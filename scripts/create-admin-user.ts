@@ -18,7 +18,7 @@ async function createAdminUser() {
     
     // Create admin user
     console.log("Creating admin user...");
-    const hashedPassword = await bcrypt.hash("admin", 10);
+    const hashedPassword = await bcrypt.hash("admin123", 10);
     
     const [adminUser] = await db.insert(users).values({
       email: "admin@tobeout.com",
