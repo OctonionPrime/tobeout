@@ -1,13 +1,15 @@
 import { db } from "../server/db";
 import { users, restaurants } from "../shared/schema";
 import bcrypt from "bcryptjs";
+import { eq } from "drizzle-orm";
 
 async function createAdminUser() {
   try {
     console.log("Checking if admin user exists...");
     
     // Check if admin user already exists
-    const [existingUser] = await db.select().from(users).where(users.email.equals("admin@tobeout.com"));
+    const existingUsers = await db.select().from(users).where(eq(users.email, "admin@tobeout.com"));
+    const existingUser = existingUsers[0];
     
     if (existingUser) {
       console.log("Admin user already exists with email: admin@tobeout.com");

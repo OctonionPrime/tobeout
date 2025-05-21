@@ -1,10 +1,12 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
 import { 
   insertUserSchema, insertRestaurantSchema, 
   insertTableSchema, insertGuestSchema, 
-  insertReservationSchema, insertIntegrationSettingSchema 
+  insertReservationSchema, insertIntegrationSettingSchema,
+  timeslots
 } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -13,6 +15,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import MemoryStore from "memorystore";
 import { setupTelegramBot } from "./services/telegram";
+import { eq, and, desc, sql } from "drizzle-orm";
 
 const Session = MemoryStore(session);
 
@@ -325,6 +328,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ message: `Generated ${count} timeslots` });
     } catch (error) {
       res.status(500).json({ message: error.message });
+    }
+  });
+  
+  app.get("/api/timeslots/stats", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const restaurant = await storage.getRestaurantByUserId(user.id);
+      
+      if (!restaurant) {
+        return res.status(404).json({ message: "Restaurant not found" });
+      }
+      
+      // Get the last date for which timeslots are available
+      const lastDateResult = await db.select({
+        date: timeslots.date,
+      })
+      .from(timeslots)
+      .where(eq(timeslots.restaurantId, restaurant.id))
+      .orderBy(desc(timeslots.date))
+      .limit(1);
+      
+      const lastDate = lastDateResult[0]?.date;
+      
+      // Count total available timeslots
+      const totalCount = await db.select({
+        count: sql<number>`count(*)`,
+      })
+      .from(timeslots)
+      .where(eq(timeslots.restaurantId, restaurant.id));
+      
+      // Count free timeslots
+      const freeCount = await db.select({
+        count: sql<number>`count(*)`,
+      })
+      .from(timeslots)
+      .where(and(
+        eq(timeslots.restaurantId, restaurant.id),
+        eq(timeslots.status, 'free')
+      ));
+      
+      res.json({
+        lastDate,
+        totalCount: totalCount[0]?.count || 0,
+        freeCount: freeCount[0]?.count || 0,
+      });
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
     }
   });
 

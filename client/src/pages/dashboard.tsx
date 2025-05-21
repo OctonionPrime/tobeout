@@ -7,6 +7,7 @@ import { UpcomingReservations } from "@/components/dashboard/UpcomingReservation
 import { TableStatus } from "@/components/dashboard/TableStatus";
 import { ReservationTimeline } from "@/components/dashboard/ReservationTimeline";
 import { AIAssistant } from "@/components/dashboard/AIAssistant";
+import { TimeslotGenerator } from "@/components/dashboard/TimeslotGenerator";
 import { ReservationModal } from "@/components/reservations/ReservationModal";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -136,14 +137,19 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Reservation Timeline & AI Assistant */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <ReservationTimeline restaurantId={restaurantId} />
-          </div>
+        {/* Timeslot Generator & AI Assistant */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
           <div className="lg:col-span-1">
+            <TimeslotGenerator restaurantId={restaurantId} />
+          </div>
+          <div className="lg:col-span-2">
             <AIAssistant restaurantId={restaurantId} />
           </div>
+        </div>
+
+        {/* Reservation Timeline */}
+        <div className="grid grid-cols-1 gap-8">
+          <ReservationTimeline restaurantId={restaurantId} />
         </div>
       </div>
 
