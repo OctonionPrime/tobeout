@@ -1,0 +1,121 @@
+The current table view shows "reserved" but it's not date/time specific - it just shows the table is reserved in general, not when it's reserved. Here's what we need:
+🎯 The Problem:
+
+✅ Tables show "reserved" status
+❌ No date/time context - can't tell WHEN it's reserved
+❌ Not useful for staff - they need to know availability for specific times
+
+🎯 Better Design & Logic:
+Option 1: Date/Time Selector + Table Status
+┌─ Table View ─────────────────────────────────────┐
+│ Date: [May 23, 2025 ▼]  Time: [19:00 ▼]        │
+│                                                  │
+│ Table Status for May 23, 2025 at 19:00:        │
+│                                                  │
+│ [Table 1] - 🔴 Reserved (Pavel - 4 guests)      │
+│ [Table 2] - 🟢 Available                        │
+│ [Table 3] - 🟡 Reserved (Misha - 2 guests)      │
+└──────────────────────────────────────────────────┘
+Option 2: Time Grid View
+┌─ Table Availability - May 23, 2025 ──────────────┐
+│ Time    │ Table 1      │ Table 2      │ Table 3  │
+│---------|--------------|--------------|----------|
+│ 17:00   │ 🟢 Free      │ 🟢 Free      │ 🟢 Free  │
+│ 17:30   │ 🟢 Free      │ 🟢 Free      │ 🟢 Free  │
+│ 18:00   │ 🟢 Free      │ 🟢 Free      │ 🟢 Free  │
+│ 18:30   │ 🟢 Free      │ 🟢 Free      │ 🟢 Free  │
+│ 19:00   │ 🔴 Pavel     │ 🟢 Free      │ 🟡 Misha │
+│ 19:30   │ 🔴 Pavel     │ 🟢 Free      │ 🟡 Misha │
+│ 20:00   │ 🟢 Free      │ 🟢 Free      │ 🟢 Free  │
+└──────────────────────────────────────────────────┘
+Option 3: Calendar-Style Table View
+┌─ Table 1 Schedule ───────────────────────────────┐
+│ May 23: 19:00-21:00 Pavel (4 guests)           │
+│ May 24: Available all day                       │
+│ May 25: 18:30-20:30 Maria (2 guests)           │
+│ May 26: Available all day                       │
+└──────────────────────────────────────────────────┘
+🔧 For Your AI Developer:
+Task: Implement Date/Time-Aware Table Status
+Backend Logic Needed:
+javascript// Instead of general "reserved" status
+const getTableStatus = async (tableId) => {
+  return "reserved"; // Too vague!
+}
+
+// Need time-specific status
+const getTableStatusForDateTime = async (tableId, date, time) => {
+  const reservation = await getReservation({
+    tableId,
+    date,
+    time // Check if this specific time slot is booked
+  });
+  
+  if (reservation) {
+    return {
+      status: 'reserved',
+      guestName: reservation.guestName,
+      guestCount: reservation.guests,
+      timeSlot: `${reservation.time} - ${getEndTime(reservation)}`
+    };
+  }
+  
+  return { status: 'available' };
+}
+Frontend Updates Needed:
+
+Add Date/Time Selectors
+jsxconst [selectedDate, setSelectedDate] = useState(new Date());
+const [selectedTime, setSelectedTime] = useState('19:00');
+
+// Update table status when date/time changes
+useEffect(() => {
+  updateTableStatuses(selectedDate, selectedTime);
+}, [selectedDate, selectedTime]);
+
+Update Table Display
+jsx// Instead of just "Reserved"
+<TableCard status="reserved" />
+
+// Show specific reservation info
+<TableCard 
+  status="reserved"
+  reservation={{
+    guestName: "Pavel",
+    guestCount: 4,
+    timeSlot: "19:00-21:00"
+  }}
+/>
+
+
+🎯 My Recommendation: Option 1 (Date/Time Selector)
+Why this approach:
+
+✅ Practical for staff - "Is Table 1 free at 7 PM tonight?"
+✅ Easy to implement - Add selectors to existing table view
+✅ Intuitive UX - Pick time, see which tables are available
+✅ Booking integration - Staff can immediately book available tables
+
+📋 Questions for Your AI Developer:
+Implementation Questions:
+
+Date/Time Picker: Add date and time selectors above table grid?
+Default Time: Show current time or next booking hour?
+Reservation Display: Show guest name and details on reserved tables?
+Time Slots: Use 30-minute intervals matching your booking system?
+
+Technical Questions:
+
+Query Optimization: How to efficiently check table status for specific date/time?
+Real-time Updates: Should status update automatically when new booking made?
+Booking Duration: How to calculate when reservation ends (start + duration)?
+
+🔧 Suggested Implementation Steps:
+
+Add date/time selectors to table view header
+Update table status query to be time-specific
+Show reservation details on reserved tables
+Add "Book Now" button on available tables
+Real-time refresh when reservations change
+
+Which design option do you prefer? I think Option 1 (Date/Time Selector) would be most useful for restaurant staff.

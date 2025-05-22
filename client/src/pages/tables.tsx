@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,13 +9,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, Edit, Trash2, Users, Terminal } from "lucide-react";
+import { Plus, Edit, Trash2, Users, Terminal, Calendar, Clock } from "lucide-react";
+import { format, addDays } from "date-fns";
 
 // In a real application, you would get the restaurant ID from context
 const restaurantId = 1;
@@ -38,6 +40,10 @@ export default function Tables() {
   const [activeView, setActiveView] = useState<"grid" | "list" | "floorplan">("grid");
   const [draggedTable, setDraggedTable] = useState<any>(null);
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  
+  // Date/Time selector state for time-specific availability
+  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [selectedTime, setSelectedTime] = useState('19:00');
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -268,6 +274,66 @@ export default function Tables() {
             </Button>
           </div>
         </header>
+
+        {/* Date/Time Availability Selector */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5" />
+              Table Availability
+            </CardTitle>
+            <div className="flex items-center gap-4 mt-4">
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium">Date:</label>
+                <Select value={selectedDate} onValueChange={setSelectedDate}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={format(new Date(), 'yyyy-MM-dd')}>
+                      Today ({format(new Date(), 'MMM dd')})
+                    </SelectItem>
+                    <SelectItem value={format(addDays(new Date(), 1), 'yyyy-MM-dd')}>
+                      Tomorrow ({format(addDays(new Date(), 1), 'MMM dd')})
+                    </SelectItem>
+                    <SelectItem value={format(addDays(new Date(), 2), 'yyyy-MM-dd')}>
+                      {format(addDays(new Date(), 2), 'EEE, MMM dd')}
+                    </SelectItem>
+                    <SelectItem value={format(addDays(new Date(), 3), 'yyyy-MM-dd')}>
+                      {format(addDays(new Date(), 3), 'EEE, MMM dd')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4" />
+                <label className="text-sm font-medium">Time:</label>
+                <Select value={selectedTime} onValueChange={setSelectedTime}>
+                  <SelectTrigger className="w-32">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="17:00">5:00 PM</SelectItem>
+                    <SelectItem value="17:30">5:30 PM</SelectItem>
+                    <SelectItem value="18:00">6:00 PM</SelectItem>
+                    <SelectItem value="18:30">6:30 PM</SelectItem>
+                    <SelectItem value="19:00">7:00 PM</SelectItem>
+                    <SelectItem value="19:30">7:30 PM</SelectItem>
+                    <SelectItem value="20:00">8:00 PM</SelectItem>
+                    <SelectItem value="20:30">8:30 PM</SelectItem>
+                    <SelectItem value="21:00">9:00 PM</SelectItem>
+                    <SelectItem value="21:30">9:30 PM</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="text-sm text-gray-600">
+                Table status for {format(new Date(selectedDate), 'MMMM d, yyyy')} at {selectedTime}
+              </div>
+            </div>
+          </CardHeader>
+        </Card>
 
         <Card className="mb-6">
           <CardHeader className="pb-3">

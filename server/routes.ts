@@ -423,6 +423,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Table availability for specific date/time
+  app.get("/api/tables/availability", isAuthenticated, async (req, res) => {
+    try {
+      const { date, time } = req.query;
+      const user = req.user as any;
+      const restaurant = await storage.getRestaurantByUserId(user.id);
+      
+      if (!restaurant) {
+        return res.status(404).json({ message: "Restaurant not found" });
+      }
+
+      if (!date || !time) {
+        return res.status(400).json({ message: "Date and time are required" });
+      }
+
+      // Get tables and reservations for the specific date/time
+      const tables = await storage.getTables(restaurant.id);
+      const reservations = await storage.getReservations(restaurant.id, { date: date as string });
+
+      const tableAvailability = tables.map(table => {
+        const tableReservation = reservations.find(r => 
+          r.reservation.tableId === table.id && 
+          r.reservation.time === time &&
+          ['confirmed', 'created'].includes(r.reservation.status || '')
+        );
+
+        if (tableReservation) {
+          return {
+            ...table,
+            status: 'reserved',
+            reservation: {
+              guestName: tableReservation.guest?.name || 'Unknown',
+              guestCount: tableReservation.reservation.guests,
+              timeSlot: `${tableReservation.reservation.time} - ${String(parseInt(tableReservation.reservation.time.split(':')[0]) + 2).padStart(2, '0')}:${tableReservation.reservation.time.split(':')[1]}`,
+              phone: tableReservation.guest?.phone,
+              status: tableReservation.reservation.status
+            }
+          };
+        }
+
+        return { ...table, status: 'available', reservation: null };
+      });
+
+      res.json(tableAvailability);
+    } catch (error) {
+      console.error("Error getting table availability:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   // Reservation routes
   app.get("/api/reservations", isAuthenticated, async (req, res) => {
     try {
