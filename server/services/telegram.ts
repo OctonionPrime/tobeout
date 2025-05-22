@@ -115,194 +115,206 @@ What would you like to do?`
 
     const chatId = msg.chat.id;
     const message = msg.text || '';
+    console.log(`📱 Telegram message received: "${message}" from chat ${chatId}`);
+    
     const context = getOrCreateContext(chatId, restaurantId);
     
-    // Try to detect reservation intent
-    const intent = await detectReservationIntent(message);
+    try {
+      // Try to detect reservation intent
+      console.log('🔍 Detecting reservation intent...');
+      const intent = await detectReservationIntent(message);
+      console.log('🔍 Intent detected:', intent);
     
-    // If it's likely a reservation request (confidence > 0.7) or we're in collecting info stage
-    if (intent.confidence > 0.7 || context.stage === 'collecting_info') {
-      // Log AI activity
-      await storage.logAiActivity({
-        restaurantId,
-        type: 'telegram_reservation_intent',
-        description: `Processed reservation intent from Telegram user ${msg.from?.first_name || 'Unknown'}`,
-        data: { intent, chatId, userId: msg.from?.id, contextStage: context.stage }
-      });
-
-      // Update context with new information
-      if (!context.partialIntent) {
-        context.partialIntent = {};
-      }
-      
-      // Merge the new intent with existing context
-      if (intent.date) context.partialIntent.date = intent.date;
-      if (intent.time) context.partialIntent.time = intent.time;
-      if (intent.guests) context.partialIntent.guests = intent.guests;
-      if (intent.name) context.partialIntent.name = intent.name;
-      if (intent.phone) context.partialIntent.phone = intent.phone;
-      if (intent.special_requests) context.partialIntent.special_requests = intent.special_requests;
-      
-      // Move to collecting info stage
-      context.stage = 'collecting_info';
-
-      // Check if we have all the required fields for a reservation
-      const { date, time, guests, name, phone } = context.partialIntent;
-      
-      if (date && time && guests && name && phone) {
-        // We have all the information, check if the requested time is available
-        const alternatives = await suggestAlternativeSlots(
+      // If it's likely a reservation request (confidence > 0.7) or we're in collecting info stage
+      if (intent.confidence > 0.7 || context.stage === 'collecting_info') {
+        // Log AI activity
+        await storage.logAiActivity({
           restaurantId,
-          date,
-          time,
-          guests
-        );
+          type: 'telegram_reservation_intent',
+          description: `Processed reservation intent from Telegram user ${msg.from?.first_name || 'Unknown'}`,
+          data: { intent, chatId, userId: msg.from?.id, contextStage: context.stage }
+        });
 
-        if (alternatives.length > 0) {
-          // Find or create guest
-          let guest = await storage.getGuestByPhone(phone);
-          
-          if (!guest) {
-            guest = await storage.createGuest({
-              name,
-              phone,
-              email: '',
-              language: 'en'  // Default
-            });
-          }
+        // Update context with new information
+        if (!context.partialIntent) {
+          context.partialIntent = {};
+        }
+      
+        // Merge the new intent with existing context
+        if (intent.date) context.partialIntent.date = intent.date;
+        if (intent.time) context.partialIntent.time = intent.time;
+        if (intent.guests) context.partialIntent.guests = intent.guests;
+        if (intent.name) context.partialIntent.name = intent.name;
+        if (intent.phone) context.partialIntent.phone = intent.phone;
+        if (intent.special_requests) context.partialIntent.special_requests = intent.special_requests;
+        
+        // Move to collecting info stage
+        context.stage = 'collecting_info';
 
-          // Create the reservation with the first alternative
-          const slot = alternatives[0];
-          const reservation = await storage.createReservation({
+        // Check if we have all the required fields for a reservation
+        const { date, time, guests, name, phone } = context.partialIntent;
+        
+        if (date && time && guests && name && phone) {
+          // We have all the information, check if the requested time is available
+          const alternatives = await suggestAlternativeSlots(
             restaurantId,
-            guestId: guest.id,
-            tableId: slot.tableId,
-            timeslotId: slot.timeslotId,
-            date: slot.date,
-            time: slot.time,
-            guests,
-            status: 'created',
-            comments: context.partialIntent.special_requests || '',
-            source: 'telegram'
-          });
-
-          // Generate confirmation message
-          const confirmationMessage = await generateReservationConfirmation(
-            name,
-            slot.date,
-            slot.time,
-            guests,
-            restaurant.name
+            date,
+            time,
+            guests
           );
 
-          // Send confirmation
-          bot.sendMessage(chatId, confirmationMessage || `Your reservation is confirmed for ${guests} people on ${slot.date} at ${slot.time}.`);
-          
-          // Notify restaurant staff
-          const staffMessage = `
-📅 New Reservation (via Telegram)
+          if (alternatives.length > 0) {
+            // Find or create guest
+            let guest = await storage.getGuestByPhone(phone);
             
+            if (!guest) {
+              guest = await storage.createGuest({
+                name,
+                phone,
+                email: '',
+                language: 'en'  // Default
+              });
+            }
+
+            // Create the reservation with the first alternative
+            const slot = alternatives[0];
+            const reservation = await storage.createReservation({
+              restaurantId,
+              guestId: guest.id,
+              tableId: slot.tableId,
+              timeslotId: slot.timeslotId,
+              date: slot.date,
+              time: slot.time,
+              guests,
+              status: 'created',
+              comments: context.partialIntent.special_requests || '',
+              source: 'telegram'
+            });
+
+            // Generate confirmation message
+            const confirmationMessage = await generateReservationConfirmation(
+              name,
+              slot.date,
+              slot.time,
+              guests,
+              restaurant.name
+            );
+
+            // Send confirmation
+            bot.sendMessage(chatId, confirmationMessage || `Your reservation is confirmed for ${guests} people on ${slot.date} at ${slot.time}.`);
+            
+            // Notify restaurant staff
+            const staffMessage = `
+📅 New Reservation (via Telegram)
+              
 👤 ${name}
 📞 ${phone}
 🕒 ${format(new Date(`${slot.date}T${slot.time}`), 'PPpp')}
 👥 ${guests} guests
 ${context.partialIntent.special_requests ? `🔔 Special requests: ${context.partialIntent.special_requests}` : ''}
-          `;
-          
-          // TODO: Send notification to restaurant staff (could be via a separate chat)
-          
-          // Reset context
-          context.stage = 'initial';
-          context.partialIntent = undefined;
+            `;
+            
+            // TODO: Send notification to restaurant staff (could be via a separate chat)
+            
+            // Reset context
+            context.stage = 'initial';
+            context.partialIntent = undefined;
+          } else {
+            // No availability for the requested time
+            context.stage = 'suggesting_alternatives';
+            
+            // Check for other possible times
+            const otherDateAlternatives = await suggestAlternativeSlots(
+              restaurantId,
+              // Try the next day
+              new Date(new Date(date).getTime() + 86400000).toISOString().split('T')[0],
+              time,
+              guests
+            );
+            
+            // Generate suggestion message
+            const suggestionMessage = await generateAlternativeSuggestionMessage(
+              restaurant.name,
+              date,
+              time,
+              guests,
+              otherDateAlternatives
+            );
+            
+            bot.sendMessage(
+              chatId,
+              suggestionMessage || `I'm sorry, but we don't have availability for ${guests} guests on ${date} at ${time}. Would you like to try a different time or date?`
+            );
+            
+            // Save alternatives for later reference
+            context.suggestedSlots = otherDateAlternatives;
+          }
         } else {
-          // No availability for the requested time
-          context.stage = 'suggesting_alternatives';
-          
-          // Check for other possible times
-          const otherDateAlternatives = await suggestAlternativeSlots(
-            restaurantId,
-            // Try the next day
-            new Date(new Date(date).getTime() + 86400000).toISOString().split('T')[0],
-            time,
-            guests
-          );
-          
-          // Generate suggestion message
-          const suggestionMessage = await generateAlternativeSuggestionMessage(
-            restaurant.name,
-            date,
-            time,
-            guests,
-            otherDateAlternatives
-          );
-          
+          // Missing information, ask for it
+          const missingFields = [];
+          if (!date) missingFields.push("date");
+          if (!time) missingFields.push("time");
+          if (!guests) missingFields.push("number of guests");
+          if (!name) missingFields.push("your name");
+          if (!phone) missingFields.push("phone number");
+
           bot.sendMessage(
             chatId,
-            suggestionMessage || `I'm sorry, but we don't have availability for ${guests} guests on ${date} at ${time}. Would you like to try a different time or date?`
+            `I'd be happy to make a reservation for you! I just need a bit more information: ${missingFields.join(", ")}. Could you please provide these details?`
           );
-          
-          // Save alternatives for later reference
-          context.suggestedSlots = otherDateAlternatives;
         }
+      } else if (context.stage === 'suggesting_alternatives') {
+        // User is responding to our alternative suggestions
+        // Try to detect if they want one of the alternatives
+        
+        // Reset context as we're switching to a new conversation
+        context.stage = 'initial';
+        context.partialIntent = undefined;
+        context.suggestedSlots = undefined;
+        
+        // Respond with a general message
+        const restaurantInfo = {
+          address: restaurant.address || undefined,
+          openingHours: "Please contact us for our opening hours",
+          cuisine: restaurant.cuisine || undefined,
+          phoneNumber: restaurant.phone || undefined,
+          description: restaurant.description || undefined
+        };
+        
+        const response = await generateResponseToGeneralInquiry(
+          message,
+          restaurant.name,
+          restaurantInfo
+        );
+        
+        bot.sendMessage(chatId, response || 'Thank you for your message. Is there anything else I can help you with?');
       } else {
-        // Missing information, ask for it
-        const missingFields = [];
-        if (!date) missingFields.push("date");
-        if (!time) missingFields.push("time");
-        if (!guests) missingFields.push("number of guests");
-        if (!name) missingFields.push("your name");
-        if (!phone) missingFields.push("phone number");
-
+        // General conversation - respond based on restaurant info
+        console.log('💬 Handling general conversation with AI...');
+        const restaurantInfo = {
+          address: restaurant.address || undefined,
+          openingHours: "Please contact us for our opening hours",
+          cuisine: restaurant.cuisine || undefined,
+          phoneNumber: restaurant.phone || undefined,
+          description: restaurant.description || undefined
+        };
+        
+        console.log('🤖 Calling generateResponseToGeneralInquiry...');
+        const response = await generateResponseToGeneralInquiry(
+          message,
+          restaurant.name,
+          restaurantInfo
+        );
+        console.log('🤖 AI Response received:', response);
+        
         bot.sendMessage(
           chatId,
-          `I'd be happy to make a reservation for you! I just need a bit more information: ${missingFields.join(", ")}. Could you please provide these details?`
+          response || `Would you like to make a reservation at ${restaurant.name}? Just let me know the date, time, and number of guests, and I'll check availability for you.`
         );
       }
-    } else if (context.stage === 'suggesting_alternatives') {
-      // User is responding to our alternative suggestions
-      // Try to detect if they want one of the alternatives
-      
-      // Reset context as we're switching to a new conversation
-      context.stage = 'initial';
-      context.partialIntent = undefined;
-      context.suggestedSlots = undefined;
-      
-      // Respond with a general message
-      const restaurantInfo = {
-        address: restaurant.address || undefined,
-        openingHours: "Please contact us for our opening hours",
-        cuisine: restaurant.cuisine || undefined,
-        phoneNumber: restaurant.phone || undefined,
-        description: restaurant.description || undefined
-      };
-      
-      const response = await generateResponseToGeneralInquiry(
-        message,
-        restaurant.name,
-        restaurantInfo
-      );
-      
-      bot.sendMessage(chatId, response || 'Thank you for your message. Is there anything else I can help you with?');
-    } else {
-      // General conversation - respond based on restaurant info
-      const restaurantInfo = {
-        address: restaurant.address || undefined,
-        openingHours: "Please contact us for our opening hours",
-        cuisine: restaurant.cuisine || undefined,
-        phoneNumber: restaurant.phone || undefined,
-        description: restaurant.description || undefined
-      };
-      
-      const response = await generateResponseToGeneralInquiry(
-        message,
-        restaurant.name,
-        restaurantInfo
-      );
-      
-      bot.sendMessage(
-        chatId,
-        response || `Would you like to make a reservation at ${restaurant.name}? Just let me know the date, time, and number of guests, and I'll check availability for you.`
-      );
+    } catch (error) {
+      console.error('❌ Error in Telegram message handler:', error);
+      bot.sendMessage(chatId, 'Sorry, I encountered an error. Please try again.');
     }
   });
 

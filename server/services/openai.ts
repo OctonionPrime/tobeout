@@ -243,6 +243,8 @@ export async function generateResponseToGeneralInquiry(
   }
 ): Promise<string> {
   try {
+    console.log(`🤖 GenerateResponseToGeneralInquiry called with message: "${message}"`);
+    
     const systemPrompt = `
       You are a friendly AI assistant for the restaurant "${restaurantName}".
       Answer customer inquiries about the restaurant in a helpful and concise way.
@@ -259,6 +261,7 @@ export async function generateResponseToGeneralInquiry(
       - Description: ${restaurantInfo.description || 'Not provided'}
     `;
 
+    console.log('🤖 Calling OpenAI API for general inquiry...');
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -268,9 +271,11 @@ export async function generateResponseToGeneralInquiry(
       max_tokens: 200
     });
 
-    return response.choices[0].message.content;
+    const aiResponse = response.choices[0].message.content || "";
+    console.log(`🤖 OpenAI Response: "${aiResponse}"`);
+    return aiResponse;
   } catch (error) {
-    console.error("Error generating response to general inquiry:", error);
+    console.error("❌ Error generating response to general inquiry:", error);
     return `Thanks for your message about ${restaurantName}. For specific information about our restaurant, please call us or visit our website.`;
   }
 }
