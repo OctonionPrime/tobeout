@@ -448,6 +448,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/reservations", isAuthenticated, async (req, res) => {
     try {
+      console.log('Received reservation request:', req.body);
+      
       const user = req.user as any;
       const restaurant = await storage.getRestaurantByUserId(user.id);
       
@@ -455,20 +457,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Restaurant not found" });
       }
       
+      // Validate required fields manually
+      if (!req.body.guestName || !req.body.guestPhone || !req.body.date || !req.body.time || !req.body.guests) {
+        return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
+      }
+      
       // First, ensure guest exists or create one
       let guest = null;
+      
+      console.log('Looking for guest with phone:', req.body.guestPhone);
       
       if (req.body.guestPhone) {
         // Try to find existing guest by phone
         guest = await storage.getGuestByPhone(req.body.guestPhone);
+        console.log('Found existing guest:', guest);
         
         if (!guest && req.body.guestName) {
           // Create a new guest
+          console.log('Creating new guest...');
           guest = await storage.createGuest({
             name: req.body.guestName,
             phone: req.body.guestPhone,
             email: req.body.guestEmail || null,
           });
+          console.log('Created new guest:', guest);
         }
       }
       
