@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +36,8 @@ export default function Tables() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [tableToDelete, setTableToDelete] = useState<number | undefined>(undefined);
   const [activeView, setActiveView] = useState<"grid" | "list" | "floorplan">("grid");
+  const [draggedTable, setDraggedTable] = useState<any>(null);
+  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -182,6 +184,35 @@ export default function Tables() {
   const confirmDelete = () => {
     if (tableToDelete) {
       deleteTableMutation.mutate(tableToDelete);
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, table: any) => {
+    setDraggedTable(table);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (draggedTable) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      // Update table position (you could save this to database)
+      setDragPosition({ x, y });
+      
+      toast({
+        title: "Table Moved",
+        description: `${draggedTable.name} repositioned on floor plan`,
+      });
+      
+      setDraggedTable(null);
     }
   };
 
@@ -357,7 +388,11 @@ export default function Tables() {
                 </div>
 
                 {/* Floor Plan Content */}
-                <div className="pt-32 px-8 pb-8">
+                <div 
+                  className="pt-32 px-8 pb-8"
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                >
                   {isLoading ? (
                     <div className="flex items-center justify-center h-64">
                       <div className="text-center">
