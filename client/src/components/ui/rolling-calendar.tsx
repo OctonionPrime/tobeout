@@ -208,7 +208,7 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
                 isToday={isToday(date)}
                 isCurrentMonth={isSameMonth(date, monthStart)}
                 capacity={capacity}
-                onClick={(e: any) => handleDateClick(date, e?.ctrlKey || e?.metaKey)}
+                onClick={() => handleDateClick(date)}
                 onHover={() => setHoveredDate(date)}
                 onLeave={() => setHoveredDate(null)}
               />

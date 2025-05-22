@@ -208,14 +208,19 @@ export default function Reservations() {
                   </Select>
                 </div>
 
-                {/* Date Filter */}
+                {/* Rolling Calendar */}
                 <div>
-                  <label className="text-sm font-medium text-gray-700">Specific Date</label>
-                  <Calendar
-                    mode="single"
-                    selected={selectedDate}
-                    onSelect={setSelectedDate}
-                    className="mt-2 rounded-md border"
+                  <label className="text-sm font-medium text-gray-700">Date Selection</label>
+                  <RollingCalendar
+                    selectedDates={selectedDate ? [selectedDate] : []}
+                    onDateSelect={(dates) => setSelectedDate(dates[0] || null)}
+                    capacityData={{
+                      '2025-05-23': { reservations: 12, capacity: 40, peakTime: '19:00-21:00' },
+                      '2025-05-28': { reservations: 34, capacity: 40, peakTime: '20:00-22:00' },
+                      '2025-05-30': { reservations: 38, capacity: 40, peakTime: '18:30-20:30' },
+                      '2025-06-02': { reservations: 28, capacity: 40, peakTime: '19:30-21:30' },
+                    }}
+                    className="mt-2"
                   />
                 </div>
 
