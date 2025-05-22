@@ -58,7 +58,7 @@ export default function Guests() {
   });
 
   const { data: guests, isLoading } = useQuery({
-    queryKey: [`/api/guests?restaurantId=${restaurantId}`],
+    queryKey: ["/api/guests"],
   });
 
   const createGuestMutation = useMutation({
