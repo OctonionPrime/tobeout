@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Search, Plus, Calendar as CalendarIcon, Edit, Trash2, UserCheck, XCircle, Phone, Mail } from "lucide-react";
+import { RollingCalendar } from "@/components/ui/rolling-calendar";
 
 const restaurantId = 1;
 
