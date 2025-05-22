@@ -242,10 +242,11 @@ export default function Tables() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle>Restaurant Tables</CardTitle>
-              <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "grid" | "list")} className="w-[200px]">
-                <TabsList className="grid w-full grid-cols-2">
+              <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "grid" | "list" | "floorplan")} className="w-[300px]">
+                <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="grid">Grid</TabsTrigger>
                   <TabsTrigger value="list">List</TabsTrigger>
+                  <TabsTrigger value="floorplan">Floor Plan</TabsTrigger>
                 </TabsList>
               </Tabs>
             </div>
@@ -319,6 +320,121 @@ export default function Tables() {
                     </Button>
                   </div>
                 )}
+              </div>
+            ) : activeView === "floorplan" ? (
+              <div className="relative bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg min-h-[500px] overflow-hidden">
+                {/* Floor Plan Header */}
+                <div className="absolute top-4 left-4 bg-white rounded-lg shadow-sm border p-3">
+                  <h3 className="text-sm font-medium text-gray-900 mb-2">Restaurant Floor Plan</h3>
+                  <div className="text-xs text-gray-500 space-y-1">
+                    <div>• Drag tables to arrange layout</div>
+                    <div>• Click tables to edit details</div>
+                    <div>• Use grid view for detailed management</div>
+                  </div>
+                </div>
+
+                {/* Legend */}
+                <div className="absolute top-4 right-4 bg-white rounded-lg shadow-sm border p-3">
+                  <h4 className="text-xs font-medium text-gray-900 mb-2">Status Legend</h4>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-green-500 rounded"></div>
+                      <span className="text-xs text-gray-600">Available</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-red-500 rounded"></div>
+                      <span className="text-xs text-gray-600">Occupied</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-amber-500 rounded"></div>
+                      <span className="text-xs text-gray-600">Reserved</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-gray-400 rounded"></div>
+                      <span className="text-xs text-gray-600">Unavailable</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Floor Plan Content */}
+                <div className="pt-32 px-8 pb-8">
+                  {isLoading ? (
+                    <div className="flex items-center justify-center h-64">
+                      <div className="text-center">
+                        <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-900 border-t-transparent mx-auto mb-4"></div>
+                        <p className="text-gray-500">Loading floor plan...</p>
+                      </div>
+                    </div>
+                  ) : tables && tables.length > 0 ? (
+                    <div className="relative grid grid-cols-8 gap-4 min-h-[400px]">
+                      {tables.map((table: any, index: number) => {
+                        const statusColors = {
+                          free: 'bg-green-500',
+                          occupied: 'bg-red-500',
+                          reserved: 'bg-amber-500',
+                          unavailable: 'bg-gray-400'
+                        };
+                        const statusColor = statusColors[table.status as keyof typeof statusColors] || statusColors.free;
+
+                        return (
+                          <div
+                            key={table.id}
+                            className={`relative cursor-pointer group transform transition-all duration-200 hover:scale-105 ${
+                              index % 8 < 4 ? 'col-start-' + (index % 4 + 1) : 'col-start-' + (index % 4 + 5)
+                            } ${Math.floor(index / 4) % 2 === 0 ? 'row-start-1' : 'row-start-3'}`}
+                            onClick={() => handleEditTable(table)}
+                          >
+                            {/* Table Shape */}
+                            <div className={`w-16 h-16 ${statusColor} rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm border-2 border-white`}>
+                              {table.name}
+                            </div>
+                            
+                            {/* Table Info Tooltip */}
+                            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
+                              <div className="bg-gray-900 text-white text-xs rounded-lg py-2 px-3 whitespace-nowrap">
+                                <div className="font-medium">{table.name}</div>
+                                <div>{table.minGuests}-{table.maxGuests} guests</div>
+                                <div className="capitalize">{table.status || 'free'}</div>
+                                {table.features && table.features.length > 0 && (
+                                  <div className="text-gray-300 mt-1">
+                                    {table.features.slice(0, 2).join(', ')}
+                                    {table.features.length > 2 && '...'}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                            </div>
+
+                            {/* Capacity Indicator */}
+                            <div className="absolute -top-1 -right-1 bg-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-medium text-gray-700 shadow-sm border">
+                              {table.maxGuests}
+                            </div>
+
+                            {/* Features Indicator */}
+                            {table.features && table.features.length > 0 && (
+                              <div className="absolute -bottom-1 -right-1 bg-blue-500 rounded-full w-4 h-4 flex items-center justify-center text-xs font-medium text-white shadow-sm">
+                                {table.features.length}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center h-64">
+                      <div className="text-center">
+                        <div className="w-16 h-16 bg-gray-200 rounded-lg mx-auto mb-4 flex items-center justify-center">
+                          <Plus className="h-8 w-8 text-gray-400" />
+                        </div>
+                        <p className="text-gray-500 mb-4">No tables in your floor plan yet</p>
+                        <Button onClick={handleAddTable}>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Add Your First Table
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="rounded-md border">
