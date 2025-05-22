@@ -1,0 +1,118 @@
+Diagnostic Checklist
+Phase 1: Environment & Configuration Verification
+1.1 OpenAI API Configuration
+
+ Check OpenAI API Key
+
+Verify OPENAI_API_KEY environment variable is set
+Confirm the API key is valid and not expired
+Test API key using direct OpenAI API call
+Check if API key has sufficient credits/quota
+
+
+ Validate OpenAI Model Configuration
+
+Verify OPENAI_MODEL environment variable (should be gpt-4o or gpt-3.5-turbo)
+Check if specified model is available for your API key
+Confirm model name spelling is correct
+
+
+ AI Assistant Settings
+
+Verify AI_ASSISTANT_ENABLED=true in environment
+Check OPENAI_MAX_TOKENS, OPENAI_TEMPERATURE values
+Confirm no conflicting AI settings
+
+
+
+1.2 Telegram Bot Configuration
+
+ Bot Token Validation
+
+Verify TELEGRAM_BOT_TOKEN is correct
+Test bot token with Telegram API directly
+Confirm bot is active and responding to basic commands
+
+
+ Bot Integration Settings
+
+Check if bot is properly configured in restaurant settings
+Verify webhook settings (if using webhooks instead of polling)
+Confirm bot has necessary permissions
+
+
+
+Phase 2: Application Architecture Check
+2.1 Code Integration Points
+
+ AI Assistant Class
+
+Verify AIAssistant class is properly initialized
+Check if TelegramAIAssistant wrapper exists and works
+Confirm AI assistant is being called in message handlers
+
+
+ Message Handler Flow
+
+Verify message handlers are routing to AI processing
+Check if AI responses are being awaited properly
+Confirm error handling isn't silently failing
+
+
+ Configuration Loading
+
+Verify bot is loading configuration from correct source
+Check if environment variables are accessible in bot context
+Confirm no configuration caching issues
+
+
+
+2.2 Dependencies & Imports
+
+ OpenAI Library
+
+Verify openai Python package is installed
+Check OpenAI library version compatibility
+Confirm import statements are correct
+
+
+ Shared Modules
+
+Verify bot can import from main Flask app modules
+Check if database connections work from bot context
+Confirm all required dependencies are available
+
+
+
+Phase 3: Runtime Diagnostics
+3.1 Logging & Error Analysis
+
+ Check Application Logs
+
+Review bot startup logs for AI initialization errors
+Look for OpenAI API call failures
+Check for any unhandled exceptions during message processing
+
+
+ Enable Debug Logging
+
+Set LOG_LEVEL=DEBUG temporarily
+Monitor AI request/response logs
+Track message processing flow
+
+
+ Error Pattern Analysis
+
+Identify if AI fails for all messages or specific types
+Check if fallback responses are being triggered
+Look for timeout or rate limiting issues
+
+
+
+3.2 API Connectivity Tests
+
+ Direct OpenAI API Test
+
+Create standalone script to test OpenAI API connection
+Verify API responses with current settings
+Test with same parameters used by bot
