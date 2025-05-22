@@ -205,19 +205,7 @@ export default function Reservations() {
               <CardHeader>
                 <CardTitle>Filters</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Time Period Filter */}
-                <div>
-                  <label className="text-sm font-medium text-gray-700">Time Period</label>
-                  <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-2">
-                    <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="all">All</TabsTrigger>
-                      <TabsTrigger value="upcoming">Upcoming</TabsTrigger>
-                      <TabsTrigger value="past">Past</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                </div>
-
+              <CardContent className="space-y-6">
                 {/* Status Filter */}
                 <div>
                   <label className="text-sm font-medium text-gray-700">Status</label>

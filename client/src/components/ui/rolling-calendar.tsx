@@ -93,7 +93,7 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
   className
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [hoveredDate, setHoveredDate] = useState<Date | null>(null);
+  const [selectedDateDetails, setSelectedDateDetails] = useState<Date | null>(null);
 
   const currentMonth = startOfMonth(currentDate);
   const nextMonth = startOfMonth(addMonths(currentDate, 1));
@@ -209,8 +209,8 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
                 isCurrentMonth={isSameMonth(date, monthStart)}
                 capacity={capacity}
                 onClick={() => handleDateClick(date)}
-                onHover={() => setHoveredDate(date)}
-                onLeave={() => setHoveredDate(null)}
+                onHover={() => setSelectedDateDetails(date)}
+                onLeave={() => setSelectedDateDetails(null)}
               />
             );
           })}
@@ -322,22 +322,7 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
         </div>
       </div>
 
-      {/* Hover Tooltip */}
-      {hoveredDate && capacityData[format(hoveredDate, 'yyyy-MM-dd')] && (
-        <div className="mt-2 p-2 bg-gray-900 text-white text-xs rounded text-center">
-          <div>{format(hoveredDate, 'MMMM d, yyyy')}</div>
-          <div>
-            {capacityData[format(hoveredDate, 'yyyy-MM-dd')]?.reservations} reservations
-          </div>
-          <div>
-            {Math.round((capacityData[format(hoveredDate, 'yyyy-MM-dd')]?.reservations || 0) / 
-            (capacityData[format(hoveredDate, 'yyyy-MM-dd')]?.capacity || 1) * 100)}% capacity
-          </div>
-          {capacityData[format(hoveredDate, 'yyyy-MM-dd')]?.peakTime && (
-            <div>Peak: {capacityData[format(hoveredDate, 'yyyy-MM-dd')]?.peakTime}</div>
-          )}
-        </div>
-      )}
+
     </div>
   );
 };
