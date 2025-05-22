@@ -444,8 +444,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Helper function to check if a time slot conflicts with a reservation
       const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
-        const startTime = reservation.reservation.time; // e.g., "17:30"
-        const duration = reservation.reservation.duration || 120; // minutes
+        const startTime = reservation.time; // e.g., "17:30"
+        const duration = reservation.duration || 90; // minutes
         
         // Convert times to minutes for calculation
         const [checkHour, checkMin] = checkTime.split(':').map(Number);
@@ -462,14 +462,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const tableAvailability = tables.map(table => {
         // Find any reservation that occupies this specific time slot
         const conflictingReservation = reservations.find(r => 
-          r.reservation.tableId === table.id && 
-          ['confirmed', 'created'].includes(r.reservation.status || '') &&
+          r.tableId === table.id && 
+          ['confirmed', 'created'].includes(r.status || '') &&
           isTimeSlotOccupied(r, time as string)
         );
 
         if (conflictingReservation) {
-          const startTime = conflictingReservation.reservation.time;
-          const duration = conflictingReservation.reservation.duration || 120;
+          const startTime = conflictingReservation.time;
+          const duration = conflictingReservation.duration || 90;
           const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
           const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
           const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
@@ -478,11 +478,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ...table,
             status: 'reserved',
             reservation: {
-              guestName: conflictingReservation.guest?.name || 'Unknown',
-              guestCount: conflictingReservation.reservation.guests,
+              guestName: conflictingReservation.guestName || 'Unknown',
+              guestCount: conflictingReservation.guests,
               timeSlot: `${startTime}-${endTime}`,
-              phone: conflictingReservation.guest?.phone,
-              status: conflictingReservation.reservation.status
+              phone: conflictingReservation.guestPhone,
+              status: conflictingReservation.status
             }
           };
         }

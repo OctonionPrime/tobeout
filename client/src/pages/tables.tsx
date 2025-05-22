@@ -63,6 +63,21 @@ export default function Tables() {
     queryKey: [`/api/tables?restaurantId=${restaurantId}`],
   });
 
+  // Fetch time-specific table availability using the new API
+  const { data: timeSpecificTables, isLoading: availabilityLoading } = useQuery({
+    queryKey: ["/api/tables/availability", selectedDate, selectedTime],
+    queryFn: async () => {
+      const response = await fetch(`/api/tables/availability?date=${selectedDate}&time=${selectedTime}`, {
+        credentials: "include"
+      });
+      if (!response.ok) throw new Error('Failed to fetch availability');
+      return response.json();
+    },
+  });
+
+  // Use time-specific data if available, otherwise fall back to general table data
+  const displayTables = timeSpecificTables || tables;
+
   const createTableMutation = useMutation({
     mutationFn: async (values: TableFormValues) => {
       // Convert features from comma-separated string to array if provided
@@ -355,8 +370,8 @@ export default function Tables() {
                   Array.from({ length: 6 }).map((_, index) => (
                     <div key={index} className="aspect-square animate-pulse bg-gray-100 rounded-lg"></div>
                   ))
-                ) : tables && tables.length > 0 ? (
-                  tables.map((table: any) => {
+                ) : displayTables && displayTables.length > 0 ? (
+                  displayTables.map((table: any) => {
                     const statusClass = getTableStatusColor(table.status);
                     return (
                       <div 
