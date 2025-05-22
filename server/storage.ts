@@ -11,7 +11,7 @@ import {
   type AiActivity, type InsertAiActivity
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, count } from "drizzle-orm";
+import { eq, and, gte, lte, desc, sql, count, or } from "drizzle-orm";
 import { addMinutes, format, parse, parseISO } from "date-fns";
 
 export interface IStorage {
