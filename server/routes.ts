@@ -638,6 +638,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const bot = await setupTelegramBot(settings.token, restaurant.id);
         const botInfo = await bot.getMe();
         
+        // Save the bot information to settings
+        const updatedSettings = {
+          ...settings,
+          settings: {
+            ...(settings.settings || {}),
+            botUsername: botInfo.username,
+            botName: botInfo.first_name
+          }
+        };
+        await storage.saveIntegrationSettings(updatedSettings);
+        
         // Log the successful test
         await storage.logAiActivity({
           restaurantId: restaurant.id,
