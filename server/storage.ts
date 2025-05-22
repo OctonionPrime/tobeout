@@ -11,7 +11,7 @@ import {
   type AiActivity, type InsertAiActivity
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, count, or, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { addMinutes, format, parse, parseISO } from "date-fns";
 
 export interface IStorage {
@@ -71,6 +71,11 @@ export interface IStorage {
   // AI activities methods
   getAiActivities(restaurantId: number, limit?: number): Promise<AiActivity[]>;
   logAiActivity(activity: InsertAiActivity): Promise<AiActivity>;
+
+  // Real-time table availability methods
+  updateTableStatusFromReservations(tableId: number): Promise<void>;
+  updateAllTableStatuses(restaurantId: number): Promise<void>;
+  getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -539,6 +544,92 @@ export class DatabaseStorage implements IStorage {
       .values(activity)
       .returning();
     return newActivity;
+  }
+
+  // Real-time table availability methods
+  async updateTableStatusFromReservations(tableId: number): Promise<void> {
+    const now = new Date();
+    const today = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const currentTime = now.toTimeString().split(' ')[0]; // HH:mm:ss
+
+    // Check if table has any active reservations right now
+    const [activeReservation] = await db
+      .select()
+      .from(reservations)
+      .where(
+        and(
+          eq(reservations.tableId, tableId),
+          eq(reservations.date, today),
+          lte(reservations.time, currentTime),
+          gte(sql`${reservations.time} + INTERVAL '2 hours'`, currentTime), // Assuming 2-hour duration
+          inArray(reservations.status, ['confirmed', 'created'])
+        )
+      );
+
+    // Check if table has upcoming reservations
+    const [upcomingReservation] = await db
+      .select()
+      .from(reservations)
+      .where(
+        and(
+          eq(reservations.tableId, tableId),
+          or(
+            and(eq(reservations.date, today), gte(reservations.time, currentTime)),
+            gte(reservations.date, today)
+          ),
+          inArray(reservations.status, ['confirmed', 'created'])
+        )
+      );
+
+    // Determine new status
+    let newStatus: 'free' | 'occupied' | 'reserved' | 'unavailable' = 'free';
+    
+    if (activeReservation) {
+      newStatus = 'occupied';
+    } else if (upcomingReservation) {
+      newStatus = 'reserved';
+    }
+
+    // Update table status
+    await db
+      .update(tables)
+      .set({ status: newStatus })
+      .where(eq(tables.id, tableId));
+  }
+
+  async updateAllTableStatuses(restaurantId: number): Promise<void> {
+    const restaurantTables = await this.getTables(restaurantId);
+    
+    for (const table of restaurantTables) {
+      await this.updateTableStatusFromReservations(table.id);
+    }
+  }
+
+  async getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]> {
+    // Get available tables for specific date/time
+    const availableTables = await db
+      .select()
+      .from(tables)
+      .where(
+        and(
+          eq(tables.restaurantId, restaurantId),
+          ne(tables.status, 'unavailable'),
+          notExists(
+            db.select()
+              .from(reservations)
+              .where(
+                and(
+                  eq(reservations.tableId, tables.id),
+                  eq(reservations.date, date),
+                  eq(reservations.time, time),
+                  inArray(reservations.status, ['confirmed', 'created'])
+                )
+              )
+          )
+        )
+      );
+
+    return availableTables;
   }
 }
 
