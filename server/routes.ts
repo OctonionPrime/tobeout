@@ -447,6 +447,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/reservations", isAuthenticated, async (req, res) => {
+    console.log('🔥 RESERVATION ENDPOINT HIT!');
     try {
       console.log('Received reservation request:', req.body);
       
