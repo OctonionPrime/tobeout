@@ -1,0 +1,138 @@
+Table Schedule System - Critical Fixes Required
+🚨 Critical Issues Identified
+Issue 1: Working Hours Mismatch
+Problem: Schedule shows 16:00-22:00, but Restaurant Profile shows 10:00-22:00
+Impact: Missing 6 hours of available booking time (10:00-16:00)
+Root Cause: System not reading actual restaurant operating hours from database
+Issue 2: Wrong Maximum Capacity Display
+Problem: Shows "12 max guests" but restaurant only has 1 table for 1-4 people
+Impact: Confusing capacity information, doesn't reflect actual restaurant setup
+Root Cause: Using hardcoded value instead of calculating from actual table capacities
+Issue 3: Unscalable Table Grid Layout
+Problem: Current layout takes massive space for just 1 table
+Impact: With 20-100 tables, interface will be unusable
+Root Cause: Poor responsive design not considering real restaurant table counts
+Issue 4: Guest Name Display Issues
+Problem: Shows "Unknown (2-4)" instead of actual guest names like "Teg" or "Pavel"
+Impact: Staff can't identify who made the reservation
+Root Cause: Not properly fetching guest data from reservations
+🎯 Required Fixes
+Fix 1: Dynamic Working Hours Integration
+Objective: Schedule must reflect actual restaurant operating hours from database
+Requirements:
+
+Read from Restaurant Profile: Query opening_time and closing_time from restaurant table
+Generate Time Slots: Create 30-minute intervals between actual opening/closing hours
+Different Hours per Restaurant: Each restaurant can have unique schedule
+Handle Edge Cases: Account for restaurants that close after midnight
+
+Expected Behavior:
+Restaurant A (10:00-22:00): Shows slots from 10:00, 10:30, 11:00... to 21:30
+Restaurant B (17:00-01:00): Shows slots from 17:00, 17:30, 18:00... to 00:30
+Restaurant C (08:00-16:00): Shows slots from 08:00, 08:30, 09:00... to 15:30
+Fix 2: Accurate Capacity Calculation
+Objective: Display real maximum capacity based on actual table setup
+Requirements:
+
+Calculate from Tables: Sum all table max capacities for restaurant
+Dynamic Updates: Recalculate when tables are added/removed/modified
+Per-Time-Slot Logic: Consider only available tables for each time slot
+Realistic Constraints: Don't show capacity higher than physically possible
+
+Logic:
+Current Restaurant Setup:
+- Table 1: Capacity 1-4 people
+- Total Restaurant Capacity: 4 people (not 12)
+
+If Adding More Tables:
+- Table 1: 1-4 people
+- Table 2: 2-6 people  
+- Table 3: 4-8 people
+- Total Restaurant Capacity: 18 people
+Fix 3: Scalable Table Layout Design
+Objective: Interface must work efficiently with 1-100+ tables
+Design Requirements:
+
+Horizontal Scrolling: Tables as columns, time as rows
+Compact Display: Each table column should be narrow but readable
+Responsive Breakpoints: Adapt to screen size and table count
+Performance Optimization: Lazy load or virtualize for large table counts
+
+Suggested Layout:
+Compact Horizontal Layout:
+Time   │ T1  │ T2  │ T3  │ T4  │ T5  │ ... → (horizontal scroll)
+-------|-----|-----|-----|-----|-----|
+10:00  │ 🟢  │ 🔴  │ 🟢  │ 🟢  │ 🟡  │
+10:30  │ 🟢  │ 🔴  │ 🟢  │ 🟢  │ 🟡  │
+11:00  │ 🟢  │ 🟢  │ 🟢  │ 🔴  │ 🟢  │
+Fix 4: Proper Guest Information Display
+Objective: Show actual guest names and details instead of "Unknown"
+Requirements:
+
+Join Reservation Data: Include guest information in availability queries
+Display Guest Names: Show "Pavel", "Teg", "Misha" instead of "Unknown"
+Show Relevant Info: Guest name, party size, reservation status
+Handle Missing Data: Graceful fallback when guest info unavailable
+
+Expected Display:
+Instead of: "Unknown (2-4)"
+Show: "Pavel (4 guests)" or "Teg - Confirmed" or "Misha (2 people)"
+🔧 Implementation Requirements
+Data Integration Points:
+
+Restaurant Operating Hours: Pull from restaurants.opening_time and restaurants.closing_time
+Table Capacities: Calculate from tables.min_capacity and tables.max_capacity
+Reservation Details: Join with guests table to get names and details
+Time Slot Generation: Dynamic based on actual restaurant schedule
+
+Performance Considerations:
+
+Efficient Queries: Batch fetch all data needed for time slots
+Caching Strategy: Cache restaurant hours and table info
+Progressive Loading: Load visible time slots first, then expand
+Memory Management: Handle large table counts without browser crash
+
+Responsive Design Requirements:
+
+Mobile Compatibility: Schedule must work on tablets/phones
+Horizontal Scrolling: For restaurants with many tables
+Zoom Functionality: Allow staff to focus on specific time periods
+Print-Friendly: Schedule should be printable for shift planning
+
+🧪 Testing Requirements
+Scenario Testing:
+
+Single Table Restaurant: Current setup should display cleanly
+Large Restaurant: Test with 50+ tables for performance
+Different Hours: Test restaurants with various operating schedules
+Edge Cases: Late night service, early morning opening, closed days
+
+Data Validation:
+
+Correct Time Ranges: Verify schedule matches restaurant profile
+Accurate Capacity: Confirm max guests reflects actual table setup
+Real Guest Names: Ensure reservations show proper guest information
+Status Consistency: Available/Reserved status matches database
+
+🎯 Success Criteria
+Functional Requirements:
+
+✅ Schedule displays all operating hours from restaurant profile
+✅ Maximum capacity reflects actual table setup
+✅ Interface scales efficiently to 100+ tables
+✅ Guest names display correctly for all reservations
+✅ Time slots update when restaurant hours change
+
+Performance Requirements:
+
+✅ Schedule loads within 2 seconds regardless of table count
+✅ Smooth scrolling and interaction with large datasets
+✅ Memory usage remains reasonable with maximum table counts
+✅ Responsive design works on all device sizes
+
+User Experience Requirements:
+
+✅ Staff can quickly identify available time slots
+✅ Guest information is immediately visible and accurate
+✅ Interface doesn't overwhelm with too much information
+✅ Schedule matches real-world restaurant operations

@@ -24,13 +24,32 @@ const restaurantId = 1;
 
 // TimeslotGridView Component - Shows the complete schedule grid
 function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tables: any[] }) {
-  // Generate time slots from 16:00 to 22:00 in 30-minute intervals
+  // Fetch restaurant operating hours
+  const { data: restaurant } = useQuery({
+    queryKey: ["/api/restaurants/profile"],
+  });
+
+  // Generate time slots based on actual restaurant operating hours
   const timeSlots = [];
-  for (let hour = 16; hour <= 22; hour++) {
-    for (let minute = 0; minute < 60; minute += 30) {
-      if (hour === 22 && minute > 0) break; // Stop at 22:00
-      const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+  if (restaurant) {
+    const openingTime = restaurant.openingTime || "10:00";
+    const closingTime = restaurant.closingTime || "22:00";
+    
+    const [openHour, openMin] = openingTime.split(':').map(Number);
+    const [closeHour, closeMin] = closingTime.split(':').map(Number);
+    
+    let currentHour = openHour;
+    let currentMin = openMin;
+    
+    while (currentHour < closeHour || (currentHour === closeHour && currentMin < closeMin)) {
+      const timeStr = `${currentHour.toString().padStart(2, '0')}:${currentMin.toString().padStart(2, '0')}`;
       timeSlots.push(timeStr);
+      
+      currentMin += 30;
+      if (currentMin >= 60) {
+        currentMin = 0;
+        currentHour++;
+      }
     }
   }
 
@@ -60,13 +79,14 @@ function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tabl
         <p className="text-sm text-gray-600">Restaurant working hours schedule</p>
       </div>
       
-      <table className="w-full border-collapse border border-gray-300">
+      <table className="w-full border-collapse border border-gray-300 text-sm">
         <thead>
           <tr className="bg-gray-50">
-            <th className="border border-gray-300 px-4 py-2 text-left font-medium">Time</th>
+            <th className="border border-gray-300 px-3 py-2 text-left font-medium sticky left-0 bg-gray-50 min-w-[80px]">Time</th>
             {tables.map((table) => (
-              <th key={table.id} className="border border-gray-300 px-4 py-2 text-center font-medium">
+              <th key={table.id} className="border border-gray-300 px-2 py-2 text-center font-medium min-w-[120px]">
                 Table {table.name}
+                <div className="text-xs text-gray-500 font-normal">({table.minGuests}-{table.maxGuests})</div>
               </th>
             ))}
           </tr>
@@ -76,7 +96,7 @@ function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tabl
             const slotData = allSlotsData?.find(slot => slot.time === time);
             return (
               <tr key={time} className="hover:bg-gray-25">
-                <td className="border border-gray-300 px-4 py-2 font-medium text-center">
+                <td className="border border-gray-300 px-3 py-2 font-medium text-center sticky left-0 bg-white">
                   {time}
                 </td>
                 {tables.map((table) => {
@@ -85,14 +105,15 @@ function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tabl
                   const reservation = tableData?.reservation;
                   
                   return (
-                    <td key={`${time}-${table.id}`} className="border border-gray-300 px-2 py-2 text-center">
+                    <td key={`${time}-${table.id}`} className="border border-gray-300 px-1 py-2 text-center">
                       {isAvailable ? (
-                        <div className="text-green-600 font-medium">
+                        <div className="text-green-600 font-medium text-xs">
                           🟢 Available
                         </div>
                       ) : (
-                        <div className="text-red-600 font-medium">
-                          🔴 {reservation?.guestName || 'Reserved'} ({reservation?.guestCount || 1}-{table.maxGuests})
+                        <div className="text-red-600 font-medium text-xs">
+                          🔴 {reservation?.guestName || 'Reserved'}
+                          <div className="text-xs">({reservation?.guestCount || 1} guests)</div>
                         </div>
                       )}
                     </td>
