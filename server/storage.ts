@@ -308,36 +308,47 @@ export class DatabaseStorage implements IStorage {
     date?: string;
     status?: string[];
     upcoming?: boolean;
-  }): Promise<Reservation[]> {
-    let query = db
-      .select()
+  }): Promise<any[]> {
+    // Get reservations with guest and table information
+    const reservationsWithDetails = await db
+      .select({
+        // Reservation fields
+        id: reservations.id,
+        restaurantId: reservations.restaurantId,
+        guestId: reservations.guestId,
+        tableId: reservations.tableId,
+        timeslotId: reservations.timeslotId,
+        date: reservations.date,
+        time: reservations.time,
+        duration: reservations.duration,
+        guests: reservations.guests,
+        status: reservations.status,
+        comments: reservations.comments,
+        source: reservations.source,
+        createdAt: reservations.createdAt,
+        // Guest fields
+        guest: {
+          id: guests.id,
+          name: guests.name,
+          phone: guests.phone,
+          email: guests.email,
+          language: guests.language
+        },
+        // Table fields
+        table: {
+          id: tables.id,
+          name: tables.name,
+          minGuests: tables.minGuests,
+          maxGuests: tables.maxGuests
+        }
+      })
       .from(reservations)
-      .where(eq(reservations.restaurantId, restaurantId));
+      .leftJoin(guests, eq(reservations.guestId, guests.id))
+      .leftJoin(tables, eq(reservations.tableId, tables.id))
+      .where(eq(reservations.restaurantId, restaurantId))
+      .orderBy(reservations.date, reservations.time);
 
-    if (filters) {
-      if (filters.date) {
-        query = query.where(eq(reservations.date, filters.date));
-      }
-
-      if (filters.status && filters.status.length > 0) {
-        query = query.where(sql`${reservations.status} IN (${filters.status.join(',')})`);
-      }
-
-      if (filters.upcoming) {
-        const today = format(new Date(), 'yyyy-MM-dd');
-        query = query.where(
-          and(
-            gte(reservations.date, today),
-            or(
-              eq(reservations.status, 'created'),
-              eq(reservations.status, 'confirmed')
-            )
-          )
-        );
-      }
-    }
-
-    return query.orderBy(reservations.date, reservations.time);
+    return reservationsWithDetails;
   }
 
   async getReservation(id: number): Promise<Reservation | undefined> {
