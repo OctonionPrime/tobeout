@@ -270,9 +270,7 @@ ${context.partialIntent.special_requests ? `🔔 Special requests: ${context.par
       // Respond with a general message
       const restaurantInfo = {
         address: restaurant.address || undefined,
-        openingHours: restaurant.openingTime && restaurant.closingTime 
-          ? `${restaurant.openingTime} - ${restaurant.closingTime}`
-          : undefined,
+        openingHours: "Please contact us for our opening hours",
         cuisine: restaurant.cuisine || undefined,
         phoneNumber: restaurant.phone || undefined,
         description: restaurant.description || undefined
@@ -289,9 +287,7 @@ ${context.partialIntent.special_requests ? `🔔 Special requests: ${context.par
       // General conversation - respond based on restaurant info
       const restaurantInfo = {
         address: restaurant.address || undefined,
-        openingHours: restaurant.openingTime && restaurant.closingTime 
-          ? `${restaurant.openingTime} - ${restaurant.closingTime}`
-          : undefined,
+        openingHours: "Please contact us for our opening hours",
         cuisine: restaurant.cuisine || undefined,
         phoneNumber: restaurant.phone || undefined,
         description: restaurant.description || undefined

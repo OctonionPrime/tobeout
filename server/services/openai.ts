@@ -150,7 +150,7 @@ export async function generateReservationConfirmation(
       max_tokens: 150
     });
 
-    return response.choices[0].message.content;
+    return response.choices[0].message.content || "";
   } catch (error) {
     console.error("Error generating reservation confirmation:", error);
     return `Your reservation for ${guests} people on ${date} at ${time} is confirmed. Thank you for choosing ${restaurantName}!`;
