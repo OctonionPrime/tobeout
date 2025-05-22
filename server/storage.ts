@@ -250,24 +250,33 @@ export class DatabaseStorage implements IStorage {
 
   // Guest methods
   async getGuests(restaurantId: number): Promise<Guest[]> {
-    // Get distinct guests who have made reservations at this restaurant
-    const guestReservations = await db
+    // Get guests with their reservation counts
+    const guestsWithCounts = await db
       .select({
-        guestId: reservations.guestId
+        id: guests.id,
+        name: guests.name,
+        phone: guests.phone,
+        email: guests.email,
+        language: guests.language,
+        birthday: guests.birthday,
+        tags: guests.tags,
+        comments: guests.comments,
+        createdAt: guests.createdAt,
+        reservationCount: count(reservations.id)
       })
-      .from(reservations)
-      .where(eq(reservations.restaurantId, restaurantId))
-      .groupBy(reservations.guestId);
-
-    if (!guestReservations.length) {
-      return [];
-    }
-
-    const guestIds = guestReservations.map(g => g.guestId);
-    return db
-      .select()
       .from(guests)
-      .where(inArray(guests.id, guestIds));
+      .leftJoin(reservations, and(
+        eq(guests.id, reservations.guestId),
+        eq(reservations.restaurantId, restaurantId)
+      ))
+      .where(sql`EXISTS (
+        SELECT 1 FROM ${reservations} 
+        WHERE ${reservations.guestId} = ${guests.id} 
+        AND ${reservations.restaurantId} = ${restaurantId}
+      )`)
+      .groupBy(guests.id);
+
+    return guestsWithCounts;
   }
 
   async getGuest(id: number): Promise<Guest | undefined> {
