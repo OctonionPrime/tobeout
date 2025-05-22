@@ -414,9 +414,11 @@ export default function Tables() {
                         return (
                           <div
                             key={table.id}
-                            className={`relative cursor-pointer group transform transition-all duration-200 hover:scale-105 ${
+                            draggable
+                            className={`relative cursor-move group transform transition-all duration-200 hover:scale-105 ${
                               index % 8 < 4 ? 'col-start-' + (index % 4 + 1) : 'col-start-' + (index % 4 + 5)
                             } ${Math.floor(index / 4) % 2 === 0 ? 'row-start-1' : 'row-start-3'}`}
+                            onDragStart={(e) => handleDragStart(e, table)}
                             onClick={() => handleEditTable(table)}
                           >
                             {/* Table Shape */}

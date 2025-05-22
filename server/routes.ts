@@ -15,6 +15,13 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import MemoryStore from "memorystore";
 import { setupTelegramBot } from "./services/telegram";
+import { 
+  findAvailableTables, 
+  findAlternativeSlots, 
+  createReservation, 
+  cancelReservation, 
+  getDateAvailability 
+} from "./services/booking";
 import { eq, and, desc, sql } from "drizzle-orm";
 
 const Session = MemoryStore(session);
@@ -671,6 +678,112 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (error: unknown) {
       console.error("Error testing Telegram bot:", error);
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
+
+  // Booking API endpoints
+  app.get("/api/booking/availability", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { restaurantId, date, time, guests } = req.query;
+      
+      if (!restaurantId || !date || !time || !guests) {
+        return res.status(400).json({ message: "Missing required parameters: restaurantId, date, time, guests" });
+      }
+
+      const availableSlots = await findAvailableTables(
+        Number(restaurantId),
+        String(date),
+        String(time),
+        Number(guests)
+      );
+
+      res.json({ available: availableSlots.length > 0, slots: availableSlots });
+    } catch (error: unknown) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
+
+  app.get("/api/booking/alternatives", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { restaurantId, date, time, guests } = req.query;
+      
+      if (!restaurantId || !date || !time || !guests) {
+        return res.status(400).json({ message: "Missing required parameters: restaurantId, date, time, guests" });
+      }
+
+      const alternatives = await findAlternativeSlots(
+        Number(restaurantId),
+        String(date),
+        String(time),
+        Number(guests)
+      );
+
+      res.json({ alternatives });
+    } catch (error: unknown) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
+
+  app.post("/api/booking/create", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { restaurantId, guestId, date, time, guests, comments, source } = req.body;
+      
+      if (!restaurantId || !guestId || !date || !time || !guests) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      const result = await createReservation({
+        restaurantId: Number(restaurantId),
+        guestId: Number(guestId),
+        date: String(date),
+        time: String(time),
+        guests: Number(guests),
+        comments: String(comments || ''),
+        source: String(source || 'manual')
+      });
+
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: unknown) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
+
+  app.post("/api/booking/cancel/:id", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      
+      const result = await cancelReservation(Number(id));
+
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: unknown) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
+
+  app.get("/api/booking/date-availability", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { restaurantId, date } = req.query;
+      
+      if (!restaurantId || !date) {
+        return res.status(400).json({ message: "Missing required parameters: restaurantId, date" });
+      }
+
+      const availability = await getDateAvailability(
+        Number(restaurantId),
+        String(date)
+      );
+
+      res.json(availability);
+    } catch (error: unknown) {
       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
     }
   });
