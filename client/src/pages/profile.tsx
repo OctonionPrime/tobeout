@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -71,8 +71,9 @@ export default function Profile() {
   });
 
   // Set form values when data is loaded
-  if (restaurant && !isLoading && !form.formState.isDirty) {
-    form.reset({
+  useEffect(() => {
+    if (restaurant && !isLoading) {
+      form.reset({
       name: restaurant.name || "",
       description: restaurant.description || "",
       country: restaurant.country || "",
@@ -92,7 +93,8 @@ export default function Profile() {
       googleMapsLink: restaurant.googleMapsLink || "",
       tripAdvisorLink: restaurant.tripAdvisorLink || "",
     });
-  }
+    }
+  }, [restaurant, isLoading, form]);
 
   const updateProfileMutation = useMutation({
     mutationFn: async (values: ProfileFormValues) => {
