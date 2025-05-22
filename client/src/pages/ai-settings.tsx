@@ -76,7 +76,7 @@ export default function AISettings() {
   });
 
   // Get Telegram Integration Settings
-  const { data: telegramSettings } = useQuery({
+  const { data: telegramSettings, isLoading: isLoadingTelegram } = useQuery<IntegrationSettings>({
     queryKey: [`/api/integrations/telegram`],
   });
 
