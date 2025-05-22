@@ -615,6 +615,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: error.message });
     }
   });
+  
+  // Test Telegram Bot Integration
+  app.get("/api/integrations/telegram/test", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const restaurant = await storage.getRestaurantByUserId(user.id);
+      
+      if (!restaurant) {
+        return res.status(404).json({ message: "Restaurant not found" });
+      }
+      
+      // Get Telegram bot settings
+      const settings = await storage.getIntegrationSettings(restaurant.id, 'telegram');
+      
+      if (!settings || !settings.enabled || !settings.token) {
+        return res.status(400).json({ message: "Telegram bot is not configured or enabled" });
+      }
+      
+      // Test the connection by trying to get the bot information
+      try {
+        const bot = await setupTelegramBot(settings.token, restaurant.id);
+        const botInfo = await bot.getMe();
+        
+        // Log the successful test
+        await storage.logAiActivity({
+          restaurantId: restaurant.id,
+          type: 'telegram_test',
+          description: `Telegram bot connection test successful`,
+          data: { botInfo }
+        });
+        
+        return res.json({ 
+          success: true, 
+          message: `Successfully connected to Telegram bot: @${botInfo.username}`,
+          botInfo
+        });
+      } catch (botError) {
+        console.error("Telegram bot connection test failed:", botError);
+        return res.status(400).json({ 
+          success: false, 
+          message: `Failed to connect to Telegram bot: ${botError.message}` 
+        });
+      }
+    } catch (error) {
+      console.error("Error testing Telegram bot:", error);
+      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
+    }
+  });
 
   app.post("/api/integrations/:type", isAuthenticated, async (req, res) => {
     try {

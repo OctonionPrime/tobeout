@@ -156,3 +156,121 @@ export async function generateReservationConfirmation(
     return `Your reservation for ${guests} people on ${date} at ${time} is confirmed. Thank you for choosing ${restaurantName}!`;
   }
 }
+
+export async function generateAlternativeSuggestionMessage(
+  restaurantName: string,
+  requestedDate: string,
+  requestedTime: string,
+  guests: number,
+  alternativeSlots: AvailableSlot[]
+): Promise<string> {
+  try {
+    if (alternativeSlots.length === 0) {
+      // No alternatives available
+      const systemPrompt = `
+        You are a friendly AI assistant for the restaurant "${restaurantName}".
+        Generate a brief, polite message explaining there's no availability.
+        Suggest they try a different date or time and offer to help them further.
+      `;
+
+      const userPrompt = `
+        Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
+        Suggest they try a different date or time and offer to help them further.
+      `;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 150
+      });
+
+      return response.choices[0].message.content;
+    } else {
+      // Format alternative slots
+      const alternativeOptions = alternativeSlots.map(slot => {
+        // Format the time for better readability
+        const timeObj = new Date(`${slot.date}T${slot.time}`);
+        const formattedTime = timeObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        return `${slot.date} at ${formattedTime}`;
+      });
+
+      const systemPrompt = `
+        You are a friendly AI assistant for the restaurant "${restaurantName}".
+        Generate a brief, polite message suggesting alternative reservation times.
+        The message should be conversational and helpful.
+      `;
+
+      const userPrompt = `
+        Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
+        Suggest these alternative times instead: ${alternativeOptions.join(', ')}.
+        Ask which alternative they would prefer, or if they'd like to try a different date.
+      `;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 200
+      });
+
+      return response.choices[0].message.content;
+    }
+  } catch (error) {
+    console.error("Error generating alternative suggestion message:", error);
+    if (alternativeSlots.length === 0) {
+      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time?`;
+    } else {
+      const alternatives = alternativeSlots.map(slot => `${slot.date} at ${slot.time}`).join(', ');
+      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would any of these alternatives work for you? ${alternatives}`;
+    }
+  }
+}
+
+export async function generateResponseToGeneralInquiry(
+  message: string,
+  restaurantName: string,
+  restaurantInfo: {
+    address?: string;
+    openingHours?: string;
+    cuisine?: string;
+    phoneNumber?: string;
+    description?: string;
+  }
+): Promise<string> {
+  try {
+    const systemPrompt = `
+      You are a friendly AI assistant for the restaurant "${restaurantName}".
+      Answer customer inquiries about the restaurant in a helpful and concise way.
+      Use the restaurant information provided to give accurate answers.
+      If you don't have the information requested, politely let the customer know
+      and offer to connect them with a staff member who can help.
+      
+      Restaurant Information:
+      - Name: ${restaurantName}
+      - Address: ${restaurantInfo.address || 'Not provided'}
+      - Opening Hours: ${restaurantInfo.openingHours || 'Not provided'}
+      - Cuisine: ${restaurantInfo.cuisine || 'Not provided'}
+      - Phone: ${restaurantInfo.phoneNumber || 'Not provided'}
+      - Description: ${restaurantInfo.description || 'Not provided'}
+    `;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message }
+      ],
+      max_tokens: 200
+    });
+
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error("Error generating response to general inquiry:", error);
+    return `Thanks for your message about ${restaurantName}. For specific information about our restaurant, please call us or visit our website.`;
+  }
+}
