@@ -331,21 +331,15 @@ export class DatabaseStorage implements IStorage {
         comments: reservations.comments,
         source: reservations.source,
         createdAt: reservations.createdAt,
-        // Guest fields
-        guest: {
-          id: guests.id,
-          name: guests.name,
-          phone: guests.phone,
-          email: guests.email,
-          language: guests.language
-        },
-        // Table fields
-        table: {
-          id: tables.id,
-          name: tables.name,
-          minGuests: tables.minGuests,
-          maxGuests: tables.maxGuests
-        }
+        // Guest fields (flattened for easy access)
+        guestName: guests.name,
+        guestPhone: guests.phone,
+        guestEmail: guests.email,
+        guestLanguage: guests.language,
+        // Table fields (flattened for easy access)
+        tableName: tables.name,
+        tableMinGuests: tables.minGuests,
+        tableMaxGuests: tables.maxGuests
       })
       .from(reservations)
       .leftJoin(guests, eq(reservations.guestId, guests.id))
