@@ -11,6 +11,7 @@ import { ReservationModal } from "@/components/reservations/ReservationModal";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Search, Plus, Calendar as CalendarIcon, Edit, Trash2, UserCheck, XCircle, Phone, Mail } from "lucide-react";
@@ -27,6 +28,7 @@ export default function Reservations() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [reservationToDelete, setReservationToDelete] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState("upcoming");
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -208,20 +210,70 @@ export default function Reservations() {
                   </Select>
                 </div>
 
-                {/* Rolling Calendar */}
+                {/* Date Selection - Quick Buttons */}
                 <div>
                   <label className="text-sm font-medium text-gray-700">Date Selection</label>
-                  <RollingCalendar
-                    selectedDates={selectedDate ? [selectedDate] : []}
-                    onDateSelect={(dates) => setSelectedDate(dates[0] || null)}
-                    capacityData={{
-                      '2025-05-23': { reservations: 12, capacity: 40, peakTime: '19:00-21:00' },
-                      '2025-05-28': { reservations: 34, capacity: 40, peakTime: '20:00-22:00' },
-                      '2025-05-30': { reservations: 38, capacity: 40, peakTime: '18:30-20:30' },
-                      '2025-06-02': { reservations: 28, capacity: 40, peakTime: '19:30-21:30' },
-                    }}
-                    className="mt-2"
-                  />
+                  <div className="mt-2 space-y-3">
+                    {/* Quick Selection Buttons */}
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant={!selectedDate && activeTab === 'all' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setSelectedDate(null)}
+                        className="text-xs"
+                      >
+                        Today
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const today = new Date();
+                          setSelectedDate(today);
+                        }}
+                        className="text-xs"
+                      >
+                        This Week
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const nextWeek = new Date();
+                          nextWeek.setDate(nextWeek.getDate() + 7);
+                          setSelectedDate(nextWeek);
+                        }}
+                        className="text-xs"
+                      >
+                        Next Week
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsCalendarModalOpen(true)}
+                        className="text-xs"
+                      >
+                        📅 More
+                      </Button>
+                    </div>
+
+                    {/* Selected Date Display */}
+                    {selectedDate && (
+                      <div className="flex items-center justify-between p-2 bg-blue-50 rounded-md">
+                        <span className="text-sm text-blue-900">
+                          Selected: {format(selectedDate, 'MMM d, yyyy')}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedDate(null)}
+                          className="h-6 w-6 p-0 text-blue-600 hover:text-blue-800"
+                        >
+                          ×
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Search Filter */}
