@@ -651,14 +651,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message: `Successfully connected to Telegram bot: @${botInfo.username}`,
           botInfo
         });
-      } catch (botError) {
+      } catch (botError: unknown) {
         console.error("Telegram bot connection test failed:", botError);
         return res.status(400).json({ 
           success: false, 
-          message: `Failed to connect to Telegram bot: ${botError.message}` 
+          message: `Failed to connect to Telegram bot: ${botError instanceof Error ? botError.message : "Unknown error"}` 
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error testing Telegram bot:", error);
       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
     }

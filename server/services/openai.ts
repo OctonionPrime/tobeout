@@ -47,7 +47,7 @@ export async function detectReservationIntent(message: string): Promise<Reservat
       response_format: { type: "json_object" }
     });
 
-    const content = response.choices[0].message.content;
+    const content = response.choices[0].message.content || '{"confidence": 0}';
     return JSON.parse(content) as ReservationIntent;
   } catch (error) {
     console.error("Error detecting reservation intent:", error);
