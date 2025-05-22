@@ -455,17 +455,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Restaurant not found" });
       }
       
-      // Validate reservation data
-      const validatedData = insertReservationSchema.parse({
-        ...req.body,
-        restaurantId: restaurant.id,
-      });
+      // First, ensure guest exists or create one
+      let guest = null;
       
-      // Ensure guest exists
-      let guest = await storage.getGuest(validatedData.guestId);
-      
-      if (!guest && req.body.guestPhone) {
-        // Try to find by phone
+      if (req.body.guestPhone) {
+        // Try to find existing guest by phone
         guest = await storage.getGuestByPhone(req.body.guestPhone);
         
         if (!guest && req.body.guestName) {
@@ -473,38 +467,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
           guest = await storage.createGuest({
             name: req.body.guestName,
             phone: req.body.guestPhone,
-            email: req.body.guestEmail,
+            email: req.body.guestEmail || null,
           });
         }
       }
       
       if (!guest) {
-        return res.status(400).json({ message: "Guest not found or could not be created" });
+        return res.status(400).json({ message: "Guest information is required" });
       }
       
-      // Update the guest ID
-      validatedData.guestId = guest.id;
-      
-      // Create the reservation
-      const reservation = await storage.createReservation(validatedData);
+      // Create reservation data
+      const reservationData = {
+        restaurantId: restaurant.id,
+        guestId: guest.id,
+        tableId: req.body.tableId && req.body.tableId !== "auto" ? parseInt(req.body.tableId) : null,
+        timeslotId: null, // Will be handled by booking service
+        date: req.body.date,
+        time: req.body.time,
+        guests: parseInt(req.body.guests),
+        status: 'created' as const,
+        comments: req.body.comments || '',
+        source: req.body.source || 'manual'
+      };
+
+      const newReservation = await storage.createReservation(reservationData);
       
       // Log AI activity if source is an AI channel
-      if (['telegram', 'web_chat', 'facebook'].includes(validatedData.source)) {
+      if (['telegram', 'web_chat', 'facebook'].includes(reservationData.source)) {
         await storage.logAiActivity({
           restaurantId: restaurant.id,
           type: 'reservation_create',
-          description: `Created new reservation for ${guest.name} (${validatedData.guests} guests) via ${validatedData.source}`,
+          description: `Created new reservation for ${guest.name} (${reservationData.guests} guests) via ${reservationData.source}`,
           data: {
-            reservationId: reservation.id,
+            reservationId: newReservation.id,
             guestId: guest.id,
-            source: validatedData.source,
+            source: reservationData.source,
           }
         });
       }
       
-      res.status(201).json(reservation);
-    } catch (error) {
-      res.status(400).json({ message: error.message });
+      res.status(201).json(newReservation);
+    } catch (error: unknown) {
+      res.status(400).json({ message: error instanceof Error ? error.message : "Unknown error" });
     }
   });
 
