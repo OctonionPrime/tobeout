@@ -324,7 +324,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="">Assign automatically</SelectItem>
+                        <SelectItem value="auto">Assign automatically</SelectItem>
                         {tables.map((table) => (
                           <SelectItem key={table.id} value={String(table.id)}>
                             {table.name} ({table.minGuests}-{table.maxGuests} guests)
