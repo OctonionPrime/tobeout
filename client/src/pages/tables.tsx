@@ -35,7 +35,7 @@ export default function Tables() {
   const [selectedTableId, setSelectedTableId] = useState<number | undefined>(undefined);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [tableToDelete, setTableToDelete] = useState<number | undefined>(undefined);
-  const [activeView, setActiveView] = useState<"grid" | "list">("grid");
+  const [activeView, setActiveView] = useState<"grid" | "list" | "floorplan">("grid");
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
