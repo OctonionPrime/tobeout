@@ -11,7 +11,7 @@ import {
   type AiActivity, type InsertAiActivity
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, count, or } from "drizzle-orm";
+import { eq, and, gte, lte, desc, sql, count, or, inArray } from "drizzle-orm";
 import { addMinutes, format, parse, parseISO } from "date-fns";
 
 export interface IStorage {
@@ -267,7 +267,7 @@ export class DatabaseStorage implements IStorage {
     return db
       .select()
       .from(guests)
-      .where(sql`${guests.id} IN (${guestIds.join(',')})`);
+      .where(inArray(guests.id, guestIds));
   }
 
   async getGuest(id: number): Promise<Guest | undefined> {
