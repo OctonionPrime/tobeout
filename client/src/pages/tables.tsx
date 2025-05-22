@@ -22,6 +22,91 @@ import { format, addDays } from "date-fns";
 // In a real application, you would get the restaurant ID from context
 const restaurantId = 1;
 
+// TimeslotGridView Component - Shows the complete schedule grid
+function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tables: any[] }) {
+  // Generate time slots from 16:00 to 22:00 in 30-minute intervals
+  const timeSlots = [];
+  for (let hour = 16; hour <= 22; hour++) {
+    for (let minute = 0; minute < 60; minute += 30) {
+      if (hour === 22 && minute > 0) break; // Stop at 22:00
+      const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      timeSlots.push(timeStr);
+    }
+  }
+
+  const { data: allSlotsData, isLoading } = useQuery({
+    queryKey: ["/api/tables/availability-grid", selectedDate],
+    queryFn: async () => {
+      const promises = timeSlots.map(async (time) => {
+        const response = await fetch(`/api/tables/availability?date=${selectedDate}&time=${time}`, {
+          credentials: "include"
+        });
+        if (!response.ok) throw new Error('Failed to fetch availability');
+        const data = await response.json();
+        return { time, tables: data };
+      });
+      return Promise.all(promises);
+    },
+  });
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-64">Loading schedule...</div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold">Table Availability - {selectedDate}</h3>
+        <p className="text-sm text-gray-600">Restaurant working hours schedule</p>
+      </div>
+      
+      <table className="w-full border-collapse border border-gray-300">
+        <thead>
+          <tr className="bg-gray-50">
+            <th className="border border-gray-300 px-4 py-2 text-left font-medium">Time</th>
+            {tables.map((table) => (
+              <th key={table.id} className="border border-gray-300 px-4 py-2 text-center font-medium">
+                Table {table.name}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {timeSlots.map((time) => {
+            const slotData = allSlotsData?.find(slot => slot.time === time);
+            return (
+              <tr key={time} className="hover:bg-gray-25">
+                <td className="border border-gray-300 px-4 py-2 font-medium text-center">
+                  {time}
+                </td>
+                {tables.map((table) => {
+                  const tableData = slotData?.tables?.find((t: any) => t.id === table.id);
+                  const isAvailable = tableData?.status === 'available';
+                  const reservation = tableData?.reservation;
+                  
+                  return (
+                    <td key={`${time}-${table.id}`} className="border border-gray-300 px-2 py-2 text-center">
+                      {isAvailable ? (
+                        <div className="text-green-600 font-medium">
+                          🟢 Available
+                        </div>
+                      ) : (
+                        <div className="text-red-600 font-medium">
+                          🔴 {reservation?.guestName || 'Reserved'} ({reservation?.guestCount || 1}-{table.maxGuests})
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const tableFormSchema = z.object({
   name: z.string().min(1, "Table name is required"),
   minGuests: z.number().min(1, "Minimum 1 guest").default(1),
@@ -37,7 +122,7 @@ export default function Tables() {
   const [selectedTableId, setSelectedTableId] = useState<number | undefined>(undefined);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [tableToDelete, setTableToDelete] = useState<number | undefined>(undefined);
-  const [activeView, setActiveView] = useState<"grid" | "list" | "floorplan">("grid");
+  const [activeView, setActiveView] = useState<"timeslot-grid" | "grid" | "list" | "floorplan">("timeslot-grid");
   const [draggedTable, setDraggedTable] = useState<any>(null);
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
   
@@ -354,8 +439,9 @@ export default function Tables() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle>Restaurant Tables</CardTitle>
-              <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "grid" | "list" | "floorplan")} className="w-[300px]">
-                <TabsList className="grid w-full grid-cols-3">
+              <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "timeslot-grid" | "grid" | "list" | "floorplan")} className="w-[400px]">
+                <TabsList className="grid w-full grid-cols-4">
+                  <TabsTrigger value="timeslot-grid">Schedule</TabsTrigger>
                   <TabsTrigger value="grid">Grid</TabsTrigger>
                   <TabsTrigger value="list">List</TabsTrigger>
                   <TabsTrigger value="floorplan">Floor Plan</TabsTrigger>
@@ -364,7 +450,9 @@ export default function Tables() {
             </div>
           </CardHeader>
           <CardContent>
-            {activeView === "grid" ? (
+            {activeView === "timeslot-grid" ? (
+              <TimeslotGridView selectedDate={selectedDate} tables={tables || []} />
+            ) : activeView === "grid" ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-4">
                 {isLoading ? (
                   Array.from({ length: 6 }).map((_, index) => (
