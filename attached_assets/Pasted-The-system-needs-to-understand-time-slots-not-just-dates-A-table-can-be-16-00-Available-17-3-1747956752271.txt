@@ -1,0 +1,168 @@
+The system needs to understand time slots, not just dates. A table can be:
+
+16:00 - ✅ Available
+17:30 - ❌ Reserved (Teg's booking)
+19:30 - ✅ Available again
+
+🎯 The Real Logic Needed:
+Current Broken Logic:
+Table 1 on May 23:
+├── ANY time → "Reserved" ❌ Wrong!
+Correct Timeslot Logic:
+Table 1 on May 23:
+├── 16:00 → Available ✅
+├── 16:30 → Available ✅  
+├── 17:00 → Available ✅
+├── 17:30 → Reserved (Teg 17:30-19:30) ❌
+├── 18:00 → Reserved (Teg 17:30-19:30) ❌
+├── 18:30 → Reserved (Teg 17:30-19:30) ❌
+├── 19:00 → Reserved (Teg 17:30-19:30) ❌
+├── 19:30 → Available ✅
+├── 20:00 → Available ✅
+└── 20:30 → Available ✅
+🔧 For Your AI Developer:
+Task: Implement Proper Timeslot Logic
+1. Calculate Reservation Duration:
+javascriptconst getReservationTimeSlots = (reservation) => {
+  const startTime = parseTime(reservation.time); // 17:30
+  const duration = reservation.duration || 120; // 2 hours default
+  const endTime = addMinutes(startTime, duration); // 19:30
+  
+  // Generate all 30-minute slots this reservation occupies
+  const occupiedSlots = [];
+  let currentSlot = startTime;
+  
+  while (currentSlot < endTime) {
+    occupiedSlots.push(formatTime(currentSlot)); // ["17:30", "18:00", "18:30", "19:00"]
+    currentSlot = addMinutes(currentSlot, 30);
+  }
+  
+  return occupiedSlots;
+};
+2. Check Specific Time Slot Availability:
+javascriptconst isTimeSlotAvailable = async (tableId, date, timeSlot) => {
+  // Get all reservations for this table on this date
+  const reservations = await getTableReservations(tableId, date);
+  
+  // Check if this specific time slot conflicts with any reservation
+  for (const reservation of reservations) {
+    const occupiedSlots = getReservationTimeSlots(reservation);
+    
+    if (occupiedSlots.includes(timeSlot)) {
+      return {
+        available: false,
+        reservation: {
+          guestName: reservation.guest_name,
+          guestPhone: reservation.guest_phone,
+          timeRange: `${reservation.time}-${getEndTime(reservation)}`,
+          status: reservation.status
+        }
+      };
+    }
+  }
+  
+  return { available: true };
+};
+3. Generate Restaurant Operating Hours:
+javascriptconst getOperatingTimeSlots = (restaurantId, date) => {
+  // Get restaurant hours (e.g., 10:00-23:00)
+  const restaurant = getRestaurant(restaurantId);
+  const openTime = parseTime(restaurant.opening_hours); // 10:00
+  const closeTime = parseTime(restaurant.closing_hours); // 23:00
+  
+  // Generate 30-minute slots
+  const timeSlots = [];
+  let currentTime = openTime;
+  
+  while (currentTime <= closeTime - 30) { // Stop 30 min before closing
+    timeSlots.push(formatTime(currentTime));
+    currentTime = addMinutes(currentTime, 30);
+  }
+  
+  return timeSlots; // ["10:00", "10:30", "11:00", ... "22:30"]
+};
+4. Update UI to Show All Time Slots:
+javascriptconst TableAvailability = () => {
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [tableStatuses, setTableStatuses] = useState({});
+  
+  const timeSlots = getOperatingTimeSlots(restaurantId, selectedDate);
+  
+  // For each time slot, check each table's availability
+  useEffect(() => {
+    const checkAllSlots = async () => {
+      const statuses = {};
+      
+      for (const timeSlot of timeSlots) {
+        for (const table of tables) {
+          const availability = await isTimeSlotAvailable(
+            table.id, 
+            selectedDate, 
+            timeSlot
+          );
+          
+          statuses[`${table.id}-${timeSlot}`] = availability;
+        }
+      }
+      
+      setTableStatuses(statuses);
+    };
+    
+    checkAllSlots();
+  }, [selectedDate]);
+};
+🎨 Better UI Design Options:
+Option 1: Time Grid (Recommended)
+Table Availability - May 23, 2025
+
+Time  │ Table 1           │ Table 2      │ Table 3
+------|-------------------|--------------|-------------
+16:00 │ 🟢 Available      │ 🟢 Available │ 🟢 Available
+16:30 │ 🟢 Available      │ 🟢 Available │ 🟢 Available  
+17:00 │ 🟢 Available      │ 🟢 Available │ 🟢 Available
+17:30 │ 🔴 Teg (1-4)      │ 🟢 Available │ 🟢 Available
+18:00 │ 🔴 Teg (1-4)      │ 🟢 Available │ 🟢 Available
+18:30 │ 🔴 Teg (1-4)      │ 🟢 Available │ 🟢 Available
+19:00 │ 🔴 Teg (1-4)      │ 🟢 Available │ 🟢 Available
+19:30 │ 🟢 Available      │ 🟢 Available │ 🟢 Available
+20:00 │ 🟢 Available      │ 🟢 Available │ 🟢 Available
+Option 2: Timeline View
+Table 1 - May 23, 2025
+├─ 16:00-17:30 ✅ Available (90 minutes)
+├─ 17:30-19:30 ❌ Reserved (Teg - 1 guest)  
+└─ 19:30-23:00 ✅ Available (3.5 hours)
+Option 3: Selected Time Focus
+Selected: May 23, 2025 at 18:00
+
+Table 1: 🔴 Reserved (Teg - ongoing until 19:30)
+Table 2: 🟢 Available  
+Table 3: 🟢 Available
+
+Available times for Table 1 today:
+16:00, 16:30, 17:00, 19:30, 20:00, 20:30, 21:00...
+🧪 Test Cases Your System Should Handle:
+Teg's Reservation: May 23, 17:30-19:30
+
+17:00 → Available ✅
+17:30 → Reserved (Teg) ❌
+18:00 → Reserved (Teg) ❌
+18:30 → Reserved (Teg) ❌
+19:00 → Reserved (Teg) ❌
+19:30 → Available ✅
+
+Multiple Reservations Same Day:
+If Pavel books 20:00-22:00:
+
+19:30 → Available ✅
+20:00 → Reserved (Pavel) ❌
+21:00 → Reserved (Pavel) ❌
+22:00 → Available ✅
+
+💡 Key Questions for Your AI Developer:
+
+Are you calculating reservation end times? (start + duration)
+Are you checking 30-minute time slot conflicts? Not just date conflicts
+Are you generating all operating hour time slots? (10:00 AM - 11:00 PM)
+Can you show a time grid instead of just one time selector?
+
+The goal: Staff should see exactly which 30-minute slots are free vs occupied for each table!

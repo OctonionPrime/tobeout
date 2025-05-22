@@ -442,23 +442,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const tables = await storage.getTables(restaurant.id);
       const reservations = await storage.getReservations(restaurant.id, { date: date as string });
 
+      // Helper function to check if a time slot conflicts with a reservation
+      const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
+        const startTime = reservation.reservation.time; // e.g., "17:30"
+        const duration = reservation.reservation.duration || 120; // minutes
+        
+        // Convert times to minutes for calculation
+        const [checkHour, checkMin] = checkTime.split(':').map(Number);
+        const checkMinutes = checkHour * 60 + checkMin;
+        
+        const [startHour, startMin] = startTime.split(':').map(Number);
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = startMinutes + duration;
+        
+        // Check if the requested time slot (30 min window) overlaps with reservation
+        return checkMinutes >= startMinutes && checkMinutes < endMinutes;
+      };
+
       const tableAvailability = tables.map(table => {
-        const tableReservation = reservations.find(r => 
+        // Find any reservation that occupies this specific time slot
+        const conflictingReservation = reservations.find(r => 
           r.reservation.tableId === table.id && 
-          r.reservation.time === time &&
-          ['confirmed', 'created'].includes(r.reservation.status || '')
+          ['confirmed', 'created'].includes(r.reservation.status || '') &&
+          isTimeSlotOccupied(r, time as string)
         );
 
-        if (tableReservation) {
+        if (conflictingReservation) {
+          const startTime = conflictingReservation.reservation.time;
+          const duration = conflictingReservation.reservation.duration || 120;
+          const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
+          const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
+          const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+
           return {
             ...table,
             status: 'reserved',
             reservation: {
-              guestName: tableReservation.guest?.name || 'Unknown',
-              guestCount: tableReservation.reservation.guests,
-              timeSlot: `${tableReservation.reservation.time} - ${String(parseInt(tableReservation.reservation.time.split(':')[0]) + 2).padStart(2, '0')}:${tableReservation.reservation.time.split(':')[1]}`,
-              phone: tableReservation.guest?.phone,
-              status: tableReservation.reservation.status
+              guestName: conflictingReservation.guest?.name || 'Unknown',
+              guestCount: conflictingReservation.reservation.guests,
+              timeSlot: `${startTime}-${endTime}`,
+              phone: conflictingReservation.guest?.phone,
+              status: conflictingReservation.reservation.status
             }
           };
         }
