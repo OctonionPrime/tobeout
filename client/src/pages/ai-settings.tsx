@@ -23,11 +23,13 @@ interface IntegrationSettings {
   token?: string;
   enabled: boolean;
   settings: any;
+  botUsername?: string;
 }
 
 const telegramFormSchema = z.object({
   token: z.string().min(1, "Telegram bot token is required"),
   enabled: z.boolean().default(false),
+  botUsername: z.string().optional(),
 });
 
 const openaiFormSchema = z.object({
@@ -68,9 +70,16 @@ export default function AISettings() {
   const { data: telegramSettings, isLoading: isLoadingTelegram } = useQuery<IntegrationSettings>({
     queryKey: [`/api/integrations/telegram`],
     onSuccess: (data) => {
+      // If we have botUsername in settings, use it
+      const botUsernameFromSettings = data.settings?.botUsername;
+      if (botUsernameFromSettings) {
+        setBotUsername(botUsernameFromSettings);
+      }
+      
       telegramForm.reset({
         token: data.token || "",
         enabled: data.enabled,
+        botUsername: botUsernameFromSettings
       });
     },
   });
@@ -136,12 +145,38 @@ export default function AISettings() {
     }
   });
 
+  // State to store bot username
+  const [botUsername, setBotUsername] = useState<string>("");
+
   // Test Telegram Bot
   const testTelegramBot = async () => {
     try {
       setIsTestingTelegram(true);
       const response = await apiRequest("GET", `/api/integrations/telegram/test?restaurantId=${restaurantId}`, undefined);
       const data = await response.json();
+      
+      // Store the bot username if available
+      if (data.botInfo && data.botInfo.username) {
+        setBotUsername(data.botInfo.username);
+        
+        // Also update the settings object to include the username
+        if (telegramSettings) {
+          const updatedSettings = {
+            ...telegramSettings,
+            settings: {
+              ...telegramSettings.settings,
+              botUsername: data.botInfo.username
+            }
+          };
+          
+          // Save the updated settings with the bot username
+          saveTelegramMutation.mutate({
+            token: telegramForm.getValues().token,
+            enabled: telegramForm.getValues().enabled,
+            botUsername: data.botInfo.username
+          });
+        }
+      }
       
       toast({
         title: "Bot Test Result",
@@ -246,7 +281,7 @@ export default function AISettings() {
                           </AlertTitle>
                           <AlertDescription className="mt-2 space-y-2 text-sm text-muted-foreground">
                             <p>Your bot is active and ready to receive reservations.</p>
-                            <p>Your guests can find it by searching for <span className="font-mono">@YourBotName</span> on Telegram.</p>
+                            <p>Your guests can find it by searching for <span className="font-mono">@{botUsername || (telegramSettings?.settings?.botUsername) || "YourBotName"}</span> on Telegram.</p>
                           </AlertDescription>
                         </Alert>
                       </div>

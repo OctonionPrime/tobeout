@@ -674,25 +674,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const type = req.params.type;
+      
+      // Save any additional custom data (like botUsername) in the settings field
+      let settings = {};
+      if (req.body.botUsername) {
+        settings = { botUsername: req.body.botUsername };
+        delete req.body.botUsername; // Remove from top level so it doesn't cause validation issues
+      }
+      
       const validatedData = insertIntegrationSettingSchema.parse({
         ...req.body,
         restaurantId: restaurant.id,
         type,
+        settings
       });
       
-      const settings = await storage.saveIntegrationSettings(validatedData);
+      const savedSettings = await storage.saveIntegrationSettings(validatedData);
       
       // If telegram integration is enabled, setup the bot
-      if (type === 'telegram' && settings.enabled && settings.token) {
+      if (type === 'telegram' && savedSettings.enabled && savedSettings.token) {
         try {
-          await setupTelegramBot(settings.token, restaurant.id);
-        } catch (error) {
+          await setupTelegramBot(savedSettings.token, restaurant.id);
+        } catch (error: unknown) {
           console.error("Error setting up Telegram bot:", error);
-          return res.status(400).json({ message: "Error setting up Telegram bot: " + error.message });
+          return res.status(400).json({ 
+            message: "Error setting up Telegram bot: " + (error instanceof Error ? error.message : "Unknown error") 
+          });
         }
       }
       
-      res.json(settings);
+      res.json(savedSettings);
     } catch (error) {
       res.status(400).json({ message: error.message });
     }
