@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -12,24 +12,27 @@ import { Separator } from "@/components/ui/separator";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Bot, BrainCircuit, MessageSquare, AlertTriangle, Save, Loader2, ArrowRight, Twitter } from "lucide-react";
+import { Bot, BrainCircuit, MessageSquare, AlertTriangle, Save, Loader2, ArrowRight, Twitter, Check, XOctagon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface IntegrationSettings {
-  id: number;
-  restaurantId: number;
-  type: string;
+  id?: number;
+  restaurantId?: number;
+  type?: string;
   apiKey?: string;
   token?: string;
-  enabled: boolean;
-  settings: any;
-  botUsername?: string;
+  enabled?: boolean;
+  settings?: {
+    botUsername?: string;
+    botName?: string;
+  };
 }
 
 const telegramFormSchema = z.object({
   token: z.string().min(1, "Telegram bot token is required"),
   enabled: z.boolean().default(false),
   botUsername: z.string().optional(),
+  botName: z.string().optional(),
 });
 
 const openaiFormSchema = z.object({
@@ -43,12 +46,18 @@ type OpenAIFormValues = z.infer<typeof openaiFormSchema>;
 export default function AISettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  
+  // State variables for UI control
   const [isTestingTelegram, setIsTestingTelegram] = useState(false);
-
+  const [showToken, setShowToken] = useState(false);
+  const [isValidTokenFormat, setIsValidTokenFormat] = useState(false);
+  const [botUsername, setBotUsername] = useState<string>("");
+  const [botName, setBotName] = useState<string>("");
+  
   // In a real application, you would get the restaurant ID from context
   const restaurantId = 1;
   
-  // Telegram Bot Settings
+  // Telegram Bot Settings Form
   const telegramForm = useForm<TelegramFormValues>({
     resolver: zodResolver(telegramFormSchema),
     defaultValues: {
@@ -57,7 +66,7 @@ export default function AISettings() {
     },
   });
 
-  // OpenAI Settings
+  // OpenAI Settings Form
   const openaiForm = useForm<OpenAIFormValues>({
     resolver: zodResolver(openaiFormSchema),
     defaultValues: {
@@ -67,33 +76,46 @@ export default function AISettings() {
   });
 
   // Get Telegram Integration Settings
-  const { data: telegramSettings, isLoading: isLoadingTelegram } = useQuery<IntegrationSettings>({
+  const { data: telegramSettings } = useQuery({
     queryKey: [`/api/integrations/telegram`],
-    onSuccess: (data) => {
-      // If we have botUsername in settings, use it
-      const botUsernameFromSettings = data.settings?.botUsername;
-      if (botUsernameFromSettings) {
-        setBotUsername(botUsernameFromSettings);
-      }
-      
-      telegramForm.reset({
-        token: data.token || "",
-        enabled: data.enabled,
-        botUsername: botUsernameFromSettings
-      });
-    },
   });
 
   // Get OpenAI Integration Settings
-  const { data: openaiSettings, isLoading: isLoadingOpenAI } = useQuery<IntegrationSettings>({
+  const { data: openaiSettings } = useQuery({
     queryKey: [`/api/integrations/openai`],
-    onSuccess: (data) => {
-      openaiForm.reset({
-        apiKey: data.apiKey || "",
-        enabled: data.enabled,
-      });
-    },
   });
+
+  // Load settings into forms and state when data is available
+  useEffect(() => {
+    if (telegramSettings) {
+      // Set form values
+      telegramForm.reset({
+        token: telegramSettings.token || "",
+        enabled: !!telegramSettings.enabled,
+        botUsername: telegramSettings.settings?.botUsername || "",
+        botName: telegramSettings.settings?.botName || ""
+      });
+      
+      // Set state variables
+      setBotUsername(telegramSettings.settings?.botUsername || "");
+      setBotName(telegramSettings.settings?.botName || "");
+      
+      // Validate token format
+      if (telegramSettings.token) {
+        const tokenPattern = /^\d{8,10}:[a-zA-Z0-9_-]{35}$/;
+        setIsValidTokenFormat(tokenPattern.test(telegramSettings.token));
+      }
+    }
+  }, [telegramSettings]);
+
+  useEffect(() => {
+    if (openaiSettings) {
+      openaiForm.reset({
+        apiKey: openaiSettings.apiKey || "",
+        enabled: !!openaiSettings.enabled,
+      });
+    }
+  }, [openaiSettings]);
 
   // Save Telegram Settings
   const saveTelegramMutation = useMutation({
@@ -111,7 +133,7 @@ export default function AISettings() {
       });
       queryClient.invalidateQueries({ queryKey: ['/api/integrations/telegram'] });
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
         title: "Error",
         description: `Failed to save Telegram bot settings: ${error.message}`,
@@ -136,7 +158,7 @@ export default function AISettings() {
       });
       queryClient.invalidateQueries({ queryKey: ['/api/integrations/openai'] });
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
         title: "Error",
         description: `Failed to save OpenAI settings: ${error.message}`,
@@ -145,9 +167,6 @@ export default function AISettings() {
     }
   });
 
-  // State to store bot username
-  const [botUsername, setBotUsername] = useState<string>("");
-
   // Test Telegram Bot
   const testTelegramBot = async () => {
     try {
@@ -155,27 +174,24 @@ export default function AISettings() {
       const response = await apiRequest("GET", `/api/integrations/telegram/test?restaurantId=${restaurantId}`, undefined);
       const data = await response.json();
       
-      // Store the bot username if available
-      if (data.botInfo && data.botInfo.username) {
-        setBotUsername(data.botInfo.username);
+      if (data.botInfo) {
+        // Store the bot information
+        const username = data.botInfo.username;
+        const name = data.botInfo.first_name;
         
-        // Also update the settings object to include the username
-        if (telegramSettings) {
-          const updatedSettings = {
-            ...telegramSettings,
-            settings: {
-              ...telegramSettings.settings,
-              botUsername: data.botInfo.username
-            }
-          };
-          
-          // Save the updated settings with the bot username
-          saveTelegramMutation.mutate({
-            token: telegramForm.getValues().token,
-            enabled: telegramForm.getValues().enabled,
-            botUsername: data.botInfo.username
-          });
-        }
+        setBotUsername(username);
+        setBotName(name);
+        
+        // Update the form values
+        telegramForm.setValue("botUsername", username);
+        
+        // Also update the settings via API
+        saveTelegramMutation.mutate({
+          token: telegramForm.getValues().token,
+          enabled: telegramForm.getValues().enabled,
+          botUsername: username,
+          botName: name
+        });
       }
       
       toast({
@@ -194,11 +210,27 @@ export default function AISettings() {
   };
 
   const onTelegramSubmit = (values: TelegramFormValues) => {
-    saveTelegramMutation.mutate(values);
+    // Ensure we keep the botUsername and botName when submitting
+    saveTelegramMutation.mutate({
+      ...values,
+      botUsername: values.botUsername || botUsername,
+      botName: values.botName || botName
+    });
   };
 
   const onOpenAISubmit = (values: OpenAIFormValues) => {
     saveOpenAIMutation.mutate(values);
+  };
+
+  // Handle token input changes
+  const handleTokenChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const token = e.target.value;
+    telegramForm.setValue("token", token);
+    
+    // Validate token format
+    const tokenPattern = /^\d{8,10}:[a-zA-Z0-9_-]{35}$/;
+    const isValid = tokenPattern.test(token);
+    setIsValidTokenFormat(isValid);
   };
 
   return (
@@ -227,74 +259,128 @@ export default function AISettings() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {isLoadingTelegram ? (
-                <div className="flex justify-center py-4">
-                  <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                </div>
-              ) : (
-                <Form {...telegramForm}>
-                  <form id="telegram-form" onSubmit={telegramForm.handleSubmit(onTelegramSubmit)} className="space-y-6">
-                    <FormField
-                      control={telegramForm.control}
-                      name="enabled"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">Telegram Bot Status</FormLabel>
-                            <FormDescription>
-                              Enable or disable the Telegram bot integration
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
+              <Form {...telegramForm}>
+                <form id="telegram-form" onSubmit={telegramForm.handleSubmit(onTelegramSubmit)} className="space-y-6">
+                  <FormField
+                    control={telegramForm.control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">Telegram Bot Status</FormLabel>
+                          <FormDescription>
+                            Enable or disable the Telegram bot integration
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
 
-                    <FormField
-                      control={telegramForm.control}
-                      name="token"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Telegram Bot Token</FormLabel>
-                          <FormControl>
-                            <Input placeholder="1234567890:ABCDefGHIJKlmnOPQRSTuvwxyz" {...field} />
-                          </FormControl>
+                  <FormField
+                    control={telegramForm.control}
+                    name="token"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Telegram Bot Token</FormLabel>
+                        <FormControl>
+                          <div className="relative">
+                            <Input 
+                              type={showToken ? "text" : "password"} 
+                              placeholder="1234567890:ABCDefGHIJKlmnOPQRSTuvwxyz" 
+                              {...field}
+                              onChange={(e) => {
+                                handleTokenChange(e);
+                                field.onChange(e);
+                              }}
+                            />
+                            <Button 
+                              type="button" 
+                              variant="ghost" 
+                              size="sm" 
+                              className="absolute right-0 top-0 h-full px-3"
+                              onClick={() => setShowToken(!showToken)}
+                            >
+                              {showToken ? "Hide" : "Show"}
+                            </Button>
+                          </div>
+                        </FormControl>
+                        <div className="flex justify-between items-center">
                           <FormDescription>
                             Get a token from @BotFather on Telegram
                           </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    {telegramSettings?.enabled && telegramSettings?.token && (
-                      <div className="mt-4">
-                        <Alert>
-                          <AlertTitle className="flex items-center">
-                            <MessageSquare className="h-4 w-4 mr-2" />
-                            Telegram Bot Information
-                          </AlertTitle>
-                          <AlertDescription className="mt-2 space-y-2 text-sm text-muted-foreground">
-                            <p>Your bot is active and ready to receive reservations.</p>
-                            <p>Your guests can find it by searching for <span className="font-mono">@{botUsername || (telegramSettings?.settings?.botUsername) || "YourBotName"}</span> on Telegram.</p>
-                          </AlertDescription>
-                        </Alert>
-                      </div>
+                          {field.value && (
+                            <div className="text-xs">
+                              {isValidTokenFormat ? (
+                                <span className="text-green-600 flex items-center">
+                                  <Check className="h-3 w-3 mr-1" />
+                                  Valid format
+                                </span>
+                              ) : (
+                                <span className="text-red-600 flex items-center">
+                                  <XOctagon className="h-3 w-3 mr-1" />
+                                  Invalid format
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <FormMessage />
+                      </FormItem>
                     )}
-                  </form>
-                </Form>
-              )}
+                  />
+
+                  <div className="mt-4">
+                    <Alert variant={telegramForm.getValues().enabled && telegramForm.getValues().token ? "default" : "destructive"}>
+                      <AlertTitle className="flex items-center">
+                        <MessageSquare className="h-4 w-4 mr-2" />
+                        Telegram Bot Information
+                      </AlertTitle>
+                      <AlertDescription className="mt-2 space-y-2 text-sm text-muted-foreground">
+                        {telegramForm.getValues().enabled && telegramForm.getValues().token ? (
+                          <>
+                            <p className="flex items-center">
+                              <span className="bg-green-100 text-green-800 text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">Active</span>
+                              Your bot is active and ready to receive reservations.
+                            </p>
+                            <p>Your guests can find it by searching for <span className="font-mono">@{botUsername || "YourBotName"}</span> on Telegram.</p>
+                            {botName && <p>Bot name: <strong>{botName}</strong></p>}
+                          </>
+                        ) : (
+                          <>
+                            <p className="flex items-center">
+                              <span className="bg-red-100 text-red-800 text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">Inactive</span>
+                              Your bot is currently inactive. Enable it to start receiving reservations.
+                            </p>
+                            <p>Configure your bot by entering a valid token and enabling the integration.</p>
+                            <p className="text-sm mt-2">
+                              <a 
+                                href="https://core.telegram.org/bots#6-botfather" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:underline"
+                              >
+                                How to create a Telegram bot with BotFather
+                              </a>
+                            </p>
+                          </>
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                </form>
+              </Form>
             </CardContent>
             <CardFooter className="flex justify-between">
               <Button 
                 type="button"
                 variant="outline" 
-                disabled={!telegramSettings?.enabled || !telegramSettings?.token || isTestingTelegram}
+                disabled={!telegramForm.getValues().token || isTestingTelegram}
                 onClick={testTelegramBot}
               >
                 {isTestingTelegram ? (
@@ -338,67 +424,82 @@ export default function AISettings() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {isLoadingOpenAI ? (
-                <div className="flex justify-center py-4">
-                  <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                </div>
-              ) : (
-                <Form {...openaiForm}>
-                  <form id="openai-form" onSubmit={openaiForm.handleSubmit(onOpenAISubmit)} className="space-y-6">
-                    <FormField
-                      control={openaiForm.control}
-                      name="enabled"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">OpenAI Integration Status</FormLabel>
-                            <FormDescription>
-                              Enable or disable the OpenAI integration for AI assistant
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={openaiForm.control}
-                      name="apiKey"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>OpenAI API Key</FormLabel>
-                          <FormControl>
-                            <Input placeholder="sk-..." type="password" {...field} />
-                          </FormControl>
+              <Form {...openaiForm}>
+                <form id="openai-form" onSubmit={openaiForm.handleSubmit(onOpenAISubmit)} className="space-y-6">
+                  <FormField
+                    control={openaiForm.control}
+                    name="enabled"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">OpenAI Status</FormLabel>
                           <FormDescription>
-                            Get your API key from your OpenAI account dashboard
+                            Enable or disable the OpenAI integration
                           </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
 
-                    <Alert className="mt-4">
-                      <AlertTriangle className="h-4 w-4" />
-                      <AlertTitle>Important</AlertTitle>
-                      <AlertDescription>
-                        Usage of the OpenAI API may incur costs based on your usage. Make sure to check OpenAI's pricing policies.
+                  <FormField
+                    control={openaiForm.control}
+                    name="apiKey"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>OpenAI API Key</FormLabel>
+                        <FormControl>
+                          <div className="relative">
+                            <Input 
+                              type="password" 
+                              placeholder="sk-..." 
+                              {...field} 
+                            />
+                          </div>
+                        </FormControl>
+                        <FormDescription>
+                          Get an API key from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">OpenAI</a>
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <div className="mt-4">
+                    <Alert variant={openaiForm.getValues().enabled ? "default" : "destructive"}>
+                      <AlertTitle className="flex items-center">
+                        <BrainCircuit className="h-4 w-4 mr-2" />
+                        OpenAI Integration Information
+                      </AlertTitle>
+                      <AlertDescription className="mt-2 space-y-2 text-sm text-muted-foreground">
+                        {openaiForm.getValues().enabled && openaiForm.getValues().apiKey ? (
+                          <>
+                            <p>OpenAI integration is active. Your digital concierge will use GPT-4o for enhanced conversational experiences.</p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="flex items-center">
+                              <span className="bg-red-100 text-red-800 text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">Inactive</span>
+                              OpenAI integration is disabled or missing API key.
+                            </p>
+                            <p>Enter a valid API key and enable the integration to use AI-powered features.</p>
+                          </>
+                        )}
                       </AlertDescription>
                     </Alert>
-                  </form>
-                </Form>
-              )}
+                  </div>
+                </form>
+              </Form>
             </CardContent>
-            <CardFooter>
+            <CardFooter className="flex justify-end">
               <Button 
-                type="submit"
+                type="submit" 
                 form="openai-form"
-                className="ml-auto"
                 disabled={saveOpenAIMutation.isPending || !openaiForm.formState.isDirty}
               >
                 {saveOpenAIMutation.isPending ? (
@@ -412,94 +513,6 @@ export default function AISettings() {
                     Save Settings
                   </>
                 )}
-              </Button>
-            </CardFooter>
-          </Card>
-        </div>
-
-        <div className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>AI Assistant Capabilities</CardTitle>
-              <CardDescription>
-                Understand what your AI assistant can do for you
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="flex flex-col p-4 bg-blue-50 rounded-lg border border-blue-100">
-                    <div className="text-blue-600 mb-2">
-                      <MessageSquare className="h-5 w-5" />
-                    </div>
-                    <h3 className="text-sm font-medium">Reservation Management</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                      The AI can create, modify, and cancel reservations through various channels.
-                    </p>
-                  </div>
-                  
-                  <div className="flex flex-col p-4 bg-green-50 rounded-lg border border-green-100">
-                    <div className="text-green-600 mb-2">
-                      <Bot className="h-5 w-5" />
-                    </div>
-                    <h3 className="text-sm font-medium">Natural Language Processing</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                      Understands guest requests in natural language to extract reservation details.
-                    </p>
-                  </div>
-                  
-                  <div className="flex flex-col p-4 bg-amber-50 rounded-lg border border-amber-100">
-                    <div className="text-amber-600 mb-2">
-                      <BrainCircuit className="h-5 w-5" />
-                    </div>
-                    <h3 className="text-sm font-medium">Intelligent Scheduling</h3>
-                    <p className="text-sm text-gray-600 mt-2">
-                      Suggests alternative times and tables when the requested slot is unavailable.
-                    </p>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-4">
-                  <h3 className="text-sm font-medium">Supported Scenarios</h3>
-                  <ul className="space-y-3">
-                    <li className="flex items-start">
-                      <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs mr-2 mt-0.5">1</div>
-                      <div>
-                        <p className="text-sm font-medium">Creating reservations</p>
-                        <p className="text-sm text-gray-600">AI assistant can create new reservations based on guest messages</p>
-                      </div>
-                    </li>
-                    <li className="flex items-start">
-                      <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs mr-2 mt-0.5">2</div>
-                      <div>
-                        <p className="text-sm font-medium">Modifying existing reservations</p>
-                        <p className="text-sm text-gray-600">Guests can change their booking details like time, date, or party size</p>
-                      </div>
-                    </li>
-                    <li className="flex items-start">
-                      <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs mr-2 mt-0.5">3</div>
-                      <div>
-                        <p className="text-sm font-medium">Cancelling reservations</p>
-                        <p className="text-sm text-gray-600">Guests can cancel their booking through the AI assistant</p>
-                      </div>
-                    </li>
-                    <li className="flex items-start">
-                      <div className="h-5 w-5 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs mr-2 mt-0.5">4</div>
-                      <div>
-                        <p className="text-sm font-medium">Sending reminders</p>
-                        <p className="text-sm text-gray-600">Automated reminders 24h and 2h before the reservation</p>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </CardContent>
-            <CardFooter>
-              <Button variant="outline" className="ml-auto" onClick={() => window.open('/ai-documentation', '_blank')}>
-                View Full Documentation
-                <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </CardFooter>
           </Card>

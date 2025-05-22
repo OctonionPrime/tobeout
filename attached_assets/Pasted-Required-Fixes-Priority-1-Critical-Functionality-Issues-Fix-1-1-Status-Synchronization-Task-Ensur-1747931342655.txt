@@ -1,0 +1,99 @@
+Required Fixes
+Priority 1: Critical Functionality Issues
+Fix 1.1: Status Synchronization
+Task: Ensure bot status display matches toggle state
+
+Frontend:
+
+If telegram_bot_active = true → slider should be ON
+If telegram_bot_active = false → slider should be OFF
+Status message should reflect actual state
+
+
+Logic:
+pythonif restaurant.telegram_bot_active and restaurant.telegram_bot_token:
+    status = "active and ready to receive reservations"
+    slider_state = True
+else:
+    status = "inactive - enable to start receiving reservations"
+    slider_state = False
+
+
+Fix 1.2: API Token Security
+Task: Implement proper token masking
+
+Display Format Options:
+
+Option A: 123456****:****************************xyz (show first 6 + last 3)
+Option B: •••••••••••••••••••••••••••••••••••••••• (full masking)
+Option C: Token configured ✓ (status indicator only)
+
+
+Implementation: Create helper function to mask sensitive data
+Show Full Token: Only when "Show Token" button is clicked (with warning)
+
+Fix 1.3: Automatic Bot Information Retrieval
+Task: Auto-fetch bot details when token is entered/changed
+
+API Integration: Use Telegram Bot API getMe method
+Endpoint: https://api.telegram.org/bot{token}/getMe
+Auto-populate fields:
+
+telegram_bot_username (e.g., @RestaurantBookingBot)
+telegram_bot_name (e.g., "Restaurant Booking Assistant")
+
+
+Error Handling: Invalid token should show clear error message
+
+Priority 2: UX Improvements
+Fix 2.1: Real-time Validation
+Task: Validate token format and connectivity
+
+Token Format Validation:
+
+Pattern: \d{8,10}:[a-zA-Z0-9_-]{35}
+Show format error immediately if invalid
+
+
+Connectivity Test:
+
+Test API connection when token is entered
+Show connection status (✓ Connected / ❌ Connection Failed)
+
+
+
+Fix 2.2: Enhanced Test Connection
+Task: Improve "Test Connection" functionality
+
+Current: Basic button
+Enhanced:
+
+Show loading spinner during test
+Display detailed results:
+
+✓ Token is valid
+✓ Bot is accessible
+✓ Bot can send messages
+❌ Specific error if failed
+
+
+
+
+Test Actions:
+
+Validate token format
+Call getMe to verify bot exists
+Test webhook setup if configured
+
+
+
+Fix 2.3: Bot Setup Guidance
+Task: Add helpful setup instructions
+
+Help Section:
+
+Link to @BotFather
+Step-by-step bot creation guide
+Token security best practices
+
+
