@@ -372,6 +372,11 @@ export class DatabaseStorage implements IStorage {
         .where(eq(timeslots.id, newReservation.timeslotId));
     }
 
+    // Automatically update table status when reservation is created
+    if (newReservation.tableId) {
+      await this.updateTableStatusFromReservations(newReservation.tableId);
+    }
+
     return newReservation;
   }
 
@@ -396,6 +401,11 @@ export class DatabaseStorage implements IStorage {
         .update(timeslots)
         .set({ status: 'free' })
         .where(eq(timeslots.id, updatedReservation.timeslotId));
+    }
+
+    // Automatically update table status when reservation is modified
+    if (updatedReservation.tableId) {
+      await this.updateTableStatusFromReservations(updatedReservation.tableId);
     }
 
     return updatedReservation;
