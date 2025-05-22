@@ -59,8 +59,11 @@ setInterval(() => {
 }, 3600000);
 
 export async function setupTelegramBot(token: string, restaurantId: number) {
+  console.log(`🚀 Setting up Telegram bot for restaurant ${restaurantId}`);
+  
   // Check if a bot is already running for this restaurant
   if (activeBots.has(restaurantId)) {
+    console.log(`🛑 Stopping existing bot for restaurant ${restaurantId}`);
     // Stop the existing bot
     const existingBot = activeBots.get(restaurantId);
     existingBot?.stopPolling();
@@ -68,8 +71,10 @@ export async function setupTelegramBot(token: string, restaurantId: number) {
   }
 
   // Create a new bot
+  console.log(`🤖 Creating new Telegram bot with token: ${token.substring(0, 10)}...`);
   const bot = new TelegramBot(token, { polling: true });
   activeBots.set(restaurantId, bot);
+  console.log(`✅ Bot created and added to active bots for restaurant ${restaurantId}`);
 
   // Get restaurant info
   const restaurant = await storage.getRestaurant(restaurantId);
