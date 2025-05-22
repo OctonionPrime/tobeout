@@ -115,7 +115,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
         date: values.date,
         time: values.time,
         guests: values.guests,
-        tableId: values.tableId ? parseInt(values.tableId) : undefined,
+        tableId: values.tableId && values.tableId !== "auto" ? parseInt(values.tableId) : undefined,
         comments: values.specialRequests,
         source: "manual"
       });

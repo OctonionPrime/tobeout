@@ -490,6 +490,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         source: req.body.source || 'manual'
       };
 
+      console.log('Creating reservation with data:', reservationData);
+      console.log('Guest created with ID:', guest.id);
+
       const newReservation = await storage.createReservation(reservationData);
       
       // Log AI activity if source is an AI channel
