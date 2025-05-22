@@ -20,7 +20,13 @@ import { RollingCalendar } from "@/components/ui/rolling-calendar";
 const restaurantId = 1;
 
 export default function Reservations() {
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [dateRangeFilter, setDateRangeFilter] = useState<{
+    type: 'default' | 'today' | 'thisWeek' | 'nextWeek' | 'custom';
+    startDate?: Date;
+    endDate?: Date;
+    displayText: string;
+  }>({ type: 'default', displayText: 'Default View' });
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
@@ -32,6 +38,25 @@ export default function Reservations() {
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  // Helper functions for date range calculations
+  const getCurrentWeekRange = () => {
+    const today = new Date();
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
+    return { start: startOfWeek, end: endOfWeek };
+  };
+
+  const getNextWeekRange = () => {
+    const currentWeek = getCurrentWeekRange();
+    const nextWeekStart = new Date(currentWeek.end);
+    nextWeekStart.setDate(nextWeekStart.getDate() + 1); // Next Monday
+    const nextWeekEnd = new Date(nextWeekStart);
+    nextWeekEnd.setDate(nextWeekStart.getDate() + 6); // Next Sunday
+    return { start: nextWeekStart, end: nextWeekEnd };
+  };
 
   const dateForQuery = selectedDate ? format(selectedDate, 'yyyy-MM-dd') : undefined;
 
@@ -217,31 +242,51 @@ export default function Reservations() {
                     {/* Quick Selection Buttons */}
                     <div className="flex flex-wrap gap-2">
                       <Button
-                        variant={!selectedDate && activeTab === 'all' ? 'default' : 'outline'}
+                        variant={dateRangeFilter.type === 'today' ? 'default' : 'outline'}
                         size="sm"
-                        onClick={() => setSelectedDate(null)}
+                        onClick={() => {
+                          const today = new Date();
+                          setDateRangeFilter({
+                            type: 'today',
+                            startDate: today,
+                            endDate: today,
+                            displayText: 'Today'
+                          });
+                          setSelectedDate(today);
+                        }}
                         className="text-xs"
                       >
                         Today
                       </Button>
                       <Button
-                        variant="outline"
+                        variant={dateRangeFilter.type === 'thisWeek' ? 'default' : 'outline'}
                         size="sm"
                         onClick={() => {
-                          const today = new Date();
-                          setSelectedDate(today);
+                          const { start, end } = getCurrentWeekRange();
+                          setDateRangeFilter({
+                            type: 'thisWeek',
+                            startDate: start,
+                            endDate: end,
+                            displayText: `This Week (${format(start, 'MMM d')}-${format(end, 'd')})`
+                          });
+                          setSelectedDate(undefined);
                         }}
                         className="text-xs"
                       >
                         This Week
                       </Button>
                       <Button
-                        variant="outline"
+                        variant={dateRangeFilter.type === 'nextWeek' ? 'default' : 'outline'}
                         size="sm"
                         onClick={() => {
-                          const nextWeek = new Date();
-                          nextWeek.setDate(nextWeek.getDate() + 7);
-                          setSelectedDate(nextWeek);
+                          const { start, end } = getNextWeekRange();
+                          setDateRangeFilter({
+                            type: 'nextWeek',
+                            startDate: start,
+                            endDate: end,
+                            displayText: `Next Week (${format(start, 'MMM d')}-${format(end, 'd')})`
+                          });
+                          setSelectedDate(undefined);
                         }}
                         className="text-xs"
                       >
@@ -258,15 +303,18 @@ export default function Reservations() {
                     </div>
 
                     {/* Selected Date Display */}
-                    {selectedDate && (
+                    {(dateRangeFilter.type !== 'default' || selectedDate) && (
                       <div className="flex items-center justify-between p-2 bg-blue-50 rounded-md">
                         <span className="text-sm text-blue-900">
-                          Selected: {format(selectedDate, 'MMM d, yyyy')}
+                          Selected: {dateRangeFilter.type !== 'default' ? dateRangeFilter.displayText : selectedDate && format(selectedDate, 'MMM d, yyyy')}
                         </span>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setSelectedDate(null)}
+                          onClick={() => {
+                            setDateRangeFilter({ type: 'default', displayText: 'Default View' });
+                            setSelectedDate(undefined);
+                          }}
                           className="h-6 w-6 p-0 text-blue-600 hover:text-blue-800"
                         >
                           ×
@@ -459,6 +507,41 @@ export default function Reservations() {
             </Card>
           </div>
         </div>
+
+        {/* Calendar Selection Modal */}
+        <Dialog open={isCalendarModalOpen} onOpenChange={setIsCalendarModalOpen}>
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Select Dates</DialogTitle>
+            </DialogHeader>
+            <div className="mt-4">
+              <RollingCalendar
+                selectedDates={selectedDate ? [selectedDate] : []}
+                onDateSelect={(dates) => {
+                  if (dates.length > 0) {
+                    setSelectedDate(dates[0]);
+                    setDateRangeFilter({
+                      type: 'custom',
+                      startDate: dates[0],
+                      endDate: dates[0],
+                      displayText: format(dates[0], 'MMM d, yyyy')
+                    });
+                    setIsCalendarModalOpen(false);
+                  }
+                }}
+                capacityData={{
+                  '2025-05-23': { reservations: 12, capacity: 40, peakTime: '19:00-21:00' },
+                  '2025-05-28': { reservations: 34, capacity: 40, peakTime: '20:00-22:00' },
+                  '2025-05-30': { reservations: 38, capacity: 40, peakTime: '18:30-20:30' },
+                  '2025-06-02': { reservations: 28, capacity: 40, peakTime: '19:30-21:30' },
+                }}
+              />
+              <div className="mt-4 text-center text-sm text-gray-600">
+                💡 Click dates to select, Ctrl+Click for multiple dates
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Reservation Modal */}
         <ReservationModal

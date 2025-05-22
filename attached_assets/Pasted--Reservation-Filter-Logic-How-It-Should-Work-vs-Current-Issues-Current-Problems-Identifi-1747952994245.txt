@@ -1,0 +1,239 @@
+# Reservation Filter Logic - How It Should Work vs Current Issues
+
+## 🔍 **Current Problems Identified:**
+
+### **Issue 1: "More" Button Not Working**
+- **Problem**: Calendar modal doesn't open when clicking "More"
+- **Likely Cause**: Missing click handler or modal component not implemented
+
+### **Issue 2: Confusing Week Selection Logic**
+- **"This Week" Problem**: Shows "Selected: May 23, 2025" but should show entire week
+- **"Next Week" Problem**: Shows "Selected: May 30, 2025" but misses May 28 booking
+- **Result**: Reservation counts change unpredictably
+
+### **Issue 3: Inconsistent Date Range Logic**
+- **Single Date vs Range**: Buttons should select ranges, not single dates
+- **Missing Reservations**: May 28 booking not showing in "Next Week"
+
+## ✅ **How It SHOULD Work:**
+
+### **Proper Button Logic:**
+
+#### **[Today] Button:**
+```
+Action: Show reservations for TODAY only
+Display: "Selected: Today (May 23, 2025)"
+Query: WHERE date = '2025-05-23'
+Count: Only today's reservations
+```
+
+#### **[This Week] Button:**
+```
+Action: Show reservations for ENTIRE current week
+Display: "Selected: This Week (May 19-25, 2025)"
+Query: WHERE date BETWEEN '2025-05-19' AND '2025-05-25'
+Count: All reservations in current week
+```
+
+#### **[Next Week] Button:**
+```
+Action: Show reservations for ENTIRE next week
+Display: "Selected: Next Week (May 26 - June 1, 2025)"
+Query: WHERE date BETWEEN '2025-05-26' AND '2025-06-01'
+Count: All reservations in next week (INCLUDING May 28!)
+```
+
+### **Clear Selection Display:**
+```
+Instead of: "Selected: May 30, 2025"
+Should be: "Selected: Next Week (May 26 - June 1)" [× Clear]
+```
+
+## 🔧 **For Your AI Developer - Investigation Tasks:**
+
+### **Task 1: Fix "More" Button**
+```javascript
+// Check if modal component exists
+// Look for: Modal, Dialog, or Popup component for calendar
+// Verify click handler is attached to "More" button
+
+// Possible issues:
+1. Missing import for modal component
+2. Modal state not initialized (useState)
+3. Click handler not bound to button
+4. Modal CSS hiding the component
+5. JavaScript error preventing modal open
+```
+
+### **Task 2: Fix Week Selection Logic**
+```javascript
+// Current (WRONG) logic appears to be:
+onClick="This Week" -> setSelectedDate('2025-05-23') // Single date!
+
+// Should be (CORRECT):
+onClick="This Week" -> setDateRange({
+  start: '2025-05-19',  // Week start (Monday)
+  end: '2025-05-25',    // Week end (Sunday)
+  type: 'week'
+})
+
+// API Query should be:
+GET /api/reservations?date_start=2025-05-19&date_end=2025-05-25
+// Not: GET /api/reservations?date=2025-05-23
+```
+
+### **Task 3: Fix Date Range Calculations**
+```javascript
+// Week calculation logic needed:
+function getCurrentWeekRange() {
+  const today = new Date();
+  const startOfWeek = new Date(today);
+  startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday
+  
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
+  
+  return { start: startOfWeek, end: endOfWeek };
+}
+
+function getNextWeekRange() {
+  const currentWeek = getCurrentWeekRange();
+  const nextWeekStart = new Date(currentWeek.end);
+  nextWeekStart.setDate(nextWeekStart.getDate() + 1); // Next Monday
+  
+  const nextWeekEnd = new Date(nextWeekStart);
+  nextWeekEnd.setDate(nextWeekStart.getDate() + 6); // Next Sunday
+  
+  return { start: nextWeekStart, end: nextWeekEnd };
+}
+```
+
+## 🎯 **Correct Implementation Specification:**
+
+### **Button Behavior Matrix:**
+```
+Button      | Date Range              | Display Text              | API Query
+------------|-------------------------|---------------------------|------------------
+Today       | May 23 only            | "Today"                   | date=2025-05-23
+This Week   | May 19-25 (7 days)     | "This Week (May 19-25)"   | date_start=19&date_end=25
+Next Week   | May 26-June 1 (7 days) | "Next Week (May 26-Jun 1)"| date_start=26&date_end=01
+More        | Opens calendar modal    | "Custom dates selected"   | Based on selection
+```
+
+### **Selection State Management:**
+```javascript
+// State should track:
+const [filterState, setFilterState] = useState({
+  type: 'default',        // 'today', 'week', 'range', 'custom'
+  startDate: null,
+  endDate: null,
+  displayText: 'Default View'
+});
+
+// When "This Week" clicked:
+setFilterState({
+  type: 'week',
+  startDate: '2025-05-19',
+  endDate: '2025-05-25',
+  displayText: 'This Week (May 19-25)'
+});
+```
+
+### **Reservation Count Logic:**
+```javascript
+// Count should reflect ACTUAL query results:
+if (filterState.type === 'today') {
+  // Count reservations for single date
+} else if (filterState.type === 'week') {
+  // Count reservations for entire week range
+} else if (filterState.type === 'range') {
+  // Count reservations for custom date range
+}
+
+// The count in "Today's Overview" should be SEPARATE from filter count
+// "Today's Overview" = Always today's count regardless of filter
+// "Showing X reservations" = Count matching current filter
+```
+
+## 🚨 **Critical Issues to Debug:**
+
+### **1. "More" Button Investigation:**
+```javascript
+// Check these areas:
+1. Console errors when clicking "More"
+2. Modal component import/export
+3. CSS z-index issues hiding modal
+4. Event handler attachment
+5. State management for modal visibility
+
+// Debug steps:
+console.log('More button clicked'); // Add to click handler
+console.log('Modal state:', isModalOpen); // Check state changes
+console.log('Modal element:', document.querySelector('.modal')); // Check DOM
+```
+
+### **2. Week Logic Investigation:**
+```javascript
+// Check current implementation:
+1. How are week ranges calculated?
+2. Is API receiving single date or date range?
+3. Are database queries using BETWEEN or equals?
+4. Is frontend filtering results correctly?
+
+// Debug steps:
+console.log('This Week clicked, sending:', queryParams);
+console.log('API response:', reservations);
+console.log('Filtered results:', filteredReservations);
+```
+
+### **3. Count Mismatch Investigation:**
+```javascript
+// Check count calculation:
+1. Where is "Total Reservations" count coming from?
+2. Is it using same filter as reservation list?
+3. Are there separate API calls for count vs list?
+4. Is caching causing stale counts?
+
+// Debug steps:
+console.log('Reservation count query:', countQuery);
+console.log('Reservation list query:', listQuery);
+console.log('Count result:', totalCount);
+console.log('List length:', reservationList.length);
+```
+
+## ✅ **Expected User Experience:**
+
+### **Correct Flow:**
+1. **Page loads**: Shows default period (Today + next 14 days)
+2. **Click "Today"**: Shows only today's reservations, count updates
+3. **Click "This Week"**: Shows full week, count shows week total
+4. **Click "Next Week"**: Shows full next week (including May 28!), count updates
+5. **Click "More"**: Opens calendar modal for custom selection
+6. **Click "Clear"**: Returns to default view
+
+### **Clear Visual Feedback:**
+```
+✅ Good: "Selected: This Week (May 19-25, 2025) [× Clear]"
+❌ Bad:  "Selected: May 23, 2025"
+
+✅ Good: "Showing 8 reservations for This Week"
+❌ Bad:  Count changes unpredictably
+```
+
+## 🔍 **Debugging Checklist for AI Developer:**
+
+### **Immediate Checks:**
+- [ ] Does "More" button have click handler?
+- [ ] Does calendar modal component exist?
+- [ ] Are week buttons sending date ranges or single dates?
+- [ ] Do API queries match button intentions?
+- [ ] Are reservation counts calculated correctly?
+
+### **Expected Fixes:**
+1. **Fix "More" button** - Implement modal calendar
+2. **Fix week logic** - Use date ranges, not single dates  
+3. **Fix display text** - Show ranges clearly
+4. **Fix count logic** - Match counts to actual queries
+5. **Add clear visual feedback** - User always knows what's selected
+
+This should resolve the confusing behavior and create a logical, predictable filtering system!
