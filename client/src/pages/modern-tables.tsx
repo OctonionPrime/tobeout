@@ -97,20 +97,61 @@ export default function ModernTables() {
     }
   };
 
+  // Cancel reservation mutation
+  const cancelReservationMutation = useMutation({
+    mutationFn: async (reservationId: number) => {
+      const response = await apiRequest(`/api/booking/cancel/${reservationId}`, {
+        method: 'POST',
+      });
+      return response;
+    },
+    onSuccess: () => {
+      // Invalidate and refetch table availability data
+      queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+      
+      toast({ 
+        title: "Reservation Cancelled", 
+        description: "Table is now available" 
+      });
+    },
+    onError: (error: any) => {
+      toast({ 
+        title: "Error", 
+        description: error.message || "Failed to cancel reservation", 
+        variant: "destructive" 
+      });
+    }
+  });
+
   const handleContextAction = async (action: string, table: any, time: string) => {
     try {
       switch (action) {
+        case 'cancel':
+          // Cancel existing reservation
+          if (table.reservation?.id) {
+            await cancelReservationMutation.mutateAsync(table.reservation.id);
+          } else {
+            toast({ title: "No Reservation", description: "No reservation found to cancel" });
+          }
+          break;
         case 'block':
           // Block table logic
           toast({ title: "Table Blocked", description: `${table.name} blocked for ${time}` });
+          // Invalidate cache to refresh
+          queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
           break;
         case 'available':
           // Make available logic
           toast({ title: "Table Available", description: `${table.name} set as available for ${time}` });
+          // Invalidate cache to refresh
+          queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
           break;
         case 'maintenance':
           // Maintenance mode logic
           toast({ title: "Maintenance Mode", description: `${table.name} set to maintenance for ${time}` });
+          // Invalidate cache to refresh
+          queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
           break;
         case 'reserve':
           // Quick reservation logic
@@ -347,12 +388,21 @@ export default function ModernTables() {
                                 </div>
                               </ContextMenuTrigger>
                               <ContextMenuContent className="rounded-xl shadow-2xl border-0 bg-white dark:bg-gray-800 p-2">
-                                <ContextMenuItem 
-                                  onClick={() => handleContextAction('reserve', table, slot.time)}
-                                  className="rounded-lg hover:bg-gradient-to-r hover:from-green-50 hover:to-emerald-50 dark:hover:from-green-900/20 dark:hover:to-emerald-900/20"
-                                >
-                                  Create Reservation
-                                </ContextMenuItem>
+                                {hasReservation ? (
+                                  <ContextMenuItem 
+                                    onClick={() => handleContextAction('cancel', table, slot.time)}
+                                    className="rounded-lg hover:bg-gradient-to-r hover:from-red-50 hover:to-pink-50 dark:hover:from-red-900/20 dark:hover:to-pink-900/20 text-red-600 dark:text-red-400"
+                                  >
+                                    Cancel Reservation
+                                  </ContextMenuItem>
+                                ) : (
+                                  <ContextMenuItem 
+                                    onClick={() => handleContextAction('reserve', table, slot.time)}
+                                    className="rounded-lg hover:bg-gradient-to-r hover:from-green-50 hover:to-emerald-50 dark:hover:from-green-900/20 dark:hover:to-emerald-900/20"
+                                  >
+                                    Create Reservation
+                                  </ContextMenuItem>
+                                )}
                                 <ContextMenuItem 
                                   onClick={() => handleContextAction('block', table, slot.time)}
                                   className="rounded-lg hover:bg-gradient-to-r hover:from-red-50 hover:to-pink-50 dark:hover:from-red-900/20 dark:hover:to-pink-900/20"
