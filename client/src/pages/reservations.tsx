@@ -381,10 +381,10 @@ export default function Reservations() {
                             </div>
                             <div>
                               <h3 className="font-medium text-gray-900">
-                                {reservation.guest?.name || 'Guest'}
+                                {reservation.guestName || reservation.guest?.name || 'Guest'}
                               </h3>
                               <p className="text-sm text-gray-500">
-                                {reservation.guest?.phone || 'No phone provided'}
+                                {reservation.guestPhone || reservation.guest?.phone || 'No phone provided'}
                               </p>
                             </div>
                           </div>
