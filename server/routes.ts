@@ -22,6 +22,7 @@ import {
   cancelReservation, 
   getDateAvailability 
 } from "./services/booking";
+import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
 import { eq, and, desc, sql } from "drizzle-orm";
 
 const Session = MemoryStore(session);
@@ -423,7 +424,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Table availability for specific date/time
+  // Table availability for specific date/time (with smart caching)
   app.get("/api/tables/availability", isAuthenticated, async (req, res) => {
     try {
       const { date, time } = req.query;
@@ -438,9 +439,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Date and time are required" });
       }
 
-      // Get tables and reservations for the specific date/time
-      const tables = await storage.getTables(restaurant.id);
-      const reservations = await storage.getReservations(restaurant.id, { date: date as string });
+      // Smart caching: Cache for 30 seconds to reduce database load
+      const cacheKey = CacheKeys.tableAvailability(restaurant.id, `${date}_${time}`);
+      const tableAvailability = await withCache(cacheKey, async () => {
+        // Get tables and reservations for the specific date/time
+        const tables = await storage.getTables(restaurant.id);
+        const reservations = await storage.getReservations(restaurant.id, { date: date as string });
 
       // Helper function to check if a time slot conflicts with a reservation
       const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
@@ -500,6 +504,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         return { ...table, status: 'available', reservation: null };
       });
+
+        return tableAvailability;
+      }, 30); // Cache for 30 seconds
 
       res.json(tableAvailability);
     } catch (error) {
