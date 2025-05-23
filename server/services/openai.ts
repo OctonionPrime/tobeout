@@ -21,11 +21,32 @@ interface ReservationIntent {
   confidence: number;
 }
 
-export async function detectReservationIntent(message: string): Promise<ReservationIntent> {
+// Enhanced intent detection with conversation context awareness
+export async function detectReservationIntentWithContext(
+  message: string, 
+  context: any
+): Promise<ReservationIntent> {
   try {
     const systemPrompt = `
-      You are an AI assistant for a restaurant reservation system. 
-      Analyze the user message and extract the following information for a restaurant reservation:
+      You are an intelligent restaurant assistant. Extract booking information while being conversational and context-aware.
+
+      CONVERSATION CONTEXT:
+      - Previous messages: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
+      - Current info collected: ${JSON.stringify(context.partialIntent || {})}
+      - Last asked for: ${context.lastAskedFor || 'nothing'}
+      - User seems frustrated: ${(context.userFrustrationLevel || 0) > 2}
+
+      RULES:
+      1. If user already provided information, DON'T extract it again unless it's different
+      2. If user seems frustrated (said "told you", "already said"), acknowledge existing info
+      3. Look for implicit confirmations and frustration signals
+      4. Extract ANY new information available, even if incomplete
+      5. Return "NOT_SPECIFIED" for fields that are truly missing
+
+      Current message: "${message}"
+      Today's date: ${new Date().toISOString().split('T')[0]}
+      
+      Extract these fields:
       - date (in YYYY-MM-DD format, convert relative dates like "tomorrow", "next Friday", "today")
       - time (in HH:MM format, 24-hour, convert "4 pm" to "16:00", "7:30" to "19:30")
       - guests (integer, extract from phrases like "table for 4", "4 people", "party of 6")
@@ -34,14 +55,8 @@ export async function detectReservationIntent(message: string): Promise<Reservat
       - special_requests (string)
       - confidence (number between 0 and 1, be AGGRESSIVE - if someone mentions table/reservation/book/dine, set confidence to 0.8+)
       
-      Be smart about parsing:
-      - "table for 4 pm" = time:16:00, guests:NOT_SPECIFIED
-      - "4 people at 7pm" = guests:4, time:19:00
-      - "tomorrow at 6" = date:tomorrow, time:18:00
-      - Any mention of table/book/reservation = confidence 0.8+
-      
-      Today's date for reference: ${new Date().toISOString().split('T')[0]}
-      Provide the data in JSON format.
+      Use "NOT_SPECIFIED" for missing information, not null.
+      Return valid JSON only.
     `;
 
     const response = await openai.chat.completions.create({
@@ -50,15 +65,34 @@ export async function detectReservationIntent(message: string): Promise<Reservat
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
       ],
+      temperature: 0.2,
       response_format: { type: "json_object" }
     });
 
-    const content = response.choices[0].message.content || '{"confidence": 0}';
-    return JSON.parse(content) as ReservationIntent;
+    const result = JSON.parse(response.choices[0].message.content || '{"confidence": 0}');
+    
+    // Clean up NOT_SPECIFIED values
+    Object.keys(result).forEach(key => {
+      if (result[key] === 'NOT_SPECIFIED') {
+        result[key] = undefined;
+      }
+    });
+    
+    return result as ReservationIntent;
   } catch (error) {
-    console.error("Error detecting reservation intent:", error);
+    console.error("Error detecting reservation intent with context:", error);
     return { confidence: 0 };
   }
+}
+
+// Keep original function for backward compatibility
+export async function detectReservationIntent(message: string): Promise<ReservationIntent> {
+  return detectReservationIntentWithContext(message, { 
+    messageHistory: [], 
+    partialIntent: {}, 
+    lastAskedFor: null, 
+    userFrustrationLevel: 0 
+  });
 }
 
 interface AvailableSlot {

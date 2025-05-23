@@ -44,7 +44,16 @@ function getOrCreateContext(chatId: number, restaurantId: number): ConversationC
     conversationContexts.set(chatId, {
       stage: 'initial',
       lastMessageTimestamp: Date.now(),
-      restaurantId
+      restaurantId,
+      partialIntent: {},
+      suggestedSlots: [],
+      lastRequestedGuests: undefined,
+      // Enhanced conversation management
+      messageHistory: [],
+      repetitionCount: 0,
+      lastAskedFor: null,
+      userFrustrationLevel: 0,
+      conversationId: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     });
   }
   
@@ -132,11 +141,28 @@ What would you like to do?`
     
     const context = getOrCreateContext(chatId, restaurantId);
     
+    // Update message history and detect loops
+    context.messageHistory.push(message);
+    if (context.messageHistory.length > 10) {
+      context.messageHistory = context.messageHistory.slice(-10);
+    }
+    
+    // Detect frustration signals
+    const frustratedPhrases = ['told you', 'already said', 'just said', 'just told you'];
+    const isFrustrated = frustratedPhrases.some(phrase => 
+      message.toLowerCase().includes(phrase)
+    );
+    
+    if (isFrustrated) {
+      context.repetitionCount++;
+      context.userFrustrationLevel = Math.min(5, context.userFrustrationLevel + 1);
+    }
+
     try {
-      // Try to detect reservation intent
-      console.log('🔍 Detecting reservation intent...');
-      const intent = await detectReservationIntent(message);
-      console.log('🔍 Intent detected:', intent);
+      // Use enhanced intent detection with conversation context
+      console.log('🔍 Detecting reservation intent with context...');
+      const intent = await detectReservationIntentWithContext(message, context);
+      console.log('🔍 Enhanced intent detected:', intent);
     
       // If it's likely a reservation request (confidence > 0.5) or we're in collecting info stage
       if (intent.confidence > 0.5 || context.stage === 'collecting_info') {
