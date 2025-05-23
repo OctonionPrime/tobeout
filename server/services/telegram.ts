@@ -1,7 +1,8 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { storage } from '../storage';
 import { 
-  detectReservationIntent, 
+  detectReservationIntent,
+  detectReservationIntentWithContext,
   suggestAlternativeSlots, 
   generateReservationConfirmation,
   generateAlternativeSuggestionMessage,
@@ -161,7 +162,7 @@ What would you like to do?`
     try {
       // Use enhanced intent detection with conversation context
       console.log('🔍 Detecting reservation intent with context...');
-      const intent = await detectReservationIntentWithContext(message, context);
+      const intent = await detectReservationIntent(message);
       console.log('🔍 Enhanced intent detected:', intent);
     
       // If it's likely a reservation request (confidence > 0.5) or we're in collecting info stage
