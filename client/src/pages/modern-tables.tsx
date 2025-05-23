@@ -235,15 +235,15 @@ export default function ModernTables() {
                 </div>
               </div>
               
-              {/* Schedule Rows with Zebra Striping */}
+              {/* Schedule Rows with Zebra Striping - More Compact */}
               <div className="divide-y divide-gray-200/30 dark:divide-gray-700/30">
                 {scheduleData?.map((slot: any, rowIndex: number) => (
-                  <div key={slot.time} className={`px-6 py-4 transition-all duration-200 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-purple-50/30 dark:hover:from-blue-900/10 dark:hover:to-purple-900/10 ${rowIndex % 2 === 0 ? 'bg-gray-50/30 dark:bg-gray-800/30' : 'bg-white dark:bg-gray-900'}`}>
+                  <div key={slot.time} className={`px-6 py-2 transition-all duration-200 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-purple-50/30 dark:hover:from-blue-900/10 dark:hover:to-purple-900/10 ${rowIndex % 2 === 0 ? 'bg-gray-50/30 dark:bg-gray-800/30' : 'bg-white dark:bg-gray-900'}`}>
                     <div className="grid grid-cols-[120px_1fr] gap-6 items-center">
                       <div className="font-medium text-gray-900 dark:text-white text-sm">
                         {format(new Date(`2000-01-01T${slot.time}`), 'h:mm a')}
                       </div>
-                      <div className="grid grid-cols-3 gap-4">
+                      <div className="grid grid-cols-3 gap-3">
                         {slot.tables?.map((table: any) => {
                           const hasReservation = table.reservation;
                           return (
@@ -251,14 +251,14 @@ export default function ModernTables() {
                               <ContextMenuTrigger>
                                 <div
                                   className={`
-                                    relative cursor-pointer rounded-2xl p-4 text-center text-sm font-medium transition-all duration-300 hover:scale-105 hover:shadow-xl
+                                    relative cursor-pointer rounded-xl p-3 text-center text-sm font-medium transition-all duration-300 hover:scale-105 hover:shadow-xl
                                     ${getStatusStyle(table.status, hasReservation)}
                                   `}
                                 >
                                   {hasReservation ? (
                                     <div>
-                                      <div className="font-semibold">Reserved</div>
-                                      <div className="text-xs opacity-90 mt-1">
+                                      <div className="font-semibold text-sm">Reserved</div>
+                                      <div className="text-xs opacity-90 mt-0.5">
                                         {table.reservation.guestName}
                                       </div>
                                       <div className="text-xs opacity-75">
@@ -267,13 +267,13 @@ export default function ModernTables() {
                                     </div>
                                   ) : (
                                     <div>
-                                      <div className="font-semibold">Available</div>
-                                      <div className="text-xs opacity-90 mt-1">Ready to book</div>
+                                      <div className="font-semibold text-sm">Available</div>
+                                      <div className="text-xs opacity-90 mt-0.5">Ready to book</div>
                                     </div>
                                   )}
                                   
                                   {/* Hover indicator */}
-                                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <MoreVertical className="h-3 w-3" />
                                   </div>
                                 </div>
