@@ -378,8 +378,9 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                   className="bg-green-600 hover:bg-green-700 text-white"
                   onClick={async () => {
                     try {
+                      const formValues = form.getValues();
                       await updateMutation.mutateAsync({
-                        id: reservationId,
+                        ...formValues,
                         status: "confirmed"
                       });
                       toast({ title: "Reservation confirmed successfully!" });

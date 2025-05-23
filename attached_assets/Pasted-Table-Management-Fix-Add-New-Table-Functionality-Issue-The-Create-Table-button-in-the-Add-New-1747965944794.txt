@@ -1,0 +1,31 @@
+Table Management
+Fix "Add New Table" Functionality:
+Issue: The "Create Table" button in the "Add New Table" modal is unresponsive; the modal remains, and no table is created.
+Task: Debug the "Create Table" button's event handler and backend logic. Ensure that when the button is pressed:
+Input data (Table Name, Min Guests, Max Guests, Comments) is correctly captured.
+The data is successfully processed and a new table record is created in the database.
+The "Add New Table" modal closes upon successful table creation.
+The UI updates to reflect the newly added table (if applicable on the current view).
+예약 Reservation Management
+Resolve "Edit Reservation" Confirmation Error:
+
+Issue: An error "400: {"message":"No values to set"}" occurs when attempting to confirm an edited reservation.
+Task: Investigate the backend endpoint responsible for updating reservations. Ensure it correctly parses and accepts all editable fields (Guest Name, Phone Number, Email, Date, Time, Number of Guests, Table, Special Requests) when a reservation is updated. The error suggests that the backend is not receiving or recognizing the data being sent.
+Implement Consistent "Confirm Reservation" Button Logic:
+
+Issue: The confirmation process for edited reservations, especially after cancellation, is unclear and lacks a dedicated "Confirm" button alongside "Update Reservation."
+Task:
+Button Visibility: When editing a reservation (regardless of its current status - Pending, Cancelled), if changes are made, ensure an "Update Reservation" button is present.
+Confirmation Workflow for Pending/Cancelled Reservations:
+When a "Pending" reservation is edited, the primary action after saving changes should be to effectively "Confirm" it if a "Confirm" action is also desired (this might be a single "Update & Confirm" button or two separate steps as you described).
+When a "Cancelled" reservation is edited (e.g., guest wants to re-book with changes):
+After clicking "Update Reservation" (which saves the new details), the system should allow the reservation to be explicitly "Confirmed."
+Introduce a "Confirm Reservation" button (potentially next to where a "Cancel" button might be, or in a similar action area as seen for pending reservations - Screenshot_418 & Screenshot_419 show edit/confirm/cancel icons). This button should only be active/visible if the reservation is in a state that can be confirmed (e.g., after being updated from a cancelled state).
+Status Update on Confirmation: When a previously "Cancelled" reservation is successfully edited and then "Confirmed":
+Its status must change from "Cancelled" to "Confirmed."
+All updated details (date, time, guests, etc.) must be saved correctly.
+The system should treat this confirmed reservation like any other newly confirmed reservation in terms of availability and display. Ensure it moves from a "Cancelled" state to an active "Confirmed" state (similar to Screenshot_419).
+Unify Confirmation Logic:
+
+Issue: The process of confirming a reservation after it has been cancelled and edited needs to be as seamless as confirming a new or pending reservation.
+Task: Refactor the confirmation logic so that whether a reservation is new, pending and being confirmed, or cancelled and being re-confirmed after edits, the underlying mechanism for setting its status to "Confirmed" and saving its details is robust and consistent. The system should reflect the latest confirmed details accurately.
