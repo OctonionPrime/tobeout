@@ -25,7 +25,14 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 const restaurantId = 1;
 
 export default function ModernTables() {
-  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  // Get current Moscow time
+  const getMoscowDate = () => {
+    const now = new Date();
+    const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+    return moscowTime;
+  };
+
+  const [selectedDate, setSelectedDate] = useState(format(getMoscowDate(), 'yyyy-MM-dd'));
   const [selectedTime, setSelectedTime] = useState("19:00");
   const [contextMenuSlot, setContextMenuSlot] = useState<{table: any, time: string} | null>(null);
   const [showAddTableModal, setShowAddTableModal] = useState(false);
@@ -251,9 +258,9 @@ export default function ModernTables() {
           <div className="flex flex-wrap items-center gap-4 mb-6">
             <div className="flex gap-2">
               {[
-                { label: "Today", value: format(new Date(), 'yyyy-MM-dd') },
-                { label: "Tomorrow", value: format(addDays(new Date(), 1), 'yyyy-MM-dd') },
-                { label: "This Weekend", value: format(addDays(new Date(), 6 - new Date().getDay()), 'yyyy-MM-dd') }
+                { label: "Today", value: format(getMoscowDate(), 'yyyy-MM-dd') },
+                { label: "Tomorrow", value: format(addDays(getMoscowDate(), 1), 'yyyy-MM-dd') },
+                { label: "This Weekend", value: format(addDays(getMoscowDate(), 6 - getMoscowDate().getDay()), 'yyyy-MM-dd') }
               ].map((option) => (
                 <Button
                   key={option.label}
@@ -276,7 +283,7 @@ export default function ModernTables() {
                 </SelectTrigger>
                 <SelectContent className="rounded-2xl shadow-2xl border-0 bg-white dark:bg-gray-800 p-2">
                   {Array.from({ length: 30 }, (_, i) => {
-                    const date = addDays(new Date(), i);
+                    const date = addDays(getMoscowDate(), i);
                     const dateValue = format(date, 'yyyy-MM-dd');
                     let label;
                     
