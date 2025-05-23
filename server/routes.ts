@@ -17,7 +17,7 @@ import MemoryStore from "memorystore";
 import { setupTelegramBot } from "./services/telegram";
 import { 
   findAvailableTables, 
-  findAlternativeSlots, 
+  findAlternativeSlots,
   createReservation, 
   cancelReservation, 
   getDateAvailability 
@@ -586,40 +586,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Guest information is required" });
       }
       
-      // Create reservation data
-      const reservationData = {
-        restaurantId: restaurant.id,
-        guestId: guest.id,
-        tableId: req.body.tableId && req.body.tableId !== "auto" ? parseInt(req.body.tableId) : null,
-        timeslotId: null, // Will be handled by booking service
-        date: req.body.date,
-        time: req.body.time,
-        guests: parseInt(req.body.guests),
-        status: 'created' as const,
-        comments: req.body.comments || '',
-        source: req.body.source || 'manual'
-      };
-
-      console.log('Creating reservation with data:', reservationData);
-      console.log('Guest created with ID:', guest.id);
-
-      const newReservation = await storage.createReservation(reservationData);
-      
-      // Log AI activity if source is an AI channel
-      if (['telegram', 'web_chat', 'facebook'].includes(reservationData.source)) {
-        await storage.logAiActivity({
+      // Use smart table assignment if no specific table selected or "auto" is chosen
+      if (!req.body.tableId || req.body.tableId === "auto" || req.body.tableId === "") {
+        console.log('🎯 Using smart table assignment for automatic booking');
+        
+        // Use our smart booking service that finds tables with 1-30 hour availability
+        const bookingResult = await createReservation({
           restaurantId: restaurant.id,
-          type: 'reservation_create',
-          description: `Created new reservation for ${guest.name} (${reservationData.guests} guests) via ${reservationData.source}`,
-          data: {
-            reservationId: newReservation.id,
-            guestId: guest.id,
-            source: reservationData.source,
-          }
+          guestId: guest.id,
+          date: req.body.date,
+          time: req.body.time,
+          guests: parseInt(req.body.guests),
+          comments: req.body.comments || '',
+          source: req.body.source || 'manual'
         });
-      }
+
+        if (!bookingResult.success) {
+          return res.status(400).json({ message: bookingResult.message });
+        }
+
+        const newReservation = bookingResult.reservation;
+        console.log('✅ Smart assignment completed! Table assigned:', newReservation.tableId);
+        
+        // Log AI activity if source is an AI channel
+        if (['telegram', 'web_chat', 'facebook'].includes(req.body.source || 'manual')) {
+          await storage.logAiActivity({
+            restaurantId: restaurant.id,
+            type: 'reservation_create',
+            description: `Auto-assigned table for ${guest.name} (${req.body.guests} guests) via smart booking`,
+            data: {
+              reservationId: newReservation.id,
+              guestId: guest.id,
+              tableId: newReservation.tableId,
+              autoAssigned: true
+            }
+          });
+        }
+
+        return res.status(201).json(newReservation);
+      } else {
+        // Manual table selection - use direct storage method
+        const reservationData = {
+          restaurantId: restaurant.id,
+          guestId: guest.id,
+          tableId: parseInt(req.body.tableId),
+          timeslotId: null,
+          date: req.body.date,
+          time: req.body.time,
+          guests: parseInt(req.body.guests),
+          status: 'created' as const,
+          comments: req.body.comments || '',
+          source: req.body.source || 'manual'
+        };
+
+        console.log('Creating reservation with manual table selection:', reservationData);
+        const newReservation = await storage.createReservation(reservationData);
       
-      res.status(201).json(newReservation);
+        // Log AI activity if source is an AI channel
+        if (['telegram', 'web_chat', 'facebook'].includes(reservationData.source)) {
+          await storage.logAiActivity({
+            restaurantId: restaurant.id,
+            type: 'reservation_create',
+            description: `Created new reservation for ${guest.name} (${reservationData.guests} guests) via ${reservationData.source}`,
+            data: {
+              reservationId: newReservation.id,
+              guestId: guest.id,
+              source: reservationData.source,
+            }
+          });
+        }
+        
+        res.status(201).json(newReservation);
+      }
     } catch (error: unknown) {
       res.status(400).json({ message: error instanceof Error ? error.message : "Unknown error" });
     }
