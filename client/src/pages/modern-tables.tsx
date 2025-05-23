@@ -270,16 +270,16 @@ export default function ModernTables() {
           
           <div className="overflow-x-auto">
             <div className="min-w-[800px]">
-              {/* Sticky Header */}
-              <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-6 py-4">
-                <div className="grid grid-cols-[120px_1fr] gap-6">
-                  <div className="font-semibold text-gray-700 dark:text-gray-300 text-sm">TIME</div>
-                  <div className="grid grid-cols-3 gap-4">
+              {/* Compact Sticky Header */}
+              <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10">
+                <div className="flex">
+                  <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">TIME</div>
+                  <div className="flex overflow-x-auto gap-1 flex-1">
                     {scheduleData?.[0]?.tables?.map((table: any) => (
-                      <div key={table.id} className="text-center">
-                        <div className="font-semibold text-gray-900 dark:text-white text-sm">{table.name}</div>
+                      <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50">
+                        <div className="font-semibold text-gray-900 dark:text-white text-xs">{table.name}</div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
-                          ({table.minGuests}-{table.maxGuests} guests)
+                          {table.minGuests}-{table.maxGuests}p
                         </div>
                       </div>
                     ))}
@@ -287,15 +287,15 @@ export default function ModernTables() {
                 </div>
               </div>
               
-              {/* Schedule Rows with Zebra Striping - More Compact */}
+              {/* Ultra Compact Schedule Rows - Show every hour only */}
               <div className="divide-y divide-gray-200/30 dark:divide-gray-700/30">
-                {scheduleData?.map((slot: any, rowIndex: number) => (
-                  <div key={slot.time} className={`px-6 py-2 transition-all duration-200 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-purple-50/30 dark:hover:from-blue-900/10 dark:hover:to-purple-900/10 ${rowIndex % 2 === 0 ? 'bg-gray-50/30 dark:bg-gray-800/30' : 'bg-white dark:bg-gray-900'}`}>
-                    <div className="grid grid-cols-[120px_1fr] gap-6 items-center">
-                      <div className="font-medium text-gray-900 dark:text-white text-sm">
+                {scheduleData?.filter((slot: any, index: number) => index % 2 === 0).map((slot: any, rowIndex: number) => (
+                  <div key={slot.time} className={`px-4 py-1.5 transition-all duration-200 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-purple-50/30 dark:hover:from-blue-900/10 dark:hover:to-purple-900/10 ${rowIndex % 2 === 0 ? 'bg-gray-50/30 dark:bg-gray-800/30' : 'bg-white dark:bg-gray-900'}`}>
+                    <div className="flex items-center">
+                      <div className="w-20 flex-shrink-0 font-medium text-gray-900 dark:text-white text-xs">
                         {format(new Date(`2000-01-01T${slot.time}`), 'h:mm a')}
                       </div>
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="flex gap-1 overflow-x-auto flex-1">
                         {slot.tables?.map((table: any) => {
                           const hasReservation = table.reservation;
                           return (
@@ -303,24 +303,40 @@ export default function ModernTables() {
                               <ContextMenuTrigger>
                                 <div
                                   className={`
-                                    relative cursor-pointer rounded-xl p-3 text-center text-sm font-medium transition-all duration-300 hover:scale-105 hover:shadow-xl
+                                    w-24 flex-shrink-0 relative cursor-pointer rounded-lg p-1.5 text-center text-xs font-medium transition-all duration-300 hover:scale-105 hover:shadow-lg
                                     ${getStatusStyle(table.status, hasReservation)}
                                   `}
+                                  draggable={true}
+                                  onDragStart={(e) => {
+                                    e.dataTransfer.setData('table', JSON.stringify({ 
+                                      tableId: table.id, 
+                                      time: slot.time,
+                                      tableName: table.name 
+                                    }));
+                                    console.log('🔄 Dragging table:', table.name, 'at', slot.time);
+                                  }}
+                                  onDragOver={(e) => e.preventDefault()}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    const data = JSON.parse(e.dataTransfer.getData('table'));
+                                    console.log('📍 Dropped table:', data.tableName, '→ Table', table.name, 'at', slot.time);
+                                    // Handle table swap/move logic here
+                                  }}
                                 >
                                   {hasReservation ? (
                                     <div>
-                                      <div className="font-semibold text-sm">Reserved</div>
-                                      <div className="text-xs opacity-90 mt-0.5">
+                                      <div className="font-semibold text-xs">📅</div>
+                                      <div className="text-xs opacity-90 truncate">
                                         {table.reservation.guestName}
                                       </div>
                                       <div className="text-xs opacity-75">
-                                        {table.reservation.guestCount} guests
+                                        {table.reservation.guestCount}p
                                       </div>
                                     </div>
                                   ) : (
                                     <div>
-                                      <div className="font-semibold text-sm">Available</div>
-                                      <div className="text-xs opacity-90 mt-0.5">Ready to book</div>
+                                      <div className="font-semibold text-xs">✓</div>
+                                      <div className="text-xs opacity-90">Free</div>
                                     </div>
                                   )}
                                   
