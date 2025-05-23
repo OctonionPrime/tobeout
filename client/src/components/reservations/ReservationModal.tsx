@@ -321,7 +321,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                       </FormControl>
                       <SelectContent>
                         {isLoadingTimes ? (
-                          <SelectItem value="" disabled>Loading available times...</SelectItem>
+                          <SelectItem value="loading" disabled>Loading available times...</SelectItem>
                         ) : availableTimeSlots.length > 0 ? (
                           availableTimeSlots.map((slot) => (
                             <SelectItem 
@@ -338,7 +338,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                             </SelectItem>
                           ))
                         ) : (
-                          <SelectItem value="" disabled>No available times for this date and guest count</SelectItem>
+                          <SelectItem value="no-times" disabled>No available times for this date and guest count</SelectItem>
                         )}
                       </SelectContent>
                     </Select>
