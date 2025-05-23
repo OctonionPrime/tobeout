@@ -326,6 +326,47 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
         
         bot.sendMessage(chatId, response || 'Thank you for your message. Is there anything else I can help you with?');
       } else {
+        // Check if user is asking for availability after being told no tables available
+        const isAvailabilityCheck = text.toLowerCase().includes('availability') || 
+                                   text.toLowerCase().includes('available') ||
+                                   text.toLowerCase().includes('what time') ||
+                                   text.toLowerCase().includes('when') ||
+                                   text.toLowerCase().includes('check') ||
+                                   text.toLowerCase().includes('tomorrow');
+                                   
+        if (isAvailabilityCheck && context.lastRequestedGuests) {
+          // User is asking for alternatives after rejection - provide specific times
+          console.log('🔍 User asking for availability, showing alternatives...');
+          try {
+            const { getAlternativeTimes } = await import('./telegram-booking');
+            const alternatives = await getAlternativeTimes(restaurantId, '2025-05-24', context.lastRequestedGuests);
+            
+            if (alternatives && alternatives.length > 0) {
+              const alternativesList = alternatives.map((alt, index) => 
+                `${index + 1}. ${alt.time} - Table ${alt.tableName} (${alt.capacity} seats)`
+              ).join('\n');
+              
+              const message = `Here are the available times for ${context.lastRequestedGuests} people tomorrow:
+
+${alternativesList}
+
+Would you like me to book one of these times? Just tell me which number you prefer!`;
+              
+              bot.sendMessage(chatId, message);
+              
+              // Update context for alternative selection
+              context.stage = 'suggesting_alternatives';
+              context.suggestedSlots = alternatives;
+              return;
+            } else {
+              bot.sendMessage(chatId, `I'm sorry, but we don't have any availability for ${context.lastRequestedGuests} people tomorrow. Would you like me to check a different date?`);
+              return;
+            }
+          } catch (error) {
+            console.error('❌ Error getting alternatives:', error);
+          }
+        }
+        
         // General conversation - respond based on restaurant info
         console.log('💬 Handling general conversation with AI...');
         const restaurantInfo = {
