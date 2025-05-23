@@ -397,13 +397,22 @@ export default function Tables() {
         </header>
 
         {/* Date/Time Availability Selector */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Calendar className="h-5 w-5" />
-              Table Availability
-            </CardTitle>
-            <div className="flex items-center gap-4 mt-4">
+        <div className="bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 rounded-2xl shadow-xl border-0 mb-8 overflow-hidden">
+          <div className="p-6 border-b border-gray-100 dark:border-gray-700">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-500/10 rounded-xl">
+                  <Calendar className="h-6 w-6 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Table Availability</h2>
+                  <p className="text-gray-500 dark:text-gray-400">Real-time restaurant scheduling</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Modern Date/Time Selection */}
+            <div className="mt-6 flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">
                 <label className="text-sm font-medium">Date:</label>
                 <Select value={selectedDate} onValueChange={setSelectedDate}>
@@ -460,8 +469,8 @@ export default function Tables() {
                 Table status for {format(new Date(selectedDate), 'MMMM d, yyyy')} at {selectedTime}
               </div>
             </div>
-          </CardHeader>
-        </Card>
+          </div>
+        </div>
 
         <Card className="mb-6">
           <CardHeader className="pb-3">

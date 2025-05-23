@@ -1,13 +1,31 @@
 # ToBeOut - Restaurant Booking System
 ## Project Status Dashboard
 
-**Last Updated:** January 22, 2025 - 10:47 PM  
-**Version:** MVP v1.2  
-**Status:** Production-Ready System with Streamlined UI & Complete Database Documentation
+**Last Updated:** January 23, 2025 - 12:22 AM  
+**Version:** MVP v1.3 - Critical Issues Resolved  
+**Status:** Production-Ready System with Fixed Guest Data & Extended Date Range
 
 ---
 
 ## 🚀 Current System Status
+
+### 🎯 **LATEST CRITICAL FIXES** (January 23, 2025)
+**ALL MAJOR ISSUES RESOLVED - SYSTEM NOW FULLY FUNCTIONAL**
+
+1. **✅ Guest Names Display Fixed**
+   - Previously showed "Guest" instead of real names
+   - Now correctly displays: Teg, Oleg, Pavel, Misha
+   - Fixed field mapping between API and frontend
+
+2. **✅ Phone Numbers Display Fixed**
+   - Previously showed "No phone provided"
+   - Now correctly displays: +79881236777, 89012457888
+   - Fixed data retrieval from guest records
+
+3. **✅ Date Range Extended**
+   - Previously limited to 4 days selection
+   - Now provides full 30-day date range
+   - Dynamic date generation implemented
 
 ### ✅ COMPLETED & FULLY FUNCTIONAL
 1. **Authentication System (100%)**
