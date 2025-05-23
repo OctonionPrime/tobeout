@@ -24,18 +24,47 @@ interface ReservationIntent {
   next_response_tone?: string;
 }
 
-// Enhanced intent detection with conversation context awareness
+// FIXED: Enhanced intent detection with Moscow timezone
 export async function detectReservationIntentWithContext(
   message: string, 
   context: any
 ): Promise<ReservationIntent> {
   try {
-    // Get current date context in Moscow timezone
-    const { getMoscowTimeContext } = await import('../utils/timezone');
-    const timeContext = getMoscowTimeContext();
-    
-    const todayString = timeContext.todayDate;
-    const tomorrowString = timeContext.tomorrowDate;
+    // FIXED: Use Moscow timezone for accurate date calculation
+    const getMoscowDates = () => {
+      const now = new Date();
+
+      // Convert current time to Moscow timezone
+      const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+
+      const year = moscowTime.getFullYear();
+      const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
+      const day = moscowTime.getDate().toString().padStart(2, '0');
+      const todayString = `${year}-${month}-${day}`;
+
+      // Calculate tomorrow in Moscow timezone
+      const tomorrowMoscow = new Date(moscowTime);
+      tomorrowMoscow.setDate(tomorrowMoscow.getDate() + 1);
+
+      const tomorrowYear = tomorrowMoscow.getFullYear();
+      const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
+      const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
+      const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
+
+      return { today: todayString, tomorrow: tomorrowString, moscowTime };
+    };
+
+    const moscowDates = getMoscowDates();
+    const todayString = moscowDates.today;
+    const tomorrowString = moscowDates.tomorrow;
+
+    console.log(`📅 MOSCOW TIMEZONE DATE CALCULATION:`);
+    console.log(`📅 Server UTC time: ${new Date().toISOString()}`);
+    console.log(`📅 Moscow time: ${moscowDates.moscowTime.toISOString()}`);
+    console.log(`📅 Moscow today: ${todayString}`);
+    console.log(`📅 Moscow tomorrow: ${tomorrowString}`);
+    console.log(`📅 Moscow day of month: ${moscowDates.moscowTime.getDate()}`);
+    console.log(`📅 Moscow hour: ${moscowDates.moscowTime.getHours()}`);
 
     // Format existing context for better AI understanding
     const existingInfo = Object.entries(context.partialIntent || {})
@@ -45,12 +74,12 @@ export async function detectReservationIntentWithContext(
 
     const systemPrompt = `You are Sofia, a professional restaurant hostess analyzing guest messages for booking information.
 
-IMPORTANT TIMEZONE INFORMATION:
+CRITICAL DATE INFORMATION (MOSCOW TIMEZONE):
 - Restaurant operates in Moscow timezone (Europe/Moscow)
-- Current Moscow date: ${todayString} (THIS IS TODAY)
-- Tomorrow's date: ${tomorrowString}
-- When guest says "today", use: ${todayString}
-- When guest says "tomorrow", use: ${tomorrowString}
+- Current Moscow time shows TODAY as: ${todayString}
+- Current Moscow time shows TOMORROW as: ${tomorrowString}
+- When guest says "today", ALWAYS use: ${todayString}
+- When guest says "tomorrow", ALWAYS use: ${tomorrowString}
 
 CURRENT CONVERSATION CONTEXT:
 - Recent messages: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
@@ -61,18 +90,19 @@ CURRENT CONVERSATION CONTEXT:
 CRITICAL ANALYSIS RULES:
 1. FRUSTRATION DETECTION: If guest says "I told you", "already said", "just said", "I said", "mentioned", "gave you" → conversation_action: "acknowledge_frustration"
 2. EXTRACT ONLY NEW INFO: Don't repeat information that's already collected
-3. DATE PARSING: 
+3. DATE PARSING (MOSCOW TIMEZONE - EXTREMELY IMPORTANT):
    - "today" → "${todayString}"
    - "tomorrow" → "${tomorrowString}"
    - "this evening" → "${todayString}"
-   - "next [day]" → calculate actual date
+   - "Friday" (if today is Friday) → "${todayString}"
 4. TIME PARSING:
-   - "7", "7pm", "7 pm" → "19:00"
+   - "7", "7pm", "7 pm", "19:00" → "19:00"
    - "noon", "12pm" → "12:00"
    - "evening" → "19:00"
    - "lunch" → "12:00"
+   - "4:00 PM", "4 pm" → "16:00"
 5. GUEST COUNT: "table for 4", "4 people", "party of 4", "4 of us" → guests: 4
-6. PHONE DETECTION: Any sequence of 10+ digits
+6. PHONE DETECTION: Any sequence of 8+ digits
 7. NAME DETECTION: "I'm [name]", "My name is [name]", "For [name]", or standalone proper nouns
 
 CURRENT MESSAGE TO ANALYZE: "${message}"
@@ -91,11 +121,10 @@ Analyze this message and return information in this exact JSON format:
   "next_response_tone": "friendly|apologetic|professional|enthusiastic"
 }
 
-EXAMPLES:
-- Message: "I told you already, George" → conversation_action: "acknowledge_frustration", name: "George", guest_sentiment: "frustrated"
-- Message: "today at 7 for 2 people" → date: "${todayString}", time: "19:00", guests: 2, confidence: 0.9
-- Message: "4573895673" → phone: "4573895673", confidence: 0.8
-- Message: "table for 4 tomorrow evening" → guests: 4, date: "${tomorrowString}", time: "19:00", confidence: 0.9
+EXAMPLES (MOSCOW TIME TODAY IS ${todayString}):
+- Message: "I wanna book a table for today" → date: "${todayString}", confidence: 0.9
+- Message: "today" → date: "${todayString}", confidence: 0.8
+- Message: "My name is Gofra, table for 4 people on 19:00, 78963285623" → name: "Gofra", guests: 4, time: "19:00", phone: "78963285623", confidence: 1.0
 
 Return only valid JSON with no additional text.`;
 
@@ -105,7 +134,7 @@ Return only valid JSON with no additional text.`;
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
       ],
-      temperature: 0.1, // Lower temperature for more consistent parsing
+      temperature: 0.1,
       response_format: { type: "json_object" },
       max_tokens: 500
     });
@@ -119,15 +148,14 @@ Return only valid JSON with no additional text.`;
       }
     });
 
-    // Validate and fix date format
+    // Validate date format
     if (result.date && !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
       console.warn('Invalid date format detected:', result.date);
       result.date = null;
     }
 
-    // Validate and fix time format
+    // Validate time format  
     if (result.time && !/^\d{2}:\d{2}$/.test(result.time)) {
-      // Try to fix common time formats
       if (result.time.includes(':')) {
         const [hours, minutes] = result.time.split(':');
         const h = parseInt(hours);
@@ -154,16 +182,17 @@ Return only valid JSON with no additional text.`;
     }
 
     // Validate phone number
-    if (result.phone && !/^\d{10,15}$/.test(result.phone.replace(/[^\d]/g, ''))) {
+    if (result.phone && !/^\d{8,15}$/.test(result.phone.replace(/[^\d]/g, ''))) {
       const cleanPhone = result.phone.replace(/[^\d]/g, '');
-      if (cleanPhone.length >= 10 && cleanPhone.length <= 15) {
+      if (cleanPhone.length >= 8 && cleanPhone.length <= 15) {
         result.phone = cleanPhone;
       } else {
+        console.warn('Invalid phone number detected:', result.phone);
         result.phone = null;
       }
     }
 
-    // Set default values for conversation management
+    // Set default values
     if (!result.conversation_action) {
       result.conversation_action = result.confidence > 0.5 ? 'collect_info' : 'general_inquiry';
     }
@@ -175,6 +204,8 @@ Return only valid JSON with no additional text.`;
     }
 
     console.log('🧠 Enhanced intent analysis result:', result);
+    console.log(`🧠 Parsed date: ${result.date} (Moscow today should be: ${todayString})`);
+
     return result as ReservationIntent;
   } catch (error) {
     console.error("Error detecting reservation intent with context:", error);
@@ -538,4 +569,18 @@ Return analysis in JSON format:
       confidence: 0
     };
   }
+}
+
+// Debug function to test Moscow timezone
+export function debugMoscowTimezone(): void {
+  const now = new Date();
+  const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+
+  console.log('🔧 MOSCOW TIMEZONE DEBUG:');
+  console.log('📅 Server UTC time:', now.toISOString());
+  console.log('📅 Moscow time:', moscowTime.toISOString());
+  console.log('📅 Moscow date string:', moscowTime.toISOString().split('T')[0]);
+  console.log('📅 Moscow day of month:', moscowTime.getDate());
+  console.log('📅 Moscow hour:', moscowTime.getHours());
+  console.log('📅 Moscow timezone offset from UTC:', -moscowTime.getTimezoneOffset() / 60, 'hours');
 }

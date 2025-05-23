@@ -529,17 +529,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Restaurant not found" });
       }
 
-      // Generate time slots based on restaurant hours
+      // Generate time slots based on restaurant hours using consistent 24-hour format
+      const { formatTime24Hour, generateTimeSlots } = await import('./utils/timezone');
       const timeSlots = [];
-      const openingTime = restaurant.openingTime || "10:00";
-      const closingTime = restaurant.closingTime || "22:00";
+      const openingTime = formatTime24Hour(restaurant.openingTime || "10:00");
+      const closingTime = formatTime24Hour(restaurant.closingTime || "22:00");
       
       const [openHour, openMin] = openingTime.split(':').map(Number);
       const [closeHour, closeMin] = closingTime.split(':').map(Number);
       
       let currentHour = openHour;
       while (currentHour < closeHour || (currentHour === closeHour && 0 < closeMin)) {
-        const timeString = `${String(currentHour).padStart(2, '0')}:00`;
+        const timeString = formatTime24Hour(currentHour.toString());
         
         // Check if any tables are available at this time
         const availableTables = await findAvailableTables(

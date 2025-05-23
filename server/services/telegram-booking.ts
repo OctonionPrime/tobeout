@@ -143,14 +143,11 @@ function getAvailableTablesForTime(
 }
 
 /**
- * Format time for display (24:00 -> 12:00 AM/PM)
+ * Format time consistently in 24-hour format
  */
 function formatTime(time24: string): string {
-  const [hours] = time24.split(':');
-  const hour = parseInt(hours);
-  
-  if (hour === 0) return '12:00 AM';
-  if (hour < 12) return `${hour}:00 AM`;
-  if (hour === 12) return '12:00 PM';
-  return `${hour - 12}:00 PM`;
+  const [hours, minutes] = time24.split(':');
+  const h = parseInt(hours);
+  const m = parseInt(minutes || '0');
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 }

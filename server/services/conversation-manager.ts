@@ -158,7 +158,7 @@ export class ConversationManager {
   }
 
   /**
-   * Create a natural booking summary from collected info
+   * Create a natural booking summary from collected info using Moscow timezone
    */
   private static createBookingSummary(info: any): string {
     const parts = [];
@@ -174,28 +174,38 @@ export class ConversationManager {
 
     // Add date in natural language using Moscow timezone
     if (info.date) {
-      const dateObj = new Date(info.date);
-      // Use Moscow timezone for accurate date comparison
-      const getMoscowDate = () => {
+      const getMoscowDateContext = () => {
         const now = new Date();
-        return new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-      };
-      
-      const moscowToday = getMoscowDate();
-      const today = moscowToday.toISOString().split('T')[0];
-      const tomorrow = new Date(moscowToday);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+        const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
 
-      if (info.date === today) {
+        const year = moscowTime.getFullYear();
+        const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
+        const day = moscowTime.getDate().toString().padStart(2, '0');
+        const todayString = `${year}-${month}-${day}`;
+
+        const tomorrowMoscow = new Date(moscowTime);
+        tomorrowMoscow.setDate(tomorrowMoscow.getDate() + 1);
+        const tomorrowYear = tomorrowMoscow.getFullYear();
+        const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
+        const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
+        const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
+
+        return { today: todayString, tomorrow: tomorrowString };
+      };
+
+      const moscowDates = getMoscowDateContext();
+
+      if (info.date === moscowDates.today) {
         parts.push('today');
-      } else if (info.date === tomorrowDate) {
+      } else if (info.date === moscowDates.tomorrow) {
         parts.push('tomorrow');
       } else {
+        const dateObj = new Date(info.date);
         const options: Intl.DateTimeFormatOptions = { 
           weekday: 'long', 
           month: 'long', 
-          day: 'numeric' 
+          day: 'numeric',
+          timeZone: 'Europe/Moscow'
         };
         parts.push(`on ${dateObj.toLocaleDateString('en-US', options)}`);
       }
@@ -391,11 +401,11 @@ export class ConversationManager {
     // Remove all non-digits
     const cleaned = phone.replace(/\D/g, '');
 
-    // Format US phone numbers
-    if (cleaned.length === 10) {
+    // Format Russian phone numbers
+    if (cleaned.length === 11 && cleaned.startsWith('7')) {
+      return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
+    } else if (cleaned.length === 10) {
       return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-    } else if (cleaned.length === 11 && cleaned.startsWith('1')) {
-      return `+1 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
     }
 
     // Return cleaned version for other formats

@@ -113,9 +113,16 @@ export async function setupTelegramBot(token: string, restaurantId: number) {
     context.repetitionCount = 0;
     context.lastAskedFor = null;
 
+    // Get current time for personalized greeting
+    const hour = new Date().getHours();
+    let greeting = "Hello";
+    if (hour < 12) greeting = "Good morning";
+    else if (hour < 17) greeting = "Good afternoon";
+    else greeting = "Good evening";
+
     bot.sendMessage(
       chatId,
-      `Welcome to ${restaurant.name}'s reservation assistant! I can help you with making a new reservation, modifying an existing one, or answering questions about the restaurant. How can I help you today?`
+      `${greeting}! Welcome to ${restaurant.name}'s reservation assistant! 😊\n\nI can help you with:\n• Making a new reservation\n• Modifying an existing reservation\n• Answering questions about the restaurant\n\nHow can I help you today?`
     );
   });
 
@@ -126,9 +133,9 @@ export async function setupTelegramBot(token: string, restaurantId: number) {
       chatId,
       `I can help you with:
 
-1. Making a reservation - just tell me when you'd like to visit and how many people.
-2. Changing or canceling a reservation - let me know your phone number and what you'd like to change.
-3. Information about the restaurant - ask about hours, location, or menu.
+1. 📅 Making a reservation - just tell me when you'd like to visit and how many people.
+2. ✏️ Changing or canceling a reservation - let me know your phone number and what you'd like to change.
+3. ℹ️ Information about the restaurant - ask about hours, location, or menu.
 
 What would you like to do?`
     );
@@ -143,6 +150,10 @@ What would you like to do?`
 
     const chatId = msg.chat.id;
     const message = msg.text || '';
+
+    // Add typing indicator for more natural feel
+    bot.sendChatAction(chatId, 'typing');
+
     console.log(`📱 Telegram message received: "${message}" from chat ${chatId}`);
 
     const context = getOrCreateContext(chatId, restaurantId);
@@ -157,7 +168,7 @@ What would you like to do?`
     const frustratedPhrases = [
       'told you', 'already said', 'just said', 'just told you', 
       'i said', 'mentioned', 'gave you', 'provided', 'i told',
-      'already told', 'already gave'
+      'already told', 'already gave', 'i already', 'already provided'
     ];
     const isFrustrated = frustratedPhrases.some(phrase => 
       message.toLowerCase().includes(phrase)
@@ -179,7 +190,7 @@ What would you like to do?`
       });
       console.log('🔍 Enhanced intent detected:', intent);
 
-      // Handle frustration FIRST - this is critical
+      // CRITICAL FIX: Handle frustration FIRST and book immediately if we have all data
       if (isFrustrated || intent.conversation_action === 'acknowledge_frustration') {
         console.log('😤 User is frustrated, generating apology...');
         const apologyResponse = ConversationManager.generateHumanResponse(
@@ -201,34 +212,39 @@ What would you like to do?`
         context.userFrustrationLevel = 0;
         context.repetitionCount = 0;
 
-        // If we have all info after frustration, proceed to booking
+        // CRITICAL FIX: Check if we have all info after frustration and proceed IMMEDIATELY
         const { date, time, guests, name, phone } = context.partialIntent || {};
+
+        console.log('🔍 After apology, checking data:', { date, time, guests, name, phone });
+
         if (date && time && guests && name && phone) {
-          console.log('✅ Have all info after apology, proceeding to book...');
-          // We'll handle the booking in the next message or trigger it here
-          setTimeout(async () => {
-            try {
-              const { createTelegramReservation } = await import('./telegram-booking');
+          console.log('✅ Have all info after apology, booking IMMEDIATELY...');
 
-              const bookingResult = await createTelegramReservation(
-                restaurantId,
-                date,
-                time,
-                guests,
-                name,
-                phone,
-                context.partialIntent?.special_requests || ''
-              );
+          // Don't use setTimeout - book immediately
+          try {
+            bot.sendChatAction(chatId, 'typing'); // Show we're working
 
-              if (bookingResult.success) {
-                const { CacheInvalidation } = await import('../cache');
-                CacheInvalidation.onReservationChange(restaurantId, date);
+            const { createTelegramReservation } = await import('./telegram-booking');
 
-                const tableInfo = bookingResult.reservation?.table 
-                  ? `Table ${bookingResult.reservation.table.name}` 
-                  : 'a perfect table';
+            const bookingResult = await createTelegramReservation(
+              restaurantId,
+              date,
+              time,
+              guests,
+              name,
+              phone,
+              context.partialIntent?.special_requests || ''
+            );
 
-                const confirmationMessage = `🎉 Perfect! Your reservation is confirmed for ${guests} ${guests === 1 ? 'person' : 'people'} on ${new Date(date).toLocaleDateString()} at ${time}.
+            if (bookingResult.success) {
+              const { CacheInvalidation } = await import('../cache');
+              CacheInvalidation.onReservationChange(restaurantId, date);
+
+              const tableInfo = bookingResult.reservation?.table 
+                ? `Table ${bookingResult.reservation.table.name}` 
+                : 'a perfect table';
+
+              const confirmationMessage = `🎉 Perfect! Your reservation is confirmed for ${guests} ${guests === 1 ? 'person' : 'people'} on ${new Date(date).toLocaleDateString()} at ${time}.
 
 We've assigned you ${tableInfo} and everything is ready for your visit.
 
@@ -237,19 +253,45 @@ Thank you for choosing ${restaurant.name}! We look forward to serving you.
 Warm regards,
 ${restaurant.name} Team`;
 
-                bot.sendMessage(chatId, confirmationMessage);
+              // Send confirmation immediately
+              bot.sendMessage(chatId, confirmationMessage);
 
-                // Reset context after successful booking
-                context.stage = 'initial';
-                context.partialIntent = {};
-                context.userFrustrationLevel = 0;
+              // Reset context after successful booking
+              context.stage = 'initial';
+              context.partialIntent = {};
+              context.userFrustrationLevel = 0;
+              context.messageHistory = [];
+
+              return; // Exit here - booking is complete
+            } else {
+              // Handle booking failure
+              bot.sendMessage(chatId, `I'm sorry ${name}, but that time slot appears to be unavailable. Let me check for alternatives...`);
+
+              // Try to find alternatives
+              try {
+                const alternatives = await suggestAlternativeSlots(restaurantId, date, guests, 3);
+                if (alternatives && alternatives.length > 0) {
+                  const alternativesList = alternatives
+                    .map((alt: any, index: number) => 
+                      `${index + 1}. ${alt.time} - Table ${alt.tableName}`
+                    ).join('\n');
+
+                  const alternativesMessage = `However, I have these great alternatives for the same day:\n\n${alternativesList}\n\nWould you like me to book one of these times instead? Just tell me which number you prefer! 🎯`;
+
+                  bot.sendMessage(chatId, alternativesMessage);
+                  context.stage = 'suggesting_alternatives';
+                  context.suggestedSlots = alternatives;
+                }
+              } catch (altError) {
+                console.error('Error finding alternatives after booking failure:', altError);
               }
-            } catch (error) {
-              console.error('❌ Error booking after apology:', error);
             }
-          }, 1000);
+          } catch (error) {
+            console.error('❌ Error booking after apology:', error);
+            bot.sendMessage(chatId, 'Sorry, I encountered an error while trying to complete your reservation. Please try again.');
+          }
         }
-        return;
+        return; // Always return after handling frustration
       }
 
       // If it's likely a reservation request (confidence > 0.5) or we're in collecting info stage
@@ -303,6 +345,10 @@ ${restaurant.name} Team`;
 
         if (date && time && guests && name && phone) {
           console.log('✅ All data present, creating reservation...');
+
+          // Show typing indicator while processing
+          bot.sendChatAction(chatId, 'typing');
+
           // We have all the information, try to create the reservation
           try {
             const { createTelegramReservation } = await import('./telegram-booking');
@@ -466,6 +512,8 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
           if (selectedSlot && context.partialIntent) {
             // Book the selected alternative
             try {
+              bot.sendChatAction(chatId, 'typing');
+
               const { createTelegramReservation } = await import('./telegram-booking');
 
               const bookingResult = await createTelegramReservation(
@@ -507,6 +555,8 @@ Thank you for choosing ${restaurant.name}! We look forward to serving you.`;
           console.log('🔍 Finding alternatives for:', context.partialIntent);
 
           try {
+            bot.sendChatAction(chatId, 'typing');
+
             const alternatives = await suggestAlternativeSlots(
               restaurantId, 
               context.partialIntent.date || new Date().toISOString().split('T')[0], 
@@ -549,15 +599,18 @@ Thank you for choosing ${restaurant.name}! We look forward to serving you.`;
           // User is asking for alternatives after rejection - provide specific times
           console.log('🔍 User asking for availability, showing alternatives...');
           try {
+            bot.sendChatAction(chatId, 'typing');
+
+            const today = new Date().toISOString().split('T')[0];
             const { getAlternativeTimes } = await import('./telegram-booking');
-            const alternatives = await getAlternativeTimes(restaurantId, '2025-05-24', context.lastRequestedGuests);
+            const alternatives = await getAlternativeTimes(restaurantId, today, context.lastRequestedGuests);
 
             if (alternatives && alternatives.length > 0) {
               const alternativesList = alternatives.map((alt, index) => 
                 `${index + 1}. ${alt.time} - Table ${alt.tableName} (${alt.capacity} seats)`
               ).join('\n');
 
-              const message = `Here are the available times for ${context.lastRequestedGuests} people tomorrow:
+              const message = `Here are the available times for ${context.lastRequestedGuests} people today:
 
 ${alternativesList}
 
@@ -570,7 +623,7 @@ Would you like me to book one of these times? Just tell me which number you pref
               context.suggestedSlots = alternatives;
               return;
             } else {
-              bot.sendMessage(chatId, `I'm sorry, but we don't have any availability for ${context.lastRequestedGuests} people tomorrow. Would you like me to check a different date?`);
+              bot.sendMessage(chatId, `I'm sorry, but we don't have any availability for ${context.lastRequestedGuests} people today. Would you like me to check a different date?`);
               return;
             }
           } catch (error) {
@@ -604,6 +657,37 @@ Would you like me to book one of these times? Just tell me which number you pref
     } catch (error) {
       console.error('❌ Error in Telegram message handler:', error);
       bot.sendMessage(chatId, 'Sorry, I encountered an error. Please try again.');
+    }
+  });
+
+  // Handle callback queries (for inline keyboards if you add them later)
+  bot.on('callback_query', async (callbackQuery) => {
+    const msg = callbackQuery.message;
+    const data = callbackQuery.data;
+
+    if (!msg) return;
+
+    const chatId = msg.chat.id;
+
+    // Answer the callback query to remove loading state
+    bot.answerCallbackQuery(callbackQuery.id);
+
+    // Handle different callback data
+    if (data?.startsWith('date_')) {
+      const context = getOrCreateContext(chatId, restaurantId);
+      if (data === 'date_today') {
+        const today = new Date().toISOString().split('T')[0];
+        context.partialIntent = context.partialIntent || {};
+        context.partialIntent.date = today;
+        bot.sendMessage(chatId, "Great! You've selected today. What time would you prefer?");
+      } else if (data === 'date_tomorrow') {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowDate = tomorrow.toISOString().split('T')[0];
+        context.partialIntent = context.partialIntent || {};
+        context.partialIntent.date = tomorrowDate;
+        bot.sendMessage(chatId, "Perfect! You've selected tomorrow. What time works for you?");
+      }
     }
   });
 
