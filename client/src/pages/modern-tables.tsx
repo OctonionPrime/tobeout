@@ -401,10 +401,10 @@ function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => 
         <div className="grid grid-cols-2 gap-4">
           <FormField
             control={form.control}
-            name="minCapacity"
+            name="minGuests"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Min Capacity</FormLabel>
+                <FormLabel>Min Guests</FormLabel>
                 <FormControl>
                   <Input 
                     type="number" 
@@ -419,10 +419,10 @@ function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => 
 
           <FormField
             control={form.control}
-            name="maxCapacity"
+            name="maxGuests"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Max Capacity</FormLabel>
+                <FormLabel>Max Guests</FormLabel>
                 <FormControl>
                   <Input 
                     type="number" 
@@ -438,10 +438,10 @@ function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => 
 
         <FormField
           control={form.control}
-          name="location"
+          name="comments"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Location</FormLabel>
+              <FormLabel>Comments</FormLabel>
               <FormControl>
                 <Input placeholder="Window section, Patio, etc." {...field} />
               </FormControl>
