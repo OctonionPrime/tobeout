@@ -179,39 +179,89 @@ What would you like to do?`
               });
             }
 
-            // Create the reservation directly using storage
-            const reservation = await storage.createReservation({
-              restaurantId,
-              guestId: guest.id,
-              tableId: null, // Let system assign
-              timeslotId: null,
-              date,
-              time,
-              guests,
-              status: 'created',
-              comments: context.partialIntent.special_requests || '',
-              source: 'telegram'
+            // Use the smart booking API that follows your table assignment logic
+            const response = await fetch(`http://localhost:5000/api/booking/create`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                date,
+                time,
+                guests,
+                guestName: name,
+                guestPhone: phone,
+                guestEmail: '',
+                comments: context.partialIntent.special_requests || '',
+                source: 'telegram',
+                tableId: 'auto' // Use smart table assignment
+              })
             });
-
-            // Invalidate cache so dashboard shows new booking immediately
-            const { CacheInvalidation } = await import('../cache');
-            CacheInvalidation.reservations(restaurantId);
-
-            // Generate confirmation message
-            const confirmationMessage = await generateReservationConfirmation(
-              name,
-              date,
-              time,
-              guests,
-              restaurant.name
-            );
-
-            // Send confirmation
-            bot.sendMessage(chatId, confirmationMessage || `🎉 Your reservation is confirmed for ${guests} people on ${date} at ${time}. Thank you for choosing ${restaurant.name}!`);
             
-            // Reset context
-            context.stage = 'initial';
-            context.partialIntent = undefined;
+            const bookingResult = await response.json();
+            
+            if (response.ok && bookingResult.success) {
+              console.log('✅ Booking successful with smart table assignment:', bookingResult);
+
+              // Invalidate cache so dashboard shows new booking immediately
+              const { CacheInvalidation } = await import('../cache');
+              CacheInvalidation.onReservationChange(restaurantId, date);
+
+              // Generate intelligent confirmation with table details
+              const tableInfo = bookingResult.reservation?.table 
+                ? `Table ${bookingResult.reservation.table.name}` 
+                : 'a perfect table';
+                
+              const confirmationMessage = `🎉 Perfect! Your reservation is confirmed for ${guests} ${guests === 1 ? 'person' : 'people'} on ${new Date(date).toLocaleDateString()} at ${time}.
+
+We've assigned you ${tableInfo} and everything is ready for your visit.
+
+Thank you for choosing ${restaurant.name}! We look forward to serving you.
+
+Warm regards,
+${restaurant.name} Team`;
+
+              bot.sendMessage(chatId, confirmationMessage);
+              
+              // Reset context after successful booking
+              context.stage = 'initial';
+              context.partialIntent = undefined;
+              
+            } else {
+              // Handle conflicts or no availability with smart alternatives
+              console.log('❌ Booking failed, checking for alternatives:', bookingResult);
+              
+              if (bookingResult.alternatives && bookingResult.alternatives.length > 0) {
+                const alternativesList = bookingResult.alternatives
+                  .slice(0, 3) // Show top 3 alternatives
+                  .map((alt: any, index: number) => 
+                    `${index + 1}. ${alt.time} - Table ${alt.table?.name || alt.tableId} (${alt.table?.capacity || 'Available'} seats)`
+                  ).join('\n');
+
+                const alternativesMessage = `I'm sorry ${name}, but ${time} on ${new Date(date).toLocaleDateString()} is not available for ${guests} ${guests === 1 ? 'person' : 'people'}.
+
+However, I have these great alternatives for the same day:
+
+${alternativesList}
+
+Would you like me to book one of these times instead? Just tell me which number you prefer, or ask for different options!`;
+                
+                bot.sendMessage(chatId, alternativesMessage);
+                
+                // Update context to handle alternative selection
+                context.stage = 'suggesting_alternatives';
+                context.suggestedSlots = bookingResult.alternatives;
+                
+              } else {
+                const noAvailabilityMessage = `I'm sorry ${name}, but we don't have availability for ${guests} ${guests === 1 ? 'person' : 'people'} at ${time} on ${new Date(date).toLocaleDateString()}.
+
+Would you like me to suggest some alternative dates or times? I'd be happy to help you find the perfect slot!`;
+                
+                bot.sendMessage(chatId, noAvailabilityMessage);
+                
+                // Reset context to allow new booking attempt
+                context.stage = 'initial';
+                context.partialIntent = undefined;
+              }
+            }
           } catch (error) {
             console.error('❌ Error creating reservation:', error);
             bot.sendMessage(chatId, 'Sorry, I encountered an error while trying to make your reservation. Please try again.');
