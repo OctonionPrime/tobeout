@@ -130,8 +130,8 @@ What would you like to do?`
       const intent = await detectReservationIntent(message);
       console.log('🔍 Intent detected:', intent);
     
-      // If it's likely a reservation request (confidence > 0.7) or we're in collecting info stage
-      if (intent.confidence > 0.7 || context.stage === 'collecting_info') {
+      // If it's likely a reservation request (confidence > 0.5) or we're in collecting info stage
+      if (intent.confidence > 0.5 || context.stage === 'collecting_info') {
         // Log AI activity
         await storage.logAiActivity({
           restaurantId,

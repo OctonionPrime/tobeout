@@ -26,15 +26,21 @@ export async function detectReservationIntent(message: string): Promise<Reservat
     const systemPrompt = `
       You are an AI assistant for a restaurant reservation system. 
       Analyze the user message and extract the following information for a restaurant reservation:
-      - date (in YYYY-MM-DD format)
-      - time (in HH:MM format, 24-hour)
-      - number of guests (integer)
+      - date (in YYYY-MM-DD format, convert relative dates like "tomorrow", "next Friday", "today")
+      - time (in HH:MM format, 24-hour, convert "4 pm" to "16:00", "7:30" to "19:30")
+      - guests (integer, extract from phrases like "table for 4", "4 people", "party of 6")
       - name (string)
       - phone (string)
       - special_requests (string)
-      - confidence (number between 0 and 1 indicating how confident you are this is a reservation request)
+      - confidence (number between 0 and 1, be AGGRESSIVE - if someone mentions table/reservation/book/dine, set confidence to 0.8+)
       
-      Only extract what's explicitly mentioned. Leave fields empty if not mentioned.
+      Be smart about parsing:
+      - "table for 4 pm" = time:16:00, guests:NOT_SPECIFIED
+      - "4 people at 7pm" = guests:4, time:19:00
+      - "tomorrow at 6" = date:tomorrow, time:18:00
+      - Any mention of table/book/reservation = confidence 0.8+
+      
+      Today's date for reference: ${new Date().toISOString().split('T')[0]}
       Provide the data in JSON format.
     `;
 
