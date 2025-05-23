@@ -264,26 +264,42 @@ ${restaurant.name} Team`;
 
               return; // Exit here - booking is complete
             } else {
-              // Handle booking failure
+              // Handle booking failure with REAL alternatives
               bot.sendMessage(chatId, `I'm sorry ${name}, but that time slot appears to be unavailable. Let me check for alternatives...`);
 
-              // Try to find alternatives
+              // Try to find REAL alternatives using new system
               try {
-                const alternatives = await suggestAlternativeSlots(restaurantId, date, guests, 3);
-                if (alternatives && alternatives.length > 0) {
-                  const alternativesList = alternatives
-                    .map((alt: any, index: number) => 
-                      `${index + 1}. ${alt.time} - Table ${alt.tableName}`
-                    ).join('\n');
+                const { getRealAvailableSlots, generateSmartAlternativeMessage } = await import('./telegram-availability');
 
-                  const alternativesMessage = `However, I have these great alternatives for the same day:\n\n${alternativesList}\n\nWould you like me to book one of these times instead? Just tell me which number you prefer! 🎯`;
+                const realAlternatives = await getRealAvailableSlots(
+                  restaurantId,
+                  date,
+                  guests,
+                  time,
+                  3
+                );
 
-                  bot.sendMessage(chatId, alternativesMessage);
+                if (realAlternatives && realAlternatives.length > 0) {
+                  const smartMessage = generateSmartAlternativeMessage(
+                    name,
+                    time,
+                    guests,
+                    realAlternatives
+                  );
+
+                  bot.sendMessage(chatId, smartMessage);
                   context.stage = 'suggesting_alternatives';
-                  context.suggestedSlots = alternatives;
+                  context.suggestedSlots = realAlternatives.map(slot => ({
+                    date: slot.date,
+                    time: slot.time,
+                    timeDisplay: slot.timeDisplay,
+                    tableId: slot.tableId,
+                    tableName: slot.tableName,
+                    tableCapacity: slot.tableCapacity.max
+                  }));
                 }
               } catch (altError) {
-                console.error('Error finding alternatives after booking failure:', altError);
+                console.error('Error finding real alternatives after booking failure:', altError);
               }
             }
           } catch (error) {
@@ -396,46 +412,51 @@ ${restaurant.name} Team`;
               context.messageHistory = [];
 
             } else {
-              // Handle conflicts or no availability with smart alternatives
-              console.log('❌ Booking failed, finding alternatives...');
+              // MAJOR FIX: Handle conflicts with REAL availability system
+              console.log('❌ Booking failed, finding REAL alternatives...');
 
-              // Always find alternative times when booking fails
+              // Import the new real availability system
+              const { getRealAvailableSlots, generateSmartAlternativeMessage } = await import('./telegram-availability');
+
               try {
-                const alternatives = await suggestAlternativeSlots(
-                  restaurantId, 
-                  date, 
+                // Get REAL available slots using actual table data
+                const realAlternatives = await getRealAvailableSlots(
+                  restaurantId,
+                  date,
                   guests,
-                  5 // Get 5 alternatives
+                  time, // Pass requested time to prioritize nearby slots
+                  5 // Get up to 5 alternatives
                 );
 
-                if (alternatives && alternatives.length > 0) {
-                  const alternativesList = alternatives
-                    .slice(0, 3) // Show top 3 alternatives
-                    .map((alt: any, index: number) => 
-                      `${index + 1}. ${alt.time} - Table ${alt.table?.name || alt.tableId} (${alt.table?.capacity || 'Available'} seats)`
-                    ).join('\n');
+                if (realAlternatives && realAlternatives.length > 0) {
+                  // Generate smart message using real availability
+                  const smartMessage = generateSmartAlternativeMessage(
+                    name,
+                    time,
+                    guests,
+                    realAlternatives
+                  );
 
-                  const alternativesMessage = `I'm sorry ${name}, but ${time} on ${new Date(date).toLocaleDateString()} is not available for ${guests} ${guests === 1 ? 'person' : 'people'}. 😔
-
-However, I have these great alternatives for the same day:
-
-${alternativesList}
-
-Would you like me to book one of these times instead? Just tell me which number you prefer! 🎯`;
-
-                  bot.sendMessage(chatId, alternativesMessage);
+                  bot.sendMessage(chatId, smartMessage);
 
                   // Update context to handle alternative selection - PRESERVE ALL INFO
                   context.stage = 'suggesting_alternatives';
-                  context.suggestedSlots = alternatives;
+                  context.suggestedSlots = realAlternatives.map(slot => ({
+                    date: slot.date,
+                    time: slot.time,
+                    timeDisplay: slot.timeDisplay,
+                    tableId: slot.tableId,
+                    tableName: slot.tableName,
+                    tableCapacity: slot.tableCapacity.max
+                  }));
                   context.lastRequestedGuests = guests;
-                  // Keep all the guest info for rebooking
                   context.partialIntent = { date, time, guests, name, phone };
 
                 } else {
-                  const noAvailabilityMessage = `I'm sorry ${name}, but we don't have any availability for ${guests} ${guests === 1 ? 'person' : 'people'} on ${new Date(date).toLocaleDateString()}. 😔
+                  // Truly no availability - this should rarely happen now
+                  const noAvailabilityMessage = `I'm sorry ${name}, but we're completely booked for ${guests} ${guests === 1 ? 'person' : 'people'} today. 😔
 
-Would you like me to check availability for a different date? I'd be happy to help you find the perfect slot! 📅`;
+Would you like me to check availability for tomorrow or a different date? I'd be happy to help you find the perfect slot! 📅`;
 
                   bot.sendMessage(chatId, noAvailabilityMessage);
 
@@ -445,16 +466,16 @@ Would you like me to check availability for a different date? I'd be happy to he
                   context.partialIntent = { date, time, guests, name, phone };
                 }
               } catch (error) {
-                console.error('❌ Error finding alternatives:', error);
-                const noAvailabilityMessage = `I'm sorry ${name}, but we don't have availability for ${guests} ${guests === 1 ? 'person' : 'people'} at ${time} on ${new Date(date).toLocaleDateString()}.
+                console.error('❌ Error finding real alternatives:', error);
 
-Would you like me to suggest some alternative dates or times? I'd be happy to help you find the perfect slot!`;
+                // Fallback message
+                const fallbackMessage = `I'm sorry ${name}, but ${time} isn't available. Let me help you find alternative times - what other times work for you today?`;
+                bot.sendMessage(chatId, fallbackMessage);
 
-                bot.sendMessage(chatId, noAvailabilityMessage);
-
-                // Reset context to allow new booking attempt
-                context.stage = 'initial';
-                context.partialIntent = {};
+                // Keep context for manual alternative requests
+                context.stage = 'suggesting_alternatives';
+                context.lastRequestedGuests = guests;
+                context.partialIntent = { date, time, guests, name, phone };
               }
             }
           } catch (error) {
@@ -530,7 +551,7 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
                 const { CacheInvalidation } = await import('../cache');
                 CacheInvalidation.onReservationChange(restaurantId, selectedSlot.date);
 
-                const confirmationMessage = `🎉 Excellent! Your reservation is confirmed for ${context.partialIntent.guests} people on ${new Date(selectedSlot.date).toLocaleDateString()} at ${selectedSlot.time}.
+                const confirmationMessage = `🎉 Excellent! Your reservation is confirmed for ${context.partialIntent.guests} people on ${new Date(selectedSlot.date).toLocaleDateString()} at ${selectedSlot.timeDisplay || selectedSlot.time}.
 
 Thank you for choosing ${restaurant.name}! We look forward to serving you.`;
 
@@ -551,35 +572,44 @@ Thank you for choosing ${restaurant.name}! We look forward to serving you.`;
             }
           }
         } else if (wantsAlternatives && context.lastRequestedGuests && context.partialIntent) {
-          // Generate alternatives for the guest's original request
-          console.log('🔍 Finding alternatives for:', context.partialIntent);
+          // Generate alternatives for the guest's original request using REAL system
+          console.log('🔍 Finding real alternatives for:', context.partialIntent);
 
           try {
             bot.sendChatAction(chatId, 'typing');
 
-            const alternatives = await suggestAlternativeSlots(
+            const { getRealAvailableSlots, generateSmartAlternativeMessage } = await import('./telegram-availability');
+
+            const realAlternatives = await getRealAvailableSlots(
               restaurantId, 
               context.partialIntent.date || new Date().toISOString().split('T')[0], 
               context.lastRequestedGuests || 2,
+              context.partialIntent.time,
               5
             );
 
-            if (alternatives && alternatives.length > 0) {
-              let alternativesMessage = `Perfect! Here are available times for ${context.lastRequestedGuests} people on ${context.partialIntent.date}:\n\n`;
+            if (realAlternatives && realAlternatives.length > 0) {
+              const smartMessage = generateSmartAlternativeMessage(
+                context.partialIntent.name || 'there',
+                context.partialIntent.time || '7:00 PM',
+                context.lastRequestedGuests,
+                realAlternatives
+              );
 
-              alternatives.forEach((alt, index) => {
-                alternativesMessage += `${index + 1}. **${alt.time}** - ${alt.tableName} (${alt.tableCapacity} seats)\n`;
-              });
-
-              alternativesMessage += `\nJust tell me which number you'd like and I'll book it for ${context.partialIntent.name}! 🎯`;
-
-              bot.sendMessage(chatId, alternativesMessage);
-              context.suggestedSlots = alternatives;
+              bot.sendMessage(chatId, smartMessage);
+              context.suggestedSlots = realAlternatives.map(slot => ({
+                date: slot.date,
+                time: slot.time,
+                timeDisplay: slot.timeDisplay,
+                tableId: slot.tableId,
+                tableName: slot.tableName,
+                tableCapacity: slot.tableCapacity.max
+              }));
             } else {
               bot.sendMessage(chatId, `I'm sorry ${context.partialIntent.name}, but we're fully booked on ${context.partialIntent.date}. Would you like to try a different date? 📅`);
             }
           } catch (error) {
-            console.error('❌ Error finding alternatives:', error);
+            console.error('❌ Error finding real alternatives:', error);
             bot.sendMessage(chatId, `Let me check other available dates for ${context.lastRequestedGuests} people. What other dates work for you?`);
           }
         } else {
@@ -596,38 +626,43 @@ Thank you for choosing ${restaurant.name}! We look forward to serving you.`;
                                    message.toLowerCase().includes('tomorrow');
 
         if (isAvailabilityCheck && context.lastRequestedGuests) {
-          // User is asking for alternatives after rejection - provide specific times
-          console.log('🔍 User asking for availability, showing alternatives...');
+          // User is asking for alternatives after rejection - provide REAL times
+          console.log('🔍 User asking for availability, showing REAL alternatives...');
           try {
             bot.sendChatAction(chatId, 'typing');
 
             const today = new Date().toISOString().split('T')[0];
-            const { getAlternativeTimes } = await import('./telegram-booking');
-            const alternatives = await getAlternativeTimes(restaurantId, today, context.lastRequestedGuests);
+            const { getRealAvailableSlots, generateSmartAlternativeMessage } = await import('./telegram-availability');
 
-            if (alternatives && alternatives.length > 0) {
-              const alternativesList = alternatives.map((alt, index) => 
-                `${index + 1}. ${alt.time} - Table ${alt.tableName} (${alt.capacity} seats)`
-              ).join('\n');
+            const realAlternatives = await getRealAvailableSlots(restaurantId, today, context.lastRequestedGuests);
 
-              const message = `Here are the available times for ${context.lastRequestedGuests} people today:
+            if (realAlternatives && realAlternatives.length > 0) {
+              const smartMessage = generateSmartAlternativeMessage(
+                'there',
+                '7:00 PM',
+                context.lastRequestedGuests,
+                realAlternatives
+              );
 
-${alternativesList}
-
-Would you like me to book one of these times? Just tell me which number you prefer!`;
-
-              bot.sendMessage(chatId, message);
+              bot.sendMessage(chatId, smartMessage);
 
               // Update context for alternative selection
               context.stage = 'suggesting_alternatives';
-              context.suggestedSlots = alternatives;
+              context.suggestedSlots = realAlternatives.map(slot => ({
+                date: slot.date,
+                time: slot.time,
+                timeDisplay: slot.timeDisplay,
+                tableId: slot.tableId,
+                tableName: slot.tableName,
+                tableCapacity: slot.tableCapacity.max
+              }));
               return;
             } else {
               bot.sendMessage(chatId, `I'm sorry, but we don't have any availability for ${context.lastRequestedGuests} people today. Would you like me to check a different date?`);
               return;
             }
           } catch (error) {
-            console.error('❌ Error getting alternatives:', error);
+            console.error('❌ Error getting real alternatives:', error);
           }
         }
 
