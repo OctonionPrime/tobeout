@@ -162,94 +162,52 @@ What would you like to do?`
         const { date, time, guests, name, phone } = context.partialIntent;
         
         if (date && time && guests && name && phone) {
-          // We have all the information, try to create the reservation using the smart booking API
+          // We have all the information, try to create the reservation using internal storage
           try {
-            // Use the same booking endpoint that the web interface uses
-            const response = await fetch(`http://localhost:5000/api/booking/create`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                date,
-                time,
-                guests,
-                guestName: name,
-                guestPhone: phone,
-                guestEmail: '',
-                comments: context.partialIntent.special_requests || '',
-                source: 'telegram',
-                tableId: 'auto' // Let the system assign the best table
-              })
-            });
+            // Find or create guest
+            let guest = await storage.getGuestByPhone(phone);
             
-            if (bookingResult.success) {
-              // Booking successful! Generate confirmation message
-              const confirmationMessage = await generateReservationConfirmation(
+            if (!guest) {
+              guest = await storage.createGuest({
                 name,
-                date,
-                time,
-                guests,
-                restaurant.name
-              );
-
-              // Send confirmation
-              bot.sendMessage(chatId, confirmationMessage || `🎉 Your reservation is confirmed for ${guests} people on ${date} at ${time}. Thank you for choosing ${restaurant.name}!`);
-              
-              // Reset context
-              context.stage = 'initial';
-              context.partialIntent = undefined;
-            } else {
-              // Booking failed, try to get alternatives
-              const altResponse = await fetch(`http://localhost:5000/api/booking/alternatives?restaurantId=${restaurantId}&date=${date}&time=${time}&guests=${guests}`);
-              const altResult = await altResponse.json();
-              
-              if (altResult.alternatives && altResult.alternatives.length > 0) {
-                const suggestionMessage = await generateAlternativeSuggestionMessage(
-                  restaurant.name,
-                  date,
-                  time,
-                  guests,
-                  altResult.alternatives
-                );
-                
-                bot.sendMessage(chatId, suggestionMessage || `I'm sorry, but we don't have availability for ${guests} people on ${date} at ${time}. Would you like to try a different time?`);
-                context.stage = 'suggesting_alternatives';
-                context.suggestedSlots = altResult.alternatives;
-              } else {
-                bot.sendMessage(chatId, `I'm sorry, we don't have availability for ${guests} people on ${date} at ${time}. Would you like to try a different date or time?`);
-                context.stage = 'initial';
-                context.partialIntent = undefined;
-              }
+                phone,
+                email: '',
+                language: 'en'
+              });
             }
-          } catch (fetchError) {
-            console.error('❌ Error calling booking API:', fetchError);
-            bot.sendMessage(chatId, 'Sorry, I encountered an error while trying to make your reservation. Please try again.');
-          }
-            
-            // Check for other possible times
-            const otherDateAlternatives = await suggestAlternativeSlots(
+
+            // Create the reservation directly using storage
+            const reservation = await storage.createReservation({
               restaurantId,
-              // Try the next day
-              new Date(new Date(date).getTime() + 86400000).toISOString().split('T')[0],
-              time,
-              guests
-            );
-            
-            // Generate suggestion message
-            const suggestionMessage = await generateAlternativeSuggestionMessage(
-              restaurant.name,
+              guestId: guest.id,
+              tableId: null, // Let system assign
+              timeslotId: null,
               date,
               time,
               guests,
-              otherDateAlternatives
+              status: 'created',
+              comments: context.partialIntent.special_requests || '',
+              source: 'telegram'
+            });
+
+            // Generate confirmation message
+            const confirmationMessage = await generateReservationConfirmation(
+              name,
+              date,
+              time,
+              guests,
+              restaurant.name
             );
+
+            // Send confirmation
+            bot.sendMessage(chatId, confirmationMessage || `🎉 Your reservation is confirmed for ${guests} people on ${date} at ${time}. Thank you for choosing ${restaurant.name}!`);
             
-            bot.sendMessage(
-              chatId,
-              suggestionMessage || `I'm sorry, but we don't have availability for ${guests} guests on ${date} at ${time}. Would you like to try a different time or date?`
-            );
-            
-            // Save alternatives for later reference
-            context.suggestedSlots = otherDateAlternatives;
+            // Reset context
+            context.stage = 'initial';
+            context.partialIntent = undefined;
+          } catch (error) {
+            console.error('❌ Error creating reservation:', error);
+            bot.sendMessage(chatId, 'Sorry, I encountered an error while trying to make your reservation. Please try again.');
           }
         } else {
           // Missing information, ask for it
