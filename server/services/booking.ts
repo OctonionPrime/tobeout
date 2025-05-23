@@ -21,7 +21,7 @@ export interface AvailableSlot {
 }
 
 /**
- * Find available tables for a booking request
+ * Find available tables with at least 1-30 hour availability window
  */
 export async function findAvailableTables(
   restaurantId: number,
@@ -29,7 +29,7 @@ export async function findAvailableTables(
   time: string,
   guests: number
 ): Promise<AvailableSlot[]> {
-  console.log(`🔍 Searching for available tables for ${guests} guests on ${date} at ${time}`);
+  console.log(`🔍 Smart table search for ${guests} guests on ${date} at ${time}`);
   
   // Get all tables for the restaurant that can accommodate the party size
   const tables = await storage.getTables(restaurantId);
@@ -43,31 +43,67 @@ export async function findAvailableTables(
     return [];
   }
   
-  // Get all timeslots for the requested date
-  const timeslots = await storage.getTimeslots(restaurantId, date);
-  console.log(`⏰ Found ${timeslots.length} timeslots for ${date}`);
+  // Get existing reservations for the date
+  const existingReservations = await storage.getReservations(restaurantId, { date });
+  console.log(`📅 Found ${existingReservations.length} existing reservations on ${date}`);
   
-  // Find available slots
   const availableSlots: AvailableSlot[] = [];
   
+  // For each suitable table, check if it has at least 1-30 hour availability window
   for (const table of suitableTables) {
-    for (const timeslot of timeslots) {
-      // Check if this timeslot matches the requested time (or is within 30 minutes)
-      if (timeslot.time === time && timeslot.status === 'free' && timeslot.tableId === table.id) {
-        availableSlots.push({
-          tableId: table.id,
-          timeslotId: timeslot.id,
-          date: timeslot.date,
-          time: timeslot.time,
-          tableName: table.name,
-          tableCapacity: { min: table.minGuests, max: table.maxGuests }
-        });
-      }
+    const tableReservations = existingReservations.filter(res => res.tableId === table.id);
+    
+    if (await hasAvailabilityWindow(table.id, date, time, tableReservations)) {
+      availableSlots.push({
+        tableId: table.id,
+        timeslotId: 0, // We'll handle this differently
+        date,
+        time,
+        tableName: table.name,
+        tableCapacity: { min: table.minGuests, max: table.maxGuests }
+      });
+      console.log(`✅ Table ${table.name} has availability window from ${time}`);
+    } else {
+      console.log(`❌ Table ${table.name} doesn't have sufficient availability window`);
     }
   }
   
-  console.log(`✅ Found ${availableSlots.length} available slots`);
   return availableSlots;
+}
+
+/**
+ * Check if a table has at least 1-30 hour availability window from requested time
+ */
+async function hasAvailabilityWindow(
+  tableId: number, 
+  date: string, 
+  requestedTime: string, 
+  tableReservations: any[]
+): Promise<boolean> {
+  const requestedDateTime = parseISO(`${date}T${requestedTime}`);
+  
+  // Check for conflicts in the next 30 hours (1-30 hour window)
+  for (let hours = 1; hours <= 30; hours++) {
+    const checkTime = addMinutes(requestedDateTime, hours * 60);
+    const checkTimeStr = format(checkTime, 'HH:mm');
+    
+    // Check if this time slot conflicts with any existing reservation
+    const hasConflict = tableReservations.some(reservation => {
+      if (!reservation.time) return false;
+      
+      const reservationStart = parseISO(`${reservation.date}T${reservation.time}`);
+      const reservationEnd = addMinutes(reservationStart, reservation.duration || 120); // Default 2 hours
+      
+      return checkTime >= reservationStart && checkTime < reservationEnd;
+    });
+    
+    if (!hasConflict) {
+      console.log(`✨ Table ${tableId} has ${hours}h availability window from ${requestedTime}`);
+      return true; // Found at least 1 hour of availability
+    }
+  }
+  
+  return false; // No availability window found
 }
 
 /**
@@ -139,32 +175,34 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
       };
     }
     
-    // Use the first available slot
+    // Use the best available table (first one with longest availability window)
     const selectedSlot = availableSlots[0];
+    console.log(`🎯 Auto-assigning Table ${selectedSlot.tableName} for ${bookingRequest.guests} guests`);
     
-    // Create the reservation
+    // Create the reservation with automatic table assignment
     const reservation = await storage.createReservation({
       restaurantId: bookingRequest.restaurantId,
       guestId: bookingRequest.guestId,
-      tableId: selectedSlot.tableId,
-      timeslotId: selectedSlot.timeslotId,
+      tableId: selectedSlot.tableId, // ✨ This ensures table is assigned!
+      timeslotId: null, // We're not using timeslot system, using direct table assignment
       date: bookingRequest.date,
       time: bookingRequest.time,
+      duration: 120, // Default 2 hours
       guests: bookingRequest.guests,
-      status: 'created',
+      status: 'confirmed', // Auto-confirm since we found an available table
       comments: bookingRequest.comments || '',
       source: bookingRequest.source || 'manual'
     });
     
-    // Update timeslot status to 'occupied'
-    await storage.updateTimeslot(selectedSlot.timeslotId, { status: 'occupied' });
+    // Update table status in real-time
+    await storage.updateTableStatusFromReservations(selectedSlot.tableId);
     
-    console.log(`✅ Reservation created successfully: ID ${reservation.id}`);
+    console.log(`✅ Auto-assigned Table ${selectedSlot.tableName} to Reservation ${reservation.id}!`);
     
     return {
       success: true,
       reservation,
-      message: `Reservation confirmed for ${bookingRequest.guests} guests at table ${selectedSlot.tableName} on ${bookingRequest.date} at ${bookingRequest.time}`
+      message: `✨ Table ${selectedSlot.tableName} automatically assigned for ${bookingRequest.guests} guests on ${bookingRequest.date} at ${bookingRequest.time}`
     };
     
   } catch (error) {
