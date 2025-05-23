@@ -145,13 +145,15 @@ What would you like to do?`
           context.partialIntent = {};
         }
       
-        // Merge the new intent with existing context
-        if (intent.date) context.partialIntent.date = intent.date;
-        if (intent.time) context.partialIntent.time = intent.time;
-        if (intent.guests) context.partialIntent.guests = intent.guests;
-        if (intent.name) context.partialIntent.name = intent.name;
-        if (intent.phone) context.partialIntent.phone = intent.phone;
-        if (intent.special_requests) context.partialIntent.special_requests = intent.special_requests;
+        // Merge the new intent with existing context (only update if new value is provided)
+        if (intent.date && intent.date !== 'NOT_SPECIFIED') context.partialIntent.date = intent.date;
+        if (intent.time && intent.time !== 'NOT_SPECIFIED') context.partialIntent.time = intent.time;
+        if (intent.guests && intent.guests > 0) context.partialIntent.guests = intent.guests;
+        if (intent.name && intent.name !== 'NOT_SPECIFIED') context.partialIntent.name = intent.name;
+        if (intent.phone && intent.phone !== 'NOT_SPECIFIED') context.partialIntent.phone = intent.phone;
+        if (intent.special_requests && intent.special_requests !== 'NOT_SPECIFIED' && intent.special_requests !== 'NONE') {
+          context.partialIntent.special_requests = intent.special_requests;
+        }
         
         // Move to collecting info stage
         context.stage = 'collecting_info';
