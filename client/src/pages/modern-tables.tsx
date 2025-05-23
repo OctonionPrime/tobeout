@@ -158,15 +158,22 @@ export default function ModernTables() {
                 <TableForm 
                   onSubmit={async (data) => {
                     try {
-                      await fetch('/api/tables', {
+                      const response = await fetch('/api/tables', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
                         body: JSON.stringify({ ...data, restaurantId })
                       });
+                      
+                      if (!response.ok) {
+                        throw new Error(`Failed to create table: ${response.statusText}`);
+                      }
+                      
                       setShowAddTableModal(false);
                       queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
                       toast({ title: "Table created successfully!" });
                     } catch (error: any) {
+                      console.error('Table creation error:', error);
                       toast({ title: "Error creating table", description: error.message, variant: "destructive" });
                     }
                   }}

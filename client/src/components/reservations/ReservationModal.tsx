@@ -383,6 +383,8 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                         ...formValues,
                         status: "confirmed"
                       });
+                      // Force refresh the reservations list
+                      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
                       toast({ title: "Reservation confirmed successfully!" });
                       onClose();
                     } catch (error: any) {
