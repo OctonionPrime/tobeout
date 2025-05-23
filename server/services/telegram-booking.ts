@@ -47,3 +47,110 @@ export async function createTelegramReservation(
     };
   }
 }
+
+/**
+ * Get alternative available times for a given date and party size
+ */
+export async function getAlternativeTimes(restaurantId: number, date: string, guests: number) {
+  try {
+    // Get all tables that can accommodate the party size
+    const allTables = await storage.getTables(restaurantId);
+    const suitableTables = allTables.filter(table => 
+      table.minCapacity <= guests && table.maxCapacity >= guests
+    );
+
+    if (suitableTables.length === 0) {
+      return [];
+    }
+
+    // Get all reservations for the date
+    const existingReservations = await storage.getReservations(restaurantId, { 
+      date: date,
+      status: ['confirmed', 'created'] // Only consider active reservations
+    });
+
+    // Generate time slots (10:00 AM to 11:00 PM in 1-hour intervals)
+    const timeSlots = [];
+    for (let hour = 10; hour <= 23; hour++) {
+      const time = `${hour.toString().padStart(2, '0')}:00:00`;
+      timeSlots.push(time);
+    }
+
+    const alternatives = [];
+
+    // Check each time slot for availability
+    for (const time of timeSlots) {
+      const availableTables = getAvailableTablesForTime(
+        suitableTables, 
+        existingReservations, 
+        date, 
+        time
+      );
+
+      if (availableTables.length > 0) {
+        // Pick the best table (largest capacity to ensure comfort)
+        const bestTable = availableTables.sort((a, b) => b.maxCapacity - a.maxCapacity)[0];
+        
+        alternatives.push({
+          time: formatTime(time),
+          tableId: bestTable.id,
+          tableName: bestTable.name,
+          capacity: bestTable.maxCapacity,
+          date
+        });
+      }
+    }
+
+    return alternatives.slice(0, 5); // Return max 5 alternatives
+  } catch (error) {
+    console.error('❌ Error getting alternative times:', error);
+    return [];
+  }
+}
+
+/**
+ * Check which tables are available at a specific time
+ */
+function getAvailableTablesForTime(
+  tables: any[], 
+  reservations: any[], 
+  date: string, 
+  time: string
+) {
+  const availableTables = [];
+
+  for (const table of tables) {
+    // Check if table has conflicting reservations
+    const hasConflict = reservations.some(reservation => {
+      if (reservation.tableId !== table.id) return false;
+      if (reservation.date !== date) return false;
+      
+      // Check if times overlap (assuming 2-hour duration)
+      const reservationStart = new Date(`${date} ${reservation.time}`);
+      const reservationEnd = new Date(reservationStart.getTime() + 2 * 60 * 60 * 1000);
+      const requestedStart = new Date(`${date} ${time}`);
+      const requestedEnd = new Date(requestedStart.getTime() + 2 * 60 * 60 * 1000);
+      
+      return (requestedStart < reservationEnd && requestedEnd > reservationStart);
+    });
+
+    if (!hasConflict) {
+      availableTables.push(table);
+    }
+  }
+
+  return availableTables;
+}
+
+/**
+ * Format time for display (24:00 -> 12:00 AM/PM)
+ */
+function formatTime(time24: string): string {
+  const [hours] = time24.split(':');
+  const hour = parseInt(hours);
+  
+  if (hour === 0) return '12:00 AM';
+  if (hour < 12) return `${hour}:00 AM`;
+  if (hour === 12) return '12:00 PM';
+  return `${hour - 12}:00 PM`;
+}
