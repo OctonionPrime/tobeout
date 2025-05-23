@@ -132,7 +132,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
         date: values.date,
         time: values.time,
         guests: values.guests,
-        tableId: values.tableId && values.tableId !== "auto" ? parseInt(values.tableId) : undefined,
+        tableId: values.tableId === "auto" ? null : (values.tableId ? parseInt(values.tableId) : null),
         comments: values.specialRequests,
         source: "manual"
       });
