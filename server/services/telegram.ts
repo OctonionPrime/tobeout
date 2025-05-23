@@ -325,7 +325,7 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
             bot.sendMessage(chatId, 'Sorry, I encountered an error while trying to make your reservation. Please try again.');
           }
         } else {
-          // Missing information, ask for it
+          // Smart missing information handling with frustration detection
           const missingFields = [];
           if (!date) missingFields.push("date");
           if (!time) missingFields.push("time");
@@ -333,10 +333,31 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
           if (!name) missingFields.push("your name");
           if (!phone) missingFields.push("phone number");
 
-          bot.sendMessage(
-            chatId,
-            `I'd be happy to make a reservation for you! I just need a bit more information: ${missingFields.join(", ")}. Could you please provide these details?`
-          );
+          // Show what we have collected to avoid frustration
+          let collectedInfo = "";
+          if (date || time || guests || name || phone) {
+            collectedInfo = "\n\nI have: ";
+            const collected = [];
+            if (date) collected.push(`📅 ${date}`);
+            if (time) collected.push(`⏰ ${time}`);
+            if (guests) collected.push(`👥 ${guests} people`);
+            if (name) collected.push(`👤 ${name}`);
+            if (phone) collected.push(`📞 ${phone}`);
+            collectedInfo += collected.join(", ");
+          }
+
+          // Detect frustration and respond appropriately
+          if (context.userFrustrationLevel > 2) {
+            bot.sendMessage(
+              chatId,
+              `I apologize for the confusion! ${collectedInfo}\n\nI just need: ${missingFields.join(", ")} to complete your reservation. 😊`
+            );
+          } else {
+            bot.sendMessage(
+              chatId,
+              `I'd be happy to make a reservation for you! ${collectedInfo}\n\nI just need: ${missingFields.join(", ")}. Could you please provide these details?`
+            );
+          }
         }
       } else if (context.stage === 'suggesting_alternatives') {
         // User is responding to our alternative suggestions
