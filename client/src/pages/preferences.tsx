@@ -193,6 +193,7 @@ export default function Preferences() {
 
   // Timezone options (a small subset for demonstration)
   const timezones = [
+    { value: "Europe/Moscow", label: "Moscow Time (MSK)" },
     { value: "America/New_York", label: "Eastern Time (US & Canada)" },
     { value: "America/Chicago", label: "Central Time (US & Canada)" },
     { value: "America/Denver", label: "Mountain Time (US & Canada)" },

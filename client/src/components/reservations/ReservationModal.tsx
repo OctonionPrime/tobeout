@@ -42,13 +42,20 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // Get current date in Moscow timezone for form default
+  const getMoscowDate = () => {
+    const now = new Date();
+    const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+    return format(moscowTime, "yyyy-MM-dd");
+  };
+
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       guestName: "",
       guestPhone: "",
       guestEmail: "",
-      date: format(new Date(), "yyyy-MM-dd"),
+      date: getMoscowDate(), // ✅ Now uses Moscow timezone
       time: "18:00",
       guests: 2,
       tableId: "",
