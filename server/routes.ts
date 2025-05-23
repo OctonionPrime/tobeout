@@ -520,6 +520,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get single reservation by ID
+  app.get("/api/reservations/:id", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const restaurant = await storage.getRestaurantByUserId(user.id);
+      
+      if (!restaurant) {
+        return res.status(404).json({ message: "Restaurant not found" });
+      }
+      
+      const reservationId = parseInt(req.params.id);
+      const reservation = await storage.getReservation(reservationId);
+      
+      if (!reservation || reservation.restaurantId !== restaurant.id) {
+        return res.status(404).json({ message: "Reservation not found" });
+      }
+      
+      res.json(reservation);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.post("/api/reservations", isAuthenticated, async (req, res) => {
     console.log('🔥 RESERVATION ENDPOINT HIT!');
     try {
