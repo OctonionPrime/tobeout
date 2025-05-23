@@ -323,7 +323,8 @@ export class DatabaseStorage implements IStorage {
 
     // Apply status filter
     if (filters?.status && filters.status.length > 0) {
-      whereConditions.push(sql`${reservations.status} IN (${filters.status.map(s => `'${s}'`).join(',')})`);
+      const statusList = filters.status.map(s => `'${s}'`).join(',');
+      whereConditions.push(sql.raw(`${reservations.status.name} IN (${statusList})`));
     }
 
     // Apply upcoming filter
