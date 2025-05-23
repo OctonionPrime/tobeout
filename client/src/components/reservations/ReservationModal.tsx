@@ -84,24 +84,28 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
       });
       
       if (response.ok) {
-        const data = await response.json();
-        const guest = await fetch(`/api/guests/${data.guestId}`, {
-          credentials: "include"
-        }).then(res => res.json());
+        const reservation = await response.json();
+        console.log("Fetched reservation data:", reservation);
         
+        // The reservation data already includes guest info flattened
         form.reset({
-          guestName: guest.name,
-          guestPhone: guest.phone,
-          guestEmail: guest.email || "",
-          date: data.date,
-          time: data.time.substring(0, 5), // HH:mm
-          guests: data.guests,
-          tableId: data.tableId ? String(data.tableId) : "",
-          specialRequests: data.comments || ""
+          guestName: reservation.guestName || "",
+          guestPhone: reservation.guestPhone || "",
+          guestEmail: reservation.guestEmail || "",
+          date: reservation.date || "",
+          time: reservation.time ? reservation.time.substring(0, 5) : "", // HH:mm
+          guests: reservation.guests || 2,
+          tableId: reservation.tableId ? String(reservation.tableId) : "",
+          specialRequests: reservation.comments || ""
         });
       }
     } catch (error) {
       console.error("Error fetching reservation:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load reservation data",
+        variant: "destructive"
+      });
     }
   };
 
@@ -189,14 +193,6 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
               ? "Update the reservation details below" 
               : "Fill in the details to create a new reservation"}
           </DialogDescription>
-          <Button 
-            onClick={onClose} 
-            size="icon" 
-            variant="ghost" 
-            className="absolute right-4 top-4"
-          >
-            <X className="h-4 w-4" />
-          </Button>
         </DialogHeader>
         
         <Form {...form}>

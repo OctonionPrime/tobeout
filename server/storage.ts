@@ -369,8 +369,37 @@ export class DatabaseStorage implements IStorage {
     return reservationsWithDetails;
   }
 
-  async getReservation(id: number): Promise<Reservation | undefined> {
-    const [reservation] = await db.select().from(reservations).where(eq(reservations.id, id));
+  async getReservation(id: number): Promise<any> {
+    const [reservation] = await db
+      .select({
+        // Reservation fields
+        id: reservations.id,
+        restaurantId: reservations.restaurantId,
+        guestId: reservations.guestId,
+        tableId: reservations.tableId,
+        timeslotId: reservations.timeslotId,
+        date: reservations.date,
+        time: reservations.time,
+        duration: reservations.duration,
+        guests: reservations.guests,
+        status: reservations.status,
+        comments: reservations.comments,
+        source: reservations.source,
+        createdAt: reservations.createdAt,
+        // Guest fields (flattened for easy access)
+        guestName: guests.name,
+        guestPhone: guests.phone,
+        guestEmail: guests.email,
+        guestLanguage: guests.language,
+        // Table fields (flattened for easy access)
+        tableName: tables.name,
+        tableMinGuests: tables.minGuests,
+        tableMaxGuests: tables.maxGuests
+      })
+      .from(reservations)
+      .leftJoin(guests, eq(reservations.guestId, guests.id))
+      .leftJoin(tables, eq(reservations.tableId, tables.id))
+      .where(eq(reservations.id, id));
     return reservation;
   }
 
