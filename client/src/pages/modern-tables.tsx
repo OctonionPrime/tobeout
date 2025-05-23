@@ -392,6 +392,7 @@ function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => 
       minGuests: table?.minGuests || 2,
       maxGuests: table?.maxGuests || 4,
       comments: table?.comments || "",
+      restaurantId: 1, // Add the restaurant ID to satisfy validation
     },
   });
 
