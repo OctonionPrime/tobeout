@@ -167,38 +167,20 @@ What would you like to do?`
           console.log('✅ All data present, creating reservation...');
           // We have all the information, try to create the reservation using internal storage
           try {
-            // Find or create guest
-            let guest = await storage.getGuestByPhone(phone);
+            // Use the dedicated Telegram booking service that bypasses authentication  
+            const { createTelegramReservation } = await import('./telegram-booking');
             
-            if (!guest) {
-              guest = await storage.createGuest({
-                name,
-                phone,
-                email: '',
-                language: 'en'
-              });
-            }
-
-            // Use the smart booking API that follows your table assignment logic
-            const response = await fetch(`http://localhost:5000/api/booking/create`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                date,
-                time,
-                guests,
-                guestName: name,
-                guestPhone: phone,
-                guestEmail: '',
-                comments: context.partialIntent.special_requests || '',
-                source: 'telegram',
-                tableId: 'auto' // Use smart table assignment
-              })
-            });
+            const bookingResult = await createTelegramReservation(
+              restaurantId,
+              date,
+              time,
+              guests,
+              name,
+              phone,
+              context.partialIntent.special_requests || ''
+            );
             
-            const bookingResult = await response.json();
-            
-            if (response.ok && bookingResult.success) {
+            if (bookingResult.success) {
               console.log('✅ Booking successful with smart table assignment:', bookingResult);
 
               // Invalidate cache so dashboard shows new booking immediately
