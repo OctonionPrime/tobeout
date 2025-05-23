@@ -478,10 +478,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ...table,
             status: 'reserved',
             reservation: {
-              guestName: conflictingReservation.guestName || 'Unknown',
+              guestName: conflictingReservation.guestName || 'Reserved',
               guestCount: conflictingReservation.guests,
               timeSlot: `${startTime}-${endTime}`,
-              phone: conflictingReservation.guestPhone,
+              phone: conflictingReservation.guestPhone || '',
               status: conflictingReservation.status
             }
           };
