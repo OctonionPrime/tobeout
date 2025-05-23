@@ -26,6 +26,7 @@ interface ConversationContext {
   lastMessageTimestamp: number;
   restaurantId: number;
   suggestedSlots?: any[];
+  lastRequestedGuests?: number;
 }
 
 const conversationContexts = new Map<number, ConversationContext>();
@@ -180,6 +181,9 @@ What would you like to do?`
               context.partialIntent.special_requests || ''
             );
             
+            // Store guest count for potential alternative suggestions
+            context.lastRequestedGuests = guests;
+            
             if (bookingResult.success) {
               console.log('✅ Booking successful with smart table assignment:', bookingResult);
 
@@ -327,12 +331,12 @@ Would you like me to suggest some alternative dates or times? I'd be happy to he
         bot.sendMessage(chatId, response || 'Thank you for your message. Is there anything else I can help you with?');
       } else {
         // Check if user is asking for availability after being told no tables available
-        const isAvailabilityCheck = text.toLowerCase().includes('availability') || 
-                                   text.toLowerCase().includes('available') ||
-                                   text.toLowerCase().includes('what time') ||
-                                   text.toLowerCase().includes('when') ||
-                                   text.toLowerCase().includes('check') ||
-                                   text.toLowerCase().includes('tomorrow');
+        const isAvailabilityCheck = message.toLowerCase().includes('availability') || 
+                                   message.toLowerCase().includes('available') ||
+                                   message.toLowerCase().includes('what time') ||
+                                   message.toLowerCase().includes('when') ||
+                                   message.toLowerCase().includes('check') ||
+                                   message.toLowerCase().includes('tomorrow');
                                    
         if (isAvailabilityCheck && context.lastRequestedGuests) {
           // User is asking for alternatives after rejection - provide specific times
