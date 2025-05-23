@@ -83,24 +83,34 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
         credentials: "include"
       });
       
-      if (response.ok) {
-        const reservation = await response.json();
-        console.log("Fetched reservation data:", reservation);
-        
-        // The reservation data already includes guest info flattened
-        form.reset({
-          guestName: reservation.guestName || "",
-          guestPhone: reservation.guestPhone || "",
-          guestEmail: reservation.guestEmail || "",
-          date: reservation.date || "",
-          time: reservation.time ? reservation.time.substring(0, 5) : "", // HH:mm
-          guests: reservation.guests || 2,
-          tableId: reservation.tableId ? String(reservation.tableId) : "",
-          specialRequests: reservation.comments || ""
-        });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
+      
+      const reservation = await response.json();
+      console.log("✅ Fetched reservation data:", reservation);
+      
+      if (!reservation) {
+        throw new Error("No reservation data received");
+      }
+      
+      // Format the data for the form
+      const formData = {
+        guestName: reservation.guestName || "",
+        guestPhone: reservation.guestPhone || "",
+        guestEmail: reservation.guestEmail || "",
+        date: reservation.date || "",
+        time: reservation.time ? reservation.time.substring(0, 5) : "",
+        guests: reservation.guests || 2,
+        tableId: reservation.tableId ? String(reservation.tableId) : "",
+        specialRequests: reservation.comments || ""
+      };
+      
+      console.log("📝 Setting form data:", formData);
+      form.reset(formData);
+      
     } catch (error) {
-      console.error("Error fetching reservation:", error);
+      console.error("❌ Error fetching reservation:", error);
       toast({
         title: "Error",
         description: "Failed to load reservation data",
