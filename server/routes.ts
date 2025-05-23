@@ -680,6 +680,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const validatedData = insertReservationSchema.partial().parse(req.body);
+      
+      // Check if smart table assignment is requested for edit
+      if ((!validatedData.tableId || validatedData.tableId === null) && 
+          validatedData.date && validatedData.time && validatedData.guests) {
+        
+        console.log('🎯 Using smart table assignment for reservation edit');
+        
+        // Use our smart booking service to find the best table
+        const bookingResult = await createReservation({
+          restaurantId: restaurant.id,
+          guestId: reservation.guestId,
+          date: validatedData.date,
+          time: validatedData.time,
+          guests: validatedData.guests,
+          comments: validatedData.comments || '',
+          source: validatedData.source || 'manual'
+        });
+
+        if (!bookingResult.success) {
+          return res.status(400).json({ message: bookingResult.message });
+        }
+
+        // Update with smart assignment data
+        validatedData.tableId = bookingResult.reservation.tableId;
+        validatedData.status = 'confirmed'; // Auto-confirm with smart assignment
+        
+        console.log('✅ Smart assignment for edit completed! Table assigned:', bookingResult.reservation.tableId);
+        
+        // Log AI activity for smart assignment
+        const guest = await storage.getGuest(reservation.guestId);
+        await storage.logAiActivity({
+          restaurantId: restaurant.id,
+          type: 'reservation_update',
+          description: `Smart table assignment during edit: Table ${bookingResult.reservation.tableId} assigned for ${guest?.name || 'Guest'}`,
+          data: {
+            reservationId: reservationId,
+            tableId: bookingResult.reservation.tableId,
+            autoAssigned: true
+          }
+        });
+      }
+      
       const updatedReservation = await storage.updateReservation(reservationId, validatedData);
       
       // Log AI activity if status was updated to confirmed/canceled
