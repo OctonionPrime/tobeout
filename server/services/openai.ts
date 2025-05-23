@@ -30,12 +30,12 @@ export async function detectReservationIntentWithContext(
   context: any
 ): Promise<ReservationIntent> {
   try {
-    // Get current date context
-    const today = new Date();
-    const todayString = today.toISOString().split('T')[0];
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowString = tomorrow.toISOString().split('T')[0];
+    // Get current date context in Moscow timezone
+    const { getMoscowTimeContext } = await import('../utils/timezone');
+    const timeContext = getMoscowTimeContext();
+    
+    const todayString = timeContext.todayDate;
+    const tomorrowString = timeContext.tomorrowDate;
 
     // Format existing context for better AI understanding
     const existingInfo = Object.entries(context.partialIntent || {})
@@ -44,6 +44,13 @@ export async function detectReservationIntentWithContext(
       .join(', ');
 
     const systemPrompt = `You are Sofia, a professional restaurant hostess analyzing guest messages for booking information.
+
+IMPORTANT TIMEZONE INFORMATION:
+- Restaurant operates in Moscow timezone (Europe/Moscow)
+- Current Moscow date: ${todayString} (THIS IS TODAY)
+- Tomorrow's date: ${tomorrowString}
+- When guest says "today", use: ${todayString}
+- When guest says "tomorrow", use: ${tomorrowString}
 
 CURRENT CONVERSATION CONTEXT:
 - Recent messages: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
