@@ -198,8 +198,19 @@ function calculateConflictScore(
   let conflictScore = 0;
   const requestedDateTime = parseISO(`${date}T${requestedTime}`);
   
-  // Add points for nearby reservations (within 4 hours)
-  tableReservations.forEach(reservation => {
+  // Only count confirmed/created reservations (ignore canceled ones)
+  const activeReservations = tableReservations.filter(r => 
+    ['confirmed', 'created'].includes(r.status || '')
+  );
+  
+  // If table has NO active reservations, give it perfect score (0)
+  if (activeReservations.length === 0) {
+    console.log(`🎯 Table ${tableId}: COMPLETELY FREE (no active reservations)`);
+    return 0;
+  }
+  
+  // Add points for nearby active reservations (within 4 hours)
+  activeReservations.forEach(reservation => {
     if (!reservation.time) return;
     
     const resStart = parseISO(`${reservation.date}T${reservation.time}`);
@@ -211,6 +222,7 @@ function calculateConflictScore(
     }
   });
   
+  console.log(`📊 Table ${tableId}: conflict score ${conflictScore} (${activeReservations.length} active reservations)`);
   return conflictScore;
 }
 
