@@ -686,6 +686,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const newReservation = bookingResult.reservation;
         console.log('✅ Smart assignment completed! Table assigned:', newReservation.tableId);
         
+        // Invalidate cache after creating reservation
+        CacheInvalidation.onReservationChange(restaurant.id, req.body.date);
+        
         // Log AI activity if source is an AI channel
         if (['telegram', 'web_chat', 'facebook'].includes(req.body.source || 'manual')) {
           await storage.logAiActivity({
