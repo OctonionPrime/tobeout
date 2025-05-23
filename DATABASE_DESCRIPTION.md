@@ -1,8 +1,12 @@
 # Database Schema Description - ToBeOut Restaurant Booking System
 
-This document describes the comprehensive database schema for the ToBeOut restaurant booking system with AI-powered conversation management and multi-channel integration.
+This document describes the comprehensive database schema for the ToBeOut restaurant booking system with advanced AI-powered conversation management, real-time availability engine, and sophisticated multi-channel integration capabilities.
 
-## Enhanced Core Tables
+**System Version:** 2.1.0-alpha  
+**Last Updated:** May 23, 2025  
+**AI Features:** Sofia AI Hostess with GPT-4o Integration
+
+## Enhanced Core Tables with AI Intelligence
 
 ### Users
 - `id`: Primary key
@@ -32,20 +36,22 @@ This document describes the comprehensive database schema for the ToBeOut restau
 - `createdAt`: Restaurant creation timestamp
 - `updatedAt`: Last modification timestamp
 
-### Tables
+### Tables (Enhanced with AI Optimization)
 - `id`: Primary key
 - `restaurantId`: Foreign key to restaurants
 - `name`: Table identifier (e.g., "Table 1", "VIP Section A")
-- `capacity`: Maximum number of guests
-- `minCapacity`: Minimum number of guests (for optimization)
-- `status`: Current status (available, occupied, reserved, maintenance, cleaned)
-- `position`: JSON object with table location/coordinates
-- `features`: JSON array with table features (window, private, accessible)
-- `priority`: Table assignment priority (1-10)
-- `shape`: Table shape (round, square, rectangular)
-- `isActive`: Boolean for table availability
-- `lastCleaned`: Timestamp of last cleaning
-- `notes`: Staff notes about table condition
+- `minGuests`: Minimum capacity for optimization (AI uses this for smart assignment)
+- `maxGuests`: Maximum capacity (AI considers this for party size matching)
+- `status`: Real-time status (free, occupied, reserved, maintenance) - AI checks this
+- `position`: JSON object with table location/coordinates for visual management
+- `features`: JSON array with table features (window, private, accessible, quiet, business-friendly)
+- `priority`: AI assignment priority (1-10) - higher priority tables selected first
+- `shape`: Table shape (round, square, rectangular) for layout optimization
+- `isActive`: Boolean for table availability in AI calculations
+- `lastCleaned`: Timestamp of last cleaning for hygiene tracking
+- `notes`: Staff notes about table condition and special considerations
+- `aiScore`: Dynamic AI-calculated score based on utilization and guest satisfaction
+- `preferredFor`: JSON array of occasions this table is optimal for (business, romantic, family)
 - `createdAt`: Table creation timestamp
 - `updatedAt`: Last modification timestamp
 
@@ -64,53 +70,62 @@ This document describes the comprehensive database schema for the ToBeOut restau
 - `createdAt`: Slot creation timestamp
 - `updatedAt`: Last modification timestamp
 
-### Guests
+### Guests (AI-Enhanced Profiling)
 - `id`: Primary key
 - `restaurantId`: Foreign key to restaurants
-- `name`: Guest full name
-- `phone`: Contact phone number (unique per restaurant)
-- `email`: Guest email (optional)
-- `preferences`: JSON object with dietary restrictions, seating preferences
-- `allergies`: JSON array with allergy information
-- `visitCount`: Number of previous visits
-- `totalSpent`: Total amount spent (for VIP status)
-- `lastVisit`: Date of last visit
-- `averagePartySize`: Average number of guests in bookings
-- `preferredTimes`: JSON array with preferred dining times
-- `blacklisted`: Boolean for banned guests
-- `notes`: Staff notes about guest
-- `loyaltyPoints`: Accumulated loyalty points
-- `vipStatus`: VIP tier level
-- `source`: How guest was acquired (telegram, web, referral)
+- `name`: Guest full name (AI uses for personalized conversations)
+- `phone`: Contact phone number (unique per restaurant, formatted by AI)
+- `email`: Guest email (optional, for confirmations)
+- `preferences`: JSON object with dietary restrictions, seating preferences (AI learns and applies)
+- `allergies`: JSON array with allergy information (AI flags for safety)
+- `visitCount`: Number of previous visits (AI considers for VIP treatment)
+- `totalSpent`: Total amount spent (AI uses for revenue optimization)
+- `lastVisit`: Date of last visit (AI references for personalization)
+- `averagePartySize`: Average number of guests in bookings (AI predicts future needs)
+- `preferredTimes`: JSON array with preferred dining times (AI suggests matching slots)
+- `conversationStyle`: AI-detected communication preferences (formal, casual, brief)
+- `satisfactionScore`: AI-calculated satisfaction rating based on interactions
+- `blacklisted`: Boolean for banned guests (AI blocks booking attempts)
+- `notes`: Staff notes about guest (AI can reference for special treatment)
+- `loyaltyPoints`: Accumulated loyalty points (AI applies rewards)
+- `vipStatus`: VIP tier level (bronze, silver, gold, platinum)
+- `source`: How guest was acquired (telegram, web, whatsapp, ai_assistant, referral)
+- `aiPersonalityProfile`: JSON object with AI-detected personality traits
+- `communicationHistory`: JSON array tracking successful conversation patterns
 - `createdAt`: Guest record creation
 - `updatedAt`: Last modification timestamp
 
-### Reservations
+### Reservations (AI-Optimized Booking)
 - `id`: Primary key
 - `restaurantId`: Foreign key to restaurants
 - `guestId`: Foreign key to guests
-- `tableId`: Foreign key to tables (nullable for flexible assignment)
+- `tableId`: Foreign key to tables (AI-assigned based on optimization algorithm)
 - `timeslotId`: Foreign key to timeslots
-- `date`: Reservation date
-- `time`: Reservation time (HH:MM format)
-- `guests`: Number of guests
-- `status`: Reservation status (pending, confirmed, cancelled, completed, no_show, seated)
-- `specialRequests`: Text field for special requests
-- `occasionType`: Type of occasion (birthday, anniversary, business, casual)
+- `date`: Reservation date (Moscow timezone for accurate handling)
+- `time`: Reservation time (24-hour format: 10:00, 19:00, etc.)
+- `guests`: Number of guests (AI matches to optimal table capacity)
+- `duration`: Expected dining duration in minutes (default 90, AI can adjust)
+- `status`: Reservation status (created, confirmed, cancelled, completed, no_show, seated)
+- `specialRequests`: Text field for special requests (AI extracts and flags)
+- `occasionType`: Type of occasion (birthday, anniversary, business, casual, date)
 - `source`: Booking source (web, telegram, whatsapp, phone, walk_in, ai_assistant)
-- `confirmation_code`: Unique confirmation code
+- `confirmation_code`: Unique confirmation code (auto-generated)
 - `arrival_time`: Actual arrival time
 - `departure_time`: Actual departure time
-- `no_show_reason`: Reason for no-show
-- `cancellation_reason`: Reason for cancellation
+- `no_show_reason`: Reason for no-show (AI can analyze patterns)
+- `cancellation_reason`: Reason for cancellation (AI learns from this)
 - `rating`: Guest rating of experience (1-5)
-- `feedback`: Guest feedback text
+- `feedback`: Guest feedback text (AI analyzes sentiment)
 - `total_amount`: Bill total (if available)
 - `deposit_required`: Boolean for deposit requirement
 - `deposit_amount`: Required deposit amount
 - `deposit_paid`: Boolean for deposit payment status
-- `reminderSent`: JSON object tracking sent reminders
-- `conversation_id`: Link to AI conversation thread
+- `reminderSent`: JSON object tracking sent reminders (AI manages this)
+- `conversation_id`: Link to AI conversation thread (tracks full interaction)
+- `aiConfidence`: AI confidence score for this booking (0-1)
+- `alternativesOffered`: Number of alternatives AI suggested before this booking
+- `bookingComplexity`: AI-rated complexity of the booking conversation
+- `guestSentiment`: AI-detected guest sentiment during booking (positive, neutral, negative)
 - `createdAt`: Booking creation timestamp
 - `updatedAt`: Last modification timestamp
 
@@ -130,21 +145,28 @@ This document describes the comprehensive database schema for the ToBeOut restau
 - `createdAt`: Setup timestamp
 - `updatedAt`: Last modification timestamp
 
-### AI Activities
+### AI Activities (Enhanced Performance Tracking)
 - `id`: Primary key
 - `restaurantId`: Foreign key to restaurants
-- `type`: Activity type (booking_attempt, conversation, optimization, sentiment_analysis)
-- `description`: Activity description
-- `metadata`: JSON object with additional data
-- `conversation_id`: Link to conversation thread
+- `type`: Activity type (booking_attempt, conversation, optimization, sentiment_analysis, frustration_detection, alternative_suggestion)
+- `description`: Detailed activity description
+- `metadata`: JSON object with comprehensive interaction data
+- `conversation_id`: Link to conversation thread (tracks full dialogue)
 - `guest_id`: Foreign key to guests (if applicable)
 - `success`: Boolean indicating success/failure
 - `confidence_score`: AI confidence level (0-1)
 - `processing_time`: Time taken for AI processing (ms)
-- `model_version`: AI model version used
-- `input_tokens`: Number of input tokens used
+- `model_version`: AI model version used (currently gpt-4o)
+- `input_tokens`: Number of input tokens used (for cost tracking)
 - `output_tokens`: Number of output tokens generated
-- `cost`: Estimated cost of AI operation
+- `cost`: Estimated cost of AI operation (USD)
+- `conversationStage`: Stage when activity occurred (greeting, collecting, confirming, alternatives)
+- `userFrustrationLevel`: Detected user frustration (0-5 scale)
+- `contextPreserved`: Boolean indicating if conversation context was maintained
+- `alternativesGenerated`: Number of alternatives suggested
+- `bookingCompleted`: Boolean if activity resulted in successful booking
+- `humanHandoffRequired`: Boolean if escalation to human was needed
+- `responseQuality`: AI-rated quality of response (1-5)
 - `createdAt`: Activity timestamp
 
 ### Conversation Threads (New)
