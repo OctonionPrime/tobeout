@@ -60,8 +60,12 @@ export async function findAvailableTables(
   for (const table of suitableTables) {
     const tableReservations = existingReservations.filter(res => res.tableId === table.id);
     
-    // Check for DIRECT conflict at exact requested time
-    const hasDirectConflict = tableReservations.some(res => {
+    // Check for DIRECT conflict at exact requested time (only confirmed/created reservations)
+    const activeReservations = tableReservations.filter(r => 
+      ['confirmed', 'created'].includes(r.status || '')
+    );
+    
+    const hasDirectConflict = activeReservations.some(res => {
       if (!res.time) return false;
       const resStart = parseISO(`${res.date}T${res.time}`);
       const resEnd = addMinutes(resStart, res.duration || 120);
