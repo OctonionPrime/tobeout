@@ -1,609 +1,255 @@
-# ToBeOut Restaurant Booking System - Database Architecture with AI Integration
-
-**Last Updated:** January 23, 2025 - 5:24 AM  
-**Version:** v2.0 - AI-Powered Intelligent Assistant Complete  
-**Database:** PostgreSQL with Drizzle ORM
-**AI:** OpenAI GPT-4o Integration with Telegram Bot
-
----
-
-## 🏗️ **System Architecture Overview**
-
-### **Technology Stack**
-- **Database:** PostgreSQL (Neon serverless)
-- **ORM:** Drizzle ORM with TypeScript
-- **Backend:** Node.js + Express.js + TypeScript
-- **Frontend:** React + TypeScript + TanStack Query
-- **Authentication:** Passport.js with session management
-- **Validation:** Zod schemas
-
-### **Connection Flow**
-```
-Frontend (React) 
-    ↓ HTTP API calls
-Backend (Express.js)
-    ↓ Drizzle ORM
-PostgreSQL Database
-```
-
----
-
-## 📊 **Database Schema Design**
-
-### **✅ ENTERPRISE PERFORMANCE OPTIMIZATIONS COMPLETED**
-- **Smart Caching Layer**: 30-second memory cache reduces database load by 70-80%
-- **Automatic Cache Invalidation**: Instant updates when reservations change
-- **High-Traffic Scalability**: Can now handle 500-1000 concurrent users
-- **Zero Breaking Changes**: All existing functionality preserved perfectly
-- **Intelligent Table Assignment**: Smart conflict resolution with 1-30 hour availability windows
-- **Real-Time Synchronization**: Live updates across all interfaces
-- **Enterprise-Grade Architecture**: Production-ready for restaurant chains
-
-### **Core Entity Relationships**
-```
-Users (1) ←→ (1) Restaurants
-    ↓
-Restaurants (1) ←→ (n) Tables ✅ WORKING (3 tables configured)
-    ↓
-Restaurants (1) ←→ (n) Timeslots ✅ WORKING (10:00-22:00 daily)
-    ↓
-Restaurants (1) ←→ (n) Guests ✅ WORKING (Real data: Teg, Oleg, Pavel, Misha)
-    ↓
-Guests (1) ←→ (n) Reservations ←→ (1) Tables ✅ WORKING (Date-specific filtering)
-    ↓                            ↓
-Reservations ←→ (0..1) Timeslots ✅ WORKING (90-minute duration conflicts)
-    ↓
-Restaurants (1) ←→ (n) IntegrationSettings
-    ↓
-Restaurants (1) ←→ (n) AiActivities
-```
-
----
-
-## 🗄️ **Detailed Table Schemas**
-
-### **1. Users Table**
-```sql
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    role user_role NOT NULL, -- 'admin', 'restaurant', 'staff'
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** System user accounts (restaurant owners, staff, admins)  
-**Frontend Connection:** Login/authentication, user profile management  
-**API Endpoints:** `/api/auth/login`, `/api/auth/me`, `/api/auth/register`
-
-### **2. Restaurants Table**
-```sql
-CREATE TABLE restaurants (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    address TEXT,
-    phone VARCHAR(50),
-    email VARCHAR(255),
-    website VARCHAR(255),
-    cuisine_type VARCHAR(100),
-    price_range VARCHAR(50),
-    capacity INTEGER DEFAULT 40,
-    avg_reservation_duration INTEGER DEFAULT 120, -- minutes
-    opening_hours JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** Restaurant profile and business information  
-**Frontend Connection:** Restaurant settings, profile management  
-**API Endpoints:** `/api/restaurants/profile`, `/api/restaurants/update`
-
-### **3. Tables Table**
-```sql
-CREATE TABLE tables (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    name VARCHAR(100) NOT NULL,
-    min_guests INTEGER NOT NULL,
-    max_guests INTEGER NOT NULL,
-    status table_status DEFAULT 'free', -- 'free', 'occupied', 'reserved', 'unavailable'
-    position_x REAL,
-    position_y REAL,
-    shape VARCHAR(50) DEFAULT 'round',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** Physical table management and layout  
-**Frontend Connection:** Table management interface (Grid/List/Floor Plan views)  
-**API Endpoints:** `/api/tables`, `/api/tables/create`, `/api/tables/update`, `/api/tables/delete`
-
-### **4. Timeslots Table**
-```sql
-CREATE TABLE timeslots (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    table_id INTEGER REFERENCES tables(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
-    time TIME NOT NULL,
-    duration INTEGER DEFAULT 120, -- minutes
-    status timeslot_status DEFAULT 'free', -- 'free', 'pending', 'occupied'
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** Time-based availability management  
-**Frontend Connection:** Calendar views, availability checking  
-**API Endpoints:** `/api/timeslots/stats`, `/api/timeslots/generate`
-
-### **5. Guests Table**
-```sql
-CREATE TABLE guests (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    phone VARCHAR(50),
-    email VARCHAR(255),
-    language VARCHAR(10) DEFAULT 'en',
-    notes TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** Customer information and contact details  
-**Frontend Connection:** Guest management interface, search functionality  
-**API Endpoints:** `/api/guests`, `/api/guests/create`, `/api/guests/update`
-
-### **6. Reservations Table**
-```sql
-CREATE TABLE reservations (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    guest_id INTEGER REFERENCES guests(id) ON DELETE CASCADE,
-    table_id INTEGER REFERENCES tables(id) ON DELETE SET NULL,
-    timeslot_id INTEGER REFERENCES timeslots(id) ON DELETE SET NULL,
-    date DATE NOT NULL,
-    time TIME NOT NULL,
-    duration INTEGER,
-    guests INTEGER NOT NULL,
-    status reservation_status DEFAULT 'created', -- 'created', 'confirmed', 'canceled', 'completed', 'archived'
-    comments TEXT,
-    source VARCHAR(100),
-    confirmation_1h BOOLEAN DEFAULT FALSE,
-    confirmation_2h BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** Core booking records with full guest and table relationships  
-**Frontend Connection:** Reservation management interface, booking workflow  
-**API Endpoints:** `/api/reservations`, `/api/booking/create`, `/api/booking/cancel/:id`
-
-### **7. Integration Settings Table**
-```sql
-CREATE TABLE integration_settings (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    type VARCHAR(100) NOT NULL, -- 'telegram', 'whatsapp', 'openai', etc.
-    settings JSONB NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** External service configurations (Telegram, WhatsApp, AI)  
-**Frontend Connection:** Integrations settings page  
-**API Endpoints:** `/api/integrations/telegram`, `/api/integrations/settings`
-
-### **8. AI Activities Table**
-```sql
-CREATE TABLE ai_activities (
-    id SERIAL PRIMARY KEY,
-    restaurant_id INTEGER REFERENCES restaurants(id) ON DELETE CASCADE,
-    type VARCHAR(100) NOT NULL, -- 'reservation_intent', 'response_generated', etc.
-    message TEXT,
-    response TEXT,
-    confidence REAL,
-    metadata JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-**Purpose:** AI interaction logging and analytics  
-**Frontend Connection:** AI Assistant dashboard, activity monitoring  
-**API Endpoints:** `/api/ai/activities`
-
----
-
-## 🔄 **Frontend-Backend Data Flow**
-
-### **Authentication Flow**
-```typescript
-// Frontend: Login request
-const response = await fetch('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ email, password }),
-    credentials: 'include'
-});
-
-// Backend: Session validation
-app.use(session({
-    store: new (require('connect-pg-simple')(session))({
-        pool: postgresPool
-    })
-}));
-```
-
-### **Reservation Management Flow**
-```typescript
-// Frontend: Fetch reservations with guest data
-const { data: reservations } = useQuery({
-    queryKey: ["/api/reservations"],
-    queryFn: async () => {
-        const response = await fetch("/api/reservations", { 
-            credentials: "include" 
-        });
-        return response.json();
-    }
-});
-
-// Backend: Join query with guest and table data
-async getReservations(restaurantId: number): Promise<any[]> {
-    const reservationsWithDetails = await db
-        .select({
-            // Reservation fields
-            id: reservations.id,
-            date: reservations.date,
-            time: reservations.time,
-            guests: reservations.guests,
-            status: reservations.status,
-            // Guest fields
-            guest: {
-                id: guests.id,
-                name: guests.name,
-                phone: guests.phone,
-                email: guests.email
-            },
-            // Table fields
-            table: {
-                id: tables.id,
-                name: tables.name,
-                minGuests: tables.minGuests,
-                maxGuests: tables.maxGuests
-            }
-        })
-        .from(reservations)
-        .leftJoin(guests, eq(reservations.guestId, guests.id))
-        .leftJoin(tables, eq(reservations.tableId, tables.id))
-        .where(eq(reservations.restaurantId, restaurantId));
-}
-```
-
-### **Real-Time Data Synchronization**
-```typescript
-// Frontend: Cache invalidation after mutations
-const mutation = useMutation({
-    mutationFn: async (data) => apiRequest('/api/reservations', {
-        method: 'POST',
-        body: data
-    }),
-    onSuccess: () => {
-        queryClient.invalidateQueries(['/api/reservations']);
-        queryClient.invalidateQueries(['/api/dashboard/stats']);
-    }
-});
-```
-
----
-
-## 🔍 **Query Patterns and Performance**
-
-### **Complex Joins for Reservation Display**
-```sql
--- Current optimized query
-SELECT 
-    r.id, r.date, r.time, r.guests, r.status, r.comments,
-    g.name as guest_name, g.phone as guest_phone, g.email as guest_email,
-    t.name as table_name, t.min_guests, t.max_guests
-FROM reservations r
-LEFT JOIN guests g ON r.guest_id = g.id
-LEFT JOIN tables t ON r.table_id = t.id
-WHERE r.restaurant_id = $1
-ORDER BY r.date, r.time;
-```
-
-### **Availability Checking Algorithm**
-```sql
--- Check table availability for specific date/time
-SELECT t.id, t.name, t.min_guests, t.max_guests
-FROM tables t
-WHERE t.restaurant_id = $1
-AND t.status = 'free'
-AND t.min_guests <= $2  -- requested guest count
-AND t.max_guests >= $2
-AND NOT EXISTS (
-    SELECT 1 FROM reservations r
-    WHERE r.table_id = t.id
-    AND r.date = $3  -- requested date
-    AND r.time = $4  -- requested time
-    AND r.status IN ('confirmed', 'created')
-);
-```
-
-### **Statistics Aggregation**
-```sql
--- Dashboard statistics query
-SELECT 
-    COUNT(*) FILTER (WHERE date = CURRENT_DATE) as today_reservations,
-    COUNT(*) FILTER (WHERE status = 'confirmed') as confirmed_reservations,
-    COUNT(*) FILTER (WHERE status = 'created') as pending_reservations,
-    SUM(guests) as total_guests
-FROM reservations 
-WHERE restaurant_id = $1;
-```
-
----
-
-## 📡 **API Layer Architecture**
-
-### **RESTful Endpoint Structure**
-```typescript
-// Authentication endpoints
-POST   /api/auth/login           // User authentication
-GET    /api/auth/me              // Current user profile
-POST   /api/auth/logout          // Session termination
-
-// Restaurant management
-GET    /api/restaurants/profile  // Restaurant details
-PUT    /api/restaurants/profile  // Update restaurant info
-
-// Table management
-GET    /api/tables               // List all tables
-POST   /api/tables               // Create new table
-PUT    /api/tables/:id           // Update table
-DELETE /api/tables/:id           // Delete table
-
-// Guest management
-GET    /api/guests               // List all guests
-POST   /api/guests               // Create guest
-PUT    /api/guests/:id           // Update guest
-
-// Reservation management
-GET    /api/reservations         // List reservations (with joins)
-GET    /api/reservations/:id     // Get single reservation (with guest data)
-POST   /api/booking/create       // Create reservation
-PATCH  /api/reservations/:id     // Update reservation
-POST   /api/booking/cancel/:id   // Cancel reservation
-GET    /api/booking/availability // Check availability
-
-// Dashboard and analytics
-GET    /api/dashboard/stats      // Restaurant statistics
-GET    /api/dashboard/upcoming   // Upcoming reservations
-GET    /api/ai/activities        // AI interaction logs
-```
-
-### **Data Validation Layer**
-```typescript
-// Zod schemas for type safety
-export const insertReservationSchema = createInsertSchema(reservations).omit({ 
-    id: true, 
-    createdAt: true 
-});
-
-// API endpoint with validation
-app.post('/api/booking/create', async (req, res) => {
-    try {
-        const validatedData = insertReservationSchema.parse(req.body);
-        const reservation = await storage.createReservation(validatedData);
-        res.json(reservation);
-    } catch (error) {
-        if (error instanceof z.ZodError) {
-            return res.status(400).json({ message: "Validation error", errors: error.errors });
-        }
-        res.status(500).json({ message: "Internal server error" });
-    }
-});
-```
-
----
-
-## 🔐 **Security and Data Integrity**
-
-### **Authentication and Authorization**
-- **Session-based authentication** using PostgreSQL session store
-- **Role-based access control** (admin, restaurant, staff)
-- **Restaurant data isolation** - users only see their own restaurant data
-- **SQL injection prevention** through parameterized queries (Drizzle ORM)
-
-### **Data Consistency Rules**
-```sql
--- Foreign key constraints ensure referential integrity
-ALTER TABLE reservations ADD CONSTRAINT fk_restaurant
-    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE;
-
-ALTER TABLE reservations ADD CONSTRAINT fk_guest
-    FOREIGN KEY (guest_id) REFERENCES guests(id) ON DELETE CASCADE;
-
--- Check constraints for business rules
-ALTER TABLE tables ADD CONSTRAINT check_guest_capacity
-    CHECK (min_guests <= max_guests AND min_guests > 0);
-
-ALTER TABLE reservations ADD CONSTRAINT check_guest_count
-    CHECK (guests > 0);
-```
-
-### **Transaction Management**
-```typescript
-// Atomic reservation creation
-await db.transaction(async (tx) => {
-    // Create guest if doesn't exist
-    const guest = await tx.insert(guests).values(guestData).returning();
-    
-    // Create reservation
-    const reservation = await tx.insert(reservations).values({
-        ...reservationData,
-        guestId: guest[0].id
-    }).returning();
-    
-    // Update table status
-    await tx.update(tables)
-        .set({ status: 'reserved' })
-        .where(eq(tables.id, reservationData.tableId));
-});
-```
-
----
-
-## 📈 **Performance Optimizations**
-
-### **Database Indexes**
-```sql
--- Indexes for common query patterns
-CREATE INDEX idx_reservations_restaurant_date ON reservations(restaurant_id, date);
-CREATE INDEX idx_reservations_status ON reservations(status);
-CREATE INDEX idx_guests_restaurant_phone ON guests(restaurant_id, phone);
-CREATE INDEX idx_tables_restaurant_status ON tables(restaurant_id, status);
-```
-
-### **Query Optimization Strategies**
-1. **Eager Loading:** Join related data in single queries
-2. **Selective Fields:** Only select required columns
-3. **Proper Indexing:** Database indexes on frequently queried columns
-4. **Connection Pooling:** Neon serverless handles connection management
-5. **Query Caching:** TanStack Query provides client-side caching
-
-### **Frontend Performance**
-```typescript
-// Optimized data fetching with React Query
-const { data: reservations, isLoading } = useQuery({
-    queryKey: ["/api/reservations"],
-    staleTime: 30000,  // 30 seconds cache
-    refetchOnWindowFocus: false
-});
-
-// Optimistic updates for better UX
-const mutation = useMutation({
-    mutationFn: updateReservation,
-    onMutate: async (newData) => {
-        await queryClient.cancelQueries(['/api/reservations']);
-        const previousData = queryClient.getQueryData(['/api/reservations']);
-        queryClient.setQueryData(['/api/reservations'], (old) => 
-            old?.map(item => item.id === newData.id ? { ...item, ...newData } : item)
-        );
-        return { previousData };
-    }
-});
-```
-
----
-
-## 🔄 **Data Migration and Versioning**
-
-### **Schema Evolution**
-```typescript
-// Drizzle migration example
-CREATE TABLE IF NOT EXISTS "ai_activities" (
-    "id" serial PRIMARY KEY NOT NULL,
-    "restaurant_id" integer NOT NULL,
-    "type" varchar(100) NOT NULL,
-    "message" text,
-    "response" text,
-    "confidence" real,
-    "metadata" jsonb,
-    "created_at" timestamp DEFAULT now()
-);
-
-ALTER TABLE "ai_activities" ADD CONSTRAINT "ai_activities_restaurant_id_restaurants_id_fk" 
-FOREIGN KEY ("restaurant_id") REFERENCES "restaurants"("id") ON DELETE cascade;
-```
-
-### **Database Commands**
-```bash
-# Push schema changes to database
-npm run db:push
-
-# Generate migration files
-npm run db:generate
-
-# View database schema
-npm run db:studio
-```
-
----
-
-## 🚀 **Deployment and Environment Configuration**
-
-### **Database Connection**
-```typescript
-// Production configuration
-export const pool = new Pool({ 
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-export const db = drizzle({ client: pool, schema });
-```
-
-### **Environment Variables**
-```bash
-DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
-PGHOST=ep-blue-river-a6vzt37p.us-west-2.aws.neon.tech
-PGDATABASE=neondb
-PGUSER=neondb_owner
-PGPASSWORD=npg_ZJiqSN7Utcj4
-PGPORT=5432
-```
-
----
-
-## 📊 **Current System Statistics**
-
-### **Database Health**
-- **Tables:** 8 core entities with proper relationships
-- **Indexes:** Optimized for common query patterns
-- **Constraints:** Full referential integrity maintained
-- **Performance:** Sub-200ms query response times
-- **Storage:** Serverless PostgreSQL with automatic scaling
-
-### **Data Integrity Status**
-- ✅ **Zero Data Loss:** All operations properly persisted
-- ✅ **Referential Integrity:** Foreign key constraints enforced
-- ✅ **Type Safety:** Zod validation on all API endpoints
-- ✅ **Transaction Safety:** Critical operations use database transactions
-- ✅ **Real Guest Data:** Pavel, Teg, Oleg, Misha properly stored and displayed
-
----
-
-## 🔍 **Troubleshooting and Diagnostics**
-
-### **Common Query Patterns**
-```sql
--- Debug reservation display issues
-SELECT r.*, g.name, g.phone, t.name as table_name
-FROM reservations r
-LEFT JOIN guests g ON r.guest_id = g.id
-LEFT JOIN tables t ON r.table_id = t.id
-WHERE r.restaurant_id = 1;
-
--- Check data consistency
-SELECT 
-    (SELECT COUNT(*) FROM reservations WHERE guest_id NOT IN (SELECT id FROM guests)) as orphaned_reservations,
-    (SELECT COUNT(*) FROM reservations WHERE table_id NOT IN (SELECT id FROM tables)) as invalid_tables;
-```
-
-### **Performance Monitoring**
-```sql
--- Query performance analysis
-EXPLAIN ANALYZE SELECT r.*, g.name, g.phone 
-FROM reservations r 
-LEFT JOIN guests g ON r.guest_id = g.id 
-WHERE r.restaurant_id = 1 
-ORDER BY r.date, r.time;
-```
-
----
-
-**This database architecture provides a robust, scalable foundation for the ToBeOut restaurant booking system with proper data relationships, performance optimization, and maintainable code structure.**
+# Database Schema Description - ToBeOut Restaurant Booking System
+
+This document describes the comprehensive database schema for the ToBeOut restaurant booking system with AI-powered conversation management and multi-channel integration.
+
+## Enhanced Core Tables
+
+### Users
+- `id`: Primary key
+- `email`: User email (unique)
+- `password`: Hashed password (bcrypt)
+- `role`: User role (admin, manager, staff)
+- `name`: Full name
+- `isActive`: Account status
+- `lastLogin`: Last authentication timestamp
+- `createdAt`: Account creation timestamp
+
+### Restaurants
+- `id`: Primary key
+- `name`: Restaurant name
+- `description`: Restaurant description
+- `address`: Physical address
+- `phone`: Contact phone number
+- `email`: Contact email
+- `cuisine`: Type of cuisine
+- `openingHours`: JSON object with detailed operating hours
+- `userId`: Foreign key to users table (owner)
+- `settings`: JSON object with restaurant configuration
+- `timezone`: Restaurant timezone
+- `averageServiceTime`: Average dining duration (minutes)
+- `maxAdvanceBooking`: Maximum days in advance for bookings
+- `isActive`: Restaurant operational status
+- `createdAt`: Restaurant creation timestamp
+- `updatedAt`: Last modification timestamp
+
+### Tables
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `name`: Table identifier (e.g., "Table 1", "VIP Section A")
+- `capacity`: Maximum number of guests
+- `minCapacity`: Minimum number of guests (for optimization)
+- `status`: Current status (available, occupied, reserved, maintenance, cleaned)
+- `position`: JSON object with table location/coordinates
+- `features`: JSON array with table features (window, private, accessible)
+- `priority`: Table assignment priority (1-10)
+- `shape`: Table shape (round, square, rectangular)
+- `isActive`: Boolean for table availability
+- `lastCleaned`: Timestamp of last cleaning
+- `notes`: Staff notes about table condition
+- `createdAt`: Table creation timestamp
+- `updatedAt`: Last modification timestamp
+
+### Timeslots
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `date`: Reservation date
+- `time`: Time slot (HH:MM format)
+- `isAvailable`: Boolean availability status
+- `maxCapacity`: Maximum total guests for this time slot
+- `currentBookings`: Current number of bookings
+- `isActive`: Boolean for slot availability
+- `staffLevel`: Required staff level for this slot
+- `specialEvent`: Special event or promotion
+- `pricing`: JSON object with dynamic pricing
+- `createdAt`: Slot creation timestamp
+- `updatedAt`: Last modification timestamp
+
+### Guests
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `name`: Guest full name
+- `phone`: Contact phone number (unique per restaurant)
+- `email`: Guest email (optional)
+- `preferences`: JSON object with dietary restrictions, seating preferences
+- `allergies`: JSON array with allergy information
+- `visitCount`: Number of previous visits
+- `totalSpent`: Total amount spent (for VIP status)
+- `lastVisit`: Date of last visit
+- `averagePartySize`: Average number of guests in bookings
+- `preferredTimes`: JSON array with preferred dining times
+- `blacklisted`: Boolean for banned guests
+- `notes`: Staff notes about guest
+- `loyaltyPoints`: Accumulated loyalty points
+- `vipStatus`: VIP tier level
+- `source`: How guest was acquired (telegram, web, referral)
+- `createdAt`: Guest record creation
+- `updatedAt`: Last modification timestamp
+
+### Reservations
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `guestId`: Foreign key to guests
+- `tableId`: Foreign key to tables (nullable for flexible assignment)
+- `timeslotId`: Foreign key to timeslots
+- `date`: Reservation date
+- `time`: Reservation time (HH:MM format)
+- `guests`: Number of guests
+- `status`: Reservation status (pending, confirmed, cancelled, completed, no_show, seated)
+- `specialRequests`: Text field for special requests
+- `occasionType`: Type of occasion (birthday, anniversary, business, casual)
+- `source`: Booking source (web, telegram, whatsapp, phone, walk_in, ai_assistant)
+- `confirmation_code`: Unique confirmation code
+- `arrival_time`: Actual arrival time
+- `departure_time`: Actual departure time
+- `no_show_reason`: Reason for no-show
+- `cancellation_reason`: Reason for cancellation
+- `rating`: Guest rating of experience (1-5)
+- `feedback`: Guest feedback text
+- `total_amount`: Bill total (if available)
+- `deposit_required`: Boolean for deposit requirement
+- `deposit_amount`: Required deposit amount
+- `deposit_paid`: Boolean for deposit payment status
+- `reminderSent`: JSON object tracking sent reminders
+- `conversation_id`: Link to AI conversation thread
+- `createdAt`: Booking creation timestamp
+- `updatedAt`: Last modification timestamp
+
+### Integration Settings
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `type`: Integration type (telegram, whatsapp, voice, facebook, google)
+- `settings`: JSON object with integration configuration
+- `credentials`: Encrypted credentials for the integration
+- `webhook_url`: Webhook URL for real-time updates
+- `isActive`: Boolean for integration status
+- `lastSync`: Last synchronization timestamp
+- `errorCount`: Number of recent errors
+- `lastError`: Last error message
+- `rateLimits`: JSON object with rate limiting configuration
+- `features`: JSON array with enabled features
+- `createdAt`: Setup timestamp
+- `updatedAt`: Last modification timestamp
+
+### AI Activities
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `type`: Activity type (booking_attempt, conversation, optimization, sentiment_analysis)
+- `description`: Activity description
+- `metadata`: JSON object with additional data
+- `conversation_id`: Link to conversation thread
+- `guest_id`: Foreign key to guests (if applicable)
+- `success`: Boolean indicating success/failure
+- `confidence_score`: AI confidence level (0-1)
+- `processing_time`: Time taken for AI processing (ms)
+- `model_version`: AI model version used
+- `input_tokens`: Number of input tokens used
+- `output_tokens`: Number of output tokens generated
+- `cost`: Estimated cost of AI operation
+- `createdAt`: Activity timestamp
+
+### Conversation Threads (New)
+- `id`: Primary key
+- `restaurantId`: Foreign key to restaurants
+- `guest_id`: Foreign key to guests (nullable)
+- `platform`: Communication platform (telegram, whatsapp, web)
+- `platform_user_id`: Platform-specific user identifier
+- `thread_id`: Platform-specific thread identifier
+- `status`: Conversation status (active, paused, completed, abandoned)
+- `stage`: Current conversation stage
+- `intent`: Detected user intent
+- `context`: JSON object with conversation context
+- `message_count`: Total number of messages
+- `last_message_at`: Timestamp of last message
+- `sentiment_score`: Overall conversation sentiment (-1 to 1)
+- `satisfaction_rating`: User satisfaction rating (1-5)
+- `resolution_type`: How conversation was resolved
+- `agent_handoff`: Boolean indicating human agent involvement
+- `createdAt`: Conversation start timestamp
+- `updatedAt`: Last activity timestamp
+
+### Messages (New)
+- `id`: Primary key
+- `conversation_id`: Foreign key to conversation_threads
+- `sender_type`: Message sender (user, ai, agent)
+- `sender_id`: Identifier of sender
+- `message_text`: Message content
+- `message_type`: Type of message (text, image, audio, file, quick_reply)
+- `metadata`: JSON object with message metadata
+- `ai_confidence`: AI processing confidence (0-1)
+- `processing_time`: AI processing time (ms)
+- `intent_detected`: Detected intent from message
+- `entities_extracted`: JSON object with extracted entities
+- `sentiment_score`: Message sentiment score (-1 to 1)
+- `language`: Detected language
+- `is_flagged`: Boolean for content moderation
+- `response_time`: Time to generate response (ms)
+- `createdAt`: Message timestamp
+
+## Enhanced Relationships
+
+- Users → Restaurants (1:many) - A user can own multiple restaurants
+- Restaurants → Tables (1:many) - A restaurant has multiple tables
+- Restaurants → Timeslots (1:many) - A restaurant has multiple time slots  
+- Restaurants → Guests (1:many) - A restaurant serves multiple guests
+- Restaurants → Reservations (1:many) - A restaurant has multiple reservations
+- Restaurants → Conversation Threads (1:many) - A restaurant has multiple conversations
+- Guests → Reservations (1:many) - A guest can have multiple reservations
+- Guests → Conversation Threads (1:many) - A guest can have multiple conversations
+- Tables → Reservations (1:many) - A table can have multiple reservations
+- Timeslots → Reservations (1:many) - A timeslot can have multiple reservations
+- Conversation Threads → Messages (1:many) - A conversation has multiple messages
+- Conversation Threads → Reservations (1:many) - A conversation can result in multiple reservations
+
+## Advanced Business Logic
+
+### Smart Table Assignment Algorithm
+1. **Guest History Analysis** - Consider guest's previous table preferences
+2. **Party Size Optimization** - Match table capacity to party size efficiently
+3. **Table Features Matching** - Match special requests to table features
+4. **Revenue Optimization** - Prioritize high-value time slots and guests
+5. **Operational Efficiency** - Consider service time and table turnover
+6. **Accessibility Requirements** - Automatic matching for accessibility needs
+
+### Dynamic Time Slot Management
+- **Real-time Availability Calculation** - Based on current reservations and service times
+- **Buffer Time Management** - Automatic cleaning and preparation time
+- **Seasonal Adjustments** - Holiday and special event considerations
+- **Capacity Optimization** - Dynamic adjustment based on staff levels
+- **Weather Integration** - Outdoor seating availability based on weather
+
+### AI-Powered Guest Profiling
+- **Behavioral Pattern Recognition** - Analyze booking patterns and preferences
+- **Sentiment Analysis** - Track guest satisfaction across interactions
+- **Predictive Analytics** - Anticipate guest needs and preferences
+- **Personalization Engine** - Customize offers and communications
+- **Churn Prevention** - Identify at-risk guests and retention strategies
+
+### Multi-Channel Conversation Management
+- **Context Preservation** - Maintain conversation state across channels
+- **Intent Recognition** - Understand guest needs from natural language
+- **Sentiment Monitoring** - Real-time emotional state analysis
+- **Escalation Triggers** - Automatic handoff to human agents
+- **Performance Analytics** - Track conversation success rates and satisfaction
+
+### Advanced Reservation Status Flow
+1. **inquiry** - Initial interest expressed
+2. **pending** - Formal booking request submitted
+3. **confirmed** - Booking confirmed by restaurant
+4. **reminded** - Confirmation reminder sent
+5. **seated** - Guest has arrived and been seated
+6. **dining** - Guest is currently dining
+7. **completed** - Service completed successfully
+8. **cancelled** - Booking cancelled by guest or restaurant
+9. **no_show** - Guest didn't show up
+10. **rescheduled** - Booking moved to different time/date
+
+### Performance Metrics & Analytics
+- **Booking Conversion Rate** - Inquiry to confirmed reservation ratio
+- **No-Show Rate** - Percentage of confirmed bookings that don't show
+- **Customer Satisfaction Score** - Average rating across all interactions
+- **Revenue Per Available Seat Hour** - Revenue optimization metric
+- **AI Automation Rate** - Percentage of bookings handled without human intervention
+- **Response Time** - Average time to respond to booking inquiries
+- **Table Utilization Rate** - Percentage of available capacity used
+
+This enhanced schema supports advanced AI conversation management, multi-channel integration, comprehensive analytics, and sophisticated business intelligence while maintaining high performance and data integrity.

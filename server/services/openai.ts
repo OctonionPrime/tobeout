@@ -19,6 +19,9 @@ interface ReservationIntent {
   phone?: string;
   special_requests?: string;
   confidence: number;
+  conversation_action?: string;
+  guest_sentiment?: string;
+  next_response_tone?: string;
 }
 
 // Enhanced intent detection with conversation context awareness
@@ -27,45 +30,67 @@ export async function detectReservationIntentWithContext(
   context: any
 ): Promise<ReservationIntent> {
   try {
-    const systemPrompt = `You are Sofia, a professional and warm restaurant hostess. Your goal is to have natural, flowing conversations while gathering booking information.
+    // Get current date context
+    const today = new Date();
+    const todayString = today.toISOString().split('T')[0];
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowString = tomorrow.toISOString().split('T')[0];
 
-CONVERSATION MEMORY:
-- Chat history: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
-- Information I have: ${JSON.stringify(context.partialIntent || {})}
-- User frustration level: ${(context.userFrustrationLevel || 0)}/5
+    // Format existing context for better AI understanding
+    const existingInfo = Object.entries(context.partialIntent || {})
+      .filter(([key, value]) => value !== null && value !== undefined && value !== '')
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(', ');
 
-HUMAN-LIKE CONVERSATION RULES:
-1. NEVER repeat requests for information the guest already gave you
-2. If they say "I told you" or "already said" - acknowledge their frustration immediately
-3. Build on what they've shared, don't start over
-4. When they give partial info, acknowledge what you heard before asking for more
-5. Use natural language patterns, not robotic questioning
+    const systemPrompt = `You are Sofia, a professional restaurant hostess analyzing guest messages for booking information.
 
-EXAMPLES OF NATURAL FLOW:
-❌ BAD: "I need date, time, guests, name, phone"
-✅ GOOD: "Perfect! So Boris for 3 people today at 7pm. Just need your phone number to confirm."
+CURRENT CONVERSATION CONTEXT:
+- Recent messages: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
+- Information already collected: ${existingInfo || 'none'}
+- Guest frustration level: ${(context.userFrustrationLevel || 0)}/5
+- Last thing I asked for: ${context.lastAskedFor || 'nothing specific'}
 
-❌ BAD: After they give phone: "I need date, time, guests, name, phone"  
-✅ GOOD: "Excellent! Let me check availability for 3 people today at 7pm for Boris."
+CRITICAL ANALYSIS RULES:
+1. FRUSTRATION DETECTION: If guest says "I told you", "already said", "just said", "I said", "mentioned", "gave you" → conversation_action: "acknowledge_frustration"
+2. EXTRACT ONLY NEW INFO: Don't repeat information that's already collected
+3. DATE PARSING: 
+   - "today" → "${todayString}"
+   - "tomorrow" → "${tomorrowString}"
+   - "this evening" → "${todayString}"
+   - "next [day]" → calculate actual date
+4. TIME PARSING:
+   - "7", "7pm", "7 pm" → "19:00"
+   - "noon", "12pm" → "12:00"
+   - "evening" → "19:00"
+   - "lunch" → "12:00"
+5. GUEST COUNT: "table for 4", "4 people", "party of 4", "4 of us" → guests: 4
+6. PHONE DETECTION: Any sequence of 10+ digits
+7. NAME DETECTION: "I'm [name]", "My name is [name]", "For [name]", or standalone proper nouns
 
-Current guest message: "${message}"
-Today's date: ${new Date().toISOString().split('T')[0]}
+CURRENT MESSAGE TO ANALYZE: "${message}"
 
-Extract/update ONLY new information from this specific message:
+Analyze this message and return information in this exact JSON format:
 {
-  "date": "YYYY-MM-DD or null if not mentioned",
-  "time": "HH:MM or null if not mentioned", 
-  "guests": "number or null if not mentioned",
-  "name": "string or null if not mentioned",
-  "phone": "string or null if not mentioned",
-  "special_requests": "string or null if not mentioned",
-  "confidence": "0.0-1.0 (high if booking-related)",
-  "conversation_action": "collect_info|ready_to_book|show_alternatives|acknowledge_frustration|general_inquiry",
+  "date": "YYYY-MM-DD if mentioned, otherwise null",
+  "time": "HH:MM format if mentioned, otherwise null", 
+  "guests": "number if mentioned, otherwise null",
+  "name": "exact name if mentioned, otherwise null",
+  "phone": "phone number if mentioned, otherwise null",
+  "special_requests": "any special requests mentioned, otherwise null",
+  "confidence": "0.0-1.0 based on how booking-related this message is",
+  "conversation_action": "collect_info|ready_to_book|acknowledge_frustration|show_alternatives|general_inquiry",
   "guest_sentiment": "happy|neutral|frustrated|confused",
   "next_response_tone": "friendly|apologetic|professional|enthusiastic"
 }
 
-Return clean JSON only.`;
+EXAMPLES:
+- Message: "I told you already, George" → conversation_action: "acknowledge_frustration", name: "George", guest_sentiment: "frustrated"
+- Message: "today at 7 for 2 people" → date: "${todayString}", time: "19:00", guests: 2, confidence: 0.9
+- Message: "4573895673" → phone: "4573895673", confidence: 0.8
+- Message: "table for 4 tomorrow evening" → guests: 4, date: "${tomorrowString}", time: "19:00", confidence: 0.9
+
+Return only valid JSON with no additional text.`;
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
@@ -73,23 +98,85 @@ Return clean JSON only.`;
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
       ],
-      temperature: 0.2,
-      response_format: { type: "json_object" }
+      temperature: 0.1, // Lower temperature for more consistent parsing
+      response_format: { type: "json_object" },
+      max_tokens: 500
     });
 
     const result = JSON.parse(response.choices[0].message.content || '{"confidence": 0}');
-    
-    // Clean up NOT_SPECIFIED values
+
+    // Clean up and validate the response
     Object.keys(result).forEach(key => {
-      if (result[key] === 'NOT_SPECIFIED') {
-        result[key] = undefined;
+      if (result[key] === 'NOT_SPECIFIED' || result[key] === 'null' || result[key] === '' || result[key] === 'NONE') {
+        result[key] = null;
       }
     });
-    
+
+    // Validate and fix date format
+    if (result.date && !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
+      console.warn('Invalid date format detected:', result.date);
+      result.date = null;
+    }
+
+    // Validate and fix time format
+    if (result.time && !/^\d{2}:\d{2}$/.test(result.time)) {
+      // Try to fix common time formats
+      if (result.time.includes(':')) {
+        const [hours, minutes] = result.time.split(':');
+        const h = parseInt(hours);
+        const m = parseInt(minutes) || 0;
+        if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+          result.time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        } else {
+          result.time = null;
+        }
+      } else {
+        console.warn('Invalid time format detected:', result.time);
+        result.time = null;
+      }
+    }
+
+    // Ensure guests is a valid number
+    if (result.guests && (typeof result.guests !== 'number' || result.guests < 1 || result.guests > 20)) {
+      const guestNum = parseInt(result.guests);
+      if (guestNum >= 1 && guestNum <= 20) {
+        result.guests = guestNum;
+      } else {
+        result.guests = null;
+      }
+    }
+
+    // Validate phone number
+    if (result.phone && !/^\d{10,15}$/.test(result.phone.replace(/[^\d]/g, ''))) {
+      const cleanPhone = result.phone.replace(/[^\d]/g, '');
+      if (cleanPhone.length >= 10 && cleanPhone.length <= 15) {
+        result.phone = cleanPhone;
+      } else {
+        result.phone = null;
+      }
+    }
+
+    // Set default values for conversation management
+    if (!result.conversation_action) {
+      result.conversation_action = result.confidence > 0.5 ? 'collect_info' : 'general_inquiry';
+    }
+    if (!result.guest_sentiment) {
+      result.guest_sentiment = 'neutral';
+    }
+    if (!result.next_response_tone) {
+      result.next_response_tone = 'friendly';
+    }
+
+    console.log('🧠 Enhanced intent analysis result:', result);
     return result as ReservationIntent;
   } catch (error) {
     console.error("Error detecting reservation intent with context:", error);
-    return { confidence: 0 };
+    return { 
+      confidence: 0,
+      conversation_action: 'general_inquiry',
+      guest_sentiment: 'neutral',
+      next_response_tone: 'friendly'
+    };
   }
 }
 
@@ -107,62 +194,120 @@ interface AvailableSlot {
   date: string;
   time: string;
   tableId: number;
-  timeslotId: number;
+  tableName: string;
+  tableCapacity: number;
+  table?: any;
 }
 
 export async function suggestAlternativeSlots(
   restaurantId: number,
   date: string,
-  time: string,
   guests: number,
-  preferredTableFeatures: string[] = []
+  maxResults: number = 5
 ): Promise<AvailableSlot[]> {
   try {
+    console.log(`🔍 Finding alternatives for ${guests} guests on ${date}`);
+
     // Get restaurant tables that can accommodate the guests
     const allTables = await storage.getTables(restaurantId);
     const suitableTables = allTables.filter(
-      table => table.minGuests <= guests && table.maxGuests >= guests
+      table => table.minCapacity <= guests && table.maxCapacity >= guests
     );
-    
+
     if (suitableTables.length === 0) {
+      console.log('❌ No suitable tables found');
       return [];
     }
-    
-    // Get timeslots for the requested date
-    const timeslots = await storage.getTimeslots(restaurantId, date);
-    
-    // Filter free timeslots
-    const freeTimeslots = timeslots.filter(
-      ts => ts.status === 'free' && 
-      suitableTables.some(table => table.id === ts.tableId)
-    );
-    
-    if (freeTimeslots.length === 0) {
-      return [];
-    }
-    
-    // Sort timeslots by closeness to requested time
-    const requestedTime = new Date(`${date}T${time}`);
-    
-    const sortedTimeslots = freeTimeslots.sort((a, b) => {
-      const aTime = new Date(`${date}T${a.time}`);
-      const bTime = new Date(`${date}T${b.time}`);
-      
-      return Math.abs(aTime.getTime() - requestedTime.getTime()) - 
-             Math.abs(bTime.getTime() - requestedTime.getTime());
+
+    // Get existing reservations for the date
+    const existingReservations = await storage.getReservations(restaurantId, { 
+      date: date,
+      status: ['confirmed', 'created']
     });
-    
-    // Return the top 3 closest times
-    return sortedTimeslots.slice(0, 3).map(ts => ({
-      date,
-      time: ts.time,
-      tableId: ts.tableId,
-      timeslotId: ts.id
-    }));
+
+    console.log(`📋 Found ${existingReservations.length} existing reservations for ${date}`);
+
+    // Generate comprehensive time slots
+    const timeSlots = [];
+
+    // Lunch slots: 11:00 AM - 3:00 PM
+    for (let hour = 11; hour <= 15; hour++) {
+      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+      if (hour < 15) {
+        timeSlots.push(`${hour.toString().padStart(2, '0')}:30`);
+      }
+    }
+
+    // Dinner slots: 5:00 PM - 10:00 PM
+    for (let hour = 17; hour <= 22; hour++) {
+      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+      if (hour < 22) {
+        timeSlots.push(`${hour.toString().padStart(2, '0')}:30`);
+      }
+    }
+
+    const alternatives = [];
+
+    // Check each time slot for availability
+    for (const time of timeSlots) {
+      const availableTables = suitableTables.filter(table => {
+        // Check if this table is free at this time
+        return !existingReservations.some(reservation => {
+          if (reservation.tableId !== table.id) return false;
+
+          // Check time overlap (assume 2-hour dining duration)
+          const resStart = new Date(`${date} ${reservation.time}`);
+          const resEnd = new Date(resStart.getTime() + 2 * 60 * 60 * 1000);
+          const reqStart = new Date(`${date} ${time}`);
+          const reqEnd = new Date(reqStart.getTime() + 2 * 60 * 60 * 1000);
+
+          // Check if time slots overlap
+          return (reqStart < resEnd && reqEnd > resStart);
+        });
+      });
+
+      if (availableTables.length > 0) {
+        // Pick the best available table (optimal capacity for party size)
+        const bestTable = availableTables.reduce((best, current) => {
+          // Prefer tables closer to the requested party size
+          const bestDiff = Math.abs(best.maxCapacity - guests);
+          const currentDiff = Math.abs(current.maxCapacity - guests);
+          return currentDiff < bestDiff ? current : best;
+        });
+
+        alternatives.push({
+          date,
+          time: formatTimeForDisplay(time),
+          tableId: bestTable.id,
+          tableName: bestTable.name,
+          tableCapacity: bestTable.maxCapacity,
+          table: bestTable
+        });
+
+        if (alternatives.length >= maxResults) break;
+      }
+    }
+
+    console.log(`✅ Found ${alternatives.length} alternative time slots`);
+    return alternatives;
   } catch (error) {
     console.error("Error suggesting alternative slots:", error);
     return [];
   }
+}
+
+/**
+ * Format time for display (24-hour to 12-hour with AM/PM)
+ */
+function formatTimeForDisplay(time24: string): string {
+  const [hours, minutes] = time24.split(':');
+  const hour = parseInt(hours);
+  const min = minutes || '00';
+
+  if (hour === 0) return `12:${min} AM`;
+  if (hour < 12) return `${hour}:${min} AM`;
+  if (hour === 12) return `12:${min} PM`;
+  return `${hour - 12}:${min} PM`;
 }
 
 export async function generateReservationConfirmation(
@@ -177,17 +322,15 @@ export async function generateReservationConfirmation(
     const featuresText = tableFeatures && tableFeatures.length > 0 
       ? `Your table has the following features: ${tableFeatures.join(', ')}.` 
       : '';
-      
-    const systemPrompt = `
-      You are a friendly AI assistant for the restaurant "${restaurantName}".
-      Generate a brief, polite confirmation message for a reservation.
-      Keep it concise but warm and professional.
-    `;
 
-    const userPrompt = `
-      Create a reservation confirmation message for ${guestName} who has reserved a table for ${guests} people on ${date} at ${time}.
-      ${featuresText}
-    `;
+    const systemPrompt = `You are Sofia, a warm and professional restaurant hostess for "${restaurantName}".
+Generate a brief, enthusiastic confirmation message for a reservation.
+Keep it concise but warm and professional. Use emojis appropriately.
+Make the guest feel welcomed and excited about their visit.`;
+
+    const userPrompt = `Create a reservation confirmation message for ${guestName} who has reserved a table for ${guests} people on ${date} at ${time}.
+${featuresText}
+The confirmation should be friendly, professional, and make them feel welcome.`;
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
@@ -195,13 +338,14 @@ export async function generateReservationConfirmation(
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      max_tokens: 150
+      max_tokens: 200,
+      temperature: 0.7
     });
 
-    return response.choices[0].message.content || "";
+    return response.choices[0].message.content || `🎉 Perfect! Your reservation for ${guests} people on ${date} at ${time} is confirmed, ${guestName}. Thank you for choosing ${restaurantName}!`;
   } catch (error) {
     console.error("Error generating reservation confirmation:", error);
-    return `Your reservation for ${guests} people on ${date} at ${time} is confirmed. Thank you for choosing ${restaurantName}!`;
+    return `🎉 Perfect! Your reservation for ${guests} people on ${date} at ${time} is confirmed, ${guestName}. Thank you for choosing ${restaurantName}!`;
   }
 }
 
@@ -215,16 +359,14 @@ export async function generateAlternativeSuggestionMessage(
   try {
     if (alternativeSlots.length === 0) {
       // No alternatives available
-      const systemPrompt = `
-        You are a friendly AI assistant for the restaurant "${restaurantName}".
-        Generate a brief, polite message explaining there's no availability.
-        Suggest they try a different date or time and offer to help them further.
-      `;
+      const systemPrompt = `You are Sofia, a friendly restaurant hostess for "${restaurantName}".
+Generate a brief, empathetic message explaining there's no availability.
+Suggest they try a different date and offer to help them further.
+Keep it warm and helpful, not disappointing.`;
 
-      const userPrompt = `
-        Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
-        Suggest they try a different date or time and offer to help them further.
-      `;
+      const userPrompt = `Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
+Suggest they try a different date or time and offer to help them find alternatives.
+Be empathetic but positive.`;
 
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -232,30 +374,27 @@ export async function generateAlternativeSuggestionMessage(
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
         ],
-        max_tokens: 150
+        max_tokens: 150,
+        temperature: 0.7
       });
 
-      return response.choices[0].message.content;
+      return response.choices[0].message.content || `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time? I'd be happy to help you find the perfect slot! 📅`;
     } else {
-      // Format alternative slots
-      const alternativeOptions = alternativeSlots.map(slot => {
-        // Format the time for better readability
-        const timeObj = new Date(`${slot.date}T${slot.time}`);
-        const formattedTime = timeObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-        return `${slot.date} at ${formattedTime}`;
-      });
+      // Format alternative slots for better readability
+      const alternativesList = alternativeSlots.map((slot, index) => 
+        `${index + 1}. ${slot.time} - Table ${slot.tableName} (${slot.tableCapacity} seats)`
+      ).join('\n');
 
-      const systemPrompt = `
-        You are a friendly AI assistant for the restaurant "${restaurantName}".
-        Generate a brief, polite message suggesting alternative reservation times.
-        The message should be conversational and helpful.
-      `;
+      const systemPrompt = `You are Sofia, a helpful restaurant hostess for "${restaurantName}".
+Generate a friendly message suggesting alternative reservation times.
+Be enthusiastic about the alternatives and make them sound appealing.
+Use emojis and make the guest feel like these are great options.`;
 
-      const userPrompt = `
-        Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
-        Suggest these alternative times instead: ${alternativeOptions.join(', ')}.
-        Ask which alternative they would prefer, or if they'd like to try a different date.
-      `;
+      const userPrompt = `Create a message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}, but we have these great alternatives:
+
+${alternativesList}
+
+Make the alternatives sound appealing and ask which one they'd prefer. Be positive and helpful.`;
 
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -263,18 +402,21 @@ export async function generateAlternativeSuggestionMessage(
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt }
         ],
-        max_tokens: 200
+        max_tokens: 250,
+        temperature: 0.7
       });
 
-      return response.choices[0].message.content;
+      return response.choices[0].message.content || `I'm sorry, but ${requestedTime} on ${requestedDate} isn't available for ${guests} people. However, I have these great alternatives:\n\n${alternativesList}\n\nWhich one would you prefer? 🎯`;
     }
   } catch (error) {
     console.error("Error generating alternative suggestion message:", error);
     if (alternativeSlots.length === 0) {
-      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time?`;
+      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time? I'd be happy to help! 📅`;
     } else {
-      const alternatives = alternativeSlots.map(slot => `${slot.date} at ${slot.time}`).join(', ');
-      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would any of these alternatives work for you? ${alternatives}`;
+      const alternatives = alternativeSlots.map((slot, index) => 
+        `${index + 1}. ${slot.time} - Table ${slot.tableName}`
+      ).join('\n');
+      return `I'm sorry, but ${requestedTime} isn't available. Here are some great alternatives:\n\n${alternatives}\n\nWhich would you prefer? 🎯`;
     }
   }
 }
@@ -292,22 +434,29 @@ export async function generateResponseToGeneralInquiry(
 ): Promise<string> {
   try {
     console.log(`🤖 GenerateResponseToGeneralInquiry called with message: "${message}"`);
-    
-    const systemPrompt = `
-      You are a friendly AI assistant for the restaurant "${restaurantName}".
-      Answer customer inquiries about the restaurant in a helpful and concise way.
-      Use the restaurant information provided to give accurate answers.
-      If you don't have the information requested, politely let the customer know
-      and offer to connect them with a staff member who can help.
-      
-      Restaurant Information:
-      - Name: ${restaurantName}
-      - Address: ${restaurantInfo.address || 'Not provided'}
-      - Opening Hours: ${restaurantInfo.openingHours || 'Not provided'}
-      - Cuisine: ${restaurantInfo.cuisine || 'Not provided'}
-      - Phone: ${restaurantInfo.phoneNumber || 'Not provided'}
-      - Description: ${restaurantInfo.description || 'Not provided'}
-    `;
+
+    const systemPrompt = `You are Sofia, a friendly and knowledgeable AI assistant for the restaurant "${restaurantName}".
+Answer customer inquiries about the restaurant in a helpful, warm, and professional way.
+Use the restaurant information provided to give accurate answers.
+If you don't have specific information requested, politely let the customer know and offer to connect them with staff.
+Always be enthusiastic about the restaurant and try to encourage bookings when appropriate.
+Use emojis sparingly but effectively.
+
+Restaurant Information:
+- Name: ${restaurantName}
+- Address: ${restaurantInfo.address || 'Not available - please contact us directly'}
+- Opening Hours: ${restaurantInfo.openingHours || 'Please contact us for current hours'}
+- Cuisine Type: ${restaurantInfo.cuisine || 'Please ask our staff about our menu'}
+- Phone Number: ${restaurantInfo.phoneNumber || 'Not available - please contact us through this chat'}
+- Description: ${restaurantInfo.description || 'A wonderful dining experience awaits you'}
+
+Guidelines:
+- Be conversational and warm
+- If asked about reservations, guide them to make one
+- If asked about menu, describe generally based on cuisine type if available
+- If asked about location/directions, provide address if available
+- If asked about hours, provide opening hours if available
+- For anything you're unsure about, offer to help them contact the restaurant directly`;
 
     console.log('🤖 Calling OpenAI API for general inquiry...');
     const response = await openai.chat.completions.create({
@@ -316,7 +465,8 @@ export async function generateResponseToGeneralInquiry(
         { role: "system", content: systemPrompt },
         { role: "user", content: message }
       ],
-      max_tokens: 200
+      max_tokens: 300,
+      temperature: 0.7 // Slightly more creative for general conversation
     });
 
     const aiResponse = response.choices[0].message.content || "";
@@ -324,6 +474,61 @@ export async function generateResponseToGeneralInquiry(
     return aiResponse;
   } catch (error) {
     console.error("❌ Error generating response to general inquiry:", error);
-    return `Thanks for your message about ${restaurantName}. For specific information about our restaurant, please call us or visit our website.`;
+    return `Thank you for your question about ${restaurantName}! I'd be happy to help you with information about our restaurant or assist you with making a reservation. What would you like to know? 😊`;
+  }
+}
+
+/**
+ * Enhanced function to analyze conversation context and provide smart responses
+ */
+export async function analyzeConversationContext(
+  message: string,
+  conversationHistory: string[],
+  partialIntent: any
+): Promise<{
+  isRepeatingInfo: boolean;
+  isFrustrated: boolean;
+  suggestedResponse: string;
+  confidence: number;
+}> {
+  try {
+    const systemPrompt = `You are an expert conversation analyst for a restaurant booking system.
+Analyze the conversation context to detect:
+1. If the guest is repeating information they already provided
+2. If the guest is frustrated with the conversation
+3. What the appropriate response should be
+
+Conversation History: ${JSON.stringify(conversationHistory)}
+Already Collected: ${JSON.stringify(partialIntent)}
+Current Message: "${message}"
+
+Return analysis in JSON format:
+{
+  "isRepeatingInfo": true/false,
+  "isFrustrated": true/false,
+  "suggestedResponse": "recommended response strategy",
+  "confidence": 0.0-1.0
+}`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message }
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      max_tokens: 200
+    });
+
+    return JSON.parse(response.choices[0].message.content || '{"confidence": 0}');
+  } catch (error) {
+    console.error("Error analyzing conversation context:", error);
+    return {
+      isRepeatingInfo: false,
+      isFrustrated: false,
+      suggestedResponse: "continue_normal_flow",
+      confidence: 0
+    };
   }
 }
