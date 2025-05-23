@@ -299,6 +299,7 @@ ${restaurant.name} Team`;
         const { date, time, guests, name, phone } = context.partialIntent;
 
         console.log('🔍 Checking reservation data:', { date, time, guests, name, phone });
+        console.log('🔍 Full context:', JSON.stringify(context.partialIntent, null, 2));
 
         if (date && time && guests && name && phone) {
           console.log('✅ All data present, creating reservation...');
