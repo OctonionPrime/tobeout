@@ -36,6 +36,7 @@ type FormValues = z.infer<typeof formSchema>;
 
 export function ReservationModal({ isOpen, onClose, reservationId, restaurantId }: ReservationModalProps) {
   const [tables, setTables] = useState<any[]>([]);
+  const [existingReservation, setExistingReservation] = useState<any>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -93,6 +94,8 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
       if (!reservation) {
         throw new Error("No reservation data received");
       }
+      
+      setExistingReservation(reservation);
       
       // Format the data for the form
       const formData = {

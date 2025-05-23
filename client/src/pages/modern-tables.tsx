@@ -369,18 +369,15 @@ export default function ModernTables() {
   );
 }
 
-// Table Form Component for Add/Edit
+// Table Form Component for Add/Edit  
 function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => Promise<void> }) {
   const form = useForm<InsertTable>({
-    resolver: zodResolver(insertTableSchema.extend({
-      minCapacity: insertTableSchema.shape.minCapacity.min(1),
-      maxCapacity: insertTableSchema.shape.maxCapacity.min(1),
-    })),
+    resolver: zodResolver(insertTableSchema),
     defaultValues: {
       name: table?.name || "",
-      minCapacity: table?.minCapacity || 2,
-      maxCapacity: table?.maxCapacity || 4,
-      location: table?.location || "",
+      minGuests: table?.minGuests || 2,
+      maxGuests: table?.maxGuests || 4,
+      comments: table?.comments || "",
     },
   });
 
