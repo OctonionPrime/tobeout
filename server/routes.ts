@@ -460,6 +460,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       const tableAvailability = tables.map(table => {
+        // Debug: Log reservations for this table to see what's happening
+        const tableReservations = reservations.filter(r => r.tableId === table.id);
+        if (tableReservations.length > 0) {
+          console.log(`🔍 Table ${table.id} reservations:`, tableReservations.map(r => ({
+            guestName: r.guestName, 
+            status: r.status, 
+            time: r.time, 
+            date: r.date
+          })));
+        }
+
         // Find any reservation that occupies this specific time slot
         const conflictingReservation = reservations.find(r => 
           r.tableId === table.id && 
