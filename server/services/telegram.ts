@@ -27,6 +27,13 @@ interface ConversationContext {
   restaurantId: number;
   suggestedSlots?: any[];
   lastRequestedGuests?: number;
+  
+  // Enhanced conversation management
+  messageHistory: string[]; // Track recent messages
+  repetitionCount: number; // Count how many times we asked for same info
+  lastAskedFor: string | null; // What we last asked for
+  userFrustrationLevel: number; // 0-5 scale
+  conversationId: string; // Unique conversation identifier
 }
 
 const conversationContexts = new Map<number, ConversationContext>();
