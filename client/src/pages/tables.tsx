@@ -411,18 +411,25 @@ export default function Tables() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={format(new Date(), 'yyyy-MM-dd')}>
-                      Today ({format(new Date(), 'MMM dd')})
-                    </SelectItem>
-                    <SelectItem value={format(addDays(new Date(), 1), 'yyyy-MM-dd')}>
-                      Tomorrow ({format(addDays(new Date(), 1), 'MMM dd')})
-                    </SelectItem>
-                    <SelectItem value={format(addDays(new Date(), 2), 'yyyy-MM-dd')}>
-                      {format(addDays(new Date(), 2), 'EEE, MMM dd')}
-                    </SelectItem>
-                    <SelectItem value={format(addDays(new Date(), 3), 'yyyy-MM-dd')}>
-                      {format(addDays(new Date(), 3), 'EEE, MMM dd')}
-                    </SelectItem>
+                    {Array.from({ length: 30 }, (_, i) => {
+                      const date = addDays(new Date(), i);
+                      const dateValue = format(date, 'yyyy-MM-dd');
+                      let label;
+                      
+                      if (i === 0) {
+                        label = `Today (${format(date, 'MMM dd')})`;
+                      } else if (i === 1) {
+                        label = `Tomorrow (${format(date, 'MMM dd')})`;
+                      } else {
+                        label = format(date, 'EEE, MMM dd');
+                      }
+                      
+                      return (
+                        <SelectItem key={dateValue} value={dateValue}>
+                          {label}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
