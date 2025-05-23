@@ -49,23 +49,67 @@ export async function findAvailableTables(
   
   const availableSlots: AvailableSlot[] = [];
   
-  // For each suitable table, check if it has at least 1-30 hour availability window
+  // Smart table assignment with conflict detection and priority ranking
+  const tableAnalysis: Array<{
+    table: any;
+    conflictScore: number;
+    availabilityHours: number;
+    hasDirectConflict: boolean;
+  }> = [];
+
   for (const table of suitableTables) {
     const tableReservations = existingReservations.filter(res => res.tableId === table.id);
     
-    if (await hasAvailabilityWindow(table.id, date, time, tableReservations)) {
-      availableSlots.push({
-        tableId: table.id,
-        timeslotId: 0, // We'll handle this differently
-        date,
-        time,
-        tableName: table.name,
-        tableCapacity: { min: table.minGuests, max: table.maxGuests }
-      });
-      console.log(`✅ Table ${table.name} has availability window from ${time}`);
-    } else {
-      console.log(`❌ Table ${table.name} doesn't have sufficient availability window`);
+    // Check for DIRECT conflict at exact requested time
+    const hasDirectConflict = tableReservations.some(res => {
+      if (!res.time) return false;
+      const resStart = parseISO(`${res.date}T${res.time}`);
+      const resEnd = addMinutes(resStart, res.duration || 120);
+      const requestedDateTime = parseISO(`${date}T${time}`);
+      
+      return requestedDateTime >= resStart && requestedDateTime < resEnd;
+    });
+
+    if (hasDirectConflict) {
+      console.log(`🚫 Table ${table.name} has DIRECT CONFLICT at ${time} - EXCLUDED`);
+      continue; // Skip tables with direct conflicts
     }
+
+    // Calculate availability window and conflict score
+    const availabilityHours = await calculateAvailabilityWindow(table.id, date, time, tableReservations);
+    const conflictScore = calculateConflictScore(table.id, date, time, tableReservations);
+    
+    if (availabilityHours > 0) {
+      tableAnalysis.push({
+        table,
+        conflictScore,
+        availabilityHours,
+        hasDirectConflict: false
+      });
+      console.log(`✅ Table ${table.name}: ${availabilityHours}h available, conflict score: ${conflictScore}`);
+    } else {
+      console.log(`❌ Table ${table.name}: No sufficient availability window`);
+    }
+  }
+
+  // Sort by priority: lowest conflict score first, then highest availability
+  tableAnalysis.sort((a, b) => {
+    if (a.conflictScore !== b.conflictScore) {
+      return a.conflictScore - b.conflictScore; // Lower conflict = higher priority
+    }
+    return b.availabilityHours - a.availabilityHours; // More availability = higher priority
+  });
+
+  // Convert to available slots
+  for (const analysis of tableAnalysis) {
+    availableSlots.push({
+      tableId: analysis.table.id,
+      timeslotId: 0,
+      date,
+      time,
+      tableName: analysis.table.name,
+      tableCapacity: { min: analysis.table.minGuests, max: analysis.table.maxGuests }
+    });
   }
   
   return availableSlots;
@@ -104,6 +148,70 @@ async function hasAvailabilityWindow(
   }
   
   return false; // No availability window found
+}
+
+/**
+ * Calculate availability window in hours from requested time
+ */
+async function calculateAvailabilityWindow(
+  tableId: number, 
+  date: string, 
+  requestedTime: string, 
+  tableReservations: any[]
+): Promise<number> {
+  const requestedDateTime = parseISO(`${date}T${requestedTime}`);
+  let availableHours = 0;
+  
+  // Check availability for next 30 hours
+  for (let hours = 1; hours <= 30; hours++) {
+    const checkTime = addMinutes(requestedDateTime, hours * 60);
+    
+    const hasConflict = tableReservations.some(reservation => {
+      if (!reservation.time) return false;
+      
+      const reservationStart = parseISO(`${reservation.date}T${reservation.time}`);
+      const reservationEnd = addMinutes(reservationStart, reservation.duration || 120);
+      
+      return checkTime >= reservationStart && checkTime < reservationEnd;
+    });
+    
+    if (!hasConflict) {
+      availableHours = hours;
+    } else {
+      break; // Stop at first conflict
+    }
+  }
+  
+  return availableHours;
+}
+
+/**
+ * Calculate conflict score for table priority ranking
+ * Lower score = higher priority
+ */
+function calculateConflictScore(
+  tableId: number, 
+  date: string, 
+  requestedTime: string, 
+  tableReservations: any[]
+): number {
+  let conflictScore = 0;
+  const requestedDateTime = parseISO(`${date}T${requestedTime}`);
+  
+  // Add points for nearby reservations (within 4 hours)
+  tableReservations.forEach(reservation => {
+    if (!reservation.time) return;
+    
+    const resStart = parseISO(`${reservation.date}T${reservation.time}`);
+    const timeDifference = Math.abs((resStart.getTime() - requestedDateTime.getTime()) / (1000 * 60 * 60));
+    
+    if (timeDifference <= 4) {
+      // Closer reservations = higher conflict score
+      conflictScore += Math.max(0, 4 - timeDifference);
+    }
+  });
+  
+  return conflictScore;
 }
 
 /**
