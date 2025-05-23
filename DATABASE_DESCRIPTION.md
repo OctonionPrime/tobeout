@@ -1,7 +1,7 @@
 # ToBeOut Restaurant Booking System - Database Architecture
 
-**Last Updated:** January 23, 2025 - 1:38 AM  
-**Version:** v1.4 - Real-Time Updates & Edit Functionality Complete  
+**Last Updated:** January 23, 2025 - 3:54 AM  
+**Version:** v1.5 - Smart Time Slot Filtering & Advanced Conflict Resolution Complete  
 **Database:** PostgreSQL with Drizzle ORM
 
 ---
@@ -30,13 +30,13 @@ PostgreSQL Database
 ## 📊 **Database Schema Design**
 
 ### **✅ CRITICAL FIXES COMPLETED**
-- **Edit Form Loading**: Fixed reservation editing to load Pavel, Teg, Oleg data correctly
-- **Real-Time Updates**: Added 3-second auto-refresh across all pages
-- **Table Positioning**: Fixed stable table ordering (1,2,3) regardless of assignments
-- **Guest Names**: Fixed display of real names (Teg, Oleg, Pavel, Misha) instead of "Guest"
-- **Phone Numbers**: Fixed display of actual phone numbers (+79881236777, 89012457888)
-- **Date Range**: Extended from 4 days to 30 days selection
-- **API Endpoints**: Added missing `/api/reservations/:id` endpoint for edit functionality
+- **Smart Time Slot Filtering**: Dynamic availability-based time slot display
+- **Advanced Conflict Resolution**: Excludes canceled reservations from availability calculations
+- **Intelligent Table Assignment**: Prioritizes completely free tables over partial availability
+- **Real-Time Updates**: 3-second auto-refresh with live conflict detection
+- **Dynamic Guest Capacity Validation**: Shows warnings when table capacity is insufficient
+- **Universal Date Logic**: Works for any date without hardcoded time restrictions
+- **Enhanced Reservation Management**: Complete CRUD operations with guest data integrity
 
 ### **Core Entity Relationships**
 ```
