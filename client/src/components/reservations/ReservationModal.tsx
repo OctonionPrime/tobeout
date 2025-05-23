@@ -36,7 +36,9 @@ type FormValues = z.infer<typeof formSchema>;
 
 export function ReservationModal({ isOpen, onClose, reservationId, restaurantId }: ReservationModalProps) {
   const [tables, setTables] = useState<any[]>([]);
+  const [availableTimeSlots, setAvailableTimeSlots] = useState<any[]>([]);
   const [existingReservation, setExistingReservation] = useState<any>(null);
+  const [isLoadingTimes, setIsLoadingTimes] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -64,6 +66,16 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
     }
   }, [isOpen, reservationId]);
 
+  // Watch for date and guest count changes to fetch available times
+  const watchedDate = form.watch("date");
+  const watchedGuests = form.watch("guests");
+
+  useEffect(() => {
+    if (watchedDate && watchedGuests && isOpen) {
+      fetchAvailableTimeSlots(watchedDate, watchedGuests);
+    }
+  }, [watchedDate, watchedGuests, isOpen]);
+
   const fetchTables = async () => {
     try {
       const response = await fetch(`/api/tables?restaurantId=${restaurantId}`, {
@@ -75,6 +87,29 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
       }
     } catch (error) {
       console.error("Error fetching tables:", error);
+    }
+  };
+
+  const fetchAvailableTimeSlots = async (date: string, guests: number) => {
+    if (!date || !guests) return;
+    
+    setIsLoadingTimes(true);
+    try {
+      const response = await fetch(
+        `/api/booking/available-times?restaurantId=${restaurantId}&date=${date}&guests=${guests}`,
+        { credentials: "include" }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setAvailableTimeSlots(data.availableSlots || []);
+      } else {
+        setAvailableTimeSlots([]);
+      }
+    } catch (error) {
+      console.error("Error fetching available times:", error);
+      setAvailableTimeSlots([]);
+    } finally {
+      setIsLoadingTimes(false);
     }
   };
 
@@ -285,9 +320,26 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {['17:00', '17:30', '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00'].map((time) => (
-                          <SelectItem key={time} value={time}>{time}</SelectItem>
-                        ))}
+                        {isLoadingTimes ? (
+                          <SelectItem value="" disabled>Loading available times...</SelectItem>
+                        ) : availableTimeSlots.length > 0 ? (
+                          availableTimeSlots.map((slot) => (
+                            <SelectItem 
+                              key={slot.time} 
+                              value={slot.time}
+                              disabled={!slot.canAccommodate}
+                            >
+                              <div className="flex flex-col">
+                                <span>{slot.time}</span>
+                                <span className={`text-xs ${slot.canAccommodate ? 'text-green-600' : 'text-orange-600'}`}>
+                                  {slot.message}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="" disabled>No available times for this date and guest count</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                     <FormMessage />
