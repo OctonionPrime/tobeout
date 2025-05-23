@@ -366,6 +366,35 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
               <Button type="button" variant="outline" onClick={onClose}>
                 Cancel
               </Button>
+              
+              {/* Show Confirm button for cancelled reservations */}
+              {reservationId && existingReservation?.status === "canceled" && (
+                <Button 
+                  type="button"
+                  variant="default"
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  onClick={async () => {
+                    try {
+                      await updateMutation.mutateAsync({
+                        id: reservationId,
+                        status: "confirmed"
+                      });
+                      toast({ title: "Reservation confirmed successfully!" });
+                      onClose();
+                    } catch (error: any) {
+                      toast({ 
+                        title: "Error confirming reservation", 
+                        description: error.message, 
+                        variant: "destructive" 
+                      });
+                    }
+                  }}
+                  disabled={updateMutation.isPending}
+                >
+                  {updateMutation.isPending ? "Confirming..." : "Confirm Reservation"}
+                </Button>
+              )}
+              
               <Button 
                 type="submit" 
                 disabled={createMutation.isPending || updateMutation.isPending}
