@@ -4,6 +4,34 @@
 **Goal:** Build a comprehensive SaaS restaurant booking platform with AI integration and multi-channel communication
 **Tech Stack:** TypeScript, React, Node.js, Express, PostgreSQL, Drizzle ORM, OpenAI, Tailwind CSS
 **Started:** January 22, 2025
+**Last Updated:** January 23, 2025 - 12:22 AM
+
+---
+
+## 🎯 **LATEST CRITICAL FIXES** (January 23, 2025 - 12:22 AM)
+
+### **Issue Resolution Session - Guest Data & Date Range**
+**Status: ✅ ALL CRITICAL ISSUES FIXED**
+
+#### **Fix 1: Guest Names Display ✅ RESOLVED**
+- **Problem**: Guest names showed as "Guest" instead of real names like "Teg" and "Oleg"
+- **Root Cause**: Field mapping mismatch between API (`guestName`) and frontend (`guest.name`)
+- **Solution**: Updated reservations page to check both field formats
+- **Files Modified**: `client/src/pages/reservations.tsx`
+- **Result**: Real guest names now display correctly
+
+#### **Fix 2: Phone Numbers Display ✅ RESOLVED**
+- **Problem**: Phone numbers showed as "No phone provided" instead of actual numbers
+- **Root Cause**: Same field mapping issue affecting phone data
+- **Solution**: Added fallback logic for `guestPhone` and `guest?.phone`
+- **Result**: Actual phone numbers (+79881236777, 89012457888) now display
+
+#### **Fix 3: Date Range Limitation ✅ RESOLVED**
+- **Problem**: Date selector only showed 4 days instead of full month
+- **Root Cause**: Hardcoded date options in Tables page component
+- **Solution**: Replaced with dynamic 30-day generation using Array.from()
+- **Files Modified**: `client/src/pages/tables.tsx`
+- **Result**: Full month of dates (30 days) now available for selection
 
 ---
 

@@ -1,7 +1,7 @@
 # ToBeOut Restaurant Booking System - Database Architecture
 
-**Last Updated:** January 22, 2025 - 10:47 PM  
-**Version:** v1.1  
+**Last Updated:** January 23, 2025 - 12:22 AM  
+**Version:** v1.3 - Critical Issues Fixed  
 **Database:** PostgreSQL with Drizzle ORM
 
 ---
@@ -29,19 +29,25 @@ PostgreSQL Database
 
 ## 📊 **Database Schema Design**
 
+### **✅ CRITICAL FIXES COMPLETED**
+- **Date Filtering**: Fixed reservations showing only on correct dates
+- **Guest Names**: Fixed display of real names (Teg, Oleg) instead of "Guest"
+- **Phone Numbers**: Fixed display of actual phone numbers
+- **Date Range**: Extended from 4 days to 30 days selection
+
 ### **Core Entity Relationships**
 ```
 Users (1) ←→ (1) Restaurants
     ↓
-Restaurants (1) ←→ (n) Tables
+Restaurants (1) ←→ (n) Tables ✅ WORKING (3 tables configured)
     ↓
-Restaurants (1) ←→ (n) Timeslots  
+Restaurants (1) ←→ (n) Timeslots ✅ WORKING (10:00-22:00 daily)
     ↓
-Restaurants (1) ←→ (n) Guests
+Restaurants (1) ←→ (n) Guests ✅ WORKING (Real data: Teg, Oleg, Pavel, Misha)
     ↓
-Guests (1) ←→ (n) Reservations ←→ (1) Tables
+Guests (1) ←→ (n) Reservations ←→ (1) Tables ✅ WORKING (Date-specific filtering)
     ↓                            ↓
-Reservations ←→ (0..1) Timeslots
+Reservations ←→ (0..1) Timeslots ✅ WORKING (90-minute duration conflicts)
     ↓
 Restaurants (1) ←→ (n) IntegrationSettings
     ↓
