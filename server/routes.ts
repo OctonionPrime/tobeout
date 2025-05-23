@@ -682,6 +682,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertReservationSchema.partial().parse(req.body);
       
       // Check if smart table assignment is requested for edit
+      console.log('🔍 Edit Debug - tableId:', validatedData.tableId, 'date:', validatedData.date, 'time:', validatedData.time, 'guests:', validatedData.guests);
+      
       if ((!validatedData.tableId || validatedData.tableId === null) && 
           validatedData.date && validatedData.time && validatedData.guests) {
         
