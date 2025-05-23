@@ -158,6 +158,9 @@ export default function ModernTables() {
                 <TableForm 
                   onSubmit={async (data) => {
                     try {
+                      console.log('🚀 Creating table with data:', data);
+                      console.log('🏢 Restaurant ID:', restaurantId);
+                      
                       const response = await fetch('/api/tables', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -165,15 +168,19 @@ export default function ModernTables() {
                         body: JSON.stringify({ ...data, restaurantId })
                       });
                       
+                      const responseText = await response.text();
+                      console.log('📥 Response:', response.status, responseText);
+                      
                       if (!response.ok) {
-                        throw new Error(`Failed to create table: ${response.statusText}`);
+                        throw new Error(`Failed to create table: ${response.statusText} - ${responseText}`);
                       }
                       
                       setShowAddTableModal(false);
                       queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
+                      queryClient.invalidateQueries({ queryKey: ['/api/tables'] });
                       toast({ title: "Table created successfully!" });
                     } catch (error: any) {
-                      console.error('Table creation error:', error);
+                      console.error('❌ Table creation error:', error);
                       toast({ title: "Error creating table", description: error.message, variant: "destructive" });
                     }
                   }}
@@ -450,7 +457,7 @@ function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => 
             <FormItem>
               <FormLabel>Comments</FormLabel>
               <FormControl>
-                <Input placeholder="Window section, Patio, etc." {...field} />
+                <Input placeholder="Window section, Patio, etc." {...field} value={field.value || ""} />
               </FormControl>
               <FormMessage />
             </FormItem>

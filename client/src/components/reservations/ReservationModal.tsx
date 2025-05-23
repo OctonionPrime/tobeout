@@ -159,13 +159,14 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
   });
 
   const updateMutation = useMutation({
-    mutationFn: async (values: FormValues) => {
+    mutationFn: async (values: FormValues & { status?: string }) => {
       const response = await apiRequest("PATCH", `/api/reservations/${reservationId}`, {
         date: values.date,
         time: values.time,
         guests: values.guests,
         tableId: values.tableId ? parseInt(values.tableId) : undefined,
-        comments: values.specialRequests
+        comments: values.specialRequests,
+        status: values.status // Include status in the update
       });
       return response.json();
     },
@@ -382,7 +383,7 @@ export function ReservationModal({ isOpen, onClose, reservationId, restaurantId 
                       await updateMutation.mutateAsync({
                         ...formValues,
                         status: "confirmed"
-                      });
+                      } as any);
                       // Force refresh the reservations list
                       queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
                       toast({ title: "Reservation confirmed successfully!" });
