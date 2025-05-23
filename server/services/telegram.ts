@@ -233,15 +233,53 @@ Would you like me to book one of these times instead? Just tell me which number 
                 context.suggestedSlots = bookingResult.alternatives;
                 
               } else {
-                const noAvailabilityMessage = `I'm sorry ${name}, but we don't have availability for ${guests} ${guests === 1 ? 'person' : 'people'} at ${time} on ${new Date(date).toLocaleDateString()}.
+                // No availability - let's find alternative times for the same day
+                try {
+                  const { getAlternativeTimes } = await import('./telegram-booking');
+                  const alternatives = await getAlternativeTimes(restaurantId, date, guests);
+                  
+                  if (alternatives && alternatives.length > 0) {
+                    const alternativesList = alternatives.map((alt, index) => 
+                      `${index + 1}. ${alt.time} - Table ${alt.tableName} (${alt.capacity} seats)`
+                    ).join('\n');
+                    
+                    const alternativesMessage = `I'm sorry ${name}, but ${time} on ${new Date(date).toLocaleDateString()} is not available for ${guests} ${guests === 1 ? 'person' : 'people'}.
+
+However, I found these available times for the same day:
+
+${alternativesList}
+
+Would you like me to book one of these times instead? Just tell me which number you prefer!`;
+                    
+                    bot.sendMessage(chatId, alternativesMessage);
+                    
+                    // Update context to handle alternative selection
+                    context.stage = 'suggesting_alternatives';
+                    context.suggestedSlots = alternatives;
+                    
+                  } else {
+                    const noAvailabilityMessage = `I'm sorry ${name}, but we don't have any availability for ${guests} ${guests === 1 ? 'person' : 'people'} on ${new Date(date).toLocaleDateString()}.
+
+Would you like me to check availability for a different date? I'd be happy to help you find the perfect slot!`;
+                    
+                    bot.sendMessage(chatId, noAvailabilityMessage);
+                    
+                    // Reset context to allow new booking attempt
+                    context.stage = 'initial';
+                    context.partialIntent = undefined;
+                  }
+                } catch (error) {
+                  console.error('❌ Error finding alternatives:', error);
+                  const noAvailabilityMessage = `I'm sorry ${name}, but we don't have availability for ${guests} ${guests === 1 ? 'person' : 'people'} at ${time} on ${new Date(date).toLocaleDateString()}.
 
 Would you like me to suggest some alternative dates or times? I'd be happy to help you find the perfect slot!`;
-                
-                bot.sendMessage(chatId, noAvailabilityMessage);
-                
-                // Reset context to allow new booking attempt
-                context.stage = 'initial';
-                context.partialIntent = undefined;
+                  
+                  bot.sendMessage(chatId, noAvailabilityMessage);
+                  
+                  // Reset context to allow new booking attempt
+                  context.stage = 'initial';
+                  context.partialIntent = undefined;
+                }
               }
             }
           } catch (error) {
