@@ -314,7 +314,25 @@ export class DatabaseStorage implements IStorage {
     status?: string[];
     upcoming?: boolean;
   }): Promise<any[]> {
-    // Get reservations with guest and table information
+    let whereConditions = [eq(reservations.restaurantId, restaurantId)];
+
+    // Apply date filter
+    if (filters?.date) {
+      whereConditions.push(eq(reservations.date, filters.date));
+    }
+
+    // Apply status filter
+    if (filters?.status && filters.status.length > 0) {
+      whereConditions.push(sql`${reservations.status} IN (${filters.status.map(s => `'${s}'`).join(',')})`);
+    }
+
+    // Apply upcoming filter
+    if (filters?.upcoming) {
+      const now = new Date();
+      const currentDate = now.toISOString().split('T')[0];
+      whereConditions.push(sql`${reservations.date} >= '${currentDate}'`);
+    }
+
     const reservationsWithDetails = await db
       .select({
         // Reservation fields
@@ -344,7 +362,7 @@ export class DatabaseStorage implements IStorage {
       .from(reservations)
       .leftJoin(guests, eq(reservations.guestId, guests.id))
       .leftJoin(tables, eq(reservations.tableId, tables.id))
-      .where(eq(reservations.restaurantId, restaurantId))
+      .where(whereConditions.length > 1 ? and(...whereConditions) : whereConditions[0])
       .orderBy(reservations.date, reservations.time);
 
     return reservationsWithDetails;
