@@ -1,7 +1,7 @@
 # ToBeOut Restaurant Booking System - Database Architecture
 
-**Last Updated:** January 23, 2025 - 12:22 AM  
-**Version:** v1.3 - Critical Issues Fixed  
+**Last Updated:** January 23, 2025 - 1:38 AM  
+**Version:** v1.4 - Real-Time Updates & Edit Functionality Complete  
 **Database:** PostgreSQL with Drizzle ORM
 
 ---
@@ -30,10 +30,13 @@ PostgreSQL Database
 ## 📊 **Database Schema Design**
 
 ### **✅ CRITICAL FIXES COMPLETED**
-- **Date Filtering**: Fixed reservations showing only on correct dates
-- **Guest Names**: Fixed display of real names (Teg, Oleg) instead of "Guest"
-- **Phone Numbers**: Fixed display of actual phone numbers
+- **Edit Form Loading**: Fixed reservation editing to load Pavel, Teg, Oleg data correctly
+- **Real-Time Updates**: Added 3-second auto-refresh across all pages
+- **Table Positioning**: Fixed stable table ordering (1,2,3) regardless of assignments
+- **Guest Names**: Fixed display of real names (Teg, Oleg, Pavel, Misha) instead of "Guest"
+- **Phone Numbers**: Fixed display of actual phone numbers (+79881236777, 89012457888)
 - **Date Range**: Extended from 4 days to 30 days selection
+- **API Endpoints**: Added missing `/api/reservations/:id` endpoint for edit functionality
 
 ### **Core Entity Relationships**
 ```
@@ -369,7 +372,9 @@ PUT    /api/guests/:id           // Update guest
 
 // Reservation management
 GET    /api/reservations         // List reservations (with joins)
+GET    /api/reservations/:id     // Get single reservation (with guest data)
 POST   /api/booking/create       // Create reservation
+PATCH  /api/reservations/:id     // Update reservation
 POST   /api/booking/cancel/:id   // Cancel reservation
 GET    /api/booking/availability // Check availability
 
