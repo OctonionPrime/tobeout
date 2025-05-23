@@ -161,7 +161,10 @@ What would you like to do?`
         // Check if we have all the required fields for a reservation
         const { date, time, guests, name, phone } = context.partialIntent;
         
+        console.log('🔍 Telegram bot checking reservation data:', { date, time, guests, name, phone });
+        
         if (date && time && guests && name && phone) {
+          console.log('✅ All data present, creating reservation...');
           // We have all the information, try to create the reservation using internal storage
           try {
             // Find or create guest
