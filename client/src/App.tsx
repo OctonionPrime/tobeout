@@ -6,7 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import Reservations from "@/pages/reservations";
-import Tables from "@/pages/tables";
+import Tables from "@/pages/modern-tables";
 import Guests from "@/pages/guests";
 import Profile from "@/pages/profile";
 import AISettings from "@/pages/ai-settings";
