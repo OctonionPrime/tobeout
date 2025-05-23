@@ -193,6 +193,10 @@ What would you like to do?`
               source: 'telegram'
             });
 
+            // Invalidate cache so dashboard shows new booking immediately
+            const { CacheInvalidation } = await import('../cache');
+            CacheInvalidation.reservations(restaurantId);
+
             // Generate confirmation message
             const confirmationMessage = await generateReservationConfirmation(
               name,
