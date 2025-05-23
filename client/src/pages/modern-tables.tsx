@@ -28,6 +28,9 @@ export default function ModernTables() {
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedTime, setSelectedTime] = useState("19:00");
   const [contextMenuSlot, setContextMenuSlot] = useState<{table: any, time: string} | null>(null);
+  const [showAddTableModal, setShowAddTableModal] = useState(false);
+  const [editingTable, setEditingTable] = useState(null);
+  const queryClient = useQueryClient();
   const { toast } = useToast();
 
   // Fetch restaurant operating hours
@@ -141,10 +144,35 @@ export default function ModernTables() {
             <p className="text-gray-600 dark:text-gray-400 mt-2">Intelligent table scheduling and availability management</p>
           </div>
           <div className="flex gap-3">
-            <Button className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-lg shadow-blue-500/25 transition-all duration-200">
-              <Plus className="h-4 w-4 mr-2" />
-              Add Table
-            </Button>
+            <Dialog open={showAddTableModal} onOpenChange={setShowAddTableModal}>
+              <DialogTrigger asChild>
+                <Button className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-lg shadow-blue-500/25 transition-all duration-200">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Table
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add New Table</DialogTitle>
+                </DialogHeader>
+                <TableForm 
+                  onSubmit={async (data) => {
+                    try {
+                      await fetch('/api/tables', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ...data, restaurantId })
+                      });
+                      setShowAddTableModal(false);
+                      queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
+                      toast({ title: "Table created successfully!" });
+                    } catch (error: any) {
+                      toast({ title: "Error creating table", description: error.message, variant: "destructive" });
+                    }
+                  }}
+                />
+              </DialogContent>
+            </Dialog>
             <Button variant="outline" className="border-gray-300 hover:bg-gray-50 transition-all duration-200">
               <Settings className="h-4 w-4 mr-2" />
               Settings
@@ -338,5 +366,99 @@ export default function ModernTables() {
         </div>
       </div>
     </DashboardLayout>
+  );
+}
+
+// Table Form Component for Add/Edit
+function TableForm({ table, onSubmit }: { table?: any, onSubmit: (data: any) => Promise<void> }) {
+  const form = useForm<InsertTable>({
+    resolver: zodResolver(insertTableSchema.extend({
+      minCapacity: insertTableSchema.shape.minCapacity.min(1),
+      maxCapacity: insertTableSchema.shape.maxCapacity.min(1),
+    })),
+    defaultValues: {
+      name: table?.name || "",
+      minCapacity: table?.minCapacity || 2,
+      maxCapacity: table?.maxCapacity || 4,
+      location: table?.location || "",
+    },
+  });
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <FormField
+          control={form.control}
+          name="name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Table Name</FormLabel>
+              <FormControl>
+                <Input placeholder="Table 1" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className="grid grid-cols-2 gap-4">
+          <FormField
+            control={form.control}
+            name="minCapacity"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Min Capacity</FormLabel>
+                <FormControl>
+                  <Input 
+                    type="number" 
+                    {...field} 
+                    onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="maxCapacity"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Max Capacity</FormLabel>
+                <FormControl>
+                  <Input 
+                    type="number" 
+                    {...field} 
+                    onChange={(e) => field.onChange(parseInt(e.target.value) || 0)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <FormField
+          control={form.control}
+          name="location"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Location</FormLabel>
+              <FormControl>
+                <Input placeholder="Window section, Patio, etc." {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className="flex justify-end gap-2 pt-4">
+          <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+            {table ? "Update Table" : "Create Table"}
+          </Button>
+        </div>
+      </form>
+    </Form>
   );
 }
