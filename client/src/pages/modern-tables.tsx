@@ -59,11 +59,14 @@ export default function ModernTables() {
       const promises = timeSlots.map(async (time) => {
         const response = await fetch(`/api/tables/availability?date=${selectedDate}&time=${time}`);
         const data = await response.json();
-        return { time, tables: data };
+        // Sort tables by ID to maintain consistent positioning
+        const sortedTables = data.sort((a: any, b: any) => a.id - b.id);
+        return { time, tables: sortedTables };
       });
       return Promise.all(promises);
     },
     enabled: !!restaurant && timeSlots.length > 0,
+    refetchInterval: 3000, // Auto-refresh every 3 seconds for real-time updates
   });
 
   // Status colors for modern design

@@ -60,14 +60,15 @@ export default function Reservations() {
 
   const dateForQuery = selectedDate ? format(selectedDate, 'yyyy-MM-dd') : undefined;
 
-  // Fetch all reservations (no server-side filtering)
+  // Fetch all reservations (no server-side filtering) with real-time updates
   const { data: reservations, isLoading } = useQuery({
     queryKey: ["/api/reservations"],
     queryFn: async () => {
       const response = await fetch("/api/reservations", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch reservations");
       return response.json();
-    }
+    },
+    refetchInterval: 3000, // Auto-refresh every 3 seconds for real-time updates
   });
 
   // Moscow timezone filtering with improved logic
