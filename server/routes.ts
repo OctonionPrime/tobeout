@@ -508,6 +508,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Available time slots endpoint - only shows times with available tables
+  app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { restaurantId, date, guests } = req.query;
+      
+      if (!restaurantId || !date || !guests) {
+        return res.status(400).json({ message: "Missing required parameters" });
+      }
+
+      const restaurant = await storage.getRestaurant(parseInt(restaurantId as string));
+      if (!restaurant) {
+        return res.status(404).json({ message: "Restaurant not found" });
+      }
+
+      // Generate time slots based on restaurant hours
+      const timeSlots = [];
+      const openingTime = restaurant.openingTime || "10:00";
+      const closingTime = restaurant.closingTime || "22:00";
+      
+      const [openHour, openMin] = openingTime.split(':').map(Number);
+      const [closeHour, closeMin] = closingTime.split(':').map(Number);
+      
+      let currentHour = openHour;
+      while (currentHour < closeHour || (currentHour === closeHour && 0 < closeMin)) {
+        const timeString = `${String(currentHour).padStart(2, '0')}:00`;
+        
+        // Check if any tables are available at this time
+        const availableTables = await findAvailableTables(
+          parseInt(restaurantId as string),
+          date as string,
+          timeString,
+          parseInt(guests as string)
+        );
+
+        if (availableTables.length > 0) {
+          // Check max capacity of available tables
+          const maxCapacity = Math.max(...availableTables.map(t => t.tableCapacity.max));
+          
+          timeSlots.push({
+            time: timeString,
+            available: true,
+            tablesCount: availableTables.length,
+            maxCapacity: maxCapacity,
+            canAccommodate: parseInt(guests as string) <= maxCapacity,
+            message: parseInt(guests as string) > maxCapacity 
+              ? `Only tables for up to ${maxCapacity} guests available`
+              : `${availableTables.length} table(s) available`
+          });
+        }
+        
+        currentHour++;
+      }
+
+      res.json({ availableSlots: timeSlots });
+    } catch (error) {
+      console.error("Error getting available times:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   // Reservation routes
   app.get("/api/reservations", isAuthenticated, async (req, res) => {
     try {
