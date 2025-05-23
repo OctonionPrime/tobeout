@@ -8,6 +8,7 @@ import {
   generateAlternativeSuggestionMessage,
   generateResponseToGeneralInquiry
 } from './openai';
+import { ConversationManager } from './conversation-manager';
 import { format } from 'date-fns';
 
 // Store active bots by restaurant ID
