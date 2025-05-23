@@ -162,11 +162,16 @@ async function calculateAvailabilityWindow(
   const requestedDateTime = parseISO(`${date}T${requestedTime}`);
   let availableHours = 0;
   
+  // Only consider confirmed/created reservations (ignore canceled ones)
+  const activeReservations = tableReservations.filter(r => 
+    ['confirmed', 'created'].includes(r.status || '')
+  );
+  
   // Check availability for next 30 hours
   for (let hours = 1; hours <= 30; hours++) {
     const checkTime = addMinutes(requestedDateTime, hours * 60);
     
-    const hasConflict = tableReservations.some(reservation => {
+    const hasConflict = activeReservations.some(reservation => {
       if (!reservation.time) return false;
       
       const reservationStart = parseISO(`${reservation.date}T${reservation.time}`);
