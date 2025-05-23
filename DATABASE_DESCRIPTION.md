@@ -1,8 +1,9 @@
-# ToBeOut Restaurant Booking System - Database Architecture
+# ToBeOut Restaurant Booking System - Database Architecture with AI Integration
 
-**Last Updated:** January 23, 2025 - 4:04 AM  
-**Version:** v1.6 - High-Performance Caching Layer & Enterprise Scalability Complete  
+**Last Updated:** January 23, 2025 - 5:24 AM  
+**Version:** v2.0 - AI-Powered Intelligent Assistant Complete  
 **Database:** PostgreSQL with Drizzle ORM
+**AI:** OpenAI GPT-4o Integration with Telegram Bot
 
 ---
 
