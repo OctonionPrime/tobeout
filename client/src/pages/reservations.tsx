@@ -402,7 +402,7 @@ export default function Reservations() {
                             
                             <div className="text-center">
                               <p className="text-sm font-medium text-gray-900">
-                                {reservation.table?.name || 'Table not assigned'}
+                                {reservation.tableName || 'Table not assigned'}
                               </p>
                               <p className="text-xs text-gray-500">{reservation.guests} guests</p>
                             </div>
