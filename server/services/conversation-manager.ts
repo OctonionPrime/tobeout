@@ -172,11 +172,18 @@ export class ConversationManager {
       parts.push(`${info.guests} ${guestText}`);
     }
 
-    // Add date in natural language
+    // Add date in natural language using Moscow timezone
     if (info.date) {
       const dateObj = new Date(info.date);
-      const today = new Date().toISOString().split('T')[0];
-      const tomorrow = new Date();
+      // Use Moscow timezone for accurate date comparison
+      const getMoscowDate = () => {
+        const now = new Date();
+        return new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+      };
+      
+      const moscowToday = getMoscowDate();
+      const today = moscowToday.toISOString().split('T')[0];
+      const tomorrow = new Date(moscowToday);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const tomorrowDate = tomorrow.toISOString().split('T')[0];
 
