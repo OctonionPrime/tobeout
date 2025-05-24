@@ -1,5 +1,5 @@
 /**
- * conversation-manager.refactored.ts
+ * conversation-manager.ts
  *
  * Manages individual restaurant AI assistant conversations.
  * Each conversation is an instance of ActiveConversation.
