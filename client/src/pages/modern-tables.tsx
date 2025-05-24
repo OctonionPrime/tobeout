@@ -4,10 +4,11 @@ import { format, addDays } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, Users, Settings, MousePointer2, Edit2, RefreshCw, Move } from "lucide-react";
+import { Clock, Users, Settings, MousePointer2, Edit2, RefreshCw, Move, Calendar, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
 
 interface TableData {
   id: number;
@@ -245,63 +246,100 @@ export default function ModernTables() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 space-y-8">
-      {/* Beautiful Schedule Grid */}
-      <div className="bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 rounded-3xl shadow-2xl border border-gray-200/50 dark:border-gray-700/50 overflow-hidden">
-        <div className="p-6 border-b border-gray-200/50 dark:border-gray-700/50">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                Restaurant Management - {format(new Date(selectedDate), 'EEEE, MMMM d, yyyy')}
-              </h3>
-              <p className="text-gray-500 dark:text-gray-400 mt-1">
-                {activeView === 'schedule' && 'Real-time availability across all tables • Auto-refreshes every 30 seconds'}
-                {activeView === 'floorplan' && 'Drag and drop tables to arrange your restaurant layout'}
-                {activeView === 'grid' && 'Grid view of all tables with current status'}
-                {activeView === 'list' && 'Detailed list view of all table information'}
-              </p>
-            </div>
-            <div className="flex items-center gap-4">
-              {/* View Tabs */}
-              <div className="flex items-center bg-white dark:bg-gray-800 rounded-xl p-1 shadow-lg border border-gray-200/50 dark:border-gray-700/50">
-                {[
-                  { id: 'schedule', label: 'Schedule', icon: Clock },
-                  { id: 'floorplan', label: 'Floor Plan', icon: Settings },
-                  { id: 'grid', label: 'Grid', icon: MousePointer2 },
-                  { id: 'list', label: 'List', icon: Edit2 }
-                ].map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveView(id as any)}
-                    className={`
-                      flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200
-                      ${activeView === id 
-                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25' 
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-700'
-                      }
-                    `}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {label}
-                  </button>
-                ))}
+    <DashboardLayout>
+      <div className="container mx-auto px-4 py-8 space-y-8">
+        {/* Date Selection Panel */}
+        <Card className="border border-gray-200/50 dark:border-gray-700/50">
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Calendar className="h-5 w-5 text-blue-600" />
+                <CardTitle className="text-lg">Table Management</CardTitle>
               </div>
+              <div className="flex items-center gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setSelectedDate(format(getMoscowDate(), 'yyyy-MM-dd'))}
+                  className="text-xs"
+                >
+                  Today
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setSelectedDate(format(addDays(getMoscowDate(), 1), 'yyyy-MM-dd'))}
+                  className="text-xs"
+                >
+                  Tomorrow
+                </Button>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="px-3 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                />
+              </div>
+            </div>
+          </CardHeader>
+        </Card>
 
-              {(isLoading || tablesLoading) && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  Loading...
+        {/* Beautiful Schedule Grid */}
+        <div className="bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 rounded-3xl shadow-2xl border border-gray-200/50 dark:border-gray-700/50 overflow-hidden">
+          <div className="p-6 border-b border-gray-200/50 dark:border-gray-700/50">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+                  Restaurant Management - {format(new Date(selectedDate), 'EEEE, MMMM d, yyyy')}
+                </h3>
+                <p className="text-gray-500 dark:text-gray-400 mt-1">
+                  {activeView === 'schedule' && 'Real-time availability across all tables • Auto-refreshes every 30 seconds'}
+                  {activeView === 'floorplan' && 'Drag and drop tables to arrange your restaurant layout'}
+                  {activeView === 'grid' && 'Grid view of all tables with current status'}
+                  {activeView === 'list' && 'Detailed list view of all table information'}
+                </p>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* View Tabs */}
+                <div className="flex items-center bg-white dark:bg-gray-800 rounded-xl p-1 shadow-lg border border-gray-200/50 dark:border-gray-700/50">
+                  {[
+                    { id: 'schedule', label: 'Schedule', icon: Clock },
+                    { id: 'floorplan', label: 'Floor Plan', icon: Settings },
+                    { id: 'grid', label: 'Grid', icon: MousePointer2 },
+                    { id: 'list', label: 'List', icon: Edit2 }
+                  ].map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => setActiveView(id as any)}
+                      className={`
+                        flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200
+                        ${activeView === id 
+                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25' 
+                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-700'
+                        }
+                      `}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {label}
+                    </button>
+                  ))}
                 </div>
-              )}
 
-              {activeView === 'schedule' && (
-                <Badge variant="outline" className="text-xs">
-                  Hourly slots
-                </Badge>
-              )}
+                {(isLoading || tablesLoading) && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Loading...
+                  </div>
+                )}
+
+                {activeView === 'schedule' && (
+                  <Badge variant="outline" className="text-xs">
+                    Hourly slots
+                  </Badge>
+                )}
+              </div>
             </div>
           </div>
-        </div>
 
         {/* Schedule View Content */}
         <div className="p-6">
@@ -395,6 +433,7 @@ export default function ModernTables() {
           )}
         </div>
       </div>
-    </div>
+      </div>
+    </DashboardLayout>
   );
 }
