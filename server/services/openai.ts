@@ -8,7 +8,7 @@ import type {
   ConversationFlow,
   AIAnalysisResult,
   AIService // This is the interface OpenAIServiceImpl will implement
-} from './conversation-manager.refactored'; // Adjust path as necessary
+} from './conversation-manager'; // Fixed to use correct file
 
 // Initialize OpenAI client
 // Ensure OPENAI_API_KEY is set in your environment variables
@@ -81,7 +81,7 @@ export class OpenAIServiceImpl implements AIService {
         }
       }
 
-      const systemPrompt = `You are "Sofia", an expert AI assistant for a restaurant, tasked with understanding guest messages to facilitate bookings.
+      const systemPrompt = "You are \"Sofia\", an expert AI assistant for a restaurant, tasked with understanding guest messages to facilitate bookings.
 Your goal is to extract key information (entities), determine guest sentiment, and decide the next logical conversation action.
 The restaurant operates in MOSCOW TIMEZONE. All date interpretations MUST be based on this.
 
@@ -115,15 +115,15 @@ CRITICAL ANALYSIS & EXTRACTION RULES:
     * If information is ALREADY in "Information already collected", set the entity to null or do not include it, UNLESS the user is EXPLICITLY changing it, correcting it, or reconfirming it after being asked. Prioritize NEW or CORRECTED information.
 2.  **Confidence Score (confidence)**: 0.0 to 1.0. How certain are you that this message is related to making or modifying a booking? High for booking details, low for unrelated chat.
 3.  **Conversation Action (conversation_action)**: Choose ONE:
-    * `collect_info`: If more information is needed for a booking.
-    * `ready_to_book`: If ALL necessary information (date, time, guests, name, phone) seems to be collected or confirmed.
-    * `acknowledge_frustration`: If guest expresses frustration (e.g., "I already told you", "this is annoying", "you're not understanding", or if they are repeating information they just gave and you asked for something else).
-    * `show_alternatives`: If the user is asking for alternatives, or if a booking attempt failed and alternatives should be offered, or if the current request is likely unavailable.
-    * `general_inquiry`: For general questions about the restaurant (hours, menu, location) not directly part of booking flow.
-    * `reset_and_restart`: If the conversation is hopelessly stuck or the user requests to start over.
-    * `unknown_intent`: If the message intent is unclear or unrelated to restaurant services.
-4.  **Guest Sentiment (guest_sentiment)**: Choose ONE: `positive`, `neutral`, `frustrated`, `confused`, `impatient`, `appreciative`.
-5.  **Next Response Tone (next_response_tone)**: Suggest a tone for the bot's reply: `friendly`, `empathetic`, `professional`, `direct`, `enthusiastic`, `concise`, `apologetic`.
+    * collect_info: If more information is needed for a booking.
+    * ready_to_book: If ALL necessary information (date, time, guests, name, phone) seems to be collected or confirmed.
+    * acknowledge_frustration: If guest expresses frustration (e.g., "I already told you", "this is annoying", "you're not understanding", or if they are repeating information they just gave and you asked for something else).
+    * show_alternatives: If the user is asking for alternatives, or if a booking attempt failed and alternatives should be offered, or if the current request is likely unavailable.
+    * general_inquiry: For general questions about the restaurant (hours, menu, location) not directly part of booking flow.
+    * reset_and_restart: If the conversation is hopelessly stuck or the user requests to start over.
+    * unknown_intent: If the message intent is unclear or unrelated to restaurant services.
+4.  **Guest Sentiment (guest_sentiment)**: Choose ONE: positive, neutral, frustrated, confused, impatient, appreciative.
+5.  **Next Response Tone (next_response_tone)**: Suggest a tone for the bot's reply: friendly, empathetic, professional, direct, enthusiastic, concise, apologetic.
 
 CURRENT MESSAGE TO ANALYZE: "${message}"
 
