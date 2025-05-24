@@ -276,11 +276,10 @@ export default function ModernTables() {
   const isMovingWithinSameReservation = (targetTableId: number, targetTime: string): boolean => {
     if (!scheduleData || !draggedReservation) return false;
     
-    // Check if target table has reservation from same guest
-    const targetSlot = scheduleData.find(s => s.time === targetTime);
-    const targetTable = targetSlot?.tables?.find(t => t.id === targetTableId);
-    
-    return targetTable?.reservation?.guestName === draggedReservation.guestName;
+    // Only prevent moves to the EXACT same slot (same table + same time)
+    // Allow moves that shift the time even if there's some overlap
+    return draggedReservation.currentTableId === targetTableId && 
+           draggedReservation.currentTime === targetTime;
   };
 
   const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
