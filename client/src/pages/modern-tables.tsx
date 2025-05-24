@@ -247,19 +247,26 @@ export default function ModernTables() {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     
+    if (!draggedReservation) return;
+    
     setDragOverSlot({ tableId, time });
     
-    // Validate if this is a valid drop zone
+    // Find the target slot
     const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find(t => t.id === tableId);
-    const hasReservation = targetSlot?.reservation && targetSlot.reservation.status === 'confirmed';
-    const isAvailable = targetSlot?.status === 'available' && !hasReservation;
+    if (!targetSlot) {
+      setIsValidDropZone(false);
+      return;
+    }
+    
+    // Allow dropping on any table (available or with different reservations)
+    // but prevent dropping on the same table at the same time
+    const isSameLocation = targetSlot.id === draggedReservation.currentTableId && time === draggedReservation.currentTime;
     
     // Check capacity match
-    const capacityMatch = draggedReservation ? 
-      (targetSlot?.minGuests || 0) <= draggedReservation.guestCount && 
-      draggedReservation.guestCount <= (targetSlot?.maxGuests || 0) : false;
+    const capacityMatch = draggedReservation.guestCount >= (targetSlot.minGuests || 1) && 
+                         draggedReservation.guestCount <= (targetSlot.maxGuests || 10);
     
-    setIsValidDropZone(isAvailable && capacityMatch);
+    setIsValidDropZone(!isSameLocation && capacityMatch);
   };
 
   const handleDragLeave = () => {
@@ -270,13 +277,20 @@ export default function ModernTables() {
   const handleDrop = (e: React.DragEvent, tableId: number, time: string) => {
     e.preventDefault();
     
-    if (!draggedReservation || !isValidDropZone) {
+    if (!draggedReservation) {
+      setDragOverSlot(null);
+      return;
+    }
+
+    // Check if it's a valid move (not same location and capacity match)
+    const isSameLocation = tableId === draggedReservation.currentTableId && time === draggedReservation.currentTime;
+    if (isSameLocation) {
       setDraggedReservation(null);
       setDragOverSlot(null);
       return;
     }
 
-    // Execute the move
+    // Execute the move - allow moving to any valid table
     moveReservationMutation.mutate({
       reservationId: draggedReservation.reservationId,
       newTableId: tableId,
