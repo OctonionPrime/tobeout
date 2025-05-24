@@ -8,7 +8,7 @@ import type {
   ConversationFlow,
   AIAnalysisResult,
   AIService // This is the interface OpenAIServiceImpl will implement
-} from './conversation-manager'; // Fixed import path
+} from './conversation-manager.refactored'; // Adjust path as necessary
 
 // Initialize OpenAI client
 // Ensure OPENAI_API_KEY is set in your environment variables
