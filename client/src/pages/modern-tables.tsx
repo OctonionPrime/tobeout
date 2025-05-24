@@ -263,7 +263,7 @@ export default function ModernTables() {
       const slot = scheduleData.find(s => s.time === timeSlot);
       const table = slot?.tables?.find(t => t.id === targetTableId);
       
-      // Check if this slot already has a different reservation
+      // Check if this slot already has a different reservation (not the one being moved)
       if (table?.reservation && table.reservation.id !== draggedReservation.reservationId) {
         return true; // Conflict detected
       }
@@ -272,10 +272,28 @@ export default function ModernTables() {
     return false; // No conflicts
   };
 
+  // Check if target location is within the same guest's existing reservation block
+  const isMovingWithinSameReservation = (targetTableId: number, targetTime: string): boolean => {
+    if (!scheduleData || !draggedReservation) return false;
+    
+    // Check if target table has reservation from same guest
+    const targetSlot = scheduleData.find(s => s.time === targetTime);
+    const targetTable = targetSlot?.tables?.find(t => t.id === targetTableId);
+    
+    return targetTable?.reservation?.guestName === draggedReservation.guestName;
+  };
+
   const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
     e.preventDefault();
     
     setDragOverSlot({ tableId, time });
+    
+    // Special case: moving within the same reservation is always valid
+    if (isMovingWithinSameReservation(tableId, time)) {
+      setIsValidDropZone(true);
+      e.dataTransfer.dropEffect = 'move';
+      return;
+    }
     
     // Check for reservation conflicts (2-hour duration, can be made dynamic)
     const hasConflict = checkReservationConflict(tableId, time, 2);
