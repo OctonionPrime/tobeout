@@ -1,24 +1,98 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { storage } from '../storage';
+import { ActiveConversation, DefaultResponseFormatter } from './conversation-manager';
+import { OpenAIServiceImpl } from './openai';
+import { getAvailableTimeSlots } from './availability.service';
+import { createTelegramReservation } from './telegram_booking';
 
 // Store active bots by restaurant ID
 const activeBots = new Map<number, TelegramBot>();
 
-// Sofia AI Message Processing
+// Store active conversations by chat ID
+const activeConversations = new Map<number, ActiveConversation>();
+
+// Sofia AI Message Processing with full conversation intelligence
 async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: number, text: string) {
   try {
-    console.log(`📱 [Telegram] Processing message from ${chatId}: "${text}"`);
+    console.log(`📱 [Sofia AI] Processing message from ${chatId}: "${text}"`);
     
-    // Simple response for now while we fix imports
-    const response = "Hello! I'm Sofia, your AI hostess. I'm currently experiencing some technical updates but will be back to help you with reservations very soon!";
+    // Get or create conversation for this chat
+    let conversation = activeConversations.get(chatId);
+    if (!conversation) {
+      const aiService = new OpenAIServiceImpl();
+      const formatter = new DefaultResponseFormatter();
+      conversation = new ActiveConversation(aiService, formatter);
+      activeConversations.set(chatId, conversation);
+      console.log(`🎯 [Sofia AI] Started new conversation for chat ${chatId}`);
+    }
+
+    // Process message through Sofia's conversation intelligence
+    const response = await conversation.handleMessage(text);
     
-    // Send Sofia's response back to guest
+    // Check if Sofia is ready to make a reservation
+    const flow = conversation.getConversationFlow();
+    if (flow.stage === 'confirming' && hasCompleteBookingInfo(flow.collectedInfo)) {
+      // Sofia has all the info - attempt to create reservation
+      try {
+        const result = await createTelegramReservation(
+          restaurantId,
+          flow.collectedInfo.date!,
+          flow.collectedInfo.time!,
+          flow.collectedInfo.guests!,
+          flow.collectedInfo.name!,
+          flow.collectedInfo.phone!,
+          flow.collectedInfo.special_requests
+        );
+
+        if (result.success) {
+          const confirmationMessage = `🎉 Perfect! Your reservation is confirmed!\n\n✨ ${result.message}\n\nWe're excited to welcome you! 🥂`;
+          await bot.sendMessage(chatId, confirmationMessage);
+          
+          // Clear conversation after successful booking
+          activeConversations.delete(chatId);
+          return;
+        } else {
+          // Booking failed - offer alternatives
+          const alternatives = await getAvailableTimeSlots(
+            restaurantId,
+            flow.collectedInfo.date!,
+            flow.collectedInfo.guests!,
+            { maxResults: 3 }
+          );
+
+          let alternativeMessage = `I'm sorry, but that time slot isn't available anymore. `;
+          if (alternatives.length > 0) {
+            alternativeMessage += `Here are some great alternatives:\n\n`;
+            alternatives.forEach((slot, index) => {
+              alternativeMessage += `${index + 1}. ${slot.timeDisplay} at Table ${slot.tableName}\n`;
+            });
+            alternativeMessage += `\nWhich option works for you? Just reply with the number! 🎯`;
+          } else {
+            alternativeMessage += `Would you like to try a different date or time? I'm here to help find the perfect spot for you! 📅`;
+          }
+          
+          await bot.sendMessage(chatId, alternativeMessage);
+          return;
+        }
+      } catch (error) {
+        console.error('❌ [Sofia AI] Error creating reservation:', error);
+        await bot.sendMessage(chatId, "I encountered a small issue while confirming your reservation. Let me try again in just a moment!");
+      }
+    }
+
+    // Send Sofia's intelligent response
     await bot.sendMessage(chatId, response);
+    console.log(`✅ [Sofia AI] Sent response to ${chatId}`);
     
   } catch (error) {
-    console.error('❌ [Telegram] Error processing message:', error);
-    await bot.sendMessage(chatId, "I apologize, but I'm experiencing technical difficulties. Please try again in a moment.");
+    console.error('❌ [Sofia AI] Error processing conversation:', error);
+    await bot.sendMessage(chatId, "I apologize for the technical hiccup! I'm Sofia, your AI hostess. How can I help you with a reservation today? 😊");
   }
+}
+
+// Helper function to check if booking info is complete
+function hasCompleteBookingInfo(info: any): boolean {
+  return !!(info.date && info.time && info.guests && info.name && info.phone);
 }
 
 // Initialize bot for a restaurant
