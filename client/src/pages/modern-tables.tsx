@@ -327,7 +327,7 @@ export default function ModernTables() {
     },
   });
 
-  // Quick move mutation with optimistic updates
+  // Quick move mutation with conflict detection and optimistic updates
   const quickMoveMutation = useMutation({
     mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
       // Find current reservation details
@@ -342,12 +342,33 @@ export default function ModernTables() {
       const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
       const newTime = `${newHour.toString().padStart(2, '0')}:00`;
       
+      // CONFLICT DETECTION: Check if move would create overlapping reservations
+      const targetSlots = [
+        newTime,
+        `${(newHour + 1).toString().padStart(2, '0')}:00`
+      ];
+      
+      for (const targetTime of targetSlots) {
+        const targetSlot = scheduleData?.find(s => s.time === targetTime);
+        const targetTable = targetSlot?.tables?.find(t => t.id === currentTable.id);
+        
+        // Check if target slot has a different reservation (conflict)
+        if (targetTable?.reservation && targetTable.reservation.id !== reservationId) {
+          throw new Error(`Cannot move: ${targetTable.reservation.guestName} already has ${targetTime} reserved`);
+        }
+      }
+      
+      // Prevent moves outside business hours (basic validation)
+      if (newHour < 10 || newHour > 22) {
+        throw new Error('Cannot move outside business hours (10:00 - 22:00)');
+      }
+      
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tableId: currentTable.id,
-          timeSlot: newTime,
+          time: newTime,
           date: selectedDate
         }),
       });
