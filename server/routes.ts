@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
+import { initializeTelegramBot } from "./services/telegram";
 import { 
  insertUserSchema, insertRestaurantSchema, 
  insertTableSchema, insertGuestSchema, 
@@ -880,7 +881,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
        // Test the connection by trying to get the bot information
        try {
-         const bot = await setupTelegramBot(settings.token, restaurant.id);
+         const TelegramBot = require('node-telegram-bot-api');
+         const bot = new TelegramBot(settings.token);
          const botInfo = await bot.getMe();
 
          // Save the bot information to settings
