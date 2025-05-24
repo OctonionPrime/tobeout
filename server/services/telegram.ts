@@ -38,7 +38,8 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
       flow.collectedInfo.phone = `telegram_${chatId}`;
     }
     
-    if (flow.stage === 'confirming' && hasCompleteBookingInfo(flow.collectedInfo)) {
+    // Check if we have all booking info and should proceed to reservation
+    if (hasCompleteBookingInfo(flow.collectedInfo) && (flow.stage === 'confirming' || flow.stage === 'collecting')) {
       // Sofia has all the info - attempt to create reservation
       try {
         const result = await createTelegramReservation(
