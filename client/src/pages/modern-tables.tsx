@@ -140,14 +140,19 @@ export default function ModernTables() {
       // Snapshot the previous value
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
 
-      // Optimistically update the UI instantly - move reservation as one unit
+      // Optimistically update the UI instantly - move entire 2-hour reservation block
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
         if (!old || !draggedReservation) return old;
+        
+        // Calculate next hour for 2-hour reservation block
+        const currentHour = parseInt(newTime.split(':')[0]);
+        const nextHour = (currentHour + 1).toString().padStart(2, '0');
+        const nextTimeSlot = `${nextHour}:00`;
         
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            // Remove reservation from ALL previous locations (ensure clean move)
+            // Remove reservation from ALL previous locations (both hours)
             if (table.reservation?.id === reservationId) {
               return { 
                 ...table, 
@@ -155,8 +160,9 @@ export default function ModernTables() {
                 status: 'available' 
               };
             }
-            // Add reservation ONLY to the new location
-            if (table.id === newTableId && slot.time === newTime) {
+            
+            // Add reservation to BOTH new time slots (2-hour block)
+            if (table.id === newTableId && (slot.time === newTime || slot.time === nextTimeSlot)) {
               return { 
                 ...table, 
                 status: 'reserved',
@@ -164,7 +170,7 @@ export default function ModernTables() {
                   id: reservationId,
                   guestName: draggedReservation.guestName,
                   guestCount: draggedReservation.guestCount,
-                  timeSlot: newTime,
+                  timeSlot: slot.time, // Use the specific time slot
                   phone: '',
                   status: 'confirmed'
                 }
