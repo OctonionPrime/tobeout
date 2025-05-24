@@ -321,9 +321,9 @@ export class DatabaseStorage implements IStorage {
       whereConditions.push(eq(reservations.date, filters.date));
     }
 
-    // Apply status filter
+    // Apply status filter - explicitly use reservations.status to avoid ambiguity
     if (filters?.status && filters.status.length > 0) {
-      whereConditions.push(sql`${reservations.status} IN ${filters.status}`);
+      whereConditions.push(inArray(reservations.status, filters.status));
     }
 
     // Apply upcoming filter
