@@ -31,6 +31,13 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     
     // Check if Sofia is ready to make a reservation
     const flow = conversation.getConversationFlow();
+    
+    // For Telegram, if we have name, date, time, guests but no phone, use chat ID as contact
+    if (flow.stage === 'confirming' && flow.collectedInfo.name && flow.collectedInfo.date && 
+        flow.collectedInfo.time && flow.collectedInfo.guests && !flow.collectedInfo.phone) {
+      flow.collectedInfo.phone = `telegram_${chatId}`;
+    }
+    
     if (flow.stage === 'confirming' && hasCompleteBookingInfo(flow.collectedInfo)) {
       // Sofia has all the info - attempt to create reservation
       try {
@@ -83,6 +90,9 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     // Send Sofia's intelligent response
     await bot.sendMessage(chatId, response);
     console.log(`✅ [Sofia AI] Sent response to ${chatId}`);
+    
+    // Debug: Log what info we have
+    console.log(`🔍 [Sofia AI] Current booking info:`, flow.collectedInfo);
     
   } catch (error) {
     console.error('❌ [Sofia AI] Error processing conversation:', error);
