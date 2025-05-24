@@ -215,13 +215,13 @@ Kitchen running behind, need to spread out bookings:
 - [x] Status color coding
 - [x] 30-second auto-refresh
 
-### Phase 2: Enhanced Drag & Drop System (IN PROGRESS)
-- [ ] Make reservation slots draggable
-- [ ] Add drag ghost/preview
-- [ ] Implement drop zone validation
-- [ ] Add visual feedback (green/red zones)
-- [ ] Smart capacity checking
-- [ ] **Backend Integration:** Reservation move API endpoint
+### Phase 2: Enhanced Drag & Drop System ✅ COMPLETED
+- [x] Make reservation slots draggable
+- [x] Add drag ghost/preview with Move icon
+- [x] Implement drop zone validation
+- [x] Add visual feedback (green/red zones)
+- [x] Smart capacity checking
+- [x] **Backend Integration:** Reservation move API endpoint
 
 **⚠️ Critical:** All drag & drop functionality must be perfectly aligned with backend APIs and database operations to ensure data integrity and real-time synchronization.
 
