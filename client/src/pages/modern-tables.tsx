@@ -288,10 +288,10 @@ export default function ModernTables() {
     
     setDragOverSlot({ tableId, time });
     
-    // Special case: moving within the same reservation is always valid
+    // Special case: prevent moving within the same reservation (it doesn't make sense)
     if (isMovingWithinSameReservation(tableId, time)) {
-      setIsValidDropZone(true);
-      e.dataTransfer.dropEffect = 'move';
+      setIsValidDropZone(false);
+      e.dataTransfer.dropEffect = 'none';
       return;
     }
     
