@@ -122,7 +122,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 
     // Handle incoming messages with Sofia's AI
     bot.on('message', async (msg) => {
-      if (msg.text && msg.chat.id) {
+      if (msg.text && msg.chat.id && !msg.text.startsWith('/processed_')) {
         console.log(`📱 [Sofia AI] Received message: "${msg.text}" from chat ${msg.chat.id}`);
         await handleMessage(bot, restaurantId, msg.chat.id, msg.text);
       }
