@@ -308,7 +308,7 @@ export default function ModernTables() {
       const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
       const newTime = `${newHour.toString().padStart(2, '0')}:00`;
       
-      const response = await apiRequest(`/api/reservations/${reservationId}`, {
+      const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -687,6 +687,78 @@ export default function ModernTables() {
         </div>
       </div>
       </div>
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <>
+          <div 
+            className="fixed inset-0 z-40" 
+            onClick={() => setContextMenu(null)}
+          />
+          <div
+            className="fixed z-50 bg-white border border-gray-200 rounded-md shadow-lg py-1 min-w-[180px]"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {contextMenu.reservationId ? (
+              // Reservation context menu
+              <>
+                <div className="px-3 py-2 text-sm font-medium text-gray-900 border-b">
+                  {contextMenu.guestName || 'Reservation'}
+                </div>
+                <button
+                  className="w-full px-3 py-2 text-sm text-left hover:bg-gray-100 flex items-center gap-2"
+                  onClick={() => quickMoveMutation.mutate({ reservationId: contextMenu.reservationId!, direction: 'up' })}
+                >
+                  <ArrowUp className="w-4 h-4" />
+                  Move 1 Hour Earlier
+                </button>
+                <button
+                  className="w-full px-3 py-2 text-sm text-left hover:bg-gray-100 flex items-center gap-2"
+                  onClick={() => quickMoveMutation.mutate({ reservationId: contextMenu.reservationId!, direction: 'down' })}
+                >
+                  <ArrowDown className="w-4 h-4" />
+                  Move 1 Hour Later
+                </button>
+                <button
+                  className="w-full px-3 py-2 text-sm text-left hover:bg-gray-100 flex items-center gap-2"
+                  onClick={() => {
+                    setContextMenu(null);
+                    toast({ title: "Edit Feature", description: "Edit reservation feature coming soon!" });
+                  }}
+                >
+                  <Edit2 className="w-4 h-4" />
+                  Edit Details
+                </button>
+                <div className="border-t my-1" />
+                <button
+                  className="w-full px-3 py-2 text-sm text-left hover:bg-red-50 text-red-600 flex items-center gap-2"
+                  onClick={() => cancelReservationMutation.mutate(contextMenu.reservationId!)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Cancel Reservation
+                </button>
+              </>
+            ) : (
+              // Empty slot context menu
+              <>
+                <div className="px-3 py-2 text-sm font-medium text-gray-900 border-b">
+                  Available Slot
+                </div>
+                <button
+                  className="w-full px-3 py-2 text-sm text-left hover:bg-gray-100 flex items-center gap-2"
+                  onClick={() => {
+                    setContextMenu(null);
+                    toast({ title: "Create Feature", description: "Create new reservation feature coming soon!" });
+                  }}
+                >
+                  <UserPlus className="w-4 h-4" />
+                  Create New Reservation
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
     </DashboardLayout>
   );
 }
