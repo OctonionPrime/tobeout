@@ -232,7 +232,7 @@ function Router() {
       </Route>
       
       <Route path="/ai-settings">
-        <ProtectedRoute requiredRole={['admin', 'manager']}>
+        <ProtectedRoute requiredRole={['admin']}>
           <AISettings />
         </ProtectedRoute>
       </Route>
@@ -244,7 +244,7 @@ function Router() {
       </Route>
       
       <Route path="/integrations">
-        <ProtectedRoute requiredRole={['admin', 'manager']}>
+        <ProtectedRoute requiredRole={['admin']}>
           <Integrations />
         </ProtectedRoute>
       </Route>
