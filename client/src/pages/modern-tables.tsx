@@ -83,7 +83,7 @@ export default function ModernTables() {
       return Promise.all(promises);
     },
     enabled: !!restaurant && timeSlots.length > 0,
-    refetchInterval: 3000, // Auto-refresh every 3 seconds for real-time updates
+    refetchInterval: 30000, // Auto-refresh every 30 seconds to reduce server load
   });
 
   // Status colors for modern design
