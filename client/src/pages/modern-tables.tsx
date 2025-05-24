@@ -53,6 +53,7 @@ export default function ModernTables() {
     currentTableId: number;
     currentTableName: string; // Enhanced tracking
     currentTime: string;
+    phone?: string; // Optional phone for reservation data
   } | null>(null);
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
   const [dragOverSlot, setDragOverSlot] = useState<{tableId: number; time: string} | null>(null);
@@ -139,14 +140,14 @@ export default function ModernTables() {
       // Snapshot the previous value
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
 
-      // Optimistically update the UI instantly with better logic
+      // Optimistically update the UI instantly - move reservation as one unit
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
         if (!old || !draggedReservation) return old;
         
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            // Remove reservation from old location
+            // Remove reservation from ALL previous locations (ensure clean move)
             if (table.reservation?.id === reservationId) {
               return { 
                 ...table, 
@@ -154,7 +155,7 @@ export default function ModernTables() {
                 status: 'available' 
               };
             }
-            // Add reservation to new location
+            // Add reservation ONLY to the new location
             if (table.id === newTableId && slot.time === newTime) {
               return { 
                 ...table, 
@@ -164,7 +165,7 @@ export default function ModernTables() {
                   guestName: draggedReservation.guestName,
                   guestCount: draggedReservation.guestCount,
                   timeSlot: newTime,
-                  phone: draggedReservation.phone || '',
+                  phone: '',
                   status: 'confirmed'
                 }
               };
