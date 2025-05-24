@@ -162,37 +162,43 @@ export class ActiveConversation {
       this.flow.stage = 'confirming';
       responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
     } else {
-      // Default to collecting if not confirming or in frustration recovery
-      this.flow.stage = 'collecting';
-      switch (aiResult.conversation_action) {
-        case 'collect_info':
-          const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
-          const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
-          responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
-          break;
-        case 'ready_to_book':
-          this.flow.stage = 'confirming'; // Should have been caught by hasCompleteBookingInfo
-          responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
-          break;
-        case 'show_alternatives':
-          this.flow.stage = 'suggesting_alternatives'; // Set stage
-          // The actual fetching of alternatives happens in telegram.ts,
-          // then it calls formatter.generateSmartAlternativeMessageText
-          // This response is just to acknowledge the intent to show alternatives.
-          responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summary);
-          break;
-        case 'general_inquiry':
-          responseText = this.responseFormatter.generateFriendlyResponse(this.flow, newMessage, aiResult);
-          break;
-        case 'reset_and_restart':
-             responseText = this.responseFormatter.generateResetResponse(this.flow, summary);
-             this.flow.collectedInfo = {};
-             this.flow.guestFrustrationLevel = 0;
-             this.flow.stage = 'greeting';
-             break;
-        default:
-          responseText = this.responseFormatter.generateContextualResponse(this.flow, summary, missingFieldsText);
-          break;
+      // Check if this is a greeting/start message
+      if (this.flow.responsesSent === 1 && (newMessage === '/start' || newMessage.toLowerCase().includes('hello') || newMessage.toLowerCase().includes('hi'))) {
+        this.flow.stage = 'greeting';
+        responseText = "🌟 Hello! Welcome to Demo Restaurant! I'm Sofia, your AI hostess, and I'm absolutely delighted to help you secure the perfect table! ✨\n\nI can assist you with making a reservation right now. Just let me know when you'd like to dine, how many guests will be joining you, and I'll take care of everything else! 🥂\n\nWhat sounds good to you?";
+      } else {
+        // Default to collecting if not confirming or in frustration recovery
+        this.flow.stage = 'collecting';
+        switch (aiResult.conversation_action) {
+          case 'collect_info':
+            const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
+            const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
+            responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
+            break;
+          case 'ready_to_book':
+            this.flow.stage = 'confirming'; // Should have been caught by hasCompleteBookingInfo
+            responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
+            break;
+          case 'show_alternatives':
+            this.flow.stage = 'suggesting_alternatives'; // Set stage
+            // The actual fetching of alternatives happens in telegram.ts,
+            // then it calls formatter.generateSmartAlternativeMessageText
+            // This response is just to acknowledge the intent to show alternatives.
+            responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summary);
+            break;
+          case 'general_inquiry':
+            responseText = this.responseFormatter.generateFriendlyResponse(this.flow, newMessage, aiResult);
+            break;
+          case 'reset_and_restart':
+            responseText = this.responseFormatter.generateResetResponse(this.flow, summary);
+            this.flow.collectedInfo = {};
+            this.flow.guestFrustrationLevel = 0;
+            this.flow.stage = 'greeting';
+            break;
+          default:
+            responseText = this.responseFormatter.generateContextualResponse(this.flow, summary, missingFieldsText);
+            break;
+        }
       }
     }
 
