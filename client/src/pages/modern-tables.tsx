@@ -130,75 +130,11 @@ export default function ModernTables() {
       return response.json();
     },
     
-    // INSTANT UPDATE - Optimistic UI
+    // Simplified approach: Skip optimistic updates for complex moves
     onMutate: async ({ reservationId, newTableId, newTime }) => {
-      // Cancel ALL outgoing refetches to prevent conflicts
-      await queryClient.cancelQueries({ 
-        queryKey: ["/api/tables/availability/schedule"] 
-      });
-
-      // Snapshot the previous value
-      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
-
-      // Optimistically update the UI instantly - move entire 2-hour reservation block
-      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
-        if (!old || !draggedReservation) return old;
-        
-        // Calculate source and target time slots
-        const sourceCurrentHour = parseInt(draggedReservation.currentTime.split(':')[0]);
-        const sourceNextHour = (sourceCurrentHour + 1).toString().padStart(2, '0');
-        const sourceFirstSlot = draggedReservation.currentTime;
-        const sourceSecondSlot = `${sourceNextHour}:00`;
-        
-        const targetCurrentHour = parseInt(newTime.split(':')[0]);
-        const targetNextHour = (targetCurrentHour + 1).toString().padStart(2, '0');
-        const targetFirstSlot = newTime;
-        const targetSecondSlot = `${targetNextHour}:00`;
-        
-        return old.map((slot: any) => ({
-          ...slot,
-          tables: slot.tables.map((table: any) => {
-            // Remove reservation ONLY from specific source slots
-            const isSourceSlot = (
-              table.id === draggedReservation.currentTableId && 
-              (slot.time === sourceFirstSlot || slot.time === sourceSecondSlot) &&
-              table.reservation?.id === reservationId
-            );
-            
-            if (isSourceSlot) {
-              return { 
-                ...table, 
-                reservation: null, 
-                status: 'available' 
-              };
-            }
-            
-            // Add reservation ONLY to specific target slots
-            const isTargetSlot = (
-              table.id === newTableId && 
-              (slot.time === targetFirstSlot || slot.time === targetSecondSlot)
-            );
-            
-            if (isTargetSlot) {
-              return { 
-                ...table, 
-                status: 'reserved',
-                reservation: {
-                  id: reservationId,
-                  guestName: draggedReservation.guestName,
-                  guestCount: draggedReservation.guestCount,
-                  timeSlot: slot.time, // Use the specific time slot
-                  phone: '',
-                  status: 'confirmed'
-                }
-              };
-            }
-            return table;
-          })
-        }));
-      });
-
-      return { previousData };
+      // Just show loading state, no optimistic updates
+      // This prevents visual glitches during overlapping moves
+      return {};
     },
 
     onSuccess: (data, { newTableId, newTime }) => {
