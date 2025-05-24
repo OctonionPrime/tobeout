@@ -140,11 +140,11 @@ export default function ModernTables() {
       // Snapshot the previous value
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
 
-      // Instant UI update with smart slot management
+      // Smart UI update with overlap detection
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
         if (!old || !draggedReservation) return old;
         
-        // Calculate all time slots involved
+        // Calculate slots with overlap detection
         const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
         const targetHour = parseInt(newTime.split(':')[0]);
         
@@ -158,12 +158,17 @@ export default function ModernTables() {
           `${(targetHour + 1).toString().padStart(2, '0')}:00`
         ];
         
+        // Smart overlap detection: only clear slots that won't be immediately refilled
+        const overlappingSlots = sourceSlots.filter(slot => targetSlots.includes(slot));
+        const slotsToActuallyClear = sourceSlots.filter(slot => !overlappingSlots.includes(slot));
+        const slotsToActuallyAdd = targetSlots.filter(slot => !overlappingSlots.includes(slot));
+        
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            // Clear from source slots
+            // Only clear non-overlapping source slots
             if (table.id === draggedReservation.currentTableId && 
-                sourceSlots.includes(slot.time) &&
+                slotsToActuallyClear.includes(slot.time) &&
                 table.reservation?.id === reservationId) {
               return { 
                 ...table, 
@@ -172,8 +177,8 @@ export default function ModernTables() {
               };
             }
             
-            // Add to target slots
-            if (table.id === newTableId && targetSlots.includes(slot.time)) {
+            // Add to non-overlapping target slots
+            if (table.id === newTableId && slotsToActuallyAdd.includes(slot.time)) {
               return { 
                 ...table, 
                 status: 'reserved',
@@ -187,6 +192,21 @@ export default function ModernTables() {
                 }
               };
             }
+            
+            // Handle overlapping slots: update reservation details but keep occupied
+            if (table.id === newTableId && 
+                overlappingSlots.includes(slot.time) && 
+                table.reservation?.id === reservationId) {
+              return { 
+                ...table, 
+                status: 'reserved',
+                reservation: {
+                  ...table.reservation,
+                  timeSlot: slot.time  // Update timeSlot reference
+                }
+              };
+            }
+            
             return table;
           })
         }));

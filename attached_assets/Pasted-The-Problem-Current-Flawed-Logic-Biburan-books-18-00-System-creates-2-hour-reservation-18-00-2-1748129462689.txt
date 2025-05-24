@@ -1,0 +1,71 @@
+The Problem:
+Current Flawed Logic:
+
+Biburan books 18:00 → System creates 2-hour reservation (18:00-20:00)
+Database stores: timeSlot: "18:00" but reservation spans 18:00-19:00 AND 19:00-20:00 slots
+User drags from 18:00 slot to 19:00 slot (trying to move start time)
+Optimistic update logic:
+
+Clears source slots: 18:00 and 19:00 (because it calculates sourceHour + 1)
+Adds to target slots: 19:00 and 20:00 (because it calculates targetHour + 1)
+Result: Reservation moves from 18:00-20:00 to 19:00-21:00
+
+
+
+What Actually Happened:
+
+User wanted: Move 18:00-20:00 → 19:00-21:00 ✅
+System did: Cleared 18:00-20:00, added 19:00-21:00 ✅
+UI shows: Only 20:00-21:00 slot (because 19:00 was both cleared AND added, creating conflict)
+
+🎯 Root Cause Issues:
+1. Slot Calculation Logic is Wrong
+typescript// Current problematic logic:
+const sourceSlots = [
+  draggedReservation.currentTime,           // 18:00
+  `${(sourceHour + 1).toString().padStart(2, '0')}:00`  // 19:00
+];
+
+const targetSlots = [
+  newTime,                                  // 19:00 (OVERLAP!)
+  `${(targetHour + 1).toString().padStart(2, '0')}:00`  // 20:00
+];
+Problem: When moving from 18:00 to 19:00, there's a slot overlap at 19:00 - it gets cleared as source and added as target, causing UI confusion.
+2. Database vs UI Mismatch
+
+Database: Stores single timeSlot: "18:00"
+UI Logic: Assumes 2-hour duration and calculates slots client-side
+Conflict: When dragging within the same reservation's time range, logic gets confused
+
+3. Same Reservation Detection is Insufficient
+typescript// Your current check only prevents EXACT same slot moves:
+isMovingWithinSameReservation(targetTableId, targetTime)
+
+// But doesn't handle moves WITHIN the same reservation's time span
+// Moving 18:00→19:00 should be allowed but handled differently
+🚨 The Specific Issue:
+When you drag from 18:00 to 19:00:
+
+System clears slots [18:00, 19:00]
+System adds slots [19:00, 20:00]
+19:00 slot gets both cleared AND added → UI confusion
+Only 20:00 slot shows the reservation
+18:00 slot becomes available (incorrect)
+
+💡 What Needs to be Fixed:
+1. Smart Slot Management
+
+Detect when moving within vs. outside existing reservation timespan
+Handle overlapping slots correctly (don't clear what you're about to add)
+
+2. Reservation Duration Tracking
+
+Either store duration in database OR calculate it consistently
+Don't assume all reservations are 2 hours
+
+3. Better Conflict Detection
+
+Distinguish between "moving within same reservation" vs "extending/shifting reservation"
+Handle partial overlaps intelligently
+
+The fix requires smarter optimistic update logic that properly handles slot overlaps and doesn't clear slots that should remain occupied.
