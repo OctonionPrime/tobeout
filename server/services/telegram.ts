@@ -93,6 +93,8 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     
     // Debug: Log what info we have
     console.log(`🔍 [Sofia AI] Current booking info:`, flow.collectedInfo);
+    console.log(`🔍 [Sofia AI] Flow stage:`, flow.stage);
+    console.log(`🔍 [Sofia AI] Has complete info:`, hasCompleteBookingInfo(flow.collectedInfo));
     
   } catch (error) {
     console.error('❌ [Sofia AI] Error processing conversation:', error);
