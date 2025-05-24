@@ -267,7 +267,7 @@ export default function ModernTables() {
     }
   });
 
-  // Cancel reservation mutation  
+  // Cancel reservation mutation with optimistic updates
   const cancelReservationMutation = useMutation({
     mutationFn: async (reservationId: number) => {
       const response = await fetch(`/api/booking/cancel/${reservationId}`, {
@@ -276,15 +276,49 @@ export default function ModernTables() {
       if (!response.ok) throw new Error('Failed to cancel reservation');
       return response.json();
     },
+    
+    onMutate: async (reservationId: number) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      
+      // Snapshot the previous value
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+      
+      // Optimistically remove the reservation
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+        if (!old) return old;
+        
+        return old.map((slot: any) => ({
+          ...slot,
+          tables: slot.tables.map((table: any) => {
+            if (table.reservation?.id === reservationId) {
+              return {
+                ...table,
+                reservation: null,
+                status: 'available'
+              };
+            }
+            return table;
+          })
+        }));
+      });
+      
+      return { previousData };
+    },
+    
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
       setContextMenu(null);
       toast({
         title: "Reservation Cancelled",
         description: "Successfully cancelled reservation.",
       });
     },
-    onError: () => {
+    
+    onError: (error, variables, context) => {
+      // Rollback optimistic update on error
+      if (context?.previousData) {
+        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], context.previousData);
+      }
       toast({
         title: "Cancellation Failed", 
         description: "Could not cancel reservation. Please try again.",
@@ -293,7 +327,7 @@ export default function ModernTables() {
     },
   });
 
-  // Quick move mutation (1 hour earlier/later)
+  // Quick move mutation with optimistic updates
   const quickMoveMutation = useMutation({
     mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
       // Find current reservation details
@@ -318,17 +352,107 @@ export default function ModernTables() {
         }),
       });
       if (!response.ok) throw new Error('Failed to move reservation');
-      return response.json();
+      return { response: response.json(), newTime, currentTable };
     },
+    
+    onMutate: async ({ reservationId, direction }) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      
+      // Snapshot the previous value
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+      
+      // Find current reservation
+      const currentSlot = scheduleData?.find(slot => 
+        slot.tables.some(t => t.reservation?.id === reservationId)
+      );
+      const currentTable = currentSlot?.tables.find(t => t.reservation?.id === reservationId);
+      
+      if (!currentSlot || !currentTable || !currentTable.reservation) return { previousData };
+      
+      const currentHour = parseInt(currentSlot.time.split(':')[0]);
+      const targetHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
+      const targetTime = `${targetHour.toString().padStart(2, '0')}:00`;
+      
+      // Optimistically move the reservation using smart overlap logic
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+        if (!old) return old;
+        
+        const sourceSlots = [
+          currentSlot.time,
+          `${(currentHour + 1).toString().padStart(2, '0')}:00`
+        ];
+        
+        const targetSlots = [
+          targetTime,
+          `${(targetHour + 1).toString().padStart(2, '0')}:00`
+        ];
+        
+        // Smart overlap detection
+        const overlappingSlots = sourceSlots.filter(slot => targetSlots.includes(slot));
+        const slotsToActuallyClear = sourceSlots.filter(slot => !overlappingSlots.includes(slot));
+        const slotsToActuallyAdd = targetSlots.filter(slot => !overlappingSlots.includes(slot));
+        
+        return old.map((slot: any) => ({
+          ...slot,
+          tables: slot.tables.map((table: any) => {
+            // Clear from non-overlapping source slots
+            if (table.id === currentTable.id && 
+                slotsToActuallyClear.includes(slot.time) &&
+                table.reservation?.id === reservationId) {
+              return {
+                ...table,
+                reservation: null,
+                status: 'available'
+              };
+            }
+            
+            // Add to non-overlapping target slots
+            if (table.id === currentTable.id && slotsToActuallyAdd.includes(slot.time)) {
+              return {
+                ...table,
+                status: 'reserved',
+                reservation: {
+                  ...currentTable.reservation,
+                  timeSlot: slot.time
+                }
+              };
+            }
+            
+            // Handle overlapping slots: update timeSlot but keep reservation
+            if (table.id === currentTable.id && 
+                overlappingSlots.includes(slot.time) && 
+                table.reservation?.id === reservationId) {
+              return {
+                ...table,
+                reservation: {
+                  ...table.reservation,
+                  timeSlot: slot.time
+                }
+              };
+            }
+            
+            return table;
+          })
+        }));
+      });
+      
+      return { previousData };
+    },
+    
     onSuccess: (data, { direction }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
       setContextMenu(null);
       toast({
         title: "Reservation Moved",
         description: `Moved reservation ${direction === 'up' ? 'earlier' : 'later'} by 1 hour.`,
       });
     },
-    onError: () => {
+    
+    onError: (error, variables, context) => {
+      // Rollback optimistic update on error
+      if (context?.previousData) {
+        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], context.previousData);
+      }
       toast({
         title: "Move Failed",
         description: "Could not move reservation. Check for conflicts.",
