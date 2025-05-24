@@ -267,6 +267,76 @@ export default function ModernTables() {
     }
   });
 
+  // Cancel reservation mutation  
+  const cancelReservationMutation = useMutation({
+    mutationFn: async (reservationId: number) => {
+      const response = await fetch(`/api/booking/cancel/${reservationId}`, {
+        method: 'POST',
+      });
+      if (!response.ok) throw new Error('Failed to cancel reservation');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      setContextMenu(null);
+      toast({
+        title: "Reservation Cancelled",
+        description: "Successfully cancelled reservation.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Cancellation Failed", 
+        description: "Could not cancel reservation. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Quick move mutation (1 hour earlier/later)
+  const quickMoveMutation = useMutation({
+    mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
+      // Find current reservation details
+      const currentSlot = scheduleData?.find(slot => 
+        slot.tables.some(t => t.reservation?.id === reservationId)
+      );
+      const currentTable = currentSlot?.tables.find(t => t.reservation?.id === reservationId);
+      
+      if (!currentSlot || !currentTable) throw new Error('Reservation not found');
+      
+      const currentHour = parseInt(currentSlot.time.split(':')[0]);
+      const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
+      const newTime = `${newHour.toString().padStart(2, '0')}:00`;
+      
+      const response = await apiRequest(`/api/reservations/${reservationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tableId: currentTable.id,
+          timeSlot: newTime,
+          date: selectedDate
+        }),
+      });
+      if (!response.ok) throw new Error('Failed to move reservation');
+      return response.json();
+    },
+    onSuccess: (data, { direction }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      setContextMenu(null);
+      toast({
+        title: "Reservation Moved",
+        description: `Moved reservation ${direction === 'up' ? 'earlier' : 'later'} by 1 hour.`,
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Move Failed",
+        description: "Could not move reservation. Check for conflicts.",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Enhanced Drag & Drop Event Handlers
   const handleDragStart = (
     e: React.DragEvent,
@@ -571,6 +641,17 @@ export default function ModernTables() {
                               onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
                               onDragLeave={handleDragLeave}
                               onDrop={(e) => handleDrop(e, table.id, slot.time)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setContextMenu({
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                  reservationId: hasReservation ? table.reservation?.id : undefined,
+                                  tableId: table.id,
+                                  timeSlot: slot.time,
+                                  guestName: hasReservation ? table.reservation?.guestName : undefined,
+                                });
+                              }}
                             >
                               <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
                                 {hasReservation && <Move className="h-3 w-3" />}
