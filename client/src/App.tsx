@@ -116,6 +116,12 @@ function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
 
   // Check role if specified
   if (requiredRole && user && !requiredRole.includes(user.role)) {
+    console.log('Role check failed:', { 
+      userRole: user.role, 
+      requiredRole, 
+      userId: user.id,
+      userName: user.name 
+    });
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
         <div className="max-w-md w-full mx-4">
@@ -127,6 +133,9 @@ function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
             <p className="text-muted-foreground mb-4">
               You don't have permission to access this page.
             </p>
+            <div className="text-xs text-muted-foreground mb-4 font-mono">
+              Role: {user.role} | Required: {requiredRole.join(', ')}
+            </div>
             <button
               onClick={() => navigate('/dashboard')}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium transition-colors"
