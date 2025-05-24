@@ -1,586 +1,370 @@
 import OpenAI from "openai";
-import { storage } from "../storage";
+// storage is not directly used by OpenAIServiceImpl but might be if helper functions were kept.
+// For now, it's not strictly needed by the core AIService implementation.
+// import { storage } from "../storage"; 
 
-// The newest OpenAI model is "gpt-4o" which was released May 13, 2024. Do not change this unless explicitly requested by the user
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "sk-dummy-key-for-development" });
+// Import interfaces from the definitive conversation manager file
+import type {
+  ConversationFlow,
+  AIAnalysisResult,
+  AIService // This is the interface OpenAIServiceImpl will implement
+} from './conversation-manager.refactored'; // Adjust path as necessary
 
-// Message types for OpenAI API
-type SystemMessage = { role: "system"; content: string };
-type UserMessage = { role: "user"; content: string };
-type AssistantMessage = { role: "assistant"; content: string };
-type Message = SystemMessage | UserMessage | AssistantMessage;
+// Initialize OpenAI client
+// Ensure OPENAI_API_KEY is set in your environment variables
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "sk-dummy-key-for-development-openai-service" // Using a distinct dummy key
+});
 
-// Types for reservation intents
-interface ReservationIntent {
-  date?: string;
-  time?: string;
-  guests?: number;
-  name?: string;
-  phone?: string;
-  special_requests?: string;
-  confidence: number;
-  conversation_action?: string;
-  guest_sentiment?: string;
-  next_response_tone?: string;
+/**
+ * Helper function to get current and tomorrow's date in YYYY-MM-DD format for Moscow.
+ * This is used to provide accurate date context to the AI.
+ */
+function getMoscowDatesForPromptContext() {
+  const now = new Date();
+  // Get current time in Moscow
+  const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
+
+  const year = moscowTime.getFullYear();
+  const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
+  const day = moscowTime.getDate().toString().padStart(2, '0');
+  const todayString = `${year}-${month}-${day}`;
+
+  // Calculate tomorrow in Moscow
+  const tomorrowMoscow = new Date(moscowTime);
+  tomorrowMoscow.setDate(moscowTime.getDate() + 1);
+  const tomorrowYear = tomorrowMoscow.getFullYear();
+  const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
+  const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
+  const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
+
+  console.log(`[AIService/MoscowDatesCtx] Server UTC: ${now.toISOString()}, Moscow Time: ${moscowTime.toISOString()}, Today: ${todayString}, Tomorrow: ${tomorrowString}`);
+  return { todayString, tomorrowString, currentMoscowDateTime: moscowTime };
 }
 
-// FIXED: Enhanced intent detection with Moscow timezone
-export async function detectReservationIntentWithContext(
-  message: string, 
-  context: any
-): Promise<ReservationIntent> {
-  try {
-    // FIXED: Use Moscow timezone for accurate date calculation
-    const getMoscowDates = () => {
-      const now = new Date();
+export class OpenAIServiceImpl implements AIService {
+  /**
+   * Analyzes the user's message in the context of the current conversation flow
+   * to extract intent, entities, sentiment, and suggest a course of action.
+   * This is the primary method used by ActiveConversation.
+   */
+  async analyzeMessage(message: string, context: ConversationFlow): Promise<AIAnalysisResult> {
+    try {
+      const { todayString, tomorrowString, currentMoscowDateTime } = getMoscowDatesForPromptContext();
 
-      // Convert current time to Moscow timezone
-      const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
+      const existingInfoSummary = Object.entries(context.collectedInfo || {})
+        .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(', ') || 'none';
 
-      const year = moscowTime.getFullYear();
-      const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
-      const day = moscowTime.getDate().toString().padStart(2, '0');
-      const todayString = `${year}-${month}-${day}`;
+      // Attempt to infer what the bot last asked for, to help AI avoid re-asking.
+      let lastAskedHint = 'nothing specific';
+      if (context.lastResponse) {
+        const lowerLastResponse = context.lastResponse.toLowerCase();
+        if (lowerLastResponse.includes("just need your")) {
+            const parts = context.lastResponse.substring(lowerLastResponse.indexOf("just need your") + "just need your".length).trim().split(" ");
+            if (parts.length > 1 && (parts[1] === "number" || parts[1] === "name" || parts[1] === "size" || parts[1] === "date" || parts[1] === "time")) {
+                 lastAskedHint = parts.slice(0,2).join(" "); // e.g., "phone number", "party size"
+            } else if (parts.length > 0) {
+                lastAskedHint = parts[0].replace(/[!?.,:]$/, ''); // "date", "time"
+            }
+        } else if (lowerLastResponse.includes("what date")) {
+            lastAskedHint = "date";
+        } else if (lowerLastResponse.includes("what time")) {
+            lastAskedHint = "time";
+        } else if (lowerLastResponse.includes("how many people") || lowerLastResponse.includes("party size")) {
+            lastAskedHint = "party size";
+        } else if (lowerLastResponse.includes("name should i put")) {
+            lastAskedHint = "name";
+        } else if (lowerLastResponse.includes("phone number")) {
+            lastAskedHint = "phone number";
+        }
+      }
 
-      // Calculate tomorrow in Moscow timezone
-      const tomorrowMoscow = new Date(moscowTime);
-      tomorrowMoscow.setDate(tomorrowMoscow.getDate() + 1);
+      const systemPrompt = `You are "Sofia", an expert AI assistant for a restaurant, tasked with understanding guest messages to facilitate bookings.
+Your goal is to extract key information (entities), determine guest sentiment, and decide the next logical conversation action.
+The restaurant operates in MOSCOW TIMEZONE. All date interpretations MUST be based on this.
 
-      const tomorrowYear = tomorrowMoscow.getFullYear();
-      const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
-      const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
-      const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
+CURRENT MOSCOW DATE/TIME CONTEXT:
+- Today in Moscow is: ${todayString} (Day of week: ${currentMoscowDateTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Moscow' })})
+- Tomorrow in Moscow is: ${tomorrowString}
+- Current Moscow hour (24h format): ${currentMoscowDateTime.getHours()}
 
-      return { today: todayString, tomorrow: tomorrowString, moscowTime };
-    };
+CONVERSATION HISTORY & STATE:
+- Recent messages (last 3, newest first): ${JSON.stringify(context.conversationHistory?.slice(-3).reverse() || [])}
+- Information already collected by you: ${existingInfoSummary}
+- Guest frustration level (0-5, higher is more frustrated): ${context.guestFrustrationLevel || 0}
+- What you (the bot) last asked the guest for: ${lastAskedHint}
 
-    const moscowDates = getMoscowDates();
-    const todayString = moscowDates.today;
-    const tomorrowString = moscowDates.tomorrow;
+YOUR TASK: Analyze the "CURRENT MESSAGE TO ANALYZE" from the user.
 
-    console.log(`📅 MOSCOW TIMEZONE DATE CALCULATION:`);
-    console.log(`📅 Server UTC time: ${new Date().toISOString()}`);
-    console.log(`📅 Moscow time: ${moscowDates.moscowTime.toISOString()}`);
-    console.log(`📅 Moscow today: ${todayString}`);
-    console.log(`📅 Moscow tomorrow: ${tomorrowString}`);
-    console.log(`📅 Moscow day of month: ${moscowDates.moscowTime.getDate()}`);
-    console.log(`📅 Moscow hour: ${moscowDates.moscowTime.getHours()}`);
-
-    // Format existing context for better AI understanding
-    const existingInfo = Object.entries(context.partialIntent || {})
-      .filter(([key, value]) => value !== null && value !== undefined && value !== '')
-      .map(([key, value]) => `${key}: ${value}`)
-      .join(', ');
-
-    const systemPrompt = `You are Sofia, a professional restaurant hostess analyzing guest messages for booking information.
-
-CRITICAL DATE INFORMATION (MOSCOW TIMEZONE):
-- Restaurant operates in Moscow timezone (Europe/Moscow)
-- Current Moscow time shows TODAY as: ${todayString}
-- Current Moscow time shows TOMORROW as: ${tomorrowString}
-- When guest says "today", ALWAYS use: ${todayString}
-- When guest says "tomorrow", ALWAYS use: ${tomorrowString}
-
-CURRENT CONVERSATION CONTEXT:
-- Recent messages: ${JSON.stringify(context.messageHistory?.slice(-3) || [])}
-- Information already collected: ${existingInfo || 'none'}
-- Guest frustration level: ${(context.userFrustrationLevel || 0)}/5
-- Last thing I asked for: ${context.lastAskedFor || 'nothing specific'}
-
-CRITICAL ANALYSIS RULES:
-1. FRUSTRATION DETECTION: If guest says "I told you", "already said", "just said", "I said", "mentioned", "gave you" → conversation_action: "acknowledge_frustration"
-2. EXTRACT ONLY NEW INFO: Don't repeat information that's already collected
-3. DATE PARSING (MOSCOW TIMEZONE - EXTREMELY IMPORTANT):
-   - "today" → "${todayString}"
-   - "tomorrow" → "${tomorrowString}"
-   - "this evening" → "${todayString}"
-   - "Friday" (if today is Friday) → "${todayString}"
-4. TIME PARSING:
-   - "7", "7pm", "7 pm", "19:00" → "19:00"
-   - "noon", "12pm" → "12:00"
-   - "evening" → "19:00"
-   - "lunch" → "12:00"
-   - "4:00 PM", "4 pm" → "16:00"
-5. GUEST COUNT: "table for 4", "4 people", "party of 4", "4 of us" → guests: 4
-6. PHONE DETECTION: Any sequence of 8+ digits
-7. NAME DETECTION: "I'm [name]", "My name is [name]", "For [name]", or standalone proper nouns
+CRITICAL ANALYSIS & EXTRACTION RULES:
+1.  **Entities Extraction**:
+    * **date**: If a date is mentioned (e.g., "today", "tomorrow", "August 15th", "next Friday"):
+        * "today", "tonight", "this evening" → ALWAYS resolve to: ${todayString}.
+        * "tomorrow" → ALWAYS resolve to: ${tomorrowString}.
+        * For specific dates (e.g., "August 15th"), provide as YYYY-MM-DD. Assume current year if not specified.
+        * For relative days (e.g., "Friday"), resolve to the upcoming YYYY-MM-DD based on Moscow's current date.
+    * **time**: If a time is mentioned (e.g., "7pm", "19:00", "noon", "in an hour"):
+        * Parse to HH:MM (24-hour format). Examples: "7pm" → "19:00", "noon" → "12:00", "8 AM" -> "08:00".
+        * "evening" (general) → default to "19:00". "afternoon" → "15:00". "lunch" → "13:00".
+    * **guests**: Number of people (e.g., "for 2", "3 of us"). Extract the number.
+    * **name**: Guest's name if provided (e.g., "My name is John", "reservation for Maria").
+    * **phone**: Phone number (normalize to digits only, e.g., "+7 (123) 456-7890" -> "71234567890").
+    * **special_requests**: Any specific requests (e.g., "window table", "birthday celebration").
+    * If information is ALREADY in "Information already collected", set the entity to null or do not include it, UNLESS the user is EXPLICITLY changing it, correcting it, or reconfirming it after being asked. Prioritize NEW or CORRECTED information.
+2.  **Confidence Score (confidence)**: 0.0 to 1.0. How certain are you that this message is related to making or modifying a booking? High for booking details, low for unrelated chat.
+3.  **Conversation Action (conversation_action)**: Choose ONE:
+    * `collect_info`: If more information is needed for a booking.
+    * `ready_to_book`: If ALL necessary information (date, time, guests, name, phone) seems to be collected or confirmed.
+    * `acknowledge_frustration`: If guest expresses frustration (e.g., "I already told you", "this is annoying", "you're not understanding", or if they are repeating information they just gave and you asked for something else).
+    * `show_alternatives`: If the user is asking for alternatives, or if a booking attempt failed and alternatives should be offered, or if the current request is likely unavailable.
+    * `general_inquiry`: For general questions about the restaurant (hours, menu, location) not directly part of booking flow.
+    * `reset_and_restart`: If the conversation is hopelessly stuck or the user requests to start over.
+    * `unknown_intent`: If the message intent is unclear or unrelated to restaurant services.
+4.  **Guest Sentiment (guest_sentiment)**: Choose ONE: `positive`, `neutral`, `frustrated`, `confused`, `impatient`, `appreciative`.
+5.  **Next Response Tone (next_response_tone)**: Suggest a tone for the bot's reply: `friendly`, `empathetic`, `professional`, `direct`, `enthusiastic`, `concise`, `apologetic`.
 
 CURRENT MESSAGE TO ANALYZE: "${message}"
 
-Analyze this message and return information in this exact JSON format:
+OUTPUT FORMAT (Strictly JSON, no extra text):
 {
-  "date": "YYYY-MM-DD if mentioned, otherwise null",
-  "time": "HH:MM format if mentioned, otherwise null", 
-  "guests": "number if mentioned, otherwise null",
-  "name": "exact name if mentioned, otherwise null",
-  "phone": "phone number if mentioned, otherwise null",
-  "special_requests": "any special requests mentioned, otherwise null",
-  "confidence": "0.0-1.0 based on how booking-related this message is",
-  "conversation_action": "collect_info|ready_to_book|acknowledge_frustration|show_alternatives|general_inquiry",
-  "guest_sentiment": "happy|neutral|frustrated|confused",
-  "next_response_tone": "friendly|apologetic|professional|enthusiastic"
-}
-
-EXAMPLES (MOSCOW TIME TODAY IS ${todayString}):
-- Message: "I wanna book a table for today" → date: "${todayString}", confidence: 0.9
-- Message: "today" → date: "${todayString}", confidence: 0.8
-- Message: "My name is Gofra, table for 4 people on 19:00, 78963285623" → name: "Gofra", guests: 4, time: "19:00", phone: "78963285623", confidence: 1.0
-
-Return only valid JSON with no additional text.`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message }
-      ],
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      max_tokens: 500
-    });
-
-    const result = JSON.parse(response.choices[0].message.content || '{"confidence": 0}');
-
-    // Clean up and validate the response
-    Object.keys(result).forEach(key => {
-      if (result[key] === 'NOT_SPECIFIED' || result[key] === 'null' || result[key] === '' || result[key] === 'NONE') {
-        result[key] = null;
-      }
-    });
-
-    // Validate date format
-    if (result.date && !/^\d{4}-\d{2}-\d{2}$/.test(result.date)) {
-      console.warn('Invalid date format detected:', result.date);
-      result.date = null;
-    }
-
-    // Validate time format  
-    if (result.time && !/^\d{2}:\d{2}$/.test(result.time)) {
-      if (result.time.includes(':')) {
-        const [hours, minutes] = result.time.split(':');
-        const h = parseInt(hours);
-        const m = parseInt(minutes) || 0;
-        if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-          result.time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-        } else {
-          result.time = null;
-        }
-      } else {
-        console.warn('Invalid time format detected:', result.time);
-        result.time = null;
-      }
-    }
-
-    // Ensure guests is a valid number
-    if (result.guests && (typeof result.guests !== 'number' || result.guests < 1 || result.guests > 20)) {
-      const guestNum = parseInt(result.guests);
-      if (guestNum >= 1 && guestNum <= 20) {
-        result.guests = guestNum;
-      } else {
-        result.guests = null;
-      }
-    }
-
-    // Validate phone number
-    if (result.phone && !/^\d{8,15}$/.test(result.phone.replace(/[^\d]/g, ''))) {
-      const cleanPhone = result.phone.replace(/[^\d]/g, '');
-      if (cleanPhone.length >= 8 && cleanPhone.length <= 15) {
-        result.phone = cleanPhone;
-      } else {
-        console.warn('Invalid phone number detected:', result.phone);
-        result.phone = null;
-      }
-    }
-
-    // Set default values
-    if (!result.conversation_action) {
-      result.conversation_action = result.confidence > 0.5 ? 'collect_info' : 'general_inquiry';
-    }
-    if (!result.guest_sentiment) {
-      result.guest_sentiment = 'neutral';
-    }
-    if (!result.next_response_tone) {
-      result.next_response_tone = 'friendly';
-    }
-
-    console.log('🧠 Enhanced intent analysis result:', result);
-    console.log(`🧠 Parsed date: ${result.date} (Moscow today should be: ${todayString})`);
-
-    return result as ReservationIntent;
-  } catch (error) {
-    console.error("Error detecting reservation intent with context:", error);
-    return { 
-      confidence: 0,
-      conversation_action: 'general_inquiry',
-      guest_sentiment: 'neutral',
-      next_response_tone: 'friendly'
-    };
-  }
-}
-
-// Keep original function for backward compatibility
-export async function detectReservationIntent(message: string): Promise<ReservationIntent> {
-  return detectReservationIntentWithContext(message, { 
-    messageHistory: [], 
-    partialIntent: {}, 
-    lastAskedFor: null, 
-    userFrustrationLevel: 0 
-  });
-}
-
-interface AvailableSlot {
-  date: string;
-  time: string;
-  tableId: number;
-  tableName: string;
-  tableCapacity: number;
-  table?: any;
-}
-
-export async function suggestAlternativeSlots(
-  restaurantId: number,
-  date: string,
-  guests: number,
-  maxResults: number = 5
-): Promise<AvailableSlot[]> {
-  try {
-    console.log(`🔍 Finding alternatives for ${guests} guests on ${date}`);
-
-    // Get restaurant tables that can accommodate the guests
-    const allTables = await storage.getTables(restaurantId);
-    const suitableTables = allTables.filter(
-      table => table.minCapacity <= guests && table.maxCapacity >= guests
-    );
-
-    if (suitableTables.length === 0) {
-      console.log('❌ No suitable tables found');
-      return [];
-    }
-
-    // Get existing reservations for the date
-    const existingReservations = await storage.getReservations(restaurantId, { 
-      date: date,
-      status: ['confirmed', 'created']
-    });
-
-    console.log(`📋 Found ${existingReservations.length} existing reservations for ${date}`);
-
-    // Generate comprehensive time slots
-    const timeSlots = [];
-
-    // Lunch slots: 11:00 AM - 3:00 PM
-    for (let hour = 11; hour <= 15; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-      if (hour < 15) {
-        timeSlots.push(`${hour.toString().padStart(2, '0')}:30`);
-      }
-    }
-
-    // Dinner slots: 5:00 PM - 10:00 PM
-    for (let hour = 17; hour <= 22; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-      if (hour < 22) {
-        timeSlots.push(`${hour.toString().padStart(2, '0')}:30`);
-      }
-    }
-
-    const alternatives = [];
-
-    // Check each time slot for availability
-    for (const time of timeSlots) {
-      const availableTables = suitableTables.filter(table => {
-        // Check if this table is free at this time
-        return !existingReservations.some(reservation => {
-          if (reservation.tableId !== table.id) return false;
-
-          // Check time overlap (assume 2-hour dining duration)
-          const resStart = new Date(`${date} ${reservation.time}`);
-          const resEnd = new Date(resStart.getTime() + 2 * 60 * 60 * 1000);
-          const reqStart = new Date(`${date} ${time}`);
-          const reqEnd = new Date(reqStart.getTime() + 2 * 60 * 60 * 1000);
-
-          // Check if time slots overlap
-          return (reqStart < resEnd && reqEnd > resStart);
-        });
-      });
-
-      if (availableTables.length > 0) {
-        // Pick the best available table (optimal capacity for party size)
-        const bestTable = availableTables.reduce((best, current) => {
-          // Prefer tables closer to the requested party size
-          const bestDiff = Math.abs(best.maxCapacity - guests);
-          const currentDiff = Math.abs(current.maxCapacity - guests);
-          return currentDiff < bestDiff ? current : best;
-        });
-
-        alternatives.push({
-          date,
-          time: formatTimeForDisplay(time),
-          tableId: bestTable.id,
-          tableName: bestTable.name,
-          tableCapacity: bestTable.maxCapacity,
-          table: bestTable
-        });
-
-        if (alternatives.length >= maxResults) break;
-      }
-    }
-
-    console.log(`✅ Found ${alternatives.length} alternative time slots`);
-    return alternatives;
-  } catch (error) {
-    console.error("Error suggesting alternative slots:", error);
-    return [];
-  }
-}
-
-/**
- * Format time for display (24-hour to 12-hour with AM/PM)
- */
-function formatTimeForDisplay(time24: string): string {
-  const [hours, minutes] = time24.split(':');
-  const hour = parseInt(hours);
-  const min = minutes || '00';
-
-  if (hour === 0) return `12:${min} AM`;
-  if (hour < 12) return `${hour}:${min} AM`;
-  if (hour === 12) return `12:${min} PM`;
-  return `${hour - 12}:${min} PM`;
-}
-
-export async function generateReservationConfirmation(
-  guestName: string,
-  date: string,
-  time: string,
-  guests: number,
-  restaurantName: string,
-  tableFeatures?: string[]
-): Promise<string> {
-  try {
-    const featuresText = tableFeatures && tableFeatures.length > 0 
-      ? `Your table has the following features: ${tableFeatures.join(', ')}.` 
-      : '';
-
-    const systemPrompt = `You are Sofia, a warm and professional restaurant hostess for "${restaurantName}".
-Generate a brief, enthusiastic confirmation message for a reservation.
-Keep it concise but warm and professional. Use emojis appropriately.
-Make the guest feel welcomed and excited about their visit.`;
-
-    const userPrompt = `Create a reservation confirmation message for ${guestName} who has reserved a table for ${guests} people on ${date} at ${time}.
-${featuresText}
-The confirmation should be friendly, professional, and make them feel welcome.`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      max_tokens: 200,
-      temperature: 0.7
-    });
-
-    return response.choices[0].message.content || `🎉 Perfect! Your reservation for ${guests} people on ${date} at ${time} is confirmed, ${guestName}. Thank you for choosing ${restaurantName}!`;
-  } catch (error) {
-    console.error("Error generating reservation confirmation:", error);
-    return `🎉 Perfect! Your reservation for ${guests} people on ${date} at ${time} is confirmed, ${guestName}. Thank you for choosing ${restaurantName}!`;
-  }
-}
-
-export async function generateAlternativeSuggestionMessage(
-  restaurantName: string,
-  requestedDate: string,
-  requestedTime: string,
-  guests: number,
-  alternativeSlots: AvailableSlot[]
-): Promise<string> {
-  try {
-    if (alternativeSlots.length === 0) {
-      // No alternatives available
-      const systemPrompt = `You are Sofia, a friendly restaurant hostess for "${restaurantName}".
-Generate a brief, empathetic message explaining there's no availability.
-Suggest they try a different date and offer to help them further.
-Keep it warm and helpful, not disappointing.`;
-
-      const userPrompt = `Create a polite message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}.
-Suggest they try a different date or time and offer to help them find alternatives.
-Be empathetic but positive.`;
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        max_tokens: 150,
-        temperature: 0.7
-      });
-
-      return response.choices[0].message.content || `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time? I'd be happy to help you find the perfect slot! 📅`;
-    } else {
-      // Format alternative slots for better readability
-      const alternativesList = alternativeSlots.map((slot, index) => 
-        `${index + 1}. ${slot.time} - Table ${slot.tableName} (${slot.tableCapacity} seats)`
-      ).join('\n');
-
-      const systemPrompt = `You are Sofia, a helpful restaurant hostess for "${restaurantName}".
-Generate a friendly message suggesting alternative reservation times.
-Be enthusiastic about the alternatives and make them sound appealing.
-Use emojis and make the guest feel like these are great options.`;
-
-      const userPrompt = `Create a message explaining that we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}, but we have these great alternatives:
-
-${alternativesList}
-
-Make the alternatives sound appealing and ask which one they'd prefer. Be positive and helpful.`;
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        max_tokens: 250,
-        temperature: 0.7
-      });
-
-      return response.choices[0].message.content || `I'm sorry, but ${requestedTime} on ${requestedDate} isn't available for ${guests} people. However, I have these great alternatives:\n\n${alternativesList}\n\nWhich one would you prefer? 🎯`;
-    }
-  } catch (error) {
-    console.error("Error generating alternative suggestion message:", error);
-    if (alternativeSlots.length === 0) {
-      return `I'm sorry, but we don't have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like to try a different date or time? I'd be happy to help! 📅`;
-    } else {
-      const alternatives = alternativeSlots.map((slot, index) => 
-        `${index + 1}. ${slot.time} - Table ${slot.tableName}`
-      ).join('\n');
-      return `I'm sorry, but ${requestedTime} isn't available. Here are some great alternatives:\n\n${alternatives}\n\nWhich would you prefer? 🎯`;
-    }
-  }
-}
-
-export async function generateResponseToGeneralInquiry(
-  message: string,
-  restaurantName: string,
-  restaurantInfo: {
-    address?: string;
-    openingHours?: string;
-    cuisine?: string;
-    phoneNumber?: string;
-    description?: string;
-  }
-): Promise<string> {
-  try {
-    console.log(`🤖 GenerateResponseToGeneralInquiry called with message: "${message}"`);
-
-    const systemPrompt = `You are Sofia, a friendly and knowledgeable AI assistant for the restaurant "${restaurantName}".
-Answer customer inquiries about the restaurant in a helpful, warm, and professional way.
-Use the restaurant information provided to give accurate answers.
-If you don't have specific information requested, politely let the customer know and offer to connect them with staff.
-Always be enthusiastic about the restaurant and try to encourage bookings when appropriate.
-Use emojis sparingly but effectively.
-
-Restaurant Information:
-- Name: ${restaurantName}
-- Address: ${restaurantInfo.address || 'Not available - please contact us directly'}
-- Opening Hours: ${restaurantInfo.openingHours || 'Please contact us for current hours'}
-- Cuisine Type: ${restaurantInfo.cuisine || 'Please ask our staff about our menu'}
-- Phone Number: ${restaurantInfo.phoneNumber || 'Not available - please contact us through this chat'}
-- Description: ${restaurantInfo.description || 'A wonderful dining experience awaits you'}
-
-Guidelines:
-- Be conversational and warm
-- If asked about reservations, guide them to make one
-- If asked about menu, describe generally based on cuisine type if available
-- If asked about location/directions, provide address if available
-- If asked about hours, provide opening hours if available
-- For anything you're unsure about, offer to help them contact the restaurant directly`;
-
-    console.log('🤖 Calling OpenAI API for general inquiry...');
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message }
-      ],
-      max_tokens: 300,
-      temperature: 0.7 // Slightly more creative for general conversation
-    });
-
-    const aiResponse = response.choices[0].message.content || "";
-    console.log(`🤖 OpenAI Response: "${aiResponse}"`);
-    return aiResponse;
-  } catch (error) {
-    console.error("❌ Error generating response to general inquiry:", error);
-    return `Thank you for your question about ${restaurantName}! I'd be happy to help you with information about our restaurant or assist you with making a reservation. What would you like to know? 😊`;
-  }
-}
-
-/**
- * Enhanced function to analyze conversation context and provide smart responses
- */
-export async function analyzeConversationContext(
-  message: string,
-  conversationHistory: string[],
-  partialIntent: any
-): Promise<{
-  isRepeatingInfo: boolean;
-  isFrustrated: boolean;
-  suggestedResponse: string;
-  confidence: number;
-}> {
-  try {
-    const systemPrompt = `You are an expert conversation analyst for a restaurant booking system.
-Analyze the conversation context to detect:
-1. If the guest is repeating information they already provided
-2. If the guest is frustrated with the conversation
-3. What the appropriate response should be
-
-Conversation History: ${JSON.stringify(conversationHistory)}
-Already Collected: ${JSON.stringify(partialIntent)}
-Current Message: "${message}"
-
-Return analysis in JSON format:
-{
-  "isRepeatingInfo": true/false,
-  "isFrustrated": true/false,
-  "suggestedResponse": "recommended response strategy",
-  "confidence": 0.0-1.0
+  "entities": {
+    "date": "YYYY-MM-DD or null",
+    "time": "HH:MM or null",
+    "guests": "number or null",
+    "name": "string or null",
+    "phone": "string (digits only) or null",
+    "special_requests": "string or null"
+  },
+  "confidence": 0.8,
+  "conversation_action": "collect_info",
+  "guest_sentiment": "neutral",
+  "next_response_tone": "friendly"
 }`;
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message }
-      ],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      max_tokens: 200
-    });
+      const completion = await openaiClient.chat.completions.create({
+        model: "gpt-4o", // Ensure this is the desired model
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message }
+        ],
+        temperature: 0.2, // Lower temperature for more deterministic, less creative responses for analysis
+        response_format: { type: "json_object" },
+        max_tokens: 750 // Increased slightly to ensure full JSON for complex cases
+      });
 
-    return JSON.parse(response.choices[0].message.content || '{"confidence": 0}');
-  } catch (error) {
-    console.error("Error analyzing conversation context:", error);
-    return {
-      isRepeatingInfo: false,
-      isFrustrated: false,
-      suggestedResponse: "continue_normal_flow",
-      confidence: 0
-    };
+      const rawResult = completion.choices[0].message.content;
+      const parsedResult = JSON.parse(rawResult || '{}') as Partial<AIAnalysisResult & {entities: AIAnalysisResult['entities']}>;
+
+      // Sanitize and structure the result
+      const aiResult: AIAnalysisResult = {
+        entities: parsedResult.entities || {},
+        confidence: parsedResult.confidence !== undefined ? Math.max(0, Math.min(1, parsedResult.confidence)) : 0,
+        conversation_action: parsedResult.conversation_action || (parsedResult.confidence && parsedResult.confidence > 0.5 ? 'collect_info' : 'unknown_intent'),
+        guest_sentiment: parsedResult.guest_sentiment || 'neutral',
+        next_response_tone: parsedResult.next_response_tone || 'friendly'
+      };
+
+      // Clean up entities
+      if (aiResult.entities) {
+        for (const key in aiResult.entities) {
+          const entityKey = key as keyof NonNullable<AIAnalysisResult['entities']>;
+          const value = aiResult.entities[entityKey];
+          if (value === 'null' || String(value).toUpperCase() === 'NOT_SPECIFIED' || String(value).toUpperCase() === 'NONE' || String(value).trim() === '') {
+            // Use delete operator to remove the key if value is effectively null/undefined
+            delete aiResult.entities[entityKey];
+          }
+        }
+        // Validate and normalize guests
+        if (aiResult.entities.guests !== undefined) {
+            const numGuests = parseInt(String(aiResult.entities.guests), 10);
+            aiResult.entities.guests = (!isNaN(numGuests) && numGuests > 0 && numGuests < 50) ? numGuests : undefined;
+            if (aiResult.entities.guests === undefined) delete aiResult.entities.guests;
+        }
+        // Validate and normalize phone
+        if (aiResult.entities.phone !== undefined) {
+            aiResult.entities.phone = String(aiResult.entities.phone).replace(/\D/g, '');
+            if (!aiResult.entities.phone || aiResult.entities.phone.length < 7 || aiResult.entities.phone.length > 15) { // Basic length check
+                 delete aiResult.entities.phone;
+            }
+        }
+        // Validate date format (YYYY-MM-DD)
+        if (aiResult.entities.date && !/^\d{4}-\d{2}-\d{2}$/.test(aiResult.entities.date)) {
+            console.warn(`[AIService] AI returned invalid date format: ${aiResult.entities.date}. Clearing.`);
+            delete aiResult.entities.date;
+        }
+        // Validate and normalize time format (HH:MM)
+        if (aiResult.entities.time) {
+            const timeParts = String(aiResult.entities.time).split(':');
+            if (timeParts.length === 2 && /^\d{1,2}$/.test(timeParts[0]) && /^\d{1,2}$/.test(timeParts[1])) {
+                const h = parseInt(timeParts[0], 10);
+                const m = parseInt(timeParts[1], 10);
+                if (h >=0 && h <=23 && m >=0 && m <=59) {
+                    aiResult.entities.time = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+                } else {
+                    console.warn(`[AIService] AI returned out-of-range time: ${aiResult.entities.time}. Clearing.`);
+                    delete aiResult.entities.time;
+                }
+            } else {
+                 console.warn(`[AIService] AI returned invalid time format: ${aiResult.entities.time}. Clearing.`);
+                 delete aiResult.entities.time;
+            }
+        }
+      }
+
+      console.log(`[AIService] analyzeMessage raw AI output: ${rawResult}`);
+      console.log(`[AIService] analyzeMessage processed AI result:`, aiResult);
+      return aiResult;
+
+    } catch (error) {
+      console.error("[AIService] Error in analyzeMessage:", error);
+      // Return a default safe response in case of error
+      return {
+        entities: {},
+        confidence: 0,
+        conversation_action: 'unknown_intent', // Or a specific error action
+        guest_sentiment: 'neutral',
+        next_response_tone: 'friendly'
+      };
+    }
+  }
+
+  /**
+   * Generates text for a reservation confirmation.
+   */
+  async generateReservationConfirmationText(
+    guestName: string, date: string, time: string, guests: number,
+    restaurantName: string, tableFeatures?: string[]
+  ): Promise<string> {
+    const featuresText = tableFeatures && tableFeatures.length > 0
+      ? `Your table includes the following features: ${tableFeatures.join(', ')}.`
+      : '';
+    const systemPrompt = `You are "Sofia", a warm and highly professional restaurant hostess for "${restaurantName}".
+Your task is to generate a brief, enthusiastic, and welcoming confirmation message for a successful reservation.
+Use emojis tastefully. Ensure the guest feels valued and excited.`;
+    const userPrompt = `Please craft a reservation confirmation for ${guestName}.
+Details: ${guests} people on ${date} at ${time}.
+${featuresText}
+The message should be friendly, confirm all details clearly, and express anticipation for their visit.`;
+
+    try {
+      const completion = await openaiClient.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+        max_tokens: 220, temperature: 0.65 // Slightly creative for a warm message
+      });
+      return completion.choices[0].message.content || `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`;
+    } catch (error) {
+      console.error("[AIService] Error generating reservation confirmation text:", error);
+      // Fallback message
+      return `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`;
+    }
+  }
+
+  /**
+   * Generates text for suggesting alternative slots or indicating no availability.
+   * @param alternativesListString - A pre-formatted string listing the alternatives, or empty if none.
+   * @param noAlternativesFound - Boolean indicating if no alternatives were found by the availability service.
+   */
+  async generateAlternativeSuggestionText(
+    restaurantName: string, requestedDate: string, requestedTime: string, guests: number,
+    alternativesListString: string, // This string is prepared by ResponseFormatter
+    noAlternativesFound: boolean
+  ): Promise<string> {
+    try {
+      if (noAlternativesFound) {
+        const systemPrompt = `You are "Sofia", a helpful and empathetic restaurant hostess for "${restaurantName}".
+The guest's requested time is unavailable, and no immediate alternatives were found for that specific request.
+Politely inform them and suggest trying a different date or time, or perhaps modifying the number of guests.
+Maintain a positive and helpful tone, encouraging them to continue interacting.`;
+        const userPrompt = `Inform the guest that their request for ${guests} people on ${requestedDate} at ${requestedTime} is unfortunately unavailable, and no other slots were found for this exact request.
+Encourage them to try another date/time or adjust their party size, and offer your assistance in finding a suitable slot.`;
+        const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 180, temperature: 0.7 });
+        return completion.choices[0].message.content || `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}, and I couldn't find immediate alternatives for that specific request. Would you like me to check for other dates or times, or perhaps for a different number of guests? I'd be happy to help find the perfect spot for you! 📅`;
+      } else {
+        const systemPrompt = `You are "Sofia", an engaging and helpful restaurant hostess for "${restaurantName}".
+The guest's original request was unavailable. You need to present a list of alternative times that have been found.
+Make these alternatives sound appealing and clear. Ask them to choose one by number, or request other options.`;
+        const userPrompt = `The guest's request for ${guests} people on ${requestedDate} at ${requestedTime} was not available.
+Please present the following alternatives in a friendly and inviting way:
+${alternativesListString}
+Ask them to select one by providing the number, or if they'd like to explore other dates/times.`;
+        const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 280, temperature: 0.65 });
+        return completion.choices[0].message.content || `While ${requestedTime} on ${requestedDate} isn't available for ${guests} people, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`;
+      }
+    } catch (error) {
+      console.error("[AIService] Error generating alternative suggestion text:", error);
+      // Fallback messages
+      if (noAlternativesFound) {
+        return `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like me to check for other dates or times? I'd be happy to help! 📅`;
+      } else {
+        return `While ${requestedTime} isn't available, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`;
+      }
+    }
+  }
+
+  /**
+   * Generates a response to a general inquiry based on provided restaurant information.
+   */
+  async generateGeneralInquiryResponse(
+    message: string, // The user's inquiry
+    restaurantName: string,
+    // Restaurant info should be fetched by the calling service (e.g., Telegram bot handler)
+    // and passed here to keep AIService focused on AI interaction.
+    restaurantInfo: {
+      address?: string;
+      openingHours?: string; // e.g., "10 AM - 11 PM daily"
+      cuisine?: string;
+      phoneNumber?: string;
+      description?: string;
+    }
+  ): Promise<string> {
+    try {
+      const systemPrompt = `You are "Sofia", a friendly, knowledgeable, and professional AI assistant for the restaurant "${restaurantName}".
+Your primary goal is to answer guest inquiries accurately using the provided restaurant information.
+If specific information isn't available in the provided context, politely state that and smoothly transition to offering help with a reservation or suggesting they contact staff directly for details you don't have.
+Maintain a warm, welcoming, and enthusiastic tone. Use emojis appropriately to enhance friendliness.
+
+Restaurant Information (use ONLY this information for your answer):
+- Name: ${restaurantName}
+- Address: ${restaurantInfo.address || 'For our exact location, please feel free to ask our staff or check our website!'}
+- Opening Hours: ${restaurantInfo.openingHours || 'Our current opening hours can be confirmed by contacting us directly or checking online.'}
+- Cuisine Type: ${restaurantInfo.cuisine || `We offer a delightful menu. I can help you make a reservation to experience it!`}
+- Phone Number: ${restaurantInfo.phoneNumber || 'For direct calls, please check our official contact details. I can assist with bookings here!'}
+- Description: ${restaurantInfo.description || `Experience wonderful dining at ${restaurantName}!`}
+
+Guidelines:
+- Be conversational and positive.
+- If asked about reservations, seamlessly guide them towards making one.
+- For menu details beyond cuisine type, suggest they ask staff upon arrival or check an online menu if available from other sources.
+- If you lack specific information from the "Restaurant Information" above, never invent it. Politely redirect or offer booking assistance.`;
+
+      const completion = await openaiClient.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }],
+        max_tokens: 350, // Sufficient for a detailed general response
+        temperature: 0.7 // Slightly more creative for general conversation
+      });
+      return completion.choices[0].message.content || `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`;
+    } catch (error) {
+      console.error("[AIService] Error generating general inquiry response:", error);
+      // Fallback message
+      return `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`;
+    }
   }
 }
 
-// Debug function to test Moscow timezone
+// --- Debugging Utility ---
+// This is not part of the AIService interface but can be useful for development.
 export function debugMoscowTimezone(): void {
   const now = new Date();
   const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-
-  console.log('🔧 MOSCOW TIMEZONE DEBUG:');
-  console.log('📅 Server UTC time:', now.toISOString());
-  console.log('📅 Moscow time:', moscowTime.toISOString());
-  console.log('📅 Moscow date string:', moscowTime.toISOString().split('T')[0]);
-  console.log('📅 Moscow day of month:', moscowTime.getDate());
-  console.log('📅 Moscow hour:', moscowTime.getHours());
-  console.log('📅 Moscow timezone offset from UTC:', -moscowTime.getTimezoneOffset() / 60, 'hours');
+  console.log('[MOSCOW TIMEZONE DEBUGGER]');
+  console.log('  Server System Time (UTC or local):', now.toISOString(), `(${now.toString()})`);
+  console.log('  Moscow Equivalent Time:', moscowTime.toISOString(), `(${moscowTime.toString()})`);
+  console.log('  Moscow Date (YYYY-MM-DD):', moscowTime.toISOString().split('T')[0]);
+  console.log('  Moscow Day of the Week:', moscowTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Moscow' }));
+  console.log('  Moscow Hour (24h):', moscowTime.getHours());
+  console.log('  NodeJS Timezone Offset (minutes from UTC for server):', now.getTimezoneOffset());
 }

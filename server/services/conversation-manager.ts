@@ -1,12 +1,19 @@
 /**
- * Human-Like Conversation Manager for Restaurant AI Assistant
- * 
- * This creates natural, flowing conversations that remember context
- * and respond like a real professional hostess would.
+ * conversation-manager.refactored.ts
+ *
+ * Manages individual restaurant AI assistant conversations.
+ * Each conversation is an instance of ActiveConversation.
  */
 
-interface ConversationFlow {
-  stage: 'greeting' | 'collecting' | 'confirming' | 'suggesting_alternatives' | 'completed';
+// Assuming AvailabilitySlot is defined in availability.service.ts and imported where needed
+// For this file, if DefaultResponseFormatter needs it, it should be imported.
+// Let's assume it's available or we define a local version for clarity if not directly imported.
+import type { AvailabilitySlot } from './availability.service'; // Adjust path if necessary
+
+// --- Interface Definitions ---
+
+export interface ConversationFlow {
+  stage: 'greeting' | 'collecting' | 'confirming' | 'suggesting_alternatives' | 'completed' | 'frustrated_recovery';
   collectedInfo: {
     date?: string;
     time?: string;
@@ -19,216 +26,251 @@ interface ConversationFlow {
   lastResponse: string;
   guestFrustrationLevel: number;
   responsesSent: number;
+  // restaurantId?: number; // Consider adding if formatter or AI needs it directly from flow
 }
 
-interface ConversationContext {
-  messageHistory: string[];
-  partialIntent: any;
-  lastAskedFor: string | null;
-  userFrustrationLevel: number;
-  repetitionCount: number;
+export interface AIAnalysisResult {
+  conversation_action: 'collect_info' | 'ready_to_book' | 'show_alternatives' | 'general_inquiry' | 'acknowledge_frustration' | 'unknown_intent' | string;
+  guest_sentiment: 'positive' | 'neutral' | 'frustrated' | string;
+  next_response_tone?: 'friendly' | 'empathetic' | 'direct' | string;
+  entities?: {
+    date?: string;
+    time?: string;
+    guests?: number;
+    name?: string;
+    phone?: string;
+    special_requests?: string;
+  };
+  confidence?: number;
 }
 
-export class ConversationManager {
+export interface AIService {
+  analyzeMessage(message: string, currentFlow: ConversationFlow): Promise<AIAnalysisResult>;
+  // Potentially other methods if AI is used for more than just analysis,
+  // e.g., generateComplexNarrative(prompt: string): Promise<string>;
+}
 
-  /**
-   * Generate human-like responses based on conversation context
-   */
-  static generateHumanResponse(
-    aiResult: any, 
-    conversationFlow: ConversationFlow, 
-    newMessage: string
-  ): string {
+export interface ResponseFormatter {
+  generateApology(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
+  generateSmartInfoRequest(flow: ConversationFlow, summary: string, missingFieldsText: string, specificRequest: string, urgentRequest: string): string;
+  generateBookingConfirmation(flow: ConversationFlow, summary: string): string;
+  generateAlternativeRequest(flow: ConversationFlow, summary: string): string; // Initial prompt to look for alternatives
+  generateFriendlyResponse(flow: ConversationFlow, message: string, aiResult: AIAnalysisResult): string;
+  generateContextualResponse(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
+  generateResetResponse(flow: ConversationFlow, summary: string): string;
+  generateSmartAlternativeMessageText( // Added this method
+    guestName: string | undefined,
+    requestedTime: string, // Original requested time
+    guests: number,
+    availableSlots: AvailabilitySlot[] // Data from availability.service
+  ): string;
 
-    const { conversation_action, guest_sentiment, next_response_tone } = aiResult;
-    const { collectedInfo, guestFrustrationLevel, responsesSent } = conversationFlow;
+  createBookingSummary(collectedInfo: ConversationFlow['collectedInfo']): string;
+  getMissingFields(collectedInfo: ConversationFlow['collectedInfo']): string[];
+  formatMissingFieldsText(missingFields: string[]): string;
+  createSpecificRequestText(missingFields: string[]): string;
+  createUrgentRequestText(missingFields: string[]): string;
+}
 
-    // Handle frustration IMMEDIATELY - this is the most important fix
-    if (guest_sentiment === 'frustrated' || conversation_action === 'acknowledge_frustration') {
-      return this.generateApologyResponse(collectedInfo, newMessage, guestFrustrationLevel);
-    }
+// --- Main Conversation Management Class ---
 
-    // Check if we have enough info to proceed with booking
-    const hasAllInfo = this.hasCompleteBookingInfo(collectedInfo);
+export class ActiveConversation {
+  private flow: ConversationFlow;
+  private aiService: AIService;
+  private responseFormatter: ResponseFormatter;
 
-    if (hasAllInfo && conversation_action !== 'show_alternatives') {
-      return this.generateBookingConfirmation(collectedInfo);
-    }
+  constructor(
+    aiService: AIService,
+    responseFormatter: ResponseFormatter,
+    initialHistory: string[] = [],
+    existingFlow?: Partial<ConversationFlow>
+  ) {
+    this.aiService = aiService;
+    this.responseFormatter = responseFormatter;
 
-    // Natural conversation flow based on what we need
-    switch (conversation_action) {
-      case 'collect_info':
-        return this.generateSmartInfoRequest(collectedInfo, responsesSent, newMessage);
-
-      case 'ready_to_book':
-        return this.generateBookingConfirmation(collectedInfo);
-
-      case 'show_alternatives':
-        return this.generateAlternativeRequest(collectedInfo);
-
-      case 'general_inquiry':
-        return this.generateFriendlyResponse(collectedInfo, newMessage);
-
-      default:
-        return this.generateContextualResponse(collectedInfo, newMessage, responsesSent);
-    }
+    this.flow = {
+      stage: 'greeting',
+      collectedInfo: {},
+      conversationHistory: [...initialHistory],
+      lastResponse: '',
+      guestFrustrationLevel: 0,
+      responsesSent: 0,
+      ...existingFlow,
+    };
   }
 
-  /**
-   * Check if we have all required booking information
-   */
-  private static hasCompleteBookingInfo(info: any): boolean {
-    const required = ['date', 'time', 'guests', 'name', 'phone'];
-    return required.every(field => info[field] !== null && info[field] !== undefined && info[field] !== '');
+  public getConversationFlow(): Readonly<ConversationFlow> {
+    return { ...this.flow };
   }
 
-  /**
-   * Apologetic response when guest is frustrated
-   */
-  private static generateApologyResponse(info: any, message: string, frustrationLevel: number): string {
-    const apologies = [
-      "I sincerely apologize for the confusion! You're absolutely right.",
-      "Sorry about that - I should have been paying better attention to what you said.",
-      "You're completely right, and I apologize for asking again.",
-      "I'm sorry for the confusion - let me work with the information you've provided.",
-      "My apologies! I should have remembered what you told me."
-    ];
+  private updateCollectedInfo(entities: AIAnalysisResult['entities']): void {
+    if (!entities) return;
+    // More robustly update, only if new data is actually present and different
+    const updateField = (field: keyof ConversationFlow['collectedInfo'], value?: string | number) => {
+        if (value !== undefined && value !== null && String(value).toUpperCase() !== 'NOT_SPECIFIED' && String(value).toUpperCase() !== 'NONE') {
+            if (this.flow.collectedInfo[field] !== value) {
+                 console.log(`[ActiveConversation] Updating ${field}: ${this.flow.collectedInfo[field]} -> ${value}`);
+                (this.flow.collectedInfo[field] as any) = value;
+            }
+        }
+    };
+    updateField('date', entities.date);
+    updateField('time', entities.time);
+    updateField('guests', entities.guests);
+    updateField('name', entities.name);
+    updateField('phone', entities.phone);
+    updateField('special_requests', entities.special_requests);
+  }
 
-    // Choose apology based on frustration level
-    const apologyIndex = Math.min(frustrationLevel, apologies.length - 1);
-    const apology = apologies[apologyIndex] || apologies[0];
+  private hasCompleteBookingInfo(): boolean {
+    const { date, time, guests, name, phone } = this.flow.collectedInfo;
+    return !!(date && time && guests && name && phone);
+  }
 
-    // Create a summary of what we understand
-    const summary = this.createBookingSummary(info);
+  public async handleMessage(newMessage: string): Promise<string> {
+    if (this.flow.conversationHistory[this.flow.conversationHistory.length -1] !== newMessage) {
+        this.flow.conversationHistory.push(newMessage);
+    }
+    this.flow.responsesSent++;
 
-    if (summary) {
-      // We have information - acknowledge it and move forward
-      const hasAllInfo = this.hasCompleteBookingInfo(info);
+    const aiResult = await this.aiService.analyzeMessage(newMessage, this.flow);
 
-      if (hasAllInfo) {
-        return `${apology}\n\nI have all your details: ${summary}.\n\nLet me check availability and confirm your reservation right away! 🙏✨`;
+    this.updateCollectedInfo(aiResult.entities);
+
+    if (aiResult.guest_sentiment === 'frustrated' || aiResult.conversation_action === 'acknowledge_frustration') {
+      this.flow.guestFrustrationLevel = Math.min(5, (this.flow.guestFrustrationLevel || 0) + 1);
+      this.flow.stage = 'frustrated_recovery';
+    } else if (this.flow.guestFrustrationLevel > 0 && aiResult.guest_sentiment !== 'frustrated') {
+        this.flow.guestFrustrationLevel = Math.max(0, this.flow.guestFrustrationLevel -1 );
+    }
+
+    let responseText = "";
+    const summary = this.responseFormatter.createBookingSummary(this.flow.collectedInfo);
+    const missingFields = this.responseFormatter.getMissingFields(this.flow.collectedInfo);
+    const missingFieldsText = this.responseFormatter.formatMissingFieldsText(missingFields);
+
+    // Primary state determination
+    if (this.flow.stage === 'frustrated_recovery') {
+      responseText = this.responseFormatter.generateApology(this.flow, summary, missingFieldsText);
+      if (this.hasCompleteBookingInfo()) {
+        this.flow.stage = 'confirming';
       } else {
-        const missing = this.getMissingFields(info);
-        const missingText = this.formatMissingFields(missing);
-        return `${apology}\n\nI have: ${summary}.\n\nI just need ${missingText} to complete your reservation! 🙏`;
+        this.flow.stage = 'collecting';
       }
+      if (aiResult.guest_sentiment !== 'frustrated') this.flow.guestFrustrationLevel = 0;
+    } else if (this.hasCompleteBookingInfo() && aiResult.conversation_action !== 'show_alternatives') {
+      this.flow.stage = 'confirming';
+      responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
     } else {
-      // We don't have much info - be gentle and start over
-      return `${apology}\n\nLet me help you properly now. Could you please share your reservation details - date, time, party size, and name? I'll pay close attention this time! 😊🙏`;
-    }
-  }
-
-  /**
-   * Smart information collection that doesn't repeat questions
-   */
-  private static generateSmartInfoRequest(info: any, responseCount: number, lastMessage: string): string {
-    const missing = this.getMissingFields(info);
-    const collected = this.createBookingSummary(info);
-
-    // If no missing fields, we're ready to book
-    if (missing.length === 0) {
-      return this.generateBookingConfirmation(info);
-    }
-
-    // First interaction - warm and welcoming
-    if (responseCount <= 1) {
-      if (collected) {
-        return `Perfect! I have ${collected}.\n\nI just need ${this.formatMissingFields(missing)} to complete your reservation! ✨`;
-      } else {
-        return "I'd love to help you with a reservation! What details can you share - date, time, party size, and your name? 😊";
+      // Default to collecting if not confirming or in frustration recovery
+      this.flow.stage = 'collecting';
+      switch (aiResult.conversation_action) {
+        case 'collect_info':
+          const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
+          const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
+          responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
+          break;
+        case 'ready_to_book':
+          this.flow.stage = 'confirming'; // Should have been caught by hasCompleteBookingInfo
+          responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
+          break;
+        case 'show_alternatives':
+          this.flow.stage = 'suggesting_alternatives'; // Set stage
+          // The actual fetching of alternatives happens in telegram.ts,
+          // then it calls formatter.generateSmartAlternativeMessageText
+          // This response is just to acknowledge the intent to show alternatives.
+          responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summary);
+          break;
+        case 'general_inquiry':
+          responseText = this.responseFormatter.generateFriendlyResponse(this.flow, newMessage, aiResult);
+          break;
+        case 'reset_and_restart':
+             responseText = this.responseFormatter.generateResetResponse(this.flow, summary);
+             this.flow.collectedInfo = {};
+             this.flow.guestFrustrationLevel = 0;
+             this.flow.stage = 'greeting';
+             break;
+        default:
+          responseText = this.responseFormatter.generateContextualResponse(this.flow, summary, missingFieldsText);
+          break;
       }
     }
 
-    // Second interaction - acknowledge progress and be specific
-    if (responseCount === 2) {
-      if (collected) {
-        return `Great! I have ${collected}.\n\n${this.createSpecificRequest(missing)} 🎯`;
-      } else {
-        return "Wonderful! What information can you provide for your booking?";
-      }
-    }
+    this.flow.lastResponse = responseText;
+    return responseText;
+  }
+}
 
-    // Third+ interaction - be more direct but still friendly
-    if (collected) {
-      return `Excellent! I have ${collected}.\n\n${this.createUrgentRequest(missing)} 🎯`;
-    }
-
-    // Fallback - simple and direct
-    return `Almost there! I need ${this.formatMissingFields(missing)} to secure your table.`;
+// --- Default ResponseFormatter Implementation ---
+export class DefaultResponseFormatter implements ResponseFormatter {
+  // Moscow Timezone utilities
+  private getMoscowDateContext() {
+    const now = new Date();
+    const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
+    const year = moscowTime.getFullYear();
+    const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
+    const day = moscowTime.getDate().toString().padStart(2, '0');
+    const todayString = `${year}-${month}-${day}`;
+    const tomorrowMoscow = new Date(moscowTime);
+    tomorrowMoscow.setDate(moscowTime.getDate() + 1);
+    const tomorrowYear = tomorrowMoscow.getFullYear();
+    const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
+    const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
+    const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
+    return { today: todayString, tomorrow: tomorrowString };
   }
 
-  /**
-   * Create a natural booking summary from collected info using Moscow timezone
-   */
-  private static createBookingSummary(info: any): string {
+  private formatTimeForDisplay(time24?: string): string {
+    if (!time24) return '';
+    const parts = time24.split(':');
+    const hour = parseInt(parts[0], 10);
+    const min = parts[1]?.padStart(2, '0') || '00';
+
+    if (isNaN(hour)) return time24; // Return original if hour is not a number
+
+    if (hour === 0) return `12:${min} AM`;
+    if (hour < 12) return `${hour}:${min} AM`;
+    if (hour === 12) return `12:${min} PM`;
+    return `${hour - 12}:${min} PM`;
+  }
+
+  private formatPhoneNumber(phone?: string): string {
+    if (!phone) return '';
+    const cleaned = phone.replace(/\D/g, '');
+    if (cleaned.length === 11 && (cleaned.startsWith('7') || cleaned.startsWith('8'))) { // Common for Russia
+      return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
+    } else if (cleaned.length === 10 && !cleaned.startsWith('7') && !cleaned.startsWith('8')) {
+      return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+    }
+    return cleaned;
+  }
+
+  createBookingSummary(info: ConversationFlow['collectedInfo']): string {
     const parts = [];
-
-    // Add name first if available
     if (info.name) parts.push(info.name);
-
-    // Add party size
-    if (info.guests) {
-      const guestText = info.guests === 1 ? 'person' : 'people';
-      parts.push(`${info.guests} ${guestText}`);
-    }
-
-    // Add date in natural language using Moscow timezone
+    if (info.guests) parts.push(`${info.guests} ${info.guests === 1 ? 'person' : 'people'}`);
     if (info.date) {
-      const getMoscowDateContext = () => {
-        const now = new Date();
-        const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-
-        const year = moscowTime.getFullYear();
-        const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
-        const day = moscowTime.getDate().toString().padStart(2, '0');
-        const todayString = `${year}-${month}-${day}`;
-
-        const tomorrowMoscow = new Date(moscowTime);
-        tomorrowMoscow.setDate(tomorrowMoscow.getDate() + 1);
-        const tomorrowYear = tomorrowMoscow.getFullYear();
-        const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
-        const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
-        const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
-
-        return { today: todayString, tomorrow: tomorrowString };
-      };
-
-      const moscowDates = getMoscowDateContext();
-
-      if (info.date === moscowDates.today) {
-        parts.push('today');
-      } else if (info.date === moscowDates.tomorrow) {
-        parts.push('tomorrow');
-      } else {
-        const dateObj = new Date(info.date);
-        const options: Intl.DateTimeFormatOptions = { 
-          weekday: 'long', 
-          month: 'long', 
-          day: 'numeric',
-          timeZone: 'Europe/Moscow'
-        };
-        parts.push(`on ${dateObj.toLocaleDateString('en-US', options)}`);
+      const moscowDates = this.getMoscowDateContext();
+      if (info.date === moscowDates.today) parts.push('today');
+      else if (info.date === moscowDates.tomorrow) parts.push('tomorrow');
+      else {
+        try {
+            const dateObj = new Date(info.date + 'T00:00:00Z'); // Treat as UTC then format for Moscow
+            const options: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow' };
+            parts.push(`on ${dateObj.toLocaleDateString('en-US', options)}`);
+        } catch (e) {
+            parts.push(`on ${info.date}`);
+        }
       }
     }
-
-    // Add time in natural language
-    if (info.time) {
-      parts.push(`at ${this.formatTimeNaturally(info.time)}`);
-    }
-
-    // Add phone if available (usually last)
-    if (info.phone) {
-      parts.push(`(📞 ${this.formatPhoneNumber(info.phone)})`);
-    }
-
-    return parts.length > 0 ? parts.join(' ') : '';
+    if (info.time) parts.push(`at ${this.formatTimeForDisplay(info.time)}`);
+    if (info.phone) parts.push(`(📞 ${this.formatPhoneNumber(info.phone)})`);
+    if (info.special_requests) parts.push(`with special requests: "${info.special_requests}"`);
+    return parts.length > 0 ? parts.join(', ') : ''; // Use comma for better readability
   }
 
-  /**
-   * Get missing required fields
-   */
-  private static getMissingFields(info: any): string[] {
-    const missing = [];
+  getMissingFields(info: ConversationFlow['collectedInfo']): string[] {
+    const missing: string[] = [];
     if (!info.date) missing.push('date');
     if (!info.time) missing.push('time');
     if (!info.guests) missing.push('party size');
@@ -237,284 +279,143 @@ export class ConversationManager {
     return missing;
   }
 
-  /**
-   * Format missing fields in natural language
-   */
-  private static formatMissingFields(missing: string[]): string {
+  formatMissingFieldsText(missing: string[]): string {
     if (missing.length === 0) return '';
     if (missing.length === 1) return `your ${missing[0]}`;
-    if (missing.length === 2) return `your ${missing[0]} and ${missing[1]}`;
-
-    const last = missing.pop();
+    const last = missing.pop()!;
     return `your ${missing.join(', ')}, and ${last}`;
   }
 
-  /**
-   * Create specific request for missing information
-   */
-  private static createSpecificRequest(missing: string[]): string {
+  createSpecificRequestText(missing: string[]): string {
     if (missing.length === 1) {
       switch (missing[0]) {
-        case 'phone number':
-          return "What's the best phone number to reach you at?";
-        case 'name':
-          return "What name should I put the reservation under?";
-        case 'date':
-          return "What date would you like to visit us?";
-        case 'time':
-          return "What time works best for you?";
-        case 'party size':
-          return "How many people will be joining you?";
-        default:
-          return `I just need your ${missing[0]}!`;
+        case 'phone number': return "What's the best phone number to reach you at?";
+        case 'name': return "What name should I put the reservation under?";
+        case 'date': return "What date would you like to visit us?";
+        case 'time': return "What time works best for you?";
+        case 'party size': return "How many people will be joining you?";
+        default: return `I just need your ${missing[0]}!`;
       }
     }
-
-    return `I need ${this.formatMissingFields(missing)} to complete your booking.`;
+    return `I need ${this.formatMissingFieldsText(missing)} to complete your booking.`;
   }
 
-  /**
-   * Create urgent but friendly request for missing info
-   */
-  private static createUrgentRequest(missing: string[]): string {
+  createUrgentRequestText(missing: string[]): string {
     if (missing.length === 1) {
-      switch (missing[0]) {
-        case 'phone number':
-          return "Last thing - your phone number and we're all set!";
-        case 'name':
-          return "Just need a name for the reservation!";
-        case 'date':
-          return "Which date would you prefer?";
-        case 'time':
-          return "What time should I book for you?";
-        case 'party size':
-          return "How many guests total?";
-        default:
-          return `Just need your ${missing[0]} and we're done!`;
-      }
+        switch (missing[0]) {
+            case 'phone number': return "Last thing - your phone number and we're all set!";
+            case 'name': return "Just need a name for the reservation!";
+            case 'date': return "Which date would you prefer?";
+            case 'time': return "What time should I book for you?";
+            case 'party size': return "How many guests total?";
+            default: return `Just need your ${missing[0]} and we're done!`;
+        }
     }
-
-    return `Final details needed: ${this.formatMissingFields(missing)} and we're all set!`;
+    return `Final details needed: ${this.formatMissingFieldsText(missing)} and we're all set!`;
   }
 
-  /**
-   * Booking confirmation message
-   */
-  private static generateBookingConfirmation(info: any): string {
-    const summary = this.createBookingSummary(info);
-    return `Perfect! I have everything: ${summary}.\n\nLet me check availability and confirm your reservation right away! 🎉`;
-  }
-
-  /**
-   * Alternative suggestions request
-   */
-  private static generateAlternativeRequest(info: any): string {
-    const summary = this.createBookingSummary(info);
-    return `I understand you'd like ${summary}.\n\nLet me find some excellent alternative times for you! 🔍`;
-  }
-
-  /**
-   * General friendly response for non-booking inquiries
-   */
-  private static generateFriendlyResponse(info: any, message: string): string {
-    const lowerMessage = message.toLowerCase();
-
-    // Greeting responses
-    if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
-      return "Hello! Welcome! I'm here to help you make a reservation. What would you like to book? 😊";
-    }
-
-    // Help requests
-    if (lowerMessage.includes('help') || lowerMessage.includes('info')) {
-      return "I'd be happy to help you with a reservation! Just let me know your preferred date, time, party size, and name. What can I assist you with?";
-    }
-
-    // Menu/food questions
-    if (lowerMessage.includes('menu') || lowerMessage.includes('food') || lowerMessage.includes('cuisine')) {
-      return "I'd love to tell you about our menu! For detailed information about our dishes, I recommend speaking with our staff. Would you like to make a reservation so you can experience our cuisine? 🍽️";
-    }
-
-    // Hours/location questions
-    if (lowerMessage.includes('hours') || lowerMessage.includes('open') || lowerMessage.includes('location') || lowerMessage.includes('address')) {
-      return "For our current hours and location details, please check with our staff directly. I can help you make a reservation though! What date and time work for you? 📍";
-    }
-
-    // Default friendly response
-    return "I'd love to help you with a reservation! What details can you share with me - date, time, and party size? 😊";
-  }
-
-  /**
-   * Generate contextual response based on conversation flow
-   */
-  private static generateContextualResponse(info: any, message: string, responseCount: number): string {
-    // If we have some information, acknowledge it
-    const collected = this.createBookingSummary(info);
-
-    if (collected) {
-      const missing = this.getMissingFields(info);
-      if (missing.length === 0) {
-        return this.generateBookingConfirmation(info);
-      } else {
-        return `Thank you! I have ${collected}. I just need ${this.formatMissingFields(missing)} to complete your reservation! ✨`;
-      }
-    }
-
-    // No information yet - encourage them to share details
-    return "I'd be happy to help you with a reservation! What information can you share with me? 😊";
-  }
-
-  /**
-   * Format time 24-hour to 12-hour with AM/PM
-   */
-  private static formatTimeNaturally(time: string): string {
-    if (!time) return '';
-
-    // Handle different time formats
-    let hours: number, minutes: string;
-
-    if (time.includes(':')) {
-      const [h, m] = time.split(':');
-      hours = parseInt(h);
-      minutes = m || '00';
-    } else {
-      hours = parseInt(time);
-      minutes = '00';
-    }
-
-    // Handle invalid hours
-    if (isNaN(hours) || hours < 0 || hours > 23) {
-      return time; // Return original if invalid
-    }
-
-    if (hours === 0) return `12:${minutes} AM`;
-    if (hours < 12) return `${hours}:${minutes} AM`;
-    if (hours === 12) return `12:${minutes} PM`;
-    return `${hours - 12}:${minutes} PM`;
-  }
-
-  /**
-   * Format phone number for display
-   */
-  private static formatPhoneNumber(phone: string): string {
-    if (!phone) return '';
-
-    // Remove all non-digits
-    const cleaned = phone.replace(/\D/g, '');
-
-    // Format Russian phone numbers
-    if (cleaned.length === 11 && cleaned.startsWith('7')) {
-      return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
-    } else if (cleaned.length === 10) {
-      return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-    }
-
-    // Return cleaned version for other formats
-    return cleaned;
-  }
-
-  /**
-   * Detect if user is providing information vs asking questions
-   */
-  private static isProvidingInfo(message: string): boolean {
-    const infoPatterns = [
-      /\d{1,2}[:\s]?\d{0,2}\s*(am|pm|AM|PM)?/, // Time patterns
-      /\d{3,4}[-.\s]?\d{3}[-.\s]?\d{4}/, // Phone patterns  
-      /(today|tomorrow|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})/, // Date patterns
-      /\b\d+\s*(people|person|guests?)\b/, // Party size patterns
-      /my name is|I'm|call me|for\s+\w+/i // Name patterns
+  generateApology(flow: ConversationFlow, summary: string, missingFieldsText: string): string {
+    const apologies = [
+      "I sincerely apologize for the confusion! You're absolutely right.",
+      "My apologies for that oversight. I should have remembered that.",
+      "You're right, and I'm sorry for asking again. Let's proceed with what you've told me.",
+      "I'm sorry for the mix-up. I'll use the information you've already provided.",
+      "My mistake! I'll make sure to keep track of that. Thanks for your patience."
     ];
-
-    return infoPatterns.some(pattern => pattern.test(message));
-  }
-
-  /**
-   * Generate context-aware response based on conversation history
-   */
-  static generateContextAwareResponse(
-    message: string,
-    conversationHistory: string[],
-    collectedInfo: any,
-    frustrationLevel: number = 0
-  ): string {
-    const recentMessages = conversationHistory.slice(-3).join(' ').toLowerCase();
-
-    // Check for repetitive patterns or frustration
-    const frustratedPhrases = ['told you', 'already said', 'just said', 'mentioned'];
-    const isRepeating = frustratedPhrases.some(phrase => message.toLowerCase().includes(phrase));
-
-    if (isRepeating || frustrationLevel > 0) {
-      return this.generateApologyResponse(collectedInfo, message, frustrationLevel);
-    }
-
-    // Check if they're providing new information
-    if (this.isProvidingInfo(message)) {
-      const summary = this.createBookingSummary(collectedInfo);
-      const missing = this.getMissingFields(collectedInfo);
-
-      if (missing.length === 0) {
-        return `Excellent! I have everything: ${summary}. Let me confirm your reservation right away! 🎉`;
-      } else {
-        return `Great! I have ${summary}. Just need ${this.formatMissingFields(missing)} to complete your booking! ✨`;
-      }
-    }
-
-    return this.generateFriendlyResponse(collectedInfo, message);
-  }
-
-  /**
-   * Advanced conversation analysis
-   */
-  static analyzeConversationPattern(
-    conversationHistory: string[],
-    collectedInfo: any
-  ): {
-    isStuck: boolean;
-    isRepeating: boolean;
-    recommendedAction: string;
-    confidence: number;
-  } {
-    // Analyze if conversation is stuck in a loop
-    const recentMessages = conversationHistory.slice(-4);
-    const hasRepeatedRequests = recentMessages.some(msg => 
-      msg.toLowerCase().includes('need') && 
-      (msg.includes('name') || msg.includes('phone') || msg.includes('date'))
-    );
-
-    // Check if user is repeating information
-    const lastUserMessage = conversationHistory[conversationHistory.length - 1] || '';
-    const frustratedPhrases = ['told you', 'already said', 'just said'];
-    const isRepeating = frustratedPhrases.some(phrase => 
-      lastUserMessage.toLowerCase().includes(phrase)
-    );
-
-    // Determine if conversation is stuck
-    const isStuck = hasRepeatedRequests && conversationHistory.length > 6;
-
-    let recommendedAction = 'continue_normal_flow';
-    if (isRepeating) {
-      recommendedAction = 'apologize_and_summarize';
-    } else if (isStuck) {
-      recommendedAction = 'reset_and_restart';
-    }
-
-    return {
-      isStuck,
-      isRepeating,
-      recommendedAction,
-      confidence: 0.8
-    };
-  }
-
-  /**
-   * Emergency conversation reset when things go wrong
-   */
-  static generateResetResponse(collectedInfo: any): string {
-    const summary = this.createBookingSummary(collectedInfo);
+    const apologyIndex = Math.min(flow.guestFrustrationLevel || 0, apologies.length - 1);
+    const apology = apologies[apologyIndex];
 
     if (summary) {
-      return `Let me start fresh and work with what I understand: ${summary}.\n\nWhat additional information do you need to provide for your reservation? 🔄`;
-    } else {
-      return `Let me start over to help you better. Could you please tell me:\n- What date you'd like to visit\n- What time you prefer\n- How many people\n- Your name\n\nI'll make sure to get it right this time! 🔄😊`;
+      const hasAllInfo = this.getMissingFields(flow.collectedInfo).length === 0;
+      if (hasAllInfo) {
+        return `${apology}\n\nI confirm I have all your details: ${summary}.\n\nLet me check availability and confirm your reservation right away! 🙏✨`;
+      } else {
+        return `${apology}\n\nI have noted: ${summary}.\n\nI just need ${missingFieldsText} to complete your reservation! 🙏`;
+      }
     }
+    return `${apology}\n\nLet's get this right. Could you please share your reservation details again: date, time, party size, and your name? I'll pay close attention! 😊🙏`;
+  }
+
+  generateSmartInfoRequest(flow: ConversationFlow, summary: string, missingFieldsText: string, specificRequest: string, urgentRequest: string): string {
+    if (this.getMissingFields(flow.collectedInfo).length === 0) {
+      return this.generateBookingConfirmation(flow, summary);
+    }
+
+    if (flow.responsesSent <= 1) {
+      return summary ? `Perfect! I have ${summary}.\n\nI just need ${missingFieldsText} to complete your reservation! ✨`
+                     : "I'd love to help you with a reservation! What details can you share - date, time, party size, and your name? 😊";
+    }
+    if (flow.responsesSent === 2) {
+      return summary ? `Great! I have ${summary}.\n\n${specificRequest} 🎯`
+                     : "Wonderful! What information can you provide for your booking?";
+    }
+    return summary ? `Excellent! I have ${summary}.\n\n${urgentRequest} 🎯`
+                   : `Almost there! I need ${missingFieldsText} to secure your table.`;
+  }
+
+  generateBookingConfirmation(flow: ConversationFlow, summary: string): string {
+    return `Perfect! I have everything: ${summary}.\n\nI'll now check availability and confirm your reservation. One moment, please! 🎉`;
+  }
+
+  generateAlternativeRequest(flow: ConversationFlow, summary: string): string {
+    return `Understood. You're looking for ${summary}.\n\nLet me check for some excellent alternative times for you right now! 🔍`;
+  }
+
+  generateFriendlyResponse(flow: ConversationFlow, message: string, aiResult: AIAnalysisResult): string {
+    const lowerMessage = message.toLowerCase();
+    if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
+      return "Hello there! I'm here to help you with restaurant reservations. What can I do for you today? 😊";
+    }
+    if (lowerMessage.includes('thank')) {
+        return "You're very welcome! Is there anything else I can assist you with today? 😊";
+    }
+    // Add more nuanced general responses based on aiResult if needed
+    return "I'd be happy to help you with a reservation! What date, time, and party size are you considering? 😊";
+  }
+
+  generateContextualResponse(flow: ConversationFlow, summary: string, missingFieldsText: string): string {
+    if (summary) {
+      return this.getMissingFields(flow.collectedInfo).length === 0
+        ? this.generateBookingConfirmation(flow, summary)
+        : `Thank you! I have these details so far: ${summary}. I just need ${missingFieldsText} to complete your reservation! ✨`;
+    }
+    return "I'm ready to help with your reservation! What information can you share with me? 😊";
+  }
+
+  generateResetResponse(flow: ConversationFlow, summary: string): string {
+    if (summary) {
+      return `Okay, let's start fresh. So far, I understand: ${summary}.\n\nWhat other details can you provide for your reservation, or what would you like to change? 🔄`;
+    }
+    return `Alright, let's begin anew to make sure I get everything perfect for you. Could you please tell me:\n- The date you'd like to visit\n- Your preferred time\n- The number of people in your party\n- And the name for the reservation?\n\nI'll make sure to get it right this time! 🔄😊`;
+  }
+
+  // Implementation for the new method
+  public generateSmartAlternativeMessageText(
+    guestName: string | undefined,
+    requestedTime: string, // Original requested time (HH:MM or HH:MM:SS)
+    guests: number,
+    availableSlots: AvailabilitySlot[] // Data from availability.service
+  ): string {
+    const friendlyGuestName = guestName || "there";
+    const displayRequestedTime = this.formatTimeForDisplay(requestedTime);
+
+    if (availableSlots.length === 0) {
+      return `I'm sorry ${friendlyGuestName}, but we seem to be fully booked around ${displayRequestedTime} for ${guests} ${guests === 1 ? 'person' : 'people'}. Would you like to try a different date, or perhaps I can check for a different number of guests? 📅`;
+    }
+
+    const alternativesText = availableSlots
+      .slice(0, 3) // Show top 3 alternatives
+      .map((slot, index) =>
+        // slot.timeDisplay is already formatted by availability.service
+        `${index + 1}. ${slot.timeDisplay} at Table ${slot.tableName} (for ${slot.tableCapacity.min}-${slot.tableCapacity.max} guests)`
+      ).join('\n');
+
+    return `I'm sorry ${friendlyGuestName}, but ${displayRequestedTime} is unfortunately not available for ${guests} ${guests === 1 ? 'person' : 'people'}. 😔
+
+However, I found these other options that might work for you:
+
+${alternativesText}
+
+Would you like to book one of these? Please tell me the number. Alternatively, we can explore other dates or times! 🎯`;
   }
 }
