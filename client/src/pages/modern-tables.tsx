@@ -16,6 +16,7 @@ interface TableData {
   maxGuests: number;
   status: string;
   reservation?: {
+    id: number; // Added reservation ID for drag & drop
     guestName: string;
     guestCount: number;
     timeSlot: string;
@@ -111,7 +112,7 @@ export default function ModernTables() {
       newTime: string;
     }) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
-        method: 'PUT',
+        method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
         },

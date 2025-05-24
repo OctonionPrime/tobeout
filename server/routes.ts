@@ -497,6 +497,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
            ...table,
            status: 'reserved',
            reservation: {
+             id: conflictingReservation.id, // Add reservation ID for drag & drop
              guestName: conflictingReservation.guestName || 'Reserved',
              guestCount: conflictingReservation.guests,
              timeSlot: `${startTime}-${endTime}`,
