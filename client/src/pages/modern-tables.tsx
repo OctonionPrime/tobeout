@@ -130,11 +130,69 @@ export default function ModernTables() {
       return response.json();
     },
     
-    // Simplified approach: Skip optimistic updates for complex moves
+    // Smart optimistic updates with precise slot management
     onMutate: async ({ reservationId, newTableId, newTime }) => {
-      // Just show loading state, no optimistic updates
-      // This prevents visual glitches during overlapping moves
-      return {};
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ 
+        queryKey: ["/api/tables/availability/schedule"] 
+      });
+
+      // Snapshot the previous value
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+
+      // Instant UI update with smart slot management
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+        if (!old || !draggedReservation) return old;
+        
+        // Calculate all time slots involved
+        const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
+        const targetHour = parseInt(newTime.split(':')[0]);
+        
+        const sourceSlots = [
+          draggedReservation.currentTime,
+          `${(sourceHour + 1).toString().padStart(2, '0')}:00`
+        ];
+        
+        const targetSlots = [
+          newTime,
+          `${(targetHour + 1).toString().padStart(2, '0')}:00`
+        ];
+        
+        return old.map((slot: any) => ({
+          ...slot,
+          tables: slot.tables.map((table: any) => {
+            // Clear from source slots
+            if (table.id === draggedReservation.currentTableId && 
+                sourceSlots.includes(slot.time) &&
+                table.reservation?.id === reservationId) {
+              return { 
+                ...table, 
+                reservation: null, 
+                status: 'available' 
+              };
+            }
+            
+            // Add to target slots
+            if (table.id === newTableId && targetSlots.includes(slot.time)) {
+              return { 
+                ...table, 
+                status: 'reserved',
+                reservation: {
+                  id: reservationId,
+                  guestName: draggedReservation.guestName,
+                  guestCount: draggedReservation.guestCount,
+                  timeSlot: slot.time,
+                  phone: '',
+                  status: 'confirmed'
+                }
+              };
+            }
+            return table;
+          })
+        }));
+      });
+
+      return { previousData };
     },
 
     onSuccess: (data, { newTableId, newTime }) => {
