@@ -304,7 +304,20 @@ export default function ModernTables() {
   const handleDrop = (e: React.DragEvent, tableId: number, time: string) => {
     e.preventDefault();
     
-    if (!draggedReservation || !isValidDropZone) {
+    if (!draggedReservation) {
+      setDraggedReservation(null);
+      setDragOverSlot(null);
+      return;
+    }
+
+    // Check if dropping on the same location (no move needed)
+    if (draggedReservation.currentTableId === tableId && draggedReservation.currentTime === time) {
+      setDraggedReservation(null);
+      setDragOverSlot(null);
+      return; // No action needed - same location
+    }
+
+    if (!isValidDropZone) {
       setDraggedReservation(null);
       setDragOverSlot(null);
       return;
