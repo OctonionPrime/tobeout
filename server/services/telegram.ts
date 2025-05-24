@@ -100,12 +100,12 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
   try {
     const settings = await storage.getIntegrationSettings(restaurantId, 'telegram');
     
-    if (!settings?.settings || typeof settings.settings !== 'object' || !('token' in settings.settings)) {
+    if (!settings?.enabled || !settings?.token) {
       console.log(`⚠️ [Telegram] No bot token found for restaurant ${restaurantId}`);
       return false;
     }
 
-    const token = (settings.settings as any).token as string;
+    const token = settings.token;
     const bot = new TelegramBot(token, { polling: true });
 
     // Store bot instance
