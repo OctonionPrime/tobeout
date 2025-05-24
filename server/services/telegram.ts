@@ -98,32 +98,47 @@ function hasCompleteBookingInfo(info: any): boolean {
 // Initialize bot for a restaurant
 export async function initializeTelegramBot(restaurantId: number): Promise<boolean> {
   try {
+    // Stop existing bot if running
+    const existingBot = activeBots.get(restaurantId);
+    if (existingBot) {
+      console.log(`🔄 [Sofia AI] Stopping existing bot for restaurant ${restaurantId}`);
+      await existingBot.stopPolling();
+      activeBots.delete(restaurantId);
+    }
+
     const settings = await storage.getIntegrationSettings(restaurantId, 'telegram');
     
     if (!settings?.enabled || !settings?.token) {
-      console.log(`⚠️ [Telegram] No bot token found for restaurant ${restaurantId}`);
+      console.log(`⚠️ [Sofia AI] No bot token found for restaurant ${restaurantId}`);
       return false;
     }
 
+    console.log(`🚀 [Sofia AI] Initializing conversation bot for restaurant ${restaurantId}`);
     const token = settings.token;
     const bot = new TelegramBot(token, { polling: true });
 
     // Store bot instance
     activeBots.set(restaurantId, bot);
 
-    // Handle incoming messages
+    // Handle incoming messages with Sofia's AI
     bot.on('message', async (msg) => {
       if (msg.text && msg.chat.id) {
+        console.log(`📱 [Sofia AI] Received message: "${msg.text}" from chat ${msg.chat.id}`);
         await handleMessage(bot, restaurantId, msg.chat.id, msg.text);
       }
     });
 
-    // Handle errors
-    bot.on('error', (error) => {
-      console.error(`❌ [Telegram] Bot error for restaurant ${restaurantId}:`, error);
+    // Handle polling errors
+    bot.on('polling_error', (error) => {
+      console.error(`❌ [Sofia AI] Polling error for restaurant ${restaurantId}:`, error);
     });
 
-    console.log(`✅ [Telegram] Bot initialized for restaurant ${restaurantId}`);
+    // Handle general errors
+    bot.on('error', (error) => {
+      console.error(`❌ [Sofia AI] Bot error for restaurant ${restaurantId}:`, error);
+    });
+
+    console.log(`✅ [Sofia AI] Conversation bot initialized and listening for restaurant ${restaurantId}`);
     return true;
 
   } catch (error) {
