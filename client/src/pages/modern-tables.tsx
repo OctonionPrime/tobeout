@@ -51,6 +51,7 @@ export default function ModernTables() {
     guestName: string;
     guestCount: number;
     currentTableId: number;
+    currentTableName: string; // Enhanced tracking
     currentTime: string;
   } | null>(null);
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
@@ -102,10 +103,12 @@ export default function ModernTables() {
       return Promise.all(promises);
     },
     enabled: !!restaurant && timeSlots.length > 0,
-    refetchInterval: 30000, // Auto-refresh every 30 seconds to reduce server load
+    refetchInterval: 180000, // 3 minutes for background sync, optimistic updates handle immediacy
+    refetchOnWindowFocus: true, // Refresh when user returns to tab
+    refetchOnMount: true, // Always fresh data on component mount
   });
 
-  // Move reservation mutation - Backend integrated
+  // Move reservation mutation with optimistic updates
   const moveReservationMutation = useMutation({
     mutationFn: async ({ reservationId, newTableId, newTime }: {
       reservationId: number;
@@ -114,9 +117,7 @@ export default function ModernTables() {
     }) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tableId: newTableId,
           time: newTime,
@@ -124,37 +125,98 @@ export default function ModernTables() {
         })
       });
       
-      if (!response.ok) {
-        throw new Error('Failed to move reservation');
-      }
-      
+      if (!response.ok) throw new Error('Failed to move reservation');
       return response.json();
     },
-    onSuccess: () => {
-      // Invalidate cache to refresh data
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reservations"] });
-      
+    
+    // INSTANT UPDATE - Optimistic UI
+    onMutate: async ({ reservationId, newTableId, newTime }) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ 
+        queryKey: ["/api/tables/availability/schedule", selectedDate] 
+      });
+
+      // Snapshot the previous value
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+
+      // Optimistically update the UI instantly
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+        if (!old) return old;
+        
+        return old.map((slot: any) => ({
+          ...slot,
+          tables: slot.tables.map((table: any) => {
+            // Remove reservation from old location
+            if (table.reservation?.id === reservationId) {
+              return { ...table, reservation: null, status: 'available' };
+            }
+            // Add reservation to new location
+            if (table.id === newTableId && slot.time === newTime) {
+              return { 
+                ...table, 
+                status: 'reserved',
+                reservation: draggedReservation ? {
+                  id: reservationId,
+                  guestName: draggedReservation.guestName,
+                  guestCount: draggedReservation.guestCount,
+                  timeSlot: newTime,
+                  phone: '',
+                  status: 'confirmed'
+                } : null
+              };
+            }
+            return table;
+          })
+        }));
+      });
+
+      return { previousData };
+    },
+
+    onSuccess: (data, { newTableId, newTime }) => {
+      // Enhanced toast with specific details
+      const oldTableName = draggedReservation?.currentTableName || `Table ${draggedReservation?.currentTableId}`;
+      const newTableName = scheduleData?.find(slot => slot.time === newTime)
+        ?.tables?.find(t => t.id === newTableId)?.name || `Table ${newTableId}`;
+
       toast({
-        title: "Reservation moved successfully",
-        description: `${draggedReservation?.guestName} has been moved to the new time slot`,
+        title: "Reservation Updated",
+        description: `${draggedReservation?.guestName}'s reservation moved from ${draggedReservation?.currentTime} (${oldTableName}) to ${newTime} (${newTableName})`,
       });
       
+      // Clean up drag state
       setDraggedReservation(null);
       setDragOverSlot(null);
+      
+      // Sync with server after successful move
+      setTimeout(() => {
+        queryClient.invalidateQueries({ 
+          queryKey: ["/api/tables/availability/schedule", selectedDate] 
+        });
+      }, 1000);
     },
-    onError: (error: any) => {
+
+    onError: (error: any, variables, context) => {
+      // Revert optimistic update on error
+      if (context?.previousData) {
+        queryClient.setQueryData(
+          ["/api/tables/availability/schedule", selectedDate], 
+          context.previousData
+        );
+      }
+
       toast({
         title: "Failed to move reservation",
         description: error.message || "Please try again",
         variant: "destructive",
       });
+      
       setDraggedReservation(null);
       setDragOverSlot(null);
     }
   });
 
-  // Drag & Drop Event Handlers
+  // Enhanced Drag & Drop Event Handlers
   const handleDragStart = (
     e: React.DragEvent,
     reservation: {
@@ -162,14 +224,15 @@ export default function ModernTables() {
       guestName: string;
       guestCount: number;
     },
-    tableId: number,
+    table: TableData, // Pass full table object instead of just ID
     time: string
   ) => {
     setDraggedReservation({
       reservationId: reservation.id,
       guestName: reservation.guestName,
       guestCount: reservation.guestCount,
-      currentTableId: tableId,
+      currentTableId: table.id,
+      currentTableName: table.name, // Capture table name for enhanced messaging
       currentTime: time
     });
     
@@ -393,7 +456,7 @@ export default function ModernTables() {
                                   guestName: table.reservation.guestName,
                                   guestCount: table.reservation.guestCount
                                 },
-                                table.id,
+                                table, // Pass full table object for enhanced messaging
                                 slot.time
                               )}
                               onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
