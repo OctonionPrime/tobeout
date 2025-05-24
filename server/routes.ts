@@ -1058,7 +1058,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
        // If telegram integration is enabled, setup the bot
        if (type === 'telegram' && savedSettings.enabled && savedSettings.token) {
          try {
-           await setupTelegramBot(savedSettings.token, restaurant.id);
+           await initializeTelegramBot(restaurant.id);
 
            // Log successful bot setup
            await storage.logAiActivity({
