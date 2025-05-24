@@ -131,38 +131,42 @@ export default function ModernTables() {
     
     // INSTANT UPDATE - Optimistic UI
     onMutate: async ({ reservationId, newTableId, newTime }) => {
-      // Cancel any outgoing refetches
+      // Cancel ALL outgoing refetches to prevent conflicts
       await queryClient.cancelQueries({ 
-        queryKey: ["/api/tables/availability/schedule", selectedDate] 
+        queryKey: ["/api/tables/availability/schedule"] 
       });
 
       // Snapshot the previous value
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
 
-      // Optimistically update the UI instantly
+      // Optimistically update the UI instantly with better logic
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
-        if (!old) return old;
+        if (!old || !draggedReservation) return old;
         
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
             // Remove reservation from old location
             if (table.reservation?.id === reservationId) {
-              return { ...table, reservation: null, status: 'available' };
+              return { 
+                ...table, 
+                reservation: null, 
+                status: 'available' 
+              };
             }
             // Add reservation to new location
             if (table.id === newTableId && slot.time === newTime) {
               return { 
                 ...table, 
                 status: 'reserved',
-                reservation: draggedReservation ? {
+                reservation: {
                   id: reservationId,
                   guestName: draggedReservation.guestName,
                   guestCount: draggedReservation.guestCount,
                   timeSlot: newTime,
-                  phone: '',
+                  phone: draggedReservation.phone || '',
                   status: 'confirmed'
-                } : null
+                }
               };
             }
             return table;
@@ -188,12 +192,10 @@ export default function ModernTables() {
       setDraggedReservation(null);
       setDragOverSlot(null);
       
-      // Sync with server after successful move
-      setTimeout(() => {
-        queryClient.invalidateQueries({ 
-          queryKey: ["/api/tables/availability/schedule", selectedDate] 
-        });
-      }, 1000);
+      // Invalidate related queries immediately to stay in sync
+      queryClient.invalidateQueries({ 
+        queryKey: ["/api/reservations"] 
+      });
     },
 
     onError: (error: any, variables, context) => {
