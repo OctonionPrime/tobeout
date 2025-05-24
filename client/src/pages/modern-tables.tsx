@@ -249,23 +249,51 @@ export default function ModernTables() {
     e.dataTransfer.effectAllowed = 'move';
   };
 
+  // Enhanced collision detection for multi-hour reservations
+  const checkReservationConflict = (targetTableId: number, targetTime: string, duration: number = 2): boolean => {
+    if (!scheduleData || !draggedReservation) return false;
+    
+    const targetHour = parseInt(targetTime.split(':')[0]);
+    
+    // Generate all time slots this reservation would occupy
+    for (let i = 0; i < duration; i++) {
+      const hour = (targetHour + i).toString().padStart(2, '0');
+      const timeSlot = `${hour}:00`;
+      
+      const slot = scheduleData.find(s => s.time === timeSlot);
+      const table = slot?.tables?.find(t => t.id === targetTableId);
+      
+      // Check if this slot already has a different reservation
+      if (table?.reservation && table.reservation.id !== draggedReservation.reservationId) {
+        return true; // Conflict detected
+      }
+    }
+    
+    return false; // No conflicts
+  };
+
   const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
     
     setDragOverSlot({ tableId, time });
     
-    // Validate if this is a valid drop zone
+    // Check for reservation conflicts (2-hour duration, can be made dynamic)
+    const hasConflict = checkReservationConflict(tableId, time, 2);
+    
+    // Validate basic availability
     const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find(t => t.id === tableId);
-    const hasReservation = targetSlot?.reservation && targetSlot.reservation.status === 'confirmed';
-    const isAvailable = targetSlot?.status === 'available' && !hasReservation;
+    const hasExistingReservation = targetSlot?.reservation && 
+      targetSlot.reservation.id !== draggedReservation?.reservationId;
     
     // Check capacity match
     const capacityMatch = draggedReservation ? 
       (targetSlot?.minGuests || 0) <= draggedReservation.guestCount && 
       draggedReservation.guestCount <= (targetSlot?.maxGuests || 0) : false;
     
-    setIsValidDropZone(isAvailable && capacityMatch);
+    const isValidDrop = !hasConflict && !hasExistingReservation && capacityMatch;
+    
+    setIsValidDropZone(isValidDrop);
+    e.dataTransfer.dropEffect = isValidDrop ? 'move' : 'none';
   };
 
   const handleDragLeave = () => {
