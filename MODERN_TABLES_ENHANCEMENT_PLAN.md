@@ -221,7 +221,9 @@ Kitchen running behind, need to spread out bookings:
 - [ ] Implement drop zone validation
 - [ ] Add visual feedback (green/red zones)
 - [ ] Smart capacity checking
-- [ ] Reservation move API endpoint
+- [ ] **Backend Integration:** Reservation move API endpoint
+
+**⚠️ Critical:** All drag & drop functionality must be perfectly aligned with backend APIs and database operations to ensure data integrity and real-time synchronization.
 
 ### Phase 3: Advanced UI Features (TODO)
 - [ ] Date selection with quick buttons

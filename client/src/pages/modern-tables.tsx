@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, addDays } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, Users, Settings, MousePointer2, Edit2, RefreshCw } from "lucide-react";
+import { Clock, Users, Settings, MousePointer2, Edit2, RefreshCw, Move } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 
 interface TableData {
   id: number;
@@ -41,8 +42,19 @@ export default function ModernTables() {
   const [activeView, setActiveView] = useState<"schedule" | "floorplan" | "grid" | "list">("schedule");
   const [showAddTableModal, setShowAddTableModal] = useState(false);
   const [editingTable, setEditingTable] = useState<TableData | null>(null);
-  const [draggedTable, setDraggedTable] = useState<{tableId: number; time: string; tableName: string} | null>(null);
+  
+  // Enhanced drag & drop state
+  const [draggedReservation, setDraggedReservation] = useState<{
+    reservationId: number;
+    guestName: string;
+    guestCount: number;
+    currentTableId: number;
+    currentTime: string;
+  } | null>(null);
   const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  const [dragOverSlot, setDragOverSlot] = useState<{tableId: number; time: string} | null>(null);
+  const [isValidDropZone, setIsValidDropZone] = useState(false);
+  
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -53,13 +65,18 @@ export default function ModernTables() {
 
   // Generate time slots based on restaurant hours (showing every hour for compact view)
   const timeSlots: string[] = [];
-  if (restaurant) {
+  if (restaurant && restaurant.openingTime && restaurant.closingTime) {
     const openingTime = restaurant.openingTime || "10:00";
     const closingTime = restaurant.closingTime || "22:00";
     const [openHour] = openingTime.split(':').map(Number);
     const [closeHour] = closingTime.split(':').map(Number);
     
     for (let hour = openHour; hour <= closeHour; hour++) {
+      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+    }
+  } else {
+    // Default time slots if restaurant data is not available
+    for (let hour = 10; hour <= 22; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
   }
@@ -86,15 +103,135 @@ export default function ModernTables() {
     refetchInterval: 30000, // Auto-refresh every 30 seconds to reduce server load
   });
 
+  // Move reservation mutation - Backend integrated
+  const moveReservationMutation = useMutation({
+    mutationFn: async ({ reservationId, newTableId, newTime }: {
+      reservationId: number;
+      newTableId: number;
+      newTime: string;
+    }) => {
+      const response = await fetch(`/api/reservations/${reservationId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          tableId: newTableId,
+          time: newTime,
+          date: selectedDate
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to move reservation');
+      }
+      
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate cache to refresh data
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reservations"] });
+      
+      toast({
+        title: "Reservation moved successfully",
+        description: `${draggedReservation?.guestName} has been moved to the new time slot`,
+      });
+      
+      setDraggedReservation(null);
+      setDragOverSlot(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to move reservation",
+        description: error.message || "Please try again",
+        variant: "destructive",
+      });
+      setDraggedReservation(null);
+      setDragOverSlot(null);
+    }
+  });
+
+  // Drag & Drop Event Handlers
+  const handleDragStart = (
+    e: React.DragEvent,
+    reservation: {
+      id: number;
+      guestName: string;
+      guestCount: number;
+    },
+    tableId: number,
+    time: string
+  ) => {
+    setDraggedReservation({
+      reservationId: reservation.id,
+      guestName: reservation.guestName,
+      guestCount: reservation.guestCount,
+      currentTableId: tableId,
+      currentTime: time
+    });
+    
+    // Set drag effect
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    setDragOverSlot({ tableId, time });
+    
+    // Validate if this is a valid drop zone
+    const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find(t => t.id === tableId);
+    const hasReservation = targetSlot?.reservation && targetSlot.reservation.status === 'confirmed';
+    const isAvailable = targetSlot?.status === 'available' && !hasReservation;
+    
+    // Check capacity match
+    const capacityMatch = draggedReservation ? 
+      (targetSlot?.minGuests || 0) <= draggedReservation.guestCount && 
+      draggedReservation.guestCount <= (targetSlot?.maxGuests || 0) : false;
+    
+    setIsValidDropZone(isAvailable && capacityMatch);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverSlot(null);
+    setIsValidDropZone(false);
+  };
+
+  const handleDrop = (e: React.DragEvent, tableId: number, time: string) => {
+    e.preventDefault();
+    
+    if (!draggedReservation || !isValidDropZone) {
+      setDraggedReservation(null);
+      setDragOverSlot(null);
+      return;
+    }
+
+    // Execute the move
+    moveReservationMutation.mutate({
+      reservationId: draggedReservation.reservationId,
+      newTableId: tableId,
+      newTime: time
+    });
+  };
+
   // Status colors for modern design
-  const getStatusStyle = (status: string, hasReservation: boolean) => {
+  const getStatusStyle = (status: string, hasReservation: boolean, isDragTarget = false) => {
+    // Drag target highlighting
+    if (isDragTarget) {
+      return isValidDropZone
+        ? "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105"
+        : "bg-gradient-to-br from-red-400 to-red-500 text-white shadow-lg shadow-red-400/50 ring-2 ring-red-300";
+    }
+    
     if (hasReservation) {
-      return "bg-gradient-to-br from-red-500 to-red-600 text-white shadow-lg shadow-red-500/25";
+      return "bg-gradient-to-br from-red-500 to-red-600 text-white shadow-lg shadow-red-500/25 cursor-grab active:cursor-grabbing";
     }
     
     switch (status) {
       case 'available':
-        return "bg-gradient-to-br from-green-500 to-green-600 text-white shadow-lg shadow-green-500/25";
+        return "bg-gradient-to-br from-green-500 to-green-600 text-white shadow-lg shadow-green-500/25 hover:shadow-green-500/40 transition-all duration-200";
       case 'occupied':
         return "bg-gradient-to-br from-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/25";
       case 'reserved':
@@ -198,16 +335,34 @@ export default function ModernTables() {
                       <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
                         {slot.tables?.map((table: TableData) => {
                           const hasReservation = table.reservation && table.reservation.status === 'confirmed';
+                          const isDragTarget = dragOverSlot?.tableId === table.id && dragOverSlot?.time === slot.time;
                           
                           return (
                             <div
                               key={table.id}
                               className={cn(
-                                "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200 hover:scale-105 cursor-pointer",
-                                getStatusStyle(table.status, hasReservation)
+                                "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
+                                getStatusStyle(table.status, hasReservation, isDragTarget),
+                                !hasReservation && "hover:scale-105"
                               )}
+                              // Drag & Drop Events
+                              draggable={hasReservation}
+                              onDragStart={(e) => hasReservation && table.reservation && handleDragStart(
+                                e,
+                                {
+                                  id: table.reservation.id || 0,
+                                  guestName: table.reservation.guestName,
+                                  guestCount: table.reservation.guestCount
+                                },
+                                table.id,
+                                slot.time
+                              )}
+                              onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
+                              onDragLeave={handleDragLeave}
+                              onDrop={(e) => handleDrop(e, table.id, slot.time)}
                             >
-                              <div className="text-xs font-bold opacity-90">
+                              <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
+                                {hasReservation && <Move className="h-3 w-3" />}
                                 {table.name}
                               </div>
                               {hasReservation && table.reservation && (
