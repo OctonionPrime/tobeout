@@ -144,16 +144,28 @@ export default function ModernTables() {
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
         if (!old || !draggedReservation) return old;
         
-        // Calculate next hour for 2-hour reservation block
-        const currentHour = parseInt(newTime.split(':')[0]);
-        const nextHour = (currentHour + 1).toString().padStart(2, '0');
-        const nextTimeSlot = `${nextHour}:00`;
+        // Calculate source and target time slots
+        const sourceCurrentHour = parseInt(draggedReservation.currentTime.split(':')[0]);
+        const sourceNextHour = (sourceCurrentHour + 1).toString().padStart(2, '0');
+        const sourceFirstSlot = draggedReservation.currentTime;
+        const sourceSecondSlot = `${sourceNextHour}:00`;
+        
+        const targetCurrentHour = parseInt(newTime.split(':')[0]);
+        const targetNextHour = (targetCurrentHour + 1).toString().padStart(2, '0');
+        const targetFirstSlot = newTime;
+        const targetSecondSlot = `${targetNextHour}:00`;
         
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            // Remove reservation from ALL previous locations (both hours)
-            if (table.reservation?.id === reservationId) {
+            // Remove reservation ONLY from specific source slots
+            const isSourceSlot = (
+              table.id === draggedReservation.currentTableId && 
+              (slot.time === sourceFirstSlot || slot.time === sourceSecondSlot) &&
+              table.reservation?.id === reservationId
+            );
+            
+            if (isSourceSlot) {
               return { 
                 ...table, 
                 reservation: null, 
@@ -161,8 +173,13 @@ export default function ModernTables() {
               };
             }
             
-            // Add reservation to BOTH new time slots (2-hour block)
-            if (table.id === newTableId && (slot.time === newTime || slot.time === nextTimeSlot)) {
+            // Add reservation ONLY to specific target slots
+            const isTargetSlot = (
+              table.id === newTableId && 
+              (slot.time === targetFirstSlot || slot.time === targetSecondSlot)
+            );
+            
+            if (isTargetSlot) {
               return { 
                 ...table, 
                 status: 'reserved',
