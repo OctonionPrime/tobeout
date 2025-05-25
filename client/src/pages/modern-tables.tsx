@@ -88,15 +88,21 @@ export default function ModernTables() {
   if (restaurant) {
     const openingTime = restaurant.openingTime || "10:00";
     const closingTime = restaurant.closingTime || "22:00";
+    const avgDuration = restaurant.avgReservationDuration || 90; // minutes
+    
     const [openHour] = openingTime.split(':').map(Number);
     const [closeHour] = closingTime.split(':').map(Number);
     
-    for (let hour = openHour; hour <= closeHour; hour++) {
+    // Calculate last booking time (closing time minus average duration)
+    const durationHours = Math.ceil(avgDuration / 60); // Convert to hours, round up
+    const lastBookingHour = closeHour - durationHours;
+    
+    for (let hour = openHour; hour <= lastBookingHour; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
   } else {
-    // Fallback while restaurant data loads
-    for (let hour = 10; hour <= 22; hour++) {
+    // Fallback while restaurant data loads (10:00-20:00, assuming 2-hour duration)
+    for (let hour = 10; hour <= 20; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
   }
