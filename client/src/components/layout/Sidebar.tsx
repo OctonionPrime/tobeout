@@ -24,9 +24,9 @@ interface NavItemProps {
 
 const NavItem = ({ href, icon, children, active }: NavItemProps) => (
   <Link href={href}>
-    <a 
+    <div 
       className={cn(
-        "flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50",
+        "flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50 cursor-pointer",
         active && "bg-blue-50 border-r-4 border-blue-500"
       )}
     >
@@ -34,7 +34,7 @@ const NavItem = ({ href, icon, children, active }: NavItemProps) => (
         {icon}
       </div>
       <span className="mx-3">{children}</span>
-    </a>
+    </div>
   </Link>
 );
 

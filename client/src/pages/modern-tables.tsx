@@ -80,20 +80,14 @@ export default function ModernTables() {
 
   // Generate time slots based on restaurant hours (showing every hour for compact view)
   const timeSlots: string[] = [];
-  if (restaurant && restaurant.openingTime && restaurant.closingTime) {
-    const openingTime = restaurant.openingTime || "10:00";
-    const closingTime = restaurant.closingTime || "22:00";
-    const [openHour] = openingTime.split(':').map(Number);
-    const [closeHour] = closingTime.split(':').map(Number);
-    
-    for (let hour = openHour; hour <= closeHour; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-    }
-  } else {
-    // Default time slots if restaurant data is not available
-    for (let hour = 10; hour <= 22; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-    }
+  // Use default business hours since restaurant schema doesn't have openingTime/closingTime yet
+  const openingTime = "10:00"; // Default opening time
+  const closingTime = "22:00";  // Default closing time
+  const [openHour] = openingTime.split(':').map(Number);
+  const [closeHour] = closingTime.split(':').map(Number);
+  
+  for (let hour = openHour; hour <= closeHour; hour++) {
+    timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
   }
 
   // Fetch table data
