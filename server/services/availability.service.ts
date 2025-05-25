@@ -237,11 +237,14 @@ export async function getAvailableTimeSlots(
     console.log(`[AvailabilityService] Found ${activeReservationsForDate.length} active reservations on ${date} to check against.`);
 
     // 7. Generate potential time slots based on determined operating hours and interval.
+    // Apply one-hour-before-closing rule: last booking should be at least 1 hour before closing
+    const lastBookingTimeMinutes = closingTimeMinutes - 60; // One hour before closing
+    
     const potentialTimeSlots: string[] = [];
-    for (let currentTimeMinutes = openingTimeMinutes; currentTimeMinutes < closingTimeMinutes; currentTimeMinutes += slotIntervalMinutes) {
-      // A slot is only valid if it STARTS before closing AND ENDS no later than closing.
-      if (addMinutesToTime(currentTimeMinutes, slotDurationMinutes) > closingTimeMinutes) {
-        continue; // This slot would extend beyond closing time.
+    for (let currentTimeMinutes = openingTimeMinutes; currentTimeMinutes <= lastBookingTimeMinutes; currentTimeMinutes += slotIntervalMinutes) {
+      // Ensure the slot doesn't start after our last booking time
+      if (currentTimeMinutes > lastBookingTimeMinutes) {
+        continue; // This slot would be too late
       }
       const hours = Math.floor(currentTimeMinutes / 60);
       const minutes = currentTimeMinutes % 60;
