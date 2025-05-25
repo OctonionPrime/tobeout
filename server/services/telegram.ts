@@ -83,6 +83,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
           flow.collectedInfo.time!,
           flow.collectedInfo.guests!,
           flow.collectedInfo.name!,
+          flow.collectedInfo.phone!,
           chatId.toString(), // Use Telegram chat ID as the unique identifier
           flow.collectedInfo.special_requests
         );

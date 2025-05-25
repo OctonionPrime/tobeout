@@ -26,6 +26,7 @@ export async function createTelegramReservation(
  time: string, // Can be HH:MM, booking.ts might handle parsing or expect HH:MM:SS
  guests: number,
  name: string,
+ phone: string,
  telegramUserId: string,
  comments?: string
 ): Promise<{
@@ -37,24 +38,35 @@ export async function createTelegramReservation(
  try {
    console.log(`[TelegramBooking] Attempting to create reservation via Telegram: ${guests} guests for ${name} on ${date} at ${time}`);
 
-   // Step 1: Find or create the guest by Telegram user ID.
+   // Step 1: Find or create the guest by Telegram user ID first, then by phone as fallback.
    let guest: SchemaGuest | undefined = await storage.getGuestByTelegramId(telegramUserId);
    if (!guest) {
-     console.log(`[TelegramBooking] Guest with Telegram ID ${telegramUserId} not found. Creating new guest: ${name}`);
-     // Prepare guest data according to InsertGuest from schema.ts
-     const newGuestData: InsertGuest = {
-       name,
-       telegram_user_id: telegramUserId,
-       language: 'en', // Default language
-       // phone, email, birthday, comments, tags are nullable and can be omitted
-     };
-     guest = await storage.createGuest(newGuestData);
-     console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name} (Telegram: ${telegramUserId})`);
+     // Try to find by phone number as fallback
+     guest = await storage.getGuestByPhone(phone);
+     if (guest) {
+       // Update existing guest with Telegram ID
+       console.log(`[TelegramBooking] Found existing guest by phone ${phone}, adding Telegram ID: ${telegramUserId}`);
+       guest = await storage.updateGuest(guest.id, { telegram_user_id: telegramUserId });
+     } else {
+       console.log(`[TelegramBooking] Creating new guest: ${name} (Phone: ${phone}, Telegram: ${telegramUserId})`);
+       // Prepare guest data according to InsertGuest from schema.ts
+       const newGuestData: InsertGuest = {
+         name,
+         phone,
+         telegram_user_id: telegramUserId,
+         language: 'en', // Default language
+         // email, birthday, comments, tags are nullable and can be omitted
+       };
+       guest = await storage.createGuest(newGuestData);
+       console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name}`);
+     }
    } else {
      console.log(`[TelegramBooking] Found existing guest ID: ${guest.id} for Telegram ID ${telegramUserId}`);
-     // Optionally, update guest name if it's different and you want to allow this.
-     // For now, we use the existing guest record.
-     // if (guest.name !== name) { /* consider storage.updateGuest(...) */ }
+     // Update phone number if it's different or missing
+     if (!guest.phone || guest.phone !== phone) {
+       guest = await storage.updateGuest(guest.id, { phone });
+       console.log(`[TelegramBooking] Updated phone number for guest ${guest.id}`);
+     }
    }
 
    // Step 2: Prepare the booking request for the core booking service.
