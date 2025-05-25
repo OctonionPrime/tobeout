@@ -174,7 +174,7 @@ export async function getAvailableTimeSlots(
     // Priority: configOverrides -> restaurant settings from DB -> hardcoded service defaults.
     const serviceDefaults = {
       openingTime: '10:00:00',
-      closingTime: '23:00:00',
+      closingTime: '22:00:00', // Updated to match restaurant default
       slotInterval: 60, // minutes
       // restaurant.avgReservationDuration has DB default 90, so it should exist.
       slotDuration: restaurant.avgReservationDuration, // minutes
