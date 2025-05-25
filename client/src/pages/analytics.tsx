@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import DashboardLayout from "@/components/layout/DashboardLayout";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { 
   Users, 
   TrendingUp, 
@@ -44,21 +44,21 @@ export default function Analytics() {
   }
 
   // Guest Analytics
-  const totalGuests = guests?.length || 0;
-  const telegramGuests = guests?.filter((g: any) => g.telegram_user_id)?.length || 0;
-  const regularGuests = guests?.filter((g: any) => {
-    const guestReservations = reservations?.filter((r: any) => r.guestId === g.id) || [];
+  const totalGuests = Array.isArray(guests) ? guests.length : 0;
+  const telegramGuests = Array.isArray(guests) ? guests.filter((g: any) => g.telegram_user_id).length : 0;
+  const regularGuests = Array.isArray(guests) ? guests.filter((g: any) => {
+    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === g.id) : [];
     return guestReservations.length > 1;
-  })?.length || 0;
+  }).length : 0;
 
   // Reservation Analytics
-  const totalReservations = reservations?.length || 0;
-  const confirmedReservations = reservations?.filter((r: any) => r.status === 'confirmed')?.length || 0;
-  const telegramBookings = reservations?.filter((r: any) => r.source === 'telegram')?.length || 0;
+  const totalReservations = Array.isArray(reservations) ? reservations.length : 0;
+  const confirmedReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.status === 'confirmed').length : 0;
+  const telegramBookings = Array.isArray(reservations) ? reservations.filter((r: any) => r.source === 'telegram').length : 0;
   
   // Guest Connections Analysis
-  const connectedGuests = guests?.reduce((acc: any, guest: any) => {
-    const guestReservations = reservations?.filter((r: any) => r.guestId === guest.id) || [];
+  const connectedGuests = Array.isArray(guests) ? guests.reduce((acc: any, guest: any) => {
+    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === guest.id) : [];
     
     if (guest.telegram_user_id) {
       const telegramGroup = acc.find((g: any) => g.telegram_user_id === guest.telegram_user_id);
@@ -73,11 +73,11 @@ export default function Analytics() {
       }
     }
     return acc;
-  }, []) || [];
+  }, []) : [];
 
   // Table Preferences
-  const tableUsage = tables?.map((table: any) => {
-    const tableReservations = reservations?.filter((r: any) => r.tableId === table.id) || [];
+  const tableUsage = Array.isArray(tables) ? tables.map((table: any) => {
+    const tableReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.tableId === table.id) : [];
     const uniqueGuests = new Set(tableReservations.map((r: any) => r.guestId)).size;
     return {
       ...table,
@@ -89,15 +89,15 @@ export default function Analytics() {
         return acc;
       }, {})
     };
-  }) || [];
+  }) : [];
 
   // Party Size Analysis
-  const partySizeStats = reservations?.reduce((acc: any, r: any) => {
+  const partySizeStats = Array.isArray(reservations) ? reservations.reduce((acc: any, r: any) => {
     acc[r.guests] = (acc[r.guests] || 0) + 1;
     return acc;
-  }, {}) || {};
+  }, {}) : {};
 
-  const avgPartySize = reservations?.length ? 
+  const avgPartySize = Array.isArray(reservations) && reservations.length ? 
     (reservations.reduce((sum: number, r: any) => sum + r.guests, 0) / reservations.length).toFixed(1) : 0;
 
   return (
@@ -203,8 +203,8 @@ export default function Analytics() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
-                    {guests?.map((guest: any) => {
-                      const guestReservations = reservations?.filter((r: any) => r.guestId === guest.id) || [];
+                    {Array.isArray(guests) ? guests.map((guest: any) => {
+                      const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === guest.id) : [];
                       if (guestReservations.length === 0) return null;
                       
                       return (
@@ -226,11 +226,7 @@ export default function Analytics() {
                           </div>
                         </div>
                       );
-                    }).filter(Boolean).sort((a: any, b: any) => {
-                      const aBookings = reservations?.filter((r: any) => r.guestId === a.key)?.length || 0;
-                      const bBookings = reservations?.filter((r: any) => r.guestId === b.key)?.length || 0;
-                      return bBookings - aBookings;
-                    }).slice(0, 8)}
+                    }).filter(Boolean) : []}
                   </div>
                 </CardContent>
               </Card>
@@ -246,7 +242,7 @@ export default function Analytics() {
                 <CardContent>
                   <div className="space-y-4">
                     {['direct', 'telegram', 'web'].map((source) => {
-                      const sourceBookings = reservations?.filter((r: any) => r.source === source)?.length || 0;
+                      const sourceBookings = Array.isArray(reservations) ? reservations.filter((r: any) => r.source === source).length : 0;
                       const percentage = totalReservations ? ((sourceBookings / totalReservations) * 100).toFixed(1) : 0;
                       
                       return (
@@ -359,11 +355,11 @@ export default function Analytics() {
                 <CardContent>
                   <div className="space-y-3">
                     {(() => {
-                      const timeSlots = reservations?.reduce((acc: any, r: any) => {
+                      const timeSlots = Array.isArray(reservations) ? reservations.reduce((acc: any, r: any) => {
                         const hour = r.time.split(':')[0];
                         acc[hour] = (acc[hour] || 0) + 1;
                         return acc;
-                      }, {}) || {};
+                      }, {}) : {};
 
                       return Object.entries(timeSlots)
                         .sort(([,a], [,b]) => (b as number) - (a as number))
