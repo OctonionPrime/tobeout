@@ -26,7 +26,7 @@ export async function createTelegramReservation(
  time: string, // Can be HH:MM, booking.ts might handle parsing or expect HH:MM:SS
  guests: number,
  name: string,
- phone: string,
+ telegramUserId: string,
  comments?: string
 ): Promise<{
  success: boolean;
@@ -37,22 +37,21 @@ export async function createTelegramReservation(
  try {
    console.log(`[TelegramBooking] Attempting to create reservation via Telegram: ${guests} guests for ${name} on ${date} at ${time}`);
 
-   // Step 1: Find or create the guest by phone number.
-   let guest: SchemaGuest | undefined = await storage.getGuestByPhone(phone);
+   // Step 1: Find or create the guest by Telegram user ID.
+   let guest: SchemaGuest | undefined = await storage.getGuestByTelegramId(telegramUserId);
    if (!guest) {
-     console.log(`[TelegramBooking] Guest with phone ${phone} not found. Creating new guest: ${name}`);
+     console.log(`[TelegramBooking] Guest with Telegram ID ${telegramUserId} not found. Creating new guest: ${name}`);
      // Prepare guest data according to InsertGuest from schema.ts
      const newGuestData: InsertGuest = {
        name,
-       phone,
-       // email: '', // email is nullable in schema, can be omitted if not provided
+       telegram_user_id: telegramUserId,
        language: 'en', // Default language
-       // birthday, comments, tags are nullable and can be omitted
+       // phone, email, birthday, comments, tags are nullable and can be omitted
      };
      guest = await storage.createGuest(newGuestData);
-     console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name}`);
+     console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name} (Telegram: ${telegramUserId})`);
    } else {
-     console.log(`[TelegramBooking] Found existing guest ID: ${guest.id} for phone ${phone}`);
+     console.log(`[TelegramBooking] Found existing guest ID: ${guest.id} for Telegram ID ${telegramUserId}`);
      // Optionally, update guest name if it's different and you want to allow this.
      // For now, we use the existing guest record.
      // if (guest.name !== name) { /* consider storage.updateGuest(...) */ }

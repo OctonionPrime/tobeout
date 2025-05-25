@@ -44,6 +44,7 @@ export interface IStorage {
   getGuests(restaurantId: number): Promise<Guest[]>;
   getGuest(id: number): Promise<Guest | undefined>;
   getGuestByPhone(phone: string): Promise<Guest | undefined>;
+  getGuestByTelegramId(telegramUserId: string): Promise<Guest | undefined>;
   createGuest(guest: InsertGuest): Promise<Guest>;
   updateGuest(id: number, guest: Partial<InsertGuest>): Promise<Guest>;
 
@@ -262,6 +263,7 @@ export class DatabaseStorage implements IStorage {
         name: guests.name,
         phone: guests.phone,
         email: guests.email,
+        telegram_user_id: guests.telegram_user_id,
         language: guests.language,
         birthday: guests.birthday,
         tags: guests.tags,
@@ -291,6 +293,11 @@ export class DatabaseStorage implements IStorage {
 
   async getGuestByPhone(phone: string): Promise<Guest | undefined> {
     const [guest] = await db.select().from(guests).where(eq(guests.phone, phone));
+    return guest;
+  }
+
+  async getGuestByTelegramId(telegramUserId: string): Promise<Guest | undefined> {
+    const [guest] = await db.select().from(guests).where(eq(guests.telegram_user_id, telegramUserId));
     return guest;
   }
 
