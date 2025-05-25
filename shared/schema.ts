@@ -142,6 +142,11 @@ export const reservations = pgTable("reservations", {
   guests: integer("guests").notNull(),
   status: reservationStatusEnum("status").default('created'),
   comments: text("comments"),
+  specialRequests: text("special_requests"), // dietary preferences, seating requests, etc.
+  staffNotes: text("staff_notes"), // internal staff observations
+  totalAmount: text("total_amount"), // stored as string to handle different currencies/formats
+  currency: text("currency").default('USD'),
+  guestRating: integer("guest_rating"), // 1-5 stars, guest satisfaction
   confirmation24h: boolean("confirmation_24h").default(false),
   confirmation2h: boolean("confirmation_2h").default(false),
   source: text("source").default('direct'), // direct, telegram, web, facebook, etc.
