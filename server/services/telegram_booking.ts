@@ -63,17 +63,17 @@ export async function createTelegramReservation(
    } else {
      console.log(`[TelegramBooking] Found existing guest ID: ${guest.id} for Telegram ID ${telegramUserId}`);
      
-     // Check if the name matches - if not, create a new guest
+     // Check if the name matches - if not, create a new guest without telegram_user_id
      if (guest.name !== name) {
-       console.log(`[TelegramBooking] Name mismatch! Existing: "${guest.name}", New: "${name}". Creating new guest.`);
+       console.log(`[TelegramBooking] Name mismatch! Existing: "${guest.name}", New: "${name}". Creating new guest without telegram_user_id.`);
        const newGuestData: InsertGuest = {
          name,
          phone,
-         telegram_user_id: telegramUserId,
+         // Don't set telegram_user_id to avoid unique constraint violation
          language: 'en',
        };
        guest = await storage.createGuest(newGuestData);
-       console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name}`);
+       console.log(`[TelegramBooking] ✨ Created new guest ID: ${guest.id} for ${name} (linked via phone: ${phone})`);
      } else {
        // Update phone number if it's different or missing
        if (!guest.phone || guest.phone !== phone) {
