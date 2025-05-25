@@ -85,9 +85,9 @@ export default function ModernTables() {
 
   // Generate time slots based on restaurant hours (showing every hour for compact view)
   const timeSlots: string[] = [];
-  if (restaurant) {
-    const openingTime = restaurant.openingTime || "10:00";
-    const closingTime = restaurant.closingTime || "22:00";
+  if (restaurant && restaurant.openingTime && restaurant.closingTime) {
+    const openingTime = restaurant.openingTime;
+    const closingTime = restaurant.closingTime;
     const avgDuration = restaurant.avgReservationDuration || 90; // minutes
     
     const [openHour] = openingTime.split(':').map(Number);
@@ -99,12 +99,8 @@ export default function ModernTables() {
     for (let hour = openHour; hour <= lastBookingHour; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
-  } else {
-    // Fallback while restaurant data loads (10:00-21:00, one hour before 22:00 closing)
-    for (let hour = 10; hour <= 21; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-    }
   }
+  // Note: No fallback hardcoded hours - wait for restaurant data to load
 
   // Fetch table data
   const { data: tables, isLoading: tablesLoading } = useQuery({

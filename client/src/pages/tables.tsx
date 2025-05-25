@@ -31,9 +31,9 @@ function TimeslotGridView({ selectedDate, tables }: { selectedDate: string; tabl
 
   // Generate time slots based on actual restaurant operating hours
   const timeSlots = [];
-  if (restaurant) {
-    const openingTime = restaurant.openingTime || "10:00";
-    const closingTime = restaurant.closingTime || "22:00";
+  if (restaurant && restaurant.openingTime && restaurant.closingTime) {
+    const openingTime = restaurant.openingTime;
+    const closingTime = restaurant.closingTime;
     
     const [openHour, openMin] = openingTime.split(':').map(Number);
     const [closeHour, closeMin] = closingTime.split(':').map(Number);

@@ -171,17 +171,15 @@ export async function getAvailableTimeSlots(
     }
 
     // 2. Determine effective operating hours, slot interval, and slot duration.
-    // Priority: configOverrides -> restaurant settings from DB -> hardcoded service defaults.
-    const serviceDefaults = {
-      openingTime: '10:00:00',
-      closingTime: '22:00:00', // Updated to match restaurant default
-      slotInterval: 60, // minutes
-      // restaurant.avgReservationDuration has DB default 90, so it should exist.
-      slotDuration: restaurant.avgReservationDuration, // minutes
-    };
+    // Priority: configOverrides -> restaurant settings from DB -> no defaults (must be set in restaurant profile)
+    if (!restaurant.openingTime || !restaurant.closingTime) {
+      console.error(`[AvailabilityService] Restaurant ${restaurantId} missing required operating hours. Please set openingTime and closingTime in restaurant profile.`);
+      return [];
+    }
 
-    const operatingOpenTimeStr = configOverrides?.operatingHours?.open || restaurant.openingTime || serviceDefaults.openingTime;
-    const operatingCloseTimeStr = configOverrides?.operatingHours?.close || restaurant.closingTime || serviceDefaults.closingTime;
+    const operatingOpenTimeStr = configOverrides?.operatingHours?.open || restaurant.openingTime;
+    const operatingCloseTimeStr = configOverrides?.operatingHours?.close || restaurant.closingTime;
+    const slotDurationMinutes = configOverrides?.slotDurationMinutes || restaurant.avgReservationDuration;
 
     const openingTimeMinutes = parseTimeToMinutes(operatingOpenTimeStr);
     const closingTimeMinutes = parseTimeToMinutes(operatingCloseTimeStr);
@@ -191,8 +189,7 @@ export async function getAvailableTimeSlots(
       return [];
     }
 
-    const slotIntervalMinutes = configOverrides?.slotIntervalMinutes || serviceDefaults.slotInterval;
-    const slotDurationMinutes = configOverrides?.slotDurationMinutes || serviceDefaults.slotDuration;
+    const slotIntervalMinutes = configOverrides?.slotIntervalMinutes || 60; // Default 60 minutes
     const maxResults = configOverrides?.maxResults || 5;
     const requestedTime = configOverrides?.requestedTime;
 
