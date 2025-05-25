@@ -242,7 +242,7 @@ export default function Guests() {
       const searchLower = searchQuery.toLowerCase();
       return (
         guest.name.toLowerCase().includes(searchLower) ||
-        guest.phone.toLowerCase().includes(searchLower) ||
+        (guest.phone && guest.phone.toLowerCase().includes(searchLower)) ||
         (guest.email && guest.email.toLowerCase().includes(searchLower))
       );
     }
@@ -325,7 +325,7 @@ export default function Guests() {
                           <div className="flex flex-col">
                             <div className="flex items-center text-sm">
                               <Phone className="h-4 w-4 mr-1" />
-                              {guest.phone}
+                              {guest.phone || 'No phone'}
                             </div>
                             {guest.email && (
                               <div className="text-sm text-gray-500 mt-1">
