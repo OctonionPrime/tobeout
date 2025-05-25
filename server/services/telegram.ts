@@ -72,6 +72,15 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     const flow = conversation.getConversationFlow();
 
     // Check if we have all booking info and should proceed to reservation
+    console.log(`🔍 [Sofia AI] Current booking info:`, {
+      date: flow.collectedInfo.date,
+      time: flow.collectedInfo.time,
+      guests: flow.collectedInfo.guests,
+      name: flow.collectedInfo.name,
+      phone: flow.collectedInfo.phone,
+      stage: flow.stage
+    });
+    
     if (hasCompleteBookingInfo(flow.collectedInfo) && (flow.stage === 'confirming' || flow.stage === 'collecting')) {
       console.log(`🎯 [Sofia AI] All booking info collected, attempting reservation`);
 
