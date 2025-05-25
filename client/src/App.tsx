@@ -8,6 +8,7 @@ import Dashboard from "@/pages/dashboard";
 import Reservations from "@/pages/reservations";
 import Tables from "@/pages/modern-tables";
 import Guests from "@/pages/guests";
+import Analytics from "@/pages/analytics";
 import Profile from "@/pages/profile";
 import AISettings from "@/pages/ai-settings";
 import Preferences from "@/pages/preferences";
