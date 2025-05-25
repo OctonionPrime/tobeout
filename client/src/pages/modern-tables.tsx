@@ -74,20 +74,31 @@ export default function ModernTables() {
   const { toast } = useToast();
 
   // Fetch restaurant operating hours
-  const { data: restaurant, isLoading: restaurantLoading } = useQuery({
+  const { data: restaurant, isLoading: restaurantLoading } = useQuery<{
+    openingTime: string;
+    closingTime: string;
+    avgReservationDuration: number;
+    [key: string]: any;
+  }>({
     queryKey: ["/api/restaurants/profile"],
   });
 
   // Generate time slots based on restaurant hours (showing every hour for compact view)
   const timeSlots: string[] = [];
-  // Use default business hours since restaurant schema doesn't have openingTime/closingTime yet
-  const openingTime = "10:00"; // Default opening time
-  const closingTime = "22:00";  // Default closing time
-  const [openHour] = openingTime.split(':').map(Number);
-  const [closeHour] = closingTime.split(':').map(Number);
-  
-  for (let hour = openHour; hour <= closeHour; hour++) {
-    timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+  if (restaurant) {
+    const openingTime = restaurant.openingTime || "10:00";
+    const closingTime = restaurant.closingTime || "22:00";
+    const [openHour] = openingTime.split(':').map(Number);
+    const [closeHour] = closingTime.split(':').map(Number);
+    
+    for (let hour = openHour; hour <= closeHour; hour++) {
+      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+    }
+  } else {
+    // Fallback while restaurant data loads
+    for (let hour = 10; hour <= 22; hour++) {
+      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+    }
   }
 
   // Fetch table data
@@ -220,7 +231,7 @@ export default function ModernTables() {
       return { previousData };
     },
 
-    onSuccess: (data, { newTableId, newTime }) => {
+    onSuccess: (data: any, { newTableId, newTime }: { newTableId: number; newTime: string }) => {
       // Enhanced toast with specific details
       const oldTableName = draggedReservation?.currentTableName || `Table ${draggedReservation?.currentTableId}`;
       const newTableName = scheduleData?.find(slot => slot.time === newTime)
