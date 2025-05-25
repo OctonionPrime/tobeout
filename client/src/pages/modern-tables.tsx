@@ -93,16 +93,15 @@ export default function ModernTables() {
     const [openHour] = openingTime.split(':').map(Number);
     const [closeHour] = closingTime.split(':').map(Number);
     
-    // Calculate last booking time (closing time minus average duration)
-    const durationHours = Math.ceil(avgDuration / 60); // Convert to hours, round up
-    const lastBookingHour = closeHour - durationHours;
+    // Calculate last booking time (one hour before closing)
+    const lastBookingHour = closeHour - 1;
     
     for (let hour = openHour; hour <= lastBookingHour; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
   } else {
-    // Fallback while restaurant data loads (10:00-20:00, assuming 2-hour duration)
-    for (let hour = 10; hour <= 20; hour++) {
+    // Fallback while restaurant data loads (10:00-21:00, one hour before 22:00 closing)
+    for (let hour = 10; hour <= 21; hour++) {
       timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
     }
   }
