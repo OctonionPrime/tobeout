@@ -5,10 +5,7 @@
  * Each conversation is an instance of ActiveConversation.
  */
 
-// Assuming AvailabilitySlot is defined in availability.service.ts and imported where needed
-// For this file, if DefaultResponseFormatter needs it, it should be imported.
-// Let's assume it's available or we define a local version for clarity if not directly imported.
-import type { AvailabilitySlot } from './availability.service'; // Adjust path if necessary
+import type { AvailabilitySlot } from './availability.service';
 
 // --- Interface Definitions ---
 
@@ -26,7 +23,6 @@ export interface ConversationFlow {
   lastResponse: string;
   guestFrustrationLevel: number;
   responsesSent: number;
-  // restaurantId?: number; // Consider adding if formatter or AI needs it directly from flow
 }
 
 export interface AIAnalysisResult {
@@ -46,24 +42,24 @@ export interface AIAnalysisResult {
 
 export interface AIService {
   analyzeMessage(message: string, currentFlow: ConversationFlow): Promise<AIAnalysisResult>;
-  // Potentially other methods if AI is used for more than just analysis,
-  // e.g., generateComplexNarrative(prompt: string): Promise<string>;
 }
 
 export interface ResponseFormatter {
   generateApology(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
   generateSmartInfoRequest(flow: ConversationFlow, summary: string, missingFieldsText: string, specificRequest: string, urgentRequest: string): string;
   generateBookingConfirmation(flow: ConversationFlow, summary: string): string;
-  generateAlternativeRequest(flow: ConversationFlow, summary: string): string; // Initial prompt to look for alternatives
+  generateAlternativeRequest(flow: ConversationFlow, summary: string): string;
   generateFriendlyResponse(flow: ConversationFlow, message: string, aiResult: AIAnalysisResult): string;
   generateContextualResponse(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
   generateResetResponse(flow: ConversationFlow, summary: string): string;
-  generateSmartAlternativeMessageText( // Added this method
+  generateSmartAlternativeMessageText(
     guestName: string | undefined,
-    requestedTime: string, // Original requested time
+    requestedTime: string,
     guests: number,
-    availableSlots: AvailabilitySlot[] // Data from availability.service
+    availableSlots: AvailabilitySlot[]
   ): string;
+  generateNoAvailabilityMessage(date: string): string;
+  generateAvailabilityConfirmationMessage(summary: string, missingFieldsText: string): string;
 
   createBookingSummary(collectedInfo: ConversationFlow['collectedInfo']): string;
   getMissingFields(collectedInfo: ConversationFlow['collectedInfo']): string[];
@@ -105,7 +101,7 @@ export class ActiveConversation {
 
   private updateCollectedInfo(entities: AIAnalysisResult['entities']): void {
     if (!entities) return;
-    // More robustly update, only if new data is actually present and different
+
     const updateField = (field: keyof ConversationFlow['collectedInfo'], value?: string | number) => {
         if (value !== undefined && value !== null && String(value).toUpperCase() !== 'NOT_SPECIFIED' && String(value).toUpperCase() !== 'NONE') {
             if (this.flow.collectedInfo[field] !== value) {
@@ -176,14 +172,11 @@ export class ActiveConversation {
             responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
             break;
           case 'ready_to_book':
-            this.flow.stage = 'confirming'; // Should have been caught by hasCompleteBookingInfo
+            this.flow.stage = 'confirming';
             responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
             break;
           case 'show_alternatives':
-            this.flow.stage = 'suggesting_alternatives'; // Set stage
-            // The actual fetching of alternatives happens in telegram.ts,
-            // then it calls formatter.generateSmartAlternativeMessageText
-            // This response is just to acknowledge the intent to show alternatives.
+            this.flow.stage = 'suggesting_alternatives';
             responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summary);
             break;
           case 'general_inquiry':
@@ -204,6 +197,31 @@ export class ActiveConversation {
 
     this.flow.lastResponse = responseText;
     return responseText;
+  }
+
+  // NEW METHOD: Check if we need availability check (called from telegram.ts)
+  public shouldCheckAvailability(): { needsCheck: boolean; date?: string; guests?: number } {
+    const { date, time, guests } = this.flow.collectedInfo;
+
+    // Check availability if we have date but not time yet
+    if (date && !time) {
+      return { needsCheck: true, date, guests: guests || 2 };
+    }
+
+    return { needsCheck: false };
+  }
+
+  // NEW METHOD: Handle availability check result (called from telegram.ts)
+  public handleAvailabilityResult(hasAvailability: boolean): string {
+    const summary = this.responseFormatter.createBookingSummary(this.flow.collectedInfo);
+    const missingFields = this.responseFormatter.getMissingFields(this.flow.collectedInfo);
+    const missingFieldsText = this.responseFormatter.formatMissingFieldsText(missingFields);
+
+    if (!hasAvailability) {
+      return this.responseFormatter.generateNoAvailabilityMessage(this.flow.collectedInfo.date!);
+    } else {
+      return this.responseFormatter.generateAvailabilityConfirmationMessage(summary, missingFieldsText);
+    }
   }
 }
 
@@ -232,7 +250,7 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     const hour = parseInt(parts[0], 10);
     const min = parts[1]?.padStart(2, '0') || '00';
 
-    if (isNaN(hour)) return time24; // Return original if hour is not a number
+    if (isNaN(hour)) return time24;
 
     if (hour === 0) return `12:${min} AM`;
     if (hour < 12) return `${hour}:${min} AM`;
@@ -243,12 +261,26 @@ export class DefaultResponseFormatter implements ResponseFormatter {
   private formatPhoneNumber(phone?: string): string {
     if (!phone) return '';
     const cleaned = phone.replace(/\D/g, '');
-    if (cleaned.length === 11 && (cleaned.startsWith('7') || cleaned.startsWith('8'))) { // Common for Russia
+    if (cleaned.length === 11 && (cleaned.startsWith('7') || cleaned.startsWith('8'))) {
       return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
     } else if (cleaned.length === 10 && !cleaned.startsWith('7') && !cleaned.startsWith('8')) {
       return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
     }
     return cleaned;
+  }
+
+  private formatDateForDisplay(date: string): string {
+    const moscowDates = this.getMoscowDateContext();
+    if (date === moscowDates.today) return 'today';
+    if (date === moscowDates.tomorrow) return 'tomorrow';
+
+    try {
+      const dateObj = new Date(date + 'T00:00:00Z');
+      const options: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow' };
+      return dateObj.toLocaleDateString('en-US', options);
+    } catch (e) {
+      return date;
+    }
   }
 
   createBookingSummary(info: ConversationFlow['collectedInfo']): string {
@@ -261,7 +293,7 @@ export class DefaultResponseFormatter implements ResponseFormatter {
       else if (info.date === moscowDates.tomorrow) parts.push('tomorrow');
       else {
         try {
-            const dateObj = new Date(info.date + 'T00:00:00Z'); // Treat as UTC then format for Moscow
+            const dateObj = new Date(info.date + 'T00:00:00Z');
             const options: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow' };
             parts.push(`on ${dateObj.toLocaleDateString('en-US', options)}`);
         } catch (e) {
@@ -272,7 +304,7 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     if (info.time) parts.push(`at ${this.formatTimeForDisplay(info.time)}`);
     if (info.phone) parts.push(`(📞 ${this.formatPhoneNumber(info.phone)})`);
     if (info.special_requests) parts.push(`with special requests: "${info.special_requests}"`);
-    return parts.length > 0 ? parts.join(', ') : ''; // Use comma for better readability
+    return parts.length > 0 ? parts.join(', ') : '';
   }
 
   getMissingFields(info: ConversationFlow['collectedInfo']): string[] {
@@ -348,7 +380,7 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     }
 
     if (flow.responsesSent <= 1) {
-      return summary ? `Perfect! I have ${summary}.\n\nI just need ${missingFieldsText} to complete your reservation! ✨`
+      return summary ? `Excellent! I can help you with ${summary}.\n\nI just need ${missingFieldsText} to complete your reservation! ✨`
                      : "I'd love to help you with a reservation! What details can you share - date, time, party size, and your name? 😊";
     }
     if (flow.responsesSent === 2) {
@@ -375,7 +407,6 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     if (lowerMessage.includes('thank')) {
         return "You're very welcome! Is there anything else I can assist you with today? 😊";
     }
-    // Add more nuanced general responses based on aiResult if needed
     return "I'd be happy to help you with a reservation! What date, time, and party size are you considering? 😊";
   }
 
@@ -395,12 +426,22 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     return `Alright, let's begin anew to make sure I get everything perfect for you. Could you please tell me:\n- The date you'd like to visit\n- Your preferred time\n- The number of people in your party\n- And the name for the reservation?\n\nI'll make sure to get it right this time! 🔄😊`;
   }
 
-  // Implementation for the new method
+  // NEW METHOD: Generate message when no availability found
+  generateNoAvailabilityMessage(date: string): string {
+    const displayDate = this.formatDateForDisplay(date);
+    return `I'm sorry, but we're fully booked ${displayDate}. 😔\n\nWould you like me to check availability for a different date? I'd be happy to help you find another time that works perfectly for you! 📅✨`;
+  }
+
+  // NEW METHOD: Generate message when availability is confirmed
+  generateAvailabilityConfirmationMessage(summary: string, missingFieldsText: string): string {
+    return `Excellent! I have tables available ${summary}! 🎉\n\nI just need ${missingFieldsText} to secure your perfect table! ✨`;
+  }
+
   public generateSmartAlternativeMessageText(
     guestName: string | undefined,
-    requestedTime: string, // Original requested time (HH:MM or HH:MM:SS)
+    requestedTime: string,
     guests: number,
-    availableSlots: AvailabilitySlot[] // Data from availability.service
+    availableSlots: AvailabilitySlot[]
   ): string {
     const friendlyGuestName = guestName || "there";
     const displayRequestedTime = this.formatTimeForDisplay(requestedTime);
@@ -410,9 +451,8 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     }
 
     const alternativesText = availableSlots
-      .slice(0, 3) // Show top 3 alternatives
+      .slice(0, 3)
       .map((slot, index) =>
-        // slot.timeDisplay is already formatted by availability.service
         `${index + 1}. ${slot.timeDisplay} at Table ${slot.tableName} (for ${slot.tableCapacity.min}-${slot.tableCapacity.max} guests)`
       ).join('\n');
 
