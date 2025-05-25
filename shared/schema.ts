@@ -115,8 +115,9 @@ export const timeslotsRelations = relations(timeslots, ({ one, many }) => ({
 export const guests = pgTable("guests", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
-  phone: text("phone").notNull().unique(),
+  phone: text("phone"),
   email: text("email"),
+  telegram_user_id: text("telegram_user_id").unique(),
   language: text("language").default('en'),
   birthday: date("birthday"),
   comments: text("comments"),
