@@ -235,6 +235,12 @@ function Router() {
         </ProtectedRoute>
       </Route>
       
+      <Route path="/analytics">
+        <ProtectedRoute>
+          <Analytics />
+        </ProtectedRoute>
+      </Route>
+      
       <Route path="/profile">
         <ProtectedRoute>
           <Profile />

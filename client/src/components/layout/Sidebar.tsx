@@ -5,6 +5,7 @@ import {
   CalendarDays, 
   Utensils, 
   Users, 
+  BarChart3,
   Store, 
   Bot, 
   Settings, 
@@ -65,6 +66,9 @@ export function Sidebar() {
           </NavItem>
           <NavItem href="/guests" icon={<Users size={18} />} active={location === "/guests"}>
             Guests
+          </NavItem>
+          <NavItem href="/analytics" icon={<BarChart3 size={18} />} active={location === "/analytics"}>
+            Analytics
           </NavItem>
 
           <div className="px-4 mt-6 mb-2">
