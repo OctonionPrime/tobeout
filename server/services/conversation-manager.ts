@@ -176,8 +176,17 @@ export class ActiveConversation {
             responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
             break;
           case 'ready_to_book':
-            this.flow.stage = 'confirming';
-            responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
+            // Only proceed to booking if we actually have all required information
+            if (this.hasCompleteBookingInfo()) {
+              this.flow.stage = 'confirming';
+              responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
+            } else {
+              // Force collection if information is missing
+              this.flow.stage = 'collecting';
+              const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
+              const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
+              responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
+            }
             break;
           case 'show_alternatives':
             this.flow.stage = 'suggesting_alternatives';
