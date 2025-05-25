@@ -119,8 +119,8 @@ export class ActiveConversation {
   }
 
   private hasCompleteBookingInfo(): boolean {
-    const { date, time, guests, name, phone } = this.flow.collectedInfo;
-    return !!(date && time && guests && name && phone);
+    const { date, time, guests, name } = this.flow.collectedInfo;
+    return !!(date && time && guests && name);
   }
 
   public async handleMessage(newMessage: string): Promise<string> {
@@ -302,7 +302,6 @@ export class DefaultResponseFormatter implements ResponseFormatter {
       }
     }
     if (info.time) parts.push(`at ${this.formatTimeForDisplay(info.time)}`);
-    if (info.phone) parts.push(`(📞 ${this.formatPhoneNumber(info.phone)})`);
     if (info.special_requests) parts.push(`with special requests: "${info.special_requests}"`);
     return parts.length > 0 ? parts.join(', ') : '';
   }
@@ -313,7 +312,6 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     if (!info.time) missing.push('time');
     if (!info.guests) missing.push('party size');
     if (!info.name) missing.push('name');
-    if (!info.phone) missing.push('phone number');
     return missing;
   }
 
