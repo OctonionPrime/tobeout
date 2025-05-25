@@ -158,6 +158,10 @@ export class ActiveConversation {
       this.flow.stage = 'confirming';
       responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
     } else {
+      // Force collection stage if information is missing, regardless of AI action
+      if (missingFields.length > 0) {
+        this.flow.stage = 'collecting';
+      }
       // Check if this is a greeting/start message
       if (this.flow.responsesSent === 1 && (newMessage === '/start' || newMessage.toLowerCase().includes('hello') || newMessage.toLowerCase().includes('hi'))) {
         this.flow.stage = 'greeting';
