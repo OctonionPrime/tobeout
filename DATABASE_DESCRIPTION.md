@@ -1,277 +1,278 @@
-# Database Schema Description - ToBeOut Restaurant Booking System
+# Database Schema Documentation - ToBeOut Restaurant Booking Platform
 
-This document describes the comprehensive database schema for the ToBeOut restaurant booking system with advanced AI-powered conversation management, real-time availability engine, and sophisticated multi-channel integration capabilities.
+## Overview
+The ToBeOut platform uses PostgreSQL with a comprehensive schema designed for restaurant management, table reservations, guest tracking, and AI-powered interactions. The database supports multi-language operations, flexible guest identity management, and real-time table availability tracking.
 
-**System Version:** 2.1.0-alpha  
-**Last Updated:** May 23, 2025  
-**AI Features:** Sofia AI Hostess with GPT-4o Integration
+## Core Tables
 
-## Enhanced Core Tables with AI Intelligence
+### Users Table
+Authentication and role management for restaurant owners and staff.
 
-### Users
-- `id`: Primary key
-- `email`: User email (unique)
-- `password`: Hashed password (bcrypt)
-- `role`: User role (admin, manager, staff)
-- `name`: Full name
-- `isActive`: Account status
-- `lastLogin`: Last authentication timestamp
-- `createdAt`: Account creation timestamp
+```sql
+users (
+  id SERIAL PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  role user_role DEFAULT 'restaurant',
+  name TEXT NOT NULL,
+  phone TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-### Restaurants
-- `id`: Primary key
-- `name`: Restaurant name
-- `description`: Restaurant description
-- `address`: Physical address
-- `phone`: Contact phone number
-- `email`: Contact email
-- `cuisine`: Type of cuisine
-- `openingHours`: JSON object with detailed operating hours
-- `userId`: Foreign key to users table (owner)
-- `settings`: JSON object with restaurant configuration
-- `timezone`: Restaurant timezone
-- `averageServiceTime`: Average dining duration (minutes)
-- `maxAdvanceBooking`: Maximum days in advance for bookings
-- `isActive`: Restaurant operational status
-- `createdAt`: Restaurant creation timestamp
-- `updatedAt`: Last modification timestamp
+**Enums:** `user_role: ['admin', 'restaurant', 'staff']`
 
-### Tables (Enhanced with AI Optimization)
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `name`: Table identifier (e.g., "Table 1", "VIP Section A")
-- `minGuests`: Minimum capacity for optimization (AI uses this for smart assignment)
-- `maxGuests`: Maximum capacity (AI considers this for party size matching)
-- `status`: Real-time status (free, occupied, reserved, maintenance) - AI checks this
-- `position`: JSON object with table location/coordinates for visual management
-- `features`: JSON array with table features (window, private, accessible, quiet, business-friendly)
-- `priority`: AI assignment priority (1-10) - higher priority tables selected first
-- `shape`: Table shape (round, square, rectangular) for layout optimization
-- `isActive`: Boolean for table availability in AI calculations
-- `lastCleaned`: Timestamp of last cleaning for hygiene tracking
-- `notes`: Staff notes about table condition and special considerations
-- `aiScore`: Dynamic AI-calculated score based on utilization and guest satisfaction
-- `preferredFor`: JSON array of occasions this table is optimal for (business, romantic, family)
-- `createdAt`: Table creation timestamp
-- `updatedAt`: Last modification timestamp
+### Restaurants Table
+Restaurant profile information with operational settings.
 
-### Timeslots
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `date`: Reservation date
-- `time`: Time slot (HH:MM format)
-- `isAvailable`: Boolean availability status
-- `maxCapacity`: Maximum total guests for this time slot
-- `currentBookings`: Current number of bookings
-- `isActive`: Boolean for slot availability
-- `staffLevel`: Required staff level for this slot
-- `specialEvent`: Special event or promotion
-- `pricing`: JSON object with dynamic pricing
-- `createdAt`: Slot creation timestamp
-- `updatedAt`: Last modification timestamp
+```sql
+restaurants (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  name TEXT NOT NULL,
+  description TEXT,
+  country TEXT,
+  city TEXT,
+  address TEXT,
+  photo TEXT,
+  opening_time TIME,
+  closing_time TIME,
+  cuisine TEXT,
+  atmosphere TEXT,
+  features TEXT[],
+  tags TEXT[],
+  languages TEXT[],
+  avg_reservation_duration INTEGER DEFAULT 90,
+  min_guests INTEGER DEFAULT 1,
+  max_guests INTEGER DEFAULT 12,
+  phone TEXT,
+  google_maps_link TEXT,
+  trip_advisor_link TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-### Guests (AI-Enhanced Profiling)
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `name`: Guest full name (AI uses for personalized conversations)
-- `phone`: Contact phone number (unique per restaurant, formatted by AI)
-- `email`: Guest email (optional, for confirmations)
-- `preferences`: JSON object with dietary restrictions, seating preferences (AI learns and applies)
-- `allergies`: JSON array with allergy information (AI flags for safety)
-- `visitCount`: Number of previous visits (AI considers for VIP treatment)
-- `totalSpent`: Total amount spent (AI uses for revenue optimization)
-- `lastVisit`: Date of last visit (AI references for personalization)
-- `averagePartySize`: Average number of guests in bookings (AI predicts future needs)
-- `preferredTimes`: JSON array with preferred dining times (AI suggests matching slots)
-- `conversationStyle`: AI-detected communication preferences (formal, casual, brief)
-- `satisfactionScore`: AI-calculated satisfaction rating based on interactions
-- `blacklisted`: Boolean for banned guests (AI blocks booking attempts)
-- `notes`: Staff notes about guest (AI can reference for special treatment)
-- `loyaltyPoints`: Accumulated loyalty points (AI applies rewards)
-- `vipStatus`: VIP tier level (bronze, silver, gold, platinum)
-- `source`: How guest was acquired (telegram, web, whatsapp, ai_assistant, referral)
-- `aiPersonalityProfile`: JSON object with AI-detected personality traits
-- `communicationHistory`: JSON array tracking successful conversation patterns
-- `createdAt`: Guest record creation
-- `updatedAt`: Last modification timestamp
+### Tables Table
+Physical table configurations with capacity and status management.
 
-### Reservations (AI-Optimized Booking)
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `guestId`: Foreign key to guests
-- `tableId`: Foreign key to tables (AI-assigned based on optimization algorithm)
-- `timeslotId`: Foreign key to timeslots
-- `date`: Reservation date (Moscow timezone for accurate handling)
-- `time`: Reservation time (24-hour format: 10:00, 19:00, etc.)
-- `guests`: Number of guests (AI matches to optimal table capacity)
-- `duration`: Expected dining duration in minutes (default 90, AI can adjust)
-- `status`: Reservation status (created, confirmed, cancelled, completed, no_show, seated)
-- `specialRequests`: Text field for special requests (AI extracts and flags)
-- `occasionType`: Type of occasion (birthday, anniversary, business, casual, date)
-- `source`: Booking source (web, telegram, whatsapp, phone, walk_in, ai_assistant)
-- `confirmation_code`: Unique confirmation code (auto-generated)
-- `arrival_time`: Actual arrival time
-- `departure_time`: Actual departure time
-- `no_show_reason`: Reason for no-show (AI can analyze patterns)
-- `cancellation_reason`: Reason for cancellation (AI learns from this)
-- `rating`: Guest rating of experience (1-5)
-- `feedback`: Guest feedback text (AI analyzes sentiment)
-- `total_amount`: Bill total (if available)
-- `deposit_required`: Boolean for deposit requirement
-- `deposit_amount`: Required deposit amount
-- `deposit_paid`: Boolean for deposit payment status
-- `reminderSent`: JSON object tracking sent reminders (AI manages this)
-- `conversation_id`: Link to AI conversation thread (tracks full interaction)
-- `aiConfidence`: AI confidence score for this booking (0-1)
-- `alternativesOffered`: Number of alternatives AI suggested before this booking
-- `bookingComplexity`: AI-rated complexity of the booking conversation
-- `guestSentiment`: AI-detected guest sentiment during booking (positive, neutral, negative)
-- `createdAt`: Booking creation timestamp
-- `updatedAt`: Last modification timestamp
+```sql
+tables (
+  id SERIAL PRIMARY KEY,
+  restaurant_id INTEGER REFERENCES restaurants(id),
+  name TEXT NOT NULL,
+  min_guests INTEGER DEFAULT 1,
+  max_guests INTEGER NOT NULL,
+  status table_status DEFAULT 'free',
+  features TEXT[],
+  comments TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-### Integration Settings
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `type`: Integration type (telegram, whatsapp, voice, facebook, google)
-- `settings`: JSON object with integration configuration
-- `credentials`: Encrypted credentials for the integration
-- `webhook_url`: Webhook URL for real-time updates
-- `isActive`: Boolean for integration status
-- `lastSync`: Last synchronization timestamp
-- `errorCount`: Number of recent errors
-- `lastError`: Last error message
-- `rateLimits`: JSON object with rate limiting configuration
-- `features`: JSON array with enabled features
-- `createdAt`: Setup timestamp
-- `updatedAt`: Last modification timestamp
+**Enums:** `table_status: ['free', 'occupied', 'reserved', 'unavailable']`
 
-### AI Activities (Enhanced Performance Tracking)
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `type`: Activity type (booking_attempt, conversation, optimization, sentiment_analysis, frustration_detection, alternative_suggestion)
-- `description`: Detailed activity description
-- `metadata`: JSON object with comprehensive interaction data
-- `conversation_id`: Link to conversation thread (tracks full dialogue)
-- `guest_id`: Foreign key to guests (if applicable)
-- `success`: Boolean indicating success/failure
-- `confidence_score`: AI confidence level (0-1)
-- `processing_time`: Time taken for AI processing (ms)
-- `model_version`: AI model version used (currently gpt-4o)
-- `input_tokens`: Number of input tokens used (for cost tracking)
-- `output_tokens`: Number of output tokens generated
-- `cost`: Estimated cost of AI operation (USD)
-- `conversationStage`: Stage when activity occurred (greeting, collecting, confirming, alternatives)
-- `userFrustrationLevel`: Detected user frustration (0-5 scale)
-- `contextPreserved`: Boolean indicating if conversation context was maintained
-- `alternativesGenerated`: Number of alternatives suggested
-- `bookingCompleted`: Boolean if activity resulted in successful booking
-- `humanHandoffRequired`: Boolean if escalation to human was needed
-- `responseQuality`: AI-rated quality of response (1-5)
-- `createdAt`: Activity timestamp
+### Guests Table
+Guest profiles with flexible identity management supporting multiple contact methods.
 
-### Conversation Threads (New)
-- `id`: Primary key
-- `restaurantId`: Foreign key to restaurants
-- `guest_id`: Foreign key to guests (nullable)
-- `platform`: Communication platform (telegram, whatsapp, web)
-- `platform_user_id`: Platform-specific user identifier
-- `thread_id`: Platform-specific thread identifier
-- `status`: Conversation status (active, paused, completed, abandoned)
-- `stage`: Current conversation stage
-- `intent`: Detected user intent
-- `context`: JSON object with conversation context
-- `message_count`: Total number of messages
-- `last_message_at`: Timestamp of last message
-- `sentiment_score`: Overall conversation sentiment (-1 to 1)
-- `satisfaction_rating`: User satisfaction rating (1-5)
-- `resolution_type`: How conversation was resolved
-- `agent_handoff`: Boolean indicating human agent involvement
-- `createdAt`: Conversation start timestamp
-- `updatedAt`: Last activity timestamp
+```sql
+guests (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT,
+  email TEXT,
+  telegram_user_id TEXT UNIQUE,
+  language TEXT DEFAULT 'en',
+  birthday DATE,
+  comments TEXT,
+  tags TEXT[],
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-### Messages (New)
-- `id`: Primary key
-- `conversation_id`: Foreign key to conversation_threads
-- `sender_type`: Message sender (user, ai, agent)
-- `sender_id`: Identifier of sender
-- `message_text`: Message content
-- `message_type`: Type of message (text, image, audio, file, quick_reply)
-- `metadata`: JSON object with message metadata
-- `ai_confidence`: AI processing confidence (0-1)
-- `processing_time`: AI processing time (ms)
-- `intent_detected`: Detected intent from message
-- `entities_extracted`: JSON object with extracted entities
-- `sentiment_score`: Message sentiment score (-1 to 1)
-- `language`: Detected language
-- `is_flagged`: Boolean for content moderation
-- `response_time`: Time to generate response (ms)
-- `createdAt`: Message timestamp
+**Key Features:**
+- Multi-language support (en, ru)
+- Telegram integration via telegram_user_id
+- Flexible contact methods (phone not unique to allow shared numbers)
+- Guest preferences and birthday tracking
 
-## Enhanced Relationships
+### Reservations Table ⭐ **Enhanced with Booking Guest Name Feature**
+Core reservation system with advanced guest name management.
 
-- Users → Restaurants (1:many) - A user can own multiple restaurants
-- Restaurants → Tables (1:many) - A restaurant has multiple tables
-- Restaurants → Timeslots (1:many) - A restaurant has multiple time slots  
-- Restaurants → Guests (1:many) - A restaurant serves multiple guests
-- Restaurants → Reservations (1:many) - A restaurant has multiple reservations
-- Restaurants → Conversation Threads (1:many) - A restaurant has multiple conversations
-- Guests → Reservations (1:many) - A guest can have multiple reservations
-- Guests → Conversation Threads (1:many) - A guest can have multiple conversations
-- Tables → Reservations (1:many) - A table can have multiple reservations
-- Timeslots → Reservations (1:many) - A timeslot can have multiple reservations
-- Conversation Threads → Messages (1:many) - A conversation has multiple messages
-- Conversation Threads → Reservations (1:many) - A conversation can result in multiple reservations
+```sql
+reservations (
+  id SERIAL PRIMARY KEY,
+  restaurant_id INTEGER REFERENCES restaurants(id),
+  guest_id INTEGER REFERENCES guests(id),
+  table_id INTEGER REFERENCES tables(id),
+  timeslot_id INTEGER REFERENCES timeslots(id),
+  date DATE NOT NULL,
+  time TIME NOT NULL,
+  duration INTEGER DEFAULT 90,
+  guests INTEGER NOT NULL,
+  status reservation_status DEFAULT 'created',
+  booking_guest_name TEXT, -- ⭐ NEW: Name used for specific booking
+  comments TEXT,
+  special_requests TEXT,
+  staff_notes TEXT,
+  total_amount TEXT,
+  currency TEXT DEFAULT 'USD',
+  guest_rating INTEGER,
+  confirmation_24h BOOLEAN DEFAULT FALSE,
+  confirmation_2h BOOLEAN DEFAULT FALSE,
+  source TEXT DEFAULT 'direct',
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-## Advanced Business Logic
+**Enums:** `reservation_status: ['created', 'confirmed', 'canceled', 'completed', 'archived']`
 
-### Smart Table Assignment Algorithm
-1. **Guest History Analysis** - Consider guest's previous table preferences
-2. **Party Size Optimization** - Match table capacity to party size efficiently
-3. **Table Features Matching** - Match special requests to table features
-4. **Revenue Optimization** - Prioritize high-value time slots and guests
-5. **Operational Efficiency** - Consider service time and table turnover
-6. **Accessibility Requirements** - Automatic matching for accessibility needs
+**Advanced Guest Name Management:**
+- `booking_guest_name`: Stores the specific name used for each booking
+- Allows guests to book under different names while maintaining profile integrity
+- When NULL, displays the guest's profile name
+- When populated, displays the booking-specific name
+- Enables scenarios like "Alex booking as Oleg" while keeping Alex's profile separate
 
-### Dynamic Time Slot Management
-- **Real-time Availability Calculation** - Based on current reservations and service times
-- **Buffer Time Management** - Automatic cleaning and preparation time
-- **Seasonal Adjustments** - Holiday and special event considerations
-- **Capacity Optimization** - Dynamic adjustment based on staff levels
-- **Weather Integration** - Outdoor seating availability based on weather
+### Timeslots Table
+Time-based availability management for detailed scheduling.
 
-### AI-Powered Guest Profiling
-- **Behavioral Pattern Recognition** - Analyze booking patterns and preferences
-- **Sentiment Analysis** - Track guest satisfaction across interactions
-- **Predictive Analytics** - Anticipate guest needs and preferences
-- **Personalization Engine** - Customize offers and communications
-- **Churn Prevention** - Identify at-risk guests and retention strategies
+```sql
+timeslots (
+  id SERIAL PRIMARY KEY,
+  restaurant_id INTEGER REFERENCES restaurants(id),
+  table_id INTEGER REFERENCES tables(id),
+  date DATE NOT NULL,
+  time TIME NOT NULL,
+  status timeslot_status DEFAULT 'free',
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-### Multi-Channel Conversation Management
-- **Context Preservation** - Maintain conversation state across channels
-- **Intent Recognition** - Understand guest needs from natural language
-- **Sentiment Monitoring** - Real-time emotional state analysis
-- **Escalation Triggers** - Automatic handoff to human agents
-- **Performance Analytics** - Track conversation success rates and satisfaction
+**Enums:** `timeslot_status: ['free', 'pending', 'occupied']`
 
-### Advanced Reservation Status Flow
-1. **inquiry** - Initial interest expressed
-2. **pending** - Formal booking request submitted
-3. **confirmed** - Booking confirmed by restaurant
-4. **reminded** - Confirmation reminder sent
-5. **seated** - Guest has arrived and been seated
-6. **dining** - Guest is currently dining
-7. **completed** - Service completed successfully
-8. **cancelled** - Booking cancelled by guest or restaurant
-9. **no_show** - Guest didn't show up
-10. **rescheduled** - Booking moved to different time/date
+### Integration Settings Table
+External service configurations for Telegram, email, and other integrations.
 
-### Performance Metrics & Analytics
-- **Booking Conversion Rate** - Inquiry to confirmed reservation ratio
-- **No-Show Rate** - Percentage of confirmed bookings that don't show
-- **Customer Satisfaction Score** - Average rating across all interactions
-- **Revenue Per Available Seat Hour** - Revenue optimization metric
-- **AI Automation Rate** - Percentage of bookings handled without human intervention
-- **Response Time** - Average time to respond to booking inquiries
-- **Table Utilization Rate** - Percentage of available capacity used
+```sql
+integration_settings (
+  id SERIAL PRIMARY KEY,
+  restaurant_id INTEGER REFERENCES restaurants(id),
+  type TEXT NOT NULL,
+  api_key TEXT,
+  token TEXT,
+  enabled BOOLEAN DEFAULT FALSE,
+  settings JSON,
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
 
-This enhanced schema supports advanced AI conversation management, multi-channel integration, comprehensive analytics, and sophisticated business intelligence while maintaining high performance and data integrity.
+**Supported Integration Types:**
+- `telegram`: Bot integration with Sofia AI
+- `email`: Email notification settings
+- `google`: Google Calendar/Maps integration
+- `web_widget`: Website booking widget
+
+### AI Activities Table
+Audit trail for AI-powered interactions and automated actions.
+
+```sql
+ai_activities (
+  id SERIAL PRIMARY KEY,
+  restaurant_id INTEGER REFERENCES restaurants(id),
+  type TEXT NOT NULL,
+  description TEXT NOT NULL,
+  data JSON,
+  created_at TIMESTAMP DEFAULT NOW()
+)
+```
+
+**Activity Types:**
+- `reservation_create`: AI-assisted booking creation
+- `reminder_sent`: Automated reminder notifications
+- `telegram_interaction`: Sofia AI conversations
+- `table_assignment`: Smart table allocation
+
+## Key Relationships
+
+### Guest-Reservation Relationship
+- One guest profile can have multiple reservations
+- Each reservation can use a different `booking_guest_name`
+- Guest profile maintains core identity while bookings show specific names
+- Prevents duplicate guest profiles for same person using different names
+
+### Restaurant-Table-Reservation Flow
+- Restaurant → Tables (1:many)
+- Table → Reservations (1:many)
+- Each reservation links to both table and guest
+- Real-time status updates across table and timeslot entities
+
+### Multi-Language Support
+- Guest language preferences stored in `guests.language`
+- Restaurant supported languages in `restaurants.languages[]`
+- AI interactions adapt to guest's preferred language
+
+## Advanced Features
+
+### Booking Guest Name System
+The platform supports complex guest identity scenarios:
+
+1. **Same Name Booking**: Guest books with profile name
+   - `booking_guest_name` = NULL
+   - Display shows `guests.name`
+
+2. **Different Name Booking**: Guest books under different name
+   - `booking_guest_name` = "Alternative Name"
+   - Display shows `booking_guest_name`
+   - Guest profile remains unchanged
+
+3. **Historical Accuracy**: Previous reservations maintain original booking names
+   - Prevents confusion when guest profile name changes
+   - Each reservation preserves the name it was made under
+
+### Smart Table Management
+- Dynamic status calculation based on active reservations
+- Automatic availability updates when reservations change
+- Overlap detection for 2-hour reservation blocks
+- Intelligent table assignment based on guest count and preferences
+
+### Real-Time Synchronization
+- WebSocket integration for live updates
+- Optimistic UI updates with server synchronization
+- Cache invalidation for immediate consistency
+- Background sync every 3 minutes for reliability
+
+## Data Integrity Features
+
+### Reservation Validation
+- Guest count must fit table capacity (`table.min_guests` ≤ `reservation.guests` ≤ `table.max_guests`)
+- Reservation time must be within restaurant operating hours
+- Last booking allowed 1 hour before closing time
+- No overlapping reservations for same table/time
+
+### Guest Profile Management
+- Phone numbers not unique (families can share phones)
+- Telegram IDs are unique for bot integration
+- Multiple contact methods supported per guest
+- Language preferences inherited from initial interaction
+
+### Restaurant Configuration
+- Operating hours validation (opening_time < closing_time)
+- Average reservation duration affects booking windows
+- Min/max guest limits apply to all table configurations
+- Multi-language support for international operations
+
+## Performance Optimizations
+
+### Indexing Strategy
+- Primary keys on all tables
+- Foreign key constraints with automatic indexing
+- Unique constraints on critical fields (email, telegram_user_id)
+- Composite indexes on frequently queried combinations
+
+### Caching Layer
+- Smart caching with 30-second TTL for availability data
+- Cache invalidation on reservation changes
+- Memory-efficient cache size limits (1000 entries)
+- Automatic cache cleanup and statistics tracking
+
+This schema supports the full ToBeOut platform functionality including Sofia AI integration, multi-language operations, advanced guest management, and real-time table availability tracking.

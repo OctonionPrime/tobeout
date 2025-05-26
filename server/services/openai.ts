@@ -152,23 +152,21 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         ],
         temperature: 0.1,
         response_format: { type: "json_object" },
-        max_tokens: 850 // Increased slightly for potentially more verbose language instructions
+        max_tokens: 850
       });
 
       const rawResult = completion.choices[0].message.content;
       const parsedResult = JSON.parse(rawResult || '{}') as Partial<AIAnalysisResult & {entities: AIAnalysisResult['entities'], detectedLanguage: Language}>;
 
-      let detectedLang: Language = context.currentLanguage || 'en'; // Default to current context or 'en'
+      let detectedLang: Language = context.currentLanguage || 'en'; 
 
       if (parsedResult.detectedLanguage === 'ru' || parsedResult.detectedLanguage === 'en') {
-          // AI provided a language, respect it if it's a clear switch or initial detection
-          if (!context.currentLanguage || // If no prior language context
-              (parsedResult.detectedLanguage !== context.currentLanguage && message.length > 5 && !/^\d+$/.test(message)) || // Clear switch on substantial text
-              (parsedResult.detectedLanguage === context.currentLanguage) // Consistent with context
+          if (!context.currentLanguage || 
+              (parsedResult.detectedLanguage !== context.currentLanguage && message.length > 5 && !/^\d+$/.test(message)) || 
+              (parsedResult.detectedLanguage === context.currentLanguage) 
           ) {
             detectedLang = parsedResult.detectedLanguage;
           }
-          // Otherwise, stick with context.currentLanguage (already set as default for detectedLang)
       }
 
 
@@ -187,9 +185,7 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
           const value = aiResult.entities[entityKey];
           if (value === 'null' || String(value).toUpperCase() === 'NOT_SPECIFIED' || String(value).toUpperCase() === 'NONE' || String(value).trim() === '') {
             if (entityKey === 'date' && context.collectedInfo?.date && !message.match(/завтра|сегодня|вчера|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье|\d{1,2}[-\s/.]\d{1,2}(?:[-\s/.]\d{2,4})?|\d{4}[-\s/.]\d{1,2}[-\s/.]\d{1,2}|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|янв|фев|мар|апр|мая|июн|июл|авг|сен|окт|ноя|дек)/i)) {
-              // This condition is to double-check if AI tries to nullify a date when it shouldn't.
-              // However, the primary logic for date preservation is now in the system prompt.
-              // If the prompt is followed, the AI should return the existing date if applicable.
+              // Date preservation logic is primarily in the system prompt.
             } else {
                  delete aiResult.entities[entityKey];
             }
@@ -261,7 +257,6 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         ? "The guest's name might be in Russian. Generate the confirmation message in RUSSIAN. Be warm and celebratory."
         : "Generate the confirmation message in ENGLISH. Be warm and celebratory.";
 
-    // --- Enhanced System Prompt for Confirmation ---
     const systemPrompt = `You are Sofia, the exceptionally warm, welcoming, and efficient hostess for "${restaurantName}".
 Your task is to craft a delightful and personal confirmation message for a successful reservation.
 Imagine you are speaking directly to the guest with a smile. Use natural, human-like language, not robotic phrases.
@@ -279,7 +274,6 @@ The message should:
 - End with a warm closing, expressing anticipation.
 Example tone (English): "Wonderful, ${guestName}! Everything is set for your visit to ${restaurantName}..."
 Example tone (Russian): "Замечательно, ${guestName}! Всё готово для вашего визита в ${restaurantName}..."`;
-    // --- End of Enhanced System Prompt for Confirmation ---
 
     try {
       const completion = await openaiClient.chat.completions.create({
@@ -302,66 +296,69 @@ Example tone (Russian): "Замечательно, ${guestName}! Всё гото
 
   async generateAlternativeSuggestionText(
     restaurantName: string, requestedDate: string, requestedTime: string, guests: number,
-    alternativesListString: string,
+    alternativesListString: string, // This string contains the pre-formatted list of alternatives
     noAlternativesFound: boolean,
     targetLanguage: Language = 'en'
   ): Promise<string> {
     try {
       const languageInstruction = targetLanguage === 'ru'
-        ? "The response MUST be in RUSSIAN. Be empathetic and helpful."
-        : "The response MUST be in ENGLISH. Be empathetic and helpful.";
+        ? "The response MUST be in RUSSIAN. Be empathetic, polite, and helpful."
+        : "The response MUST be in ENGLISH. Be empathetic, polite, and helpful.";
 
-      // --- Enhanced System Prompt for Alternatives ---
       if (noAlternativesFound) {
-        const systemPrompt = `You are Sofia, a very understanding and resourceful hostess for "${restaurantName}".
-The guest's requested time is unfortunately fully booked, and no immediate alternatives were found for their specific request.
+        // --- System Prompt for No Alternatives Found ---
+        const systemPrompt = `You are Sofia, a very understanding, polite, and resourceful hostess for "${restaurantName}".
+The guest's requested time (${requestedTime} on ${requestedDate} for ${guests} people) is unfortunately fully booked, and no immediate alternative slots for that exact number of guests on that day were found.
 Your goal is to:
-1. Gently inform them that their specific time isn't available.
+1. Gently and politely inform them that their specific time isn't available.
 2. Express sincere regret (e.g., "Oh, it looks like we're fully committed then...").
-3. Proactively suggest trying a different date, time, or even a slight change in party size, and offer to help them search again.
-4. Maintain a warm, positive, and very helpful tone, as if you're personally trying to find a solution for them.
+3. Proactively suggest trying a different date, or perhaps a slightly different time on the *same day* if they are flexible.
+4. **Resourcefully hint at other possibilities:** You can also gently mention that sometimes, for larger parties, it *might* be possible to arrange something by combining smaller tables, and they could inquire about this if they wish, or if they'd like you to check for smaller group availabilities that could potentially be combined (though you can't confirm this combination yourself, you can offer to look for the smaller tables). This shows resourcefulness.
+5. Maintain a warm, positive, and very helpful tone, as if you're personally trying to find a solution for them.
 Avoid sounding robotic. Use natural, empathetic language.
 ${languageInstruction}`;
         const userPrompt = `The guest requested ${guests} people on ${requestedDate} at ${requestedTime}, but it's unavailable, and no other slots were found for this exact request.
 Craft a response that:
-- Sounds like a real hostess: "Oh, it looks like [requestedTime] on [requestedDate] is quite popular and we're fully booked then..."
-- Suggests options: "...Perhaps we could try a little earlier or later, or maybe another day would work for you? I'd be happy to check!"
-- Is empathetic and helpful.`;
-        // --- End of Enhanced System Prompt for No Alternatives ---
-        const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 200, temperature: 0.75 });
+- Sounds like a real hostess: "Oh, it looks like [requestedTime] on [requestedDate] is quite popular and we're fully booked for [guests] then..."
+- Suggests options: "...Perhaps we could try a little earlier or later on ${requestedDate}, or maybe another day would work for you? I'd be happy to check!"
+- Includes the resourceful hint about potentially combining smaller tables if applicable for their party size, or checking for smaller table availabilities.
+- Is empathetic, polite, and helpful.`;
+        // --- End of System Prompt for No Alternatives Found ---
+        const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 250, temperature: 0.75 });
         return completion.choices[0].message.content || (
           targetLanguage === 'ru'
-          ? `Ах, ${requestedTime} ${requestedDate} у нас, похоже, очень популярное время и все столики для ${guests} гостей уже заняты. 😔 Может быть, попробуем немного раньше или позже? Или, возможно, другой день вам подойдет? Я с удовольствием посмотрю для вас! 📅`
-          : `Oh, it looks like ${requestedTime} on ${requestedDate} is quite popular and we're fully booked for ${guests} guests then. 😔 Perhaps we could try a little earlier or later? Or maybe another day would work for you? I'd be happy to check for you! 📅`
+          ? `Ах, ${requestedTime} ${requestedDate} у нас, похоже, очень популярное время, и все столики для ${guests} гостей уже заняты. 😔 Может быть, попробуем немного раньше или позже в тот же день? Или, возможно, другой день вам подойдет? Я с удовольствием посмотрю для вас! Иногда для больших компаний мы можем попробовать сдвинуть столики поменьше, если они свободны. Хотите, проверю такие варианты? 📅`
+          : `Oh, it looks like ${requestedTime} on ${requestedDate} is quite popular, and we're fully booked for ${guests} guests then. 😔 Perhaps we could try a little earlier or later on the same day? Or maybe another day would work for you? I'd be happy to check for you! Sometimes for larger parties, we might be able to arrange something by combining smaller tables if they are available. Would you like me to look into that possibility? 📅`
         );
       } else {
-        // --- Enhanced System Prompt for Presenting Alternatives ---
-        const systemPrompt = `You are Sofia, an exceptionally helpful and friendly hostess for "${restaurantName}".
-The guest's original request was unavailable, but you've found some other possibilities!
+        // --- System Prompt for Presenting Nearest Alternatives ---
+        const systemPrompt = `You are Sofia, an exceptionally helpful, polite, and friendly hostess for "${restaurantName}".
+The guest's original request (${requestedTime} on ${requestedDate} for ${guests} people) was unfortunately unavailable. However, you've found some of the NEAREST available time slots!
 Your task is to:
-1. Gently inform them their original choice isn't free.
-2. Enthusiastically present the list of alternatives (which will be provided in the user prompt, already formatted and localized).
+1. Gently and politely inform them their original choice isn't free.
+2. Enthusiastically present the list of NEAREST alternatives you found. This list is provided in the "alternativesListString". Emphasize that these are the closest times you could find to their original request.
 3. Make the alternatives sound appealing and easy to choose from.
-4. Clearly ask them to pick an option by number, or to let you know if they'd like to try different criteria (e.g., another day).
+4. Clearly ask them to pick an option by number, or to let you know if they'd like to try different criteria (e.g., another day or party size).
 Use natural, conversational language. Imagine you're genuinely trying to help them find the perfect time.
 ${languageInstruction}
 The alternatives list ("alternativesListString" which is: ${alternativesListString}) will be provided in the user prompt. Your surrounding text should match the target language and be engaging.`;
         const userPrompt = `The guest's request for ${guests} people on ${requestedDate} at ${requestedTime} was not available.
-Please present the following alternatives in a warm and inviting way:
+Please present the following NEAREST alternatives in a warm, polite, and inviting way:
 ${alternativesListString}
 Encourage them to select one by number, or suggest they can ask for other dates/times.
-Example tone (English): "It seems ${requestedTime} is booked up, but the good news is I have a few other spots that might work perfectly for you..."
-Example tone (Russian): "Кажется, ${requestedTime} уже занято, но есть и хорошие новости! Я нашла несколько других вариантов, которые могут вам подойти..."`;
-        // --- End of Enhanced System Prompt for Presenting Alternatives ---
+Example tone (English): "It seems ${requestedTime} is booked up, but the good news is I have a few of the NEAREST spots that might work perfectly for you..."
+Example tone (Russian): "Кажется, ${requestedTime} уже занято, но есть и хорошие новости! Я нашла несколько БЛИЖАЙШИХ вариантов, которые могут вам подойти..."`;
+        // --- End of System Prompt for Presenting Nearest Alternatives ---
         const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 300, temperature: 0.7 });
         return completion.choices[0].message.content || (
           targetLanguage === 'ru'
-          ? `Кажется, ${requestedTime} ${requestedDate} для ${guests} гостей уже занято. Но не волнуйтесь, я посмотрела и нашла несколько других вариантов для вас в "${restaurantName}":\n\n${alternativesListString}\n\nКакой-нибудь из этих подойдет? Просто скажите номер! Или, если хотите, можем посмотреть другие даты. 😊`
-          : `It seems ${requestedTime} on ${requestedDate} for ${guests} guests is booked up. But don't worry, I had a look and found a few other options at "${restaurantName}" for you:\n\n${alternativesListString}\n\nWould any of these work? Just let me know the number! Or, we can always look at different dates if you'd like. 😊`
+          ? `К сожалению, ${requestedTime} ${requestedDate} для ${guests} гостей уже занято. Но не волнуйтесь, я посмотрела и нашла несколько ближайших доступных вариантов для вас в "${restaurantName}":\n\n${alternativesListString}\n\nКакой-нибудь из этих подойдет? Просто скажите номер! Или, если хотите, можем посмотреть другие даты или время. 😊`
+          : `Unfortunately, ${requestedTime} on ${requestedDate} for ${guests} guests is booked up. But don't worry, I had a look and found a few of the nearest available options at "${restaurantName}" for you:\n\n${alternativesListString}\n\nWould any of these work? Just let me know the number! Or, we can always look at different dates or times if you'd like. 😊`
         );
       }
     } catch (error) {
       console.error("[AIService] Error generating alternative suggestion text:", error);
+      // Fallback messages
       if (noAlternativesFound) {
         return targetLanguage === 'ru'
           ? `Ах, ${requestedTime} ${requestedDate} у нас, похоже, очень популярное время и все столики для ${guests} гостей уже заняты. 😔 Может быть, попробуем немного раньше или позже? Или, возможно, другой день вам подойдет? Я с удовольствием посмотрю для вас! 📅`
@@ -391,7 +388,6 @@ Example tone (Russian): "Кажется, ${requestedTime} уже занято, �
         ? "The user's message might be in Russian. Your response MUST be in RUSSIAN. Sound like a helpful, informed hostess."
         : "The user's message might be in English. Your response MUST be in ENGLISH. Sound like a helpful, informed hostess.";
 
-      // --- Enhanced System Prompt for General Inquiry ---
       const systemPrompt = `You are Sofia, the exceptionally friendly, knowledgeable, and articulate hostess for "${restaurantName}".
 Your primary goal is to answer guest inquiries warmly and accurately using ONLY the provided restaurant information.
 If specific information isn't available in the "Restaurant Information" below, politely and naturally state that you'd need to double-check that detail or suggest they ask when they visit, then smoothly transition to offering help with a reservation.
@@ -412,13 +408,12 @@ Guidelines:
 - For menu specifics beyond cuisine type, you can say something like, "Our chefs are always creating wonderful dishes! For the very latest menu, it's best to see it when you arrive, or I can help you book a table and you can discover it then!"
 - If you lack specific information from the "Restaurant Information" above, never invent it. Politely redirect or offer booking assistance. For example, "That's a great question! For the most up-to-date details on [specifics], I'd recommend checking our website or asking our team when you visit. In the meantime, can I help you find a table?"
 - Use emojis sparingly and naturally (😊, 🍽️, ✨).`;
-      // --- End of Enhanced System Prompt for General Inquiry ---
 
       const completion = await openaiClient.chat.completions.create({
         model: "gpt-4o",
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }],
         max_tokens: 350,
-        temperature: 0.75 // Higher temperature for more natural, varied responses
+        temperature: 0.75 
       });
       return completion.choices[0].message.content || (
         targetLanguage === 'ru'

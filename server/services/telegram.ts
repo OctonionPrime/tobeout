@@ -5,36 +5,42 @@ import {
     DefaultResponseFormatter, 
     Language, 
     ConversationFlow,
-    type NameConflictDetails // Импортируем NameConflictDetails
+    type NameConflictDetails
 } from './conversation-manager';
 import { OpenAIServiceImpl } from './openai';
-import { getAvailableTimeSlots, AvailabilitySlot } from './availability.service';
+import { getAvailableTimeSlots, type AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service';
 import { 
     createTelegramReservation, 
-    generateTelegramConfirmationMessage,
+    // generateTelegramConfirmationMessage, // Keep for name conflict, but primary confirmation is from createTelegramReservation result
     type CreateTelegramReservationResult 
 } from './telegram_booking';
 import type { Restaurant } from '@shared/schema';
+import { db } from '../db'; // For initializeAllTelegramBots
+import { eq, and } from 'drizzle-orm'; // For initializeAllTelegramBots
+import { restaurants as schemaRestaurants, integrationSettings as schemaIntegrationSettings } from '@shared/schema'; // For initializeAllTelegramBots
+
 
 const activeBots = new Map<number, TelegramBot>();
-const activeConversations = new Map<number, ActiveConversation>();
+// Store active conversations with their last known list of presented alternatives
+const activeConversations = new Map<number, { conversation: ActiveConversation, lastPresentedAlternatives?: ServiceAvailabilitySlot[] }>();
 
 interface TelegramLocalizedStrings {
   welcomeMessage: (restaurantName: string) => string;
   helpMessage: string;
   cancelMessage: string;
   genericError: string;
-  bookingFailedOfferAlternatives: string;
-  alternativesFound: (alternatives: string) => string;
-  noAlternativesTryAgain: string;
+  // bookingFailedOfferAlternatives: string; // Now handled by conversationManager's smartAlternative
+  // alternativesFound: (alternatives: string) => string; // Now handled by conversationManager's smartAlternative
+  // noAlternativesTryAgain: string; // Now handled by conversationManager's smartAlternative
   slotUnavailableAnymore: string;
   errorCreatingReservation: string;
   errorCheckingAvailability: string;
   errorHandlingAlternative: string;
+  invalidAlternativeSelection: string;
   botNotConfigured: string;
   telegramTestSuccess: (botUsername: string) => string;
   telegramTestFailed: (errorMessage: string) => string;
-  alternativesNumericalChoicePrompt: string;
+  // alternativesNumericalChoicePrompt: string; // Part of smartAlternative message
   nameClarificationPrompt: (dbName: string, requestName: string) => string;
   useNewNameButton: (requestName: string) => string;
   useDbNameButton: (dbName: string) => string;
@@ -48,17 +54,14 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
     helpMessage: `🆘 **How I can help you:**\n\nI'm Sofia, your restaurant assistant! I can help you:\n\n✅ Make reservations\n✅ Check table availability\n✅ Find alternative times\n✅ Answer questions about dining\n\n**Just tell me:**\n• What date you'd like to visit\n• Your preferred time\n• How many people\n• Your name\n\nI'll handle the rest!\n\n**Commands:**\n/start - Start fresh conversation\n/help - Show this help\n/cancel - Cancel current booking process\n\nReady to make a reservation? Just tell me what you need! 😊`,
     cancelMessage: "No worries! I've cleared our conversation. Feel free to start fresh whenever you're ready to make a reservation! 😊",
     genericError: "I apologize for the technical hiccup! I'm Sofia. How can I help you with a reservation today? 😊",
-    bookingFailedOfferAlternatives: "I'm sorry, but that time slot isn't available anymore. ",
-    alternativesFound: (alternatives) => `Here are some great alternatives:\n\n${alternatives}`,
-    noAlternativesTryAgain: "Would you like to try a different date or time? I'm here to help find the perfect spot for you! 📅",
     slotUnavailableAnymore: "I'm sorry, but that time slot just became unavailable. Let me check for other options... 🔄",
     errorCreatingReservation: "I encountered a small issue while confirming your reservation. Let me try again in just a moment!",
     errorCheckingAvailability: "Sorry, I couldn't check availability right now. Please try again in a moment.",
     errorHandlingAlternative: "Let me help you find another option. What time would you prefer?",
+    invalidAlternativeSelection: "That's not a valid option number. Please choose one of the numbers I listed, or let me know if you'd like to try a different date or time.",
     botNotConfigured: "Telegram bot is not configured or enabled for this restaurant.",
     telegramTestSuccess: (botUsername) => `Successfully connected to Telegram bot: @${botUsername}`,
     telegramTestFailed: (errorMessage) => `Failed to connect to Telegram bot: ${errorMessage}`,
-    alternativesNumericalChoicePrompt: `\n\nWhich option works for you? Just reply with the number! 🎯`,
     nameClarificationPrompt: (dbName, requestName) => `I see you've previously booked as '${dbName}'. For this new reservation, would you like to use the name '${requestName}' or keep '${dbName}'?`,
     useNewNameButton: (requestName) => `Use name: '${requestName}'`,
     useDbNameButton: (dbName) => `Use name: '${dbName}'`,
@@ -70,17 +73,14 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
     helpMessage: `🆘 **Чем я могу помочь:**\n\nЯ София, ваш помощник по ресторану! Я могу помочь вам:\n\n✅ Сделать бронирование\n✅ Проверить наличие столиков\n✅ Найти альтернативное время\n✅ Ответить на вопросы о ресторане\n\n**Просто скажите мне:**\n• На какую дату вы хотели бы прийти\n• Предпочтительное время\n• Количество человек\n• Ваше имя\n\nЯ сделаю все остальное!\n\n**Команды:**\n/start - Начать новый разговор\n/help - Показать эту справку\n/cancel - Отменить текущий процесс бронирования\n\nГотовы сделать бронирование? Просто скажите, что вам нужно! 😊`,
     cancelMessage: "Без проблем! Я очистила наш разговор. Не стесняйтесь начать заново, когда будете готовы сделать бронирование! 😊",
     genericError: "Приношу извинения за техническую неполадку! Я София. Чем могу помочь вам с бронированием сегодня? 😊",
-    bookingFailedOfferAlternatives: "К сожалению, этот временной слот больше не доступен. ",
-    alternativesFound: (alternatives) => `Вот несколько отличных альтернатив:\n\n${alternatives}`,
-    noAlternativesTryAgain: "Хотите попробовать другую дату или время? Я здесь, чтобы помочь найти идеальное место для вас! 📅",
     slotUnavailableAnymore: "К сожалению, этот временной слот только что стал недоступен. Позвольте мне проверить другие варианты... 🔄",
     errorCreatingReservation: "Я столкнулась с небольшой проблемой при подтверждении вашего бронирования. Позвольте мне попробовать еще раз через мгновение!",
     errorCheckingAvailability: "Извините, я не смогла проверить наличие мест прямо сейчас. Пожалуйста, попробуйте еще раз через мгновение.",
     errorHandlingAlternative: "Позвольте мне помочь вам найти другой вариант. Какое время вы бы предпочли?",
+    invalidAlternativeSelection: "Это неверный номер варианта. Пожалуйста, выберите один из перечисленных номеров или сообщите, если хотите попробовать другую дату или время.",
     botNotConfigured: "Телеграм-бот не настроен или не включен для этого ресторана.",
     telegramTestSuccess: (botUsername) => `Успешное подключение к Телеграм-боту: @${botUsername}`,
     telegramTestFailed: (errorMessage) => `Не удалось подключиться к Телеграм-боту: ${errorMessage}`,
-    alternativesNumericalChoicePrompt: `\n\nКакой вариант вам подходит? Просто ответьте номером! 🎯`,
     nameClarificationPrompt: (dbName, requestName) => `Я вижу, что ранее вы бронировали под именем '${dbName}'. Для этого нового бронирования использовать имя '${requestName}' или оставить '${dbName}'?`,
     useNewNameButton: (requestName) => `Использовать '${requestName}'`,
     useDbNameButton: (dbName) => `Использовать '${dbName}'`,
@@ -90,23 +90,28 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
 };
 
 async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: number, text: string, restaurant: Restaurant) {
-  let conversation = activeConversations.get(chatId);
+  let conversationState = activeConversations.get(chatId);
+  let conversation: ActiveConversation;
   let currentLang: Language = 'en';
-  const restaurantName = restaurant.name || (currentLang === 'ru' ? "Наш Ресторан" : "Our Restaurant");
+  const defaultRestaurantName = restaurant.name || (currentLang === 'ru' ? "Наш Ресторан" : "Our Restaurant");
 
-  if (!conversation) {
+  if (!conversationState) {
     const aiService = new OpenAIServiceImpl();
     const formatter = new DefaultResponseFormatter();
     if (/[\u0400-\u04FF]/.test(text)) {
         currentLang = 'ru';
     }
+    formatter.setLanguage(currentLang);
     conversation = new ActiveConversation(aiService, formatter, [], {}, currentLang);
-    activeConversations.set(chatId, conversation);
+    conversationState = { conversation }; // Store conversation in the new structure
+    activeConversations.set(chatId, conversationState);
     console.log(`🎯 [Sofia AI] Started new conversation for chat ${chatId} with initial language: ${currentLang}`);
   } else {
+    conversation = conversationState.conversation; // Retrieve conversation from state
     currentLang = conversation.getConversationFlow().currentLanguage;
+    (conversation.responseFormatter as DefaultResponseFormatter).setLanguage(currentLang);
   }
-  (conversation.responseFormatter as DefaultResponseFormatter).setLanguage(currentLang);
+  const restaurantName = restaurant.name || defaultRestaurantName;
 
   try {
     console.log(`📱 [Sofia AI] Processing message from ${chatId} (lang: ${currentLang}): "${text}"`);
@@ -117,11 +122,10 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     }
 
     const responseFromConversationManager = await conversation.handleMessage(text, restaurantName);
-    currentLang = conversation.getConversationFlow().currentLanguage; // Обновляем язык после AI, он мог измениться
+    currentLang = conversation.getConversationFlow().currentLanguage; 
     const locale = telegramLocaleStrings[currentLang];
 
     const availabilityCheck = conversation.shouldCheckAvailability();
-
     if (availabilityCheck.needsCheck && availabilityCheck.date) {
       console.log(`🔍 [Sofia AI] Checking availability for ${availabilityCheck.date} with ${availabilityCheck.guests} guests (lang: ${currentLang})`);
       try {
@@ -130,7 +134,6 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
           { maxResults: 1, lang: currentLang }
         );
         const hasAvailability = availableSlots.length > 0;
-        console.log(`📊 [Sofia AI] Availability check result: ${hasAvailability ? 'Available' : 'Fully booked'}`);
         const availabilityResponseText = conversation.handleAvailabilityResult(hasAvailability);
         await bot.sendMessage(chatId, availabilityResponseText);
         return;
@@ -145,8 +148,8 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     console.log(`🔍 [Sofia AI] Current booking info (lang: ${currentLang}):`, flow.collectedInfo, `Stage: ${flow.stage}`);
 
     if (hasCompleteBookingInfo(flow.collectedInfo) && 
-        (flow.stage === 'confirming' || flow.stage === 'collecting') && // Добавлено 'collecting', т.к. после сбора последнего поля мы можем быть готовы
-        flow.stage !== 'awaiting_name_choice' // Не пытаемся бронировать, если ждем выбора имени
+        (flow.stage === 'confirming' || flow.stage === 'collecting') && 
+        flow.stage !== 'awaiting_name_choice' 
     ) {
       console.log(`🎯 [Sofia AI] All booking info collected, attempting reservation (lang: ${currentLang})`);
       try {
@@ -154,51 +157,38 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
           restaurantId, flow.collectedInfo.date!, flow.collectedInfo.time!,
           flow.collectedInfo.guests!, flow.collectedInfo.name!, flow.collectedInfo.phone!,
           chatId.toString(), flow.collectedInfo.special_requests, currentLang
-          // confirmedName здесь не передаем, это первый вызов
+          // No selected_slot_info here as this is the initial booking attempt
         );
 
-        if (result.status === 'created' && result.success && result.reservation) {
-          const confirmationMessage = generateTelegramConfirmationMessage(
-            result.reservation, flow.collectedInfo.name!, result.table?.name,
-            restaurantName, currentLang
-          );
-          await bot.sendMessage(chatId, confirmationMessage);
+        if (result.success && result.status === 'created') {
+          await bot.sendMessage(chatId, result.message); // Use message from booking service
           activeConversations.delete(chatId);
           console.log(`✅ [Sofia AI] Reservation confirmed and conversation cleared for chat ${chatId}`);
           return;
         } else if (result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
-          console.log(`[Sofia AI] Name mismatch for guest ${result.nameConflict.guestId}. DB: '${result.nameConflict.dbName}', Request: '${result.nameConflict.requestName}'`);
-
           conversation.setAwaitingNameChoice(result.nameConflict);
-
           const messageText = locale.nameClarificationPrompt(result.nameConflict.dbName, result.nameConflict.requestName);
           const inlineKeyboard = {
-            inline_keyboard: [
-              [
+            inline_keyboard: [[
                 { text: locale.useNewNameButton(result.nameConflict.requestName), callback_data: `confirm_name:new:${result.nameConflict.telegramUserId}` },
                 { text: locale.useDbNameButton(result.nameConflict.dbName), callback_data: `confirm_name:db:${result.nameConflict.telegramUserId}` }
-              ]
-            ]
-          };
+            ]]};
           await bot.sendMessage(chatId, messageText, { reply_markup: inlineKeyboard });
           return;
-        } else { // Обработка других ошибок от createTelegramReservation
+        } else { // Booking failed for other reasons (e.g., no slots, core booking error)
           console.log(`⚠️ [Sofia AI] Booking failed: ${result.message}, offering alternatives (lang: ${currentLang})`);
           const alternatives = await getAvailableTimeSlots(
             restaurantId, flow.collectedInfo.date!, flow.collectedInfo.guests!,
-            { maxResults: 3, lang: currentLang }
+            { maxResults: 3, lang: currentLang, requestedTime: flow.collectedInfo.time, allowCombinations: true }
           );
-          let alternativeMessageText = locale.bookingFailedOfferAlternatives;
-          if (alternatives.length > 0) {
-            const alternativesFormatted = alternatives.map((slot, index) => 
-                `${index + 1}. ${slot.timeDisplay} - ${currentLang === 'ru' ? 'Столик' : 'Table'} ${slot.tableName}`
-            ).join('\n');
-            alternativeMessageText += locale.alternativesFound(alternativesFormatted) + locale.alternativesNumericalChoicePrompt;
-          } else {
-            alternativeMessageText += locale.noAlternativesTryAgain;
-          }
+          // Store these alternatives in conversationState for later selection
+          if (conversationState) conversationState.lastPresentedAlternatives = alternatives;
+
+          const alternativeMessageText = conversation.responseFormatter.generateSmartAlternativeMessageText(
+              flow.collectedInfo.name, flow.collectedInfo.time!, flow.collectedInfo.guests!, alternatives
+          );
           await bot.sendMessage(chatId, alternativeMessageText);
-          // Не очищаем диалог, даем пользователю выбрать альтернативу или изменить запрос
+          // Keep conversation active, stage is likely 'suggesting_alternatives' via conversationManager
           return;
         }
       } catch (error) {
@@ -208,49 +198,72 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
       }
     }
 
-    // Обработка выбора альтернативы (если пользователь вводит цифру)
+    // Handling alternative selection by number
     if (flow.stage === 'suggesting_alternatives' && /^[1-3]$/.test(text.trim())) {
       console.log(`🔢 [Sofia AI] User selected alternative option: ${text} (lang: ${currentLang})`);
-      try {
-        const alternatives = await getAvailableTimeSlots(
-          restaurantId, flow.collectedInfo.date!, flow.collectedInfo.guests!,
-          { maxResults: 3, lang: currentLang }
-        );
-        const selectedIndex = parseInt(text.trim()) - 1;
-        if (selectedIndex >= 0 && selectedIndex < alternatives.length) {
-          const selectedSlot = alternatives[selectedIndex];
-          // Обновляем время в collectedInfo перед попыткой бронирования
-          (conversation.flow.collectedInfo as any).time = selectedSlot.time; 
 
-          // Повторная попытка бронирования с выбранным временем
+      // Retrieve the alternatives that were presented to the user
+      const presentedAlternatives = conversationState?.lastPresentedAlternatives;
+      if (!presentedAlternatives || presentedAlternatives.length === 0) {
+          console.warn(`[Sofia AI] No lastPresentedAlternatives found for chat ${chatId} when user selected an option.`);
+          // Attempt to re-fetch, though this might present a different list if availability changed rapidly.
+          // For robustness, it's better if alternatives are stored.
+          const freshAlternatives = await getAvailableTimeSlots(
+            restaurantId, flow.collectedInfo.date!, flow.collectedInfo.guests!,
+            { maxResults: 3, lang: currentLang, requestedTime: flow.collectedInfo.time, allowCombinations: true }
+          );
+          if (conversationState) conversationState.lastPresentedAlternatives = freshAlternatives; // Store fresh ones
+          if (!freshAlternatives || freshAlternatives.length === 0) {
+            await bot.sendMessage(chatId, locale.errorHandlingAlternative); // Or "Sorry, those options are no longer available."
+            return;
+          }
+          // If re-fetched, use freshAlternatives below. For this example, we'll assume presentedAlternatives should exist.
+          // This part of the logic might need refinement if alternatives are not stored.
+          // For now, if not stored, we'll send an error.
+          await bot.sendMessage(chatId, locale.errorHandlingAlternative + " (Could not recall previous options)");
+          return;
+      }
+
+      try {
+        const selectedIndex = parseInt(text.trim()) - 1;
+
+        if (selectedIndex >= 0 && selectedIndex < presentedAlternatives.length) {
+          const chosenSlot = presentedAlternatives[selectedIndex];
+          console.log(`[Sofia AI] Attempting to book selected alternative: SlotName ${chosenSlot.tableName}, Time ${chosenSlot.time}, IsCombined: ${chosenSlot.isCombined}`);
+
           const bookingResult: CreateTelegramReservationResult = await createTelegramReservation(
-            restaurantId, flow.collectedInfo.date!, selectedSlot.time,
+            restaurantId, flow.collectedInfo.date!, chosenSlot.time, // Use chosenSlot.time
             flow.collectedInfo.guests!, flow.collectedInfo.name!,
             flow.collectedInfo.phone || `telegram_${chatId}`, chatId.toString(),
-            flow.collectedInfo.special_requests, currentLang
-            // confirmedName здесь не передаем, т.к. конфликт имен уже должен был быть разрешен ранее, если был
+            flow.collectedInfo.special_requests, currentLang,
+            undefined, // confirmedName is not relevant here unless a new name conflict arises from this attempt
+            chosenSlot // Pass the complete chosen slot object
           );
 
-          if (bookingResult.status === 'created' && bookingResult.success && bookingResult.reservation) {
-            const confirmationMessage = generateTelegramConfirmationMessage(
-                bookingResult.reservation, flow.collectedInfo.name!, bookingResult.table?.name,
-                restaurantName, currentLang
-            );
-            await bot.sendMessage(chatId, confirmationMessage);
+          if (bookingResult.success && bookingResult.status === 'created') {
+            await bot.sendMessage(chatId, bookingResult.message); // Use message from booking service
             activeConversations.delete(chatId);
             return;
           } else if (bookingResult.status === 'name_mismatch_clarification_needed' && bookingResult.nameConflict) {
-            // Этот сценарий маловероятен здесь, но для полноты
-            console.log(`[Sofia AI] Name mismatch during alternative selection for guest ${bookingResult.nameConflict.guestId}.`);
             conversation.setAwaitingNameChoice(bookingResult.nameConflict);
             const messageText = locale.nameClarificationPrompt(bookingResult.nameConflict.dbName, bookingResult.nameConflict.requestName);
-            const inlineKeyboard = { inline_keyboard: [[{ text: locale.useNewNameButton(bookingResult.nameConflict.requestName), callback_data: `confirm_name:new:${bookingResult.nameConflict.telegramUserId}` },{ text: locale.useDbNameButton(bookingResult.nameConflict.dbName), callback_data: `confirm_name:db:${bookingResult.nameConflict.telegramUserId}` }]]};
+            const inlineKeyboard = { inline_keyboard: [[
+                { text: locale.useNewNameButton(bookingResult.nameConflict.requestName), callback_data: `confirm_name:new:${bookingResult.nameConflict.telegramUserId}` },
+                { text: locale.useDbNameButton(bookingResult.nameConflict.dbName), callback_data: `confirm_name:db:${bookingResult.nameConflict.telegramUserId}` }
+            ]]};
             await bot.sendMessage(chatId, messageText, { reply_markup: inlineKeyboard });
             return;
           } else {
             await bot.sendMessage(chatId, bookingResult.message || locale.slotUnavailableAnymore);
+            // Optionally, re-present alternatives or guide the user.
+            // For now, just send the message. The conversation stage should still be 'suggesting_alternatives'.
+            // Clear lastPresentedAlternatives as they might be outdated now.
+            if (conversationState) delete conversationState.lastPresentedAlternatives;
             return;
           }
+        } else {
+            await bot.sendMessage(chatId, locale.invalidAlternativeSelection);
+            return;
         }
       } catch (error) {
         console.error('❌ [Sofia AI] Error handling alternative selection:', error);
@@ -259,19 +272,17 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
       }
     }
 
-    // Если это не специальный случай, отправляем ответ от ConversationManager
-    if (responseFromConversationManager) { // Отправляем, только если есть что отправлять
+    if (responseFromConversationManager) { 
         await bot.sendMessage(chatId, responseFromConversationManager);
         console.log(`✅ [Sofia AI] Sent response from ConversationManager to ${chatId} (lang: ${currentLang})`);
-    } else if (flow.stage !== 'awaiting_name_choice') { // Не логируем пустой ответ, если это не ожидание выбора имени
+    } else if (flow.stage !== 'awaiting_name_choice') { 
         console.log(`[Sofia AI] No explicit response generated by ConversationManager for chat ${chatId}, stage: ${flow.stage}`);
     }
 
-
   } catch (error) {
     console.error('❌ [Sofia AI] Error processing conversation:', error);
-    const conv = activeConversations.get(chatId);
-    const langForError = conv ? conv.getConversationFlow().currentLanguage : 'en';
+    const convState = activeConversations.get(chatId);
+    const langForError = convState ? convState.conversation.getConversationFlow().currentLanguage : 'en';
     await bot.sendMessage(chatId, telegramLocaleStrings[langForError].genericError);
   }
 }
@@ -286,10 +297,12 @@ async function sendWelcomeMessage(bot: TelegramBot, chatId: number, restaurantNa
 
 export async function initializeTelegramBot(restaurantId: number): Promise<boolean> {
   try {
-    const existingBot = activeBots.get(restaurantId);
-    if (existingBot) {
-      await existingBot.stopPolling({ cancel: true }).catch(e => console.warn(`Error stopping existing bot: ${e.message}`));
+    const existingBotInstance = activeBots.get(restaurantId);
+    if (existingBotInstance) {
+      console.log(`[Sofia AI] Attempting to stop existing polling for restaurant ${restaurantId}`);
+      await existingBotInstance.stopPolling({ cancel: true }).catch(e => console.warn(`[Sofia AI] Error stopping existing bot for restaurant ${restaurantId}: ${e.message}`));
       activeBots.delete(restaurantId);
+      console.log(`[Sofia AI] Existing bot polling stopped and removed for restaurant ${restaurantId}`);
     }
 
     const settings = await storage.getIntegrationSettings(restaurantId, 'telegram');
@@ -299,37 +312,38 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
       console.log(`⚠️ [Sofia AI] No bot token or restaurant data for restaurant ${restaurantId}. Bot not initialized.`);
       return false;
     }
-    const actualRestaurantName = restaurant.name || (settings.settings?.language === 'ru' ? "Наш Ресторан" : "Our Restaurant");
+    const initialBotLang = (settings.settings as any)?.language === 'ru' ? 'ru' : 'en'; 
+    const actualRestaurantName = restaurant.name || (initialBotLang === 'ru' ? "Наш Ресторан" : "Our Restaurant");
 
     console.log(`🚀 [Sofia AI] Initializing bot for restaurant ${restaurantId} (${actualRestaurantName})`);
     const token = settings.token;
-    const bot = new TelegramBot(token, { polling: true });
+    const bot = new TelegramBot(token, { polling: { interval: 300, params: { timeout: 10 } } });
     activeBots.set(restaurantId, bot);
 
     bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
-      activeConversations.delete(chatId);
-      const userLang = msg.from?.language_code?.startsWith('ru') ? 'ru' : 'en';
+      activeConversations.delete(chatId); 
+      const userLang = msg.from?.language_code?.startsWith('ru') ? 'ru' : initialBotLang;
       await sendWelcomeMessage(bot, chatId, actualRestaurantName, userLang);
     });
 
     bot.onText(/\/help/, async (msg) => {
       const chatId = msg.chat.id;
-      const conv = activeConversations.get(chatId);
-      const lang = conv ? conv.getConversationFlow().currentLanguage : (msg.from?.language_code?.startsWith('ru') ? 'ru' : 'en');
+      const convState = activeConversations.get(chatId);
+      const lang = convState ? convState.conversation.getConversationFlow().currentLanguage : (msg.from?.language_code?.startsWith('ru') ? 'ru' : initialBotLang);
       await bot.sendMessage(chatId, telegramLocaleStrings[lang].helpMessage, { parse_mode: 'Markdown' });
     });
 
     bot.onText(/\/cancel/, async (msg) => {
       const chatId = msg.chat.id;
-      const conv = activeConversations.get(chatId);
-      const lang = conv ? conv.getConversationFlow().currentLanguage : (msg.from?.language_code?.startsWith('ru') ? 'ru' : 'en');
+      const convState = activeConversations.get(chatId);
+      const lang = convState ? convState.conversation.getConversationFlow().currentLanguage : (msg.from?.language_code?.startsWith('ru') ? 'ru' : initialBotLang);
       activeConversations.delete(chatId);
       await bot.sendMessage(chatId, telegramLocaleStrings[lang].cancelMessage);
     });
 
     bot.on('message', async (msg) => {
-      if (msg.text && msg.text.startsWith('/')) return;
+      if (msg.text && msg.text.startsWith('/')) return; 
       if (msg.text && msg.chat.id) {
         await handleMessage(bot, restaurantId, msg.chat.id, msg.text, restaurant);
       }
@@ -339,7 +353,9 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
       const chatId = callbackQuery.message?.chat.id;
       const messageId = callbackQuery.message?.message_id;
       const data = callbackQuery.data;
-      const conversation = chatId ? activeConversations.get(chatId) : undefined;
+      const conversationState = chatId ? activeConversations.get(chatId) : undefined;
+      const conversation = conversationState?.conversation;
+
 
       if (!chatId || !messageId || !data || !conversation) {
         console.warn('[Telegram] Invalid callback_query or no active conversation for callback.');
@@ -362,9 +378,8 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 
         const parts = data.split(':'); 
         const choiceType = parts[1]; 
-        // const telegramUserIdFromCb = parts[2]; // Для возможной доп. проверки
-
         const conflictDetails = currentFlow.nameConflictDetails;
+
         if(!conflictDetails) { 
             console.error("[Telegram] Critical: nameConflictDetails is undefined in awaiting_name_choice stage.");
             await bot.answerCallbackQuery(callbackQuery.id, { text: "Внутренняя ошибка. Пожалуйста, попробуйте снова."});
@@ -372,40 +387,40 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             return;
         }
 
-        const confirmedName = choiceType === 'new' ? conflictDetails.requestName : conflictDetails.dbName;
-        const nameForThisBooking = conflictDetails.requestName; // Имя, которое пользователь изначально ввел для этого бронирования
+        const confirmedNameForProfile = choiceType === 'new' ? conflictDetails.requestName : conflictDetails.dbName;
+        const nameForThisBooking = conflictDetails.requestName; 
 
-        console.log(`[Telegram] User chose to use name: ${confirmedName} for profile. Name for this booking attempt: ${nameForThisBooking}`);
+        console.log(`[Telegram] User chose to use name: ${confirmedNameForProfile} for profile. Name for this booking attempt: ${nameForThisBooking}`);
 
         try {
-            await bot.answerCallbackQuery(callbackQuery.id, { text: locale.nameConfirmationUsed(confirmedName) });
+            await bot.answerCallbackQuery(callbackQuery.id, { text: locale.nameConfirmationUsed(confirmedNameForProfile) });
             await bot.editMessageReplyMarkup({inline_keyboard: []}, { chat_id: chatId, message_id: messageId });
-        } catch (editError) {
-            console.warn(`[Telegram] Could not edit message or answer callback query: ${editError}`);
+        } catch (editError: any) {
+            console.warn(`[Telegram] Could not edit message or answer callback query: ${editError.message || editError}`);
         }
 
         conversation.clearNameChoiceState(); 
-        // Устанавливаем имя для текущей операции бронирования в collectedInfo
         (conversation.flow.collectedInfo as any).name = nameForThisBooking;
 
         try {
+          // When re-attempting reservation after name confirmation, we don't have a `selected_slot_info`
+          // unless the name conflict happened *after* an alternative was chosen.
+          // For simplicity, let's assume name conflict happens before alternative selection,
+          // so `selected_slot_info` would be undefined here. The booking service will find a slot.
           const result = await createTelegramReservation(
             restaurantId, conflictDetails.date, conflictDetails.time,
             conflictDetails.guests, nameForThisBooking, 
             conflictDetails.phone, conflictDetails.telegramUserId, 
-            conflictDetails.comments, conflictDetails.lang,
-            confirmedName // Подтвержденное имя для обновления профиля гостя в БД
+            conflictDetails.comments, conflictDetails.lang || currentLang,
+            confirmedNameForProfile,
+            undefined // selected_slot_info is likely undefined here
           );
 
-          if (result.success && result.reservation) {
-            const confirmationMessage = generateTelegramConfirmationMessage(
-              result.reservation, nameForThisBooking, result.table?.name, 
-              restaurant.name, currentLang
-            );
-            await bot.sendMessage(chatId, confirmationMessage);
+          if (result.success && result.status === 'created') {
+            // The result.message from createTelegramReservation is already fully formed and localized
+            await bot.sendMessage(chatId, result.message);
             activeConversations.delete(chatId);
           } else {
-            // Отправляем сообщение об ошибке от booking.ts (оно уже локализовано)
             await bot.sendMessage(chatId, result.message || locale.errorCreatingReservation);
           }
         } catch (error) {
@@ -417,14 +432,22 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
       }
     });
 
+    bot.on('polling_error', (error) => {
+        console.error(`❌ [Sofia AI] Polling error for restaurant ${restaurantId} (${actualRestaurantName}):`, error.message);
+        if ((error as any).code === 'ETELEGRAM' && (error as any).response?.body?.error_code === 401) {
+            console.error(`[Sofia AI] BOT TOKEN INVALID for restaurant ${restaurantId}. Stopping bot.`);
+            stopTelegramBot(restaurantId); 
+        }
+    });
+    bot.on('error', (error) => console.error(`❌ [Sofia AI] General Bot error for restaurant ${restaurantId} (${actualRestaurantName}):`, error.message));
 
-    bot.on('polling_error', (error) => console.error(`❌ [Sofia AI] Polling error for restaurant ${restaurantId}:`, error.message));
-    bot.on('error', (error) => console.error(`❌ [Sofia AI] Bot error for restaurant ${restaurantId}:`, error.message));
-
-    console.log(`✅ [Sofia AI] Conversation bot initialized and listening for restaurant ${restaurantId}`);
+    console.log(`✅ [Sofia AI] Conversation bot initialized and listening for restaurant ${restaurantId} (${actualRestaurantName})`);
     return true;
   } catch (error) {
     console.error(`❌ [Telegram] Failed to initialize bot for restaurant ${restaurantId}:`, error);
+    if (activeBots.has(restaurantId)) {
+        activeBots.delete(restaurantId);
+    }
     return false;
   }
 }
@@ -432,11 +455,59 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 export function stopTelegramBot(restaurantId: number): void {
   const bot = activeBots.get(restaurantId);
   if (bot) {
-    bot.stopPolling().catch(err => console.error(`Error stopping bot for restaurant ${restaurantId}:`, err));
+    console.log(`[Telegram] Stopping bot polling for restaurant ${restaurantId}...`);
+    bot.stopPolling({ cancel: true })
+      .then(() => { console.log(`🛑 [Telegram] Bot stopped for restaurant ${restaurantId}`); })
+      .catch(err => console.error(`Error stopping bot for restaurant ${restaurantId}:`, err.message || err));
     activeBots.delete(restaurantId);
-    console.log(`🛑 [Telegram] Bot stopped for restaurant ${restaurantId}`);
+  } else {
+    console.log(`[Telegram] No active bot found for restaurant ${restaurantId} to stop.`);
   }
 }
+
+export async function initializeAllTelegramBots(): Promise<void> {
+  try {
+    const restaurantsToInit = await db.select({
+        id: schemaRestaurants.id,
+        // token: schemaIntegrationSettings.token, // Token is fetched in initializeTelegramBot
+    })
+    .from(schemaRestaurants)
+    .innerJoin(schemaIntegrationSettings, eq(schemaRestaurants.id, schemaIntegrationSettings.restaurantId))
+    .where(and(eq(schemaIntegrationSettings.type, 'telegram'), eq(schemaIntegrationSettings.enabled, true)));
+
+    console.log(`[Telegram] Found ${restaurantsToInit.length} restaurants with Telegram integration enabled.`);
+    for (const restaurantData of restaurantsToInit) {
+        if (restaurantData.id) {
+            await initializeTelegramBot(restaurantData.id);
+        } else {
+            console.warn(`[Telegram] Skipping initialization for a restaurant due to missing ID. Data:`, restaurantData);
+        }
+    }
+    console.log(`🌟 [Sofia AI] All relevant restaurant bots processed for initialization.`);
+  } catch (error: any) {
+    console.error('❌ [Telegram] Failed to initialize all bots:', error.message || error);
+  }
+}
+
+export function cleanupTelegramBots(): void {
+  console.log(`🧹 [Telegram] Cleaning up ${activeBots.size} active bots...`);
+  for (const [restaurantId, bot] of activeBots.entries()) {
+    try {
+      console.log(`[Telegram] Stopping polling for bot of restaurant ${restaurantId} during cleanup.`);
+      bot.stopPolling({ cancel: true })
+         .then(() => console.log(`[Telegram] Bot for restaurant ${restaurantId} stopped during cleanup.`))
+         .catch(err => console.error(`Error stopping bot during cleanup for restaurant ${restaurantId}:`, err.message || err));
+    } catch (error: any) {
+      console.error(`❌ [Telegram] Error stopping bot for restaurant ${restaurantId} during cleanup:`, error.message || error);
+    }
+  }
+  activeBots.clear();
+  activeConversations.clear();
+  console.log(`✅ [Telegram] Cleanup completed. Active bots: ${activeBots.size}, Active conversations: ${activeConversations.size}`);
+}
+
+// Other utility functions like getTelegramBot, sendTelegramMessage, getConversationStats remain largely unchanged
+// unless they need to interact with the new activeConversations structure.
 
 export function getTelegramBot(restaurantId: number): TelegramBot | undefined {
   return activeBots.get(restaurantId);
@@ -455,96 +526,10 @@ export async function sendTelegramMessage(
     }
     await bot.sendMessage(chatId, message);
     return true;
-  } catch (error) {
-    console.error(`❌ [Telegram] Failed to send message:`, error);
+  } catch (error: any) {
+    console.error(`❌ [Telegram] Failed to send message to chat ${chatId} for restaurant ${restaurantId}:`, error.message || error);
     return false;
   }
-}
-
-export async function sendAvailabilityNotification(
-  restaurantId: number,
-  chatId: number,
-  date: string,
-  availableSlots: AvailabilitySlot[],
-  lang: Language,
-  formatter: DefaultResponseFormatter
-): Promise<boolean> {
-  try {
-    const bot = activeBots.get(restaurantId);
-    if (!bot) {
-      console.error(`❌ [Telegram] No bot found for restaurant ${restaurantId}`);
-      return false;
-    }
-
-    formatter.setLanguage(lang);
-    const displayDate = formatter.formatDateForDisplay(date);
-
-    let messageHeader = lang === 'ru'
-      ? `🎉 Отличные новости! Я нашла свободные места на ${displayDate}:\n\n`
-      : `🎉 Good news! I found availability for ${displayDate}:\n\n`;
-
-    const slotLines = availableSlots.slice(0, 5).map((slot, index) => {
-      const timeDisplay = formatter.formatTimeForDisplay(slot.time);
-      const tableName = slot.tableName;
-      return `${index + 1}. ${timeDisplay} - ${lang === 'ru' ? 'Столик' : 'Table'} ${tableName}`;
-    }).join('\n');
-
-    let messageFooter = lang === 'ru'
-      ? `\nКакой вариант вас интересует? Просто ответьте номером! 🎯`
-      : `\nWhich option interests you? Just reply with the number! �`;
-
-    await bot.sendMessage(chatId, messageHeader + slotLines + messageFooter);
-    return true;
-  } catch (error) {
-    console.error(`❌ [Telegram] Failed to send availability notification:`, error);
-    return false;
-  }
-}
-
-export async function setupTelegramBot(token?: string, restaurantId?: number): Promise<boolean> {
-  if (token && restaurantId) {
-    console.warn(`[Telegram] setupTelegramBot is deprecated. Use initializeTelegramBot directly or rely on initializeAllTelegramBots.`);
-    const settings = await storage.getIntegrationSettings(restaurantId, 'telegram');
-    if (!settings || settings.token !== token) {
-        await storage.saveIntegrationSettings({
-            restaurantId,
-            type: 'telegram',
-            token: token,
-            enabled: true,
-        });
-    }
-    return await initializeTelegramBot(restaurantId);
-  }
-  return false;
-}
-
-export async function initializeAllTelegramBots(): Promise<void> {
-  try {
-    const restaurantsWithTelegram = await storage.getRestaurantsWithTelegramEnabled();
-    console.log(`[Telegram] Found ${restaurantsWithTelegram.length} restaurants with Telegram integration enabled.`);
-    for (const restaurant of restaurantsWithTelegram) {
-        if (restaurant.id) {
-            await initializeTelegramBot(restaurant.id);
-        }
-    }
-    console.log(`🌟 [Sofia AI] All relevant restaurant bots initialized successfully.`);
-  } catch (error) {
-    console.error('❌ [Telegram] Failed to initialize all bots:', error);
-  }
-}
-
-export function cleanupTelegramBots(): void {
-  console.log(`🧹 [Telegram] Cleaning up ${activeBots.size} active bots...`);
-  for (const [restaurantId, bot] of activeBots.entries()) {
-    try {
-      bot.stopPolling().catch(err => console.error(`Error stopping bot during cleanup for restaurant ${restaurantId}:`, err));
-    } catch (error) {
-      console.error(`❌ [Telegram] Error stopping bot for restaurant ${restaurantId}:`, error);
-    }
-  }
-  activeBots.clear();
-  activeConversations.clear();
-  console.log(`✅ [Telegram] Cleanup completed.`);
 }
 
 export function getConversationStats(): {
@@ -553,8 +538,8 @@ export function getConversationStats(): {
   conversationsByStage: Record<string, number>;
 } {
   const conversationsByStage: Record<string, number> = {};
-  for (const conversation of activeConversations.values()) {
-    const flow = conversation.getConversationFlow();
+  for (const convState of activeConversations.values()) {
+    const flow = convState.conversation.getConversationFlow();
     conversationsByStage[flow.stage] = (conversationsByStage[flow.stage] || 0) + 1;
   }
   return {

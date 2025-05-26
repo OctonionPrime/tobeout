@@ -1,750 +1,586 @@
-# API Documentation - ToBeOut Restaurant Booking System
+# API Documentation - ToBeOut Restaurant Booking Platform
 
-## 🚀 API Overview
+## Overview
+The ToBeOut API provides comprehensive endpoints for restaurant management, table reservations, guest tracking, and AI-powered interactions. All endpoints use JSON for request/response bodies and include proper authentication and validation.
 
-**Base URL:** `https://your-domain.replit.app/api`  
-**Version:** 2.1.0-alpha  
-**Authentication:** Session-based with secure cookies  
-**Response Format:** JSON  
-**AI Integration:** Sofia AI Hostess with GPT-4o  
-**Real-time Features:** WebSocket support for live updates
+## Authentication
+All API endpoints require authentication via session-based authentication.
 
-## 🔐 Authentication
+### Authentication Endpoints
 
-### Login
-```http
-POST /api/auth/login
-Content-Type: application/json
+#### POST /api/auth/login
+Authenticate user and create session.
 
-{
-  "email": "user@example.com",
-  "password": "password123"
-}
-```
-
-**Response:**
+**Request:**
 ```json
 {
-  "user": {
-    "id": 1,
-    "email": "user@example.com",
-    "role": "admin"
-  },
-  "message": "Login successful"
+  "email": "admin@tobeout.com",
+  "password": "password"
 }
-```
-
-### Logout
-```http
-POST /api/auth/logout
-```
-
-### Current User
-```http
-GET /api/auth/me
-```
-
-## 🏢 Restaurant Management
-
-### Get Restaurant Details
-```http
-GET /api/restaurant
 ```
 
 **Response:**
 ```json
 {
   "id": 1,
-  "name": "Demo Restaurant",
-  "description": "A beautiful dining experience",
-  "address": "123 Main Street",
-  "phone": "+1234567890",
-  "email": "info@demo.com",
-  "cuisine": "Italian",
-  "openingHours": {
-    "monday": { "open": "11:00", "close": "22:00" },
-    "tuesday": { "open": "11:00", "close": "22:00" }
-  },
-  "settings": {
-    "averageServiceTime": 90,
-    "maxAdvanceBooking": 30
-  }
+  "email": "admin@tobeout.com",
+  "name": "Admin User",
+  "role": "admin"
 }
 ```
 
-### Update Restaurant
-```http
-PUT /api/restaurant
-Content-Type: application/json
+#### GET /api/auth/me
+Get current authenticated user information.
 
+**Response:**
+```json
+{
+  "id": 1,
+  "email": "admin@tobeout.com",
+  "name": "Admin User",
+  "role": "admin"
+}
+```
+
+#### POST /api/auth/logout
+Logout current user and destroy session.
+
+**Response:**
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+## Restaurant Management
+
+#### GET /api/restaurants/profile
+Get current restaurant profile information.
+
+**Response:**
+```json
+{
+  "id": 1,
+  "userId": 1,
+  "name": "Demo Restaurant",
+  "description": "A modern dining experience",
+  "country": "Russia",
+  "city": "Moscow",
+  "address": "Red Square 1",
+  "openingTime": "10:00:00",
+  "closingTime": "23:00:00",
+  "cuisine": "International",
+  "atmosphere": "Modern",
+  "features": ["WiFi", "Parking", "Outdoor Seating"],
+  "languages": ["en", "ru"],
+  "avgReservationDuration": 90,
+  "minGuests": 1,
+  "maxGuests": 12,
+  "phone": "+7 (495) 123-4567"
+}
+```
+
+#### PATCH /api/restaurants/profile
+Update restaurant profile information.
+
+**Request:**
+```json
 {
   "name": "Updated Restaurant Name",
-  "description": "Updated description",
-  "phone": "+1234567890"
+  "openingTime": "11:00:00",
+  "closingTime": "22:00:00",
+  "avgReservationDuration": 120
 }
 ```
 
-## 🪑 Table Management
+## Table Management
 
-### Get All Tables
-```http
-GET /api/tables
-```
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "name": "Table 1",
-    "capacity": 4,
-    "status": "available",
-    "position": { "x": 100, "y": 150 },
-    "features": ["window", "quiet"],
-    "isActive": true
-  }
-]
-```
-
-### Create Table
-```http
-POST /api/tables
-Content-Type: application/json
-
-{
-  "name": "Table 6",
-  "capacity": 6,
-  "position": { "x": 200, "y": 300 },
-  "features": ["private", "accessible"]
-}
-```
-
-### Update Table
-```http
-PUT /api/tables/:id
-Content-Type: application/json
-
-{
-  "name": "Updated Table Name",
-  "capacity": 8,
-  "status": "maintenance"
-}
-```
-
-### Delete Table
-```http
-DELETE /api/tables/:id
-```
-
-### Get Table Availability
-```http
-GET /api/tables/availability?date=2025-05-23&time=19:00
-```
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "name": "Table 1",
-    "capacity": 4,
-    "status": "available",
-    "nextReservation": null,
-    "isAvailable": true
-  },
-  {
-    "id": 2,
-    "name": "Table 2", 
-    "capacity": 2,
-    "status": "reserved",
-    "nextReservation": {
-      "time": "19:00",
-      "guestName": "John Doe"
-    },
-    "isAvailable": false
-  }
-]
-```
-
-## 👥 Guest Management
-
-### Get All Guests
-```http
-GET /api/guests
-```
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "name": "John Doe",
-    "phone": "+1234567890",
-    "email": "john@example.com",
-    "visitCount": 5,
-    "lastVisit": "2025-05-20",
-    "preferences": {
-      "seating": "window",
-      "dietary": ["vegetarian"]
-    },
-    "vipStatus": "gold"
-  }
-]
-```
-
-### Create Guest
-```http
-POST /api/guests
-Content-Type: application/json
-
-{
-  "name": "Jane Smith",
-  "phone": "+0987654321",
-  "email": "jane@example.com",
-  "preferences": {
-    "seating": "quiet",
-    "dietary": ["gluten-free"]
-  }
-}
-```
-
-### Update Guest
-```http
-PUT /api/guests/:id
-Content-Type: application/json
-
-{
-  "preferences": {
-    "seating": "window",
-    "dietary": ["vegan"]
-  },
-  "notes": "Prefers early dining"
-}
-```
-
-## 📅 Reservation Management
-
-### Get Reservations
-```http
-GET /api/reservations?date=2025-05-23&status=confirmed
-```
+#### GET /api/tables
+Get all tables for the authenticated restaurant.
 
 **Query Parameters:**
-- `date` (optional): Filter by specific date (YYYY-MM-DD)
-- `status` (optional): Filter by status (pending, confirmed, cancelled, completed)
-- `upcoming` (optional): Boolean to get upcoming reservations only
+- `restaurantId`: Restaurant ID (optional, defaults to authenticated user's restaurant)
 
 **Response:**
 ```json
 [
   {
-    "id": 1,
-    "guestName": "John Doe",
-    "guestPhone": "+1234567890",
-    "tableName": "Table 1",
-    "date": "2025-05-23",
-    "time": "19:00",
-    "guests": 4,
-    "status": "confirmed",
-    "specialRequests": "Window seating preferred",
-    "source": "telegram",
-    "createdAt": "2025-05-22T10:30:00Z"
+    "id": 5,
+    "restaurantId": 1,
+    "name": "5",
+    "minGuests": 1,
+    "maxGuests": 4,
+    "status": "free",
+    "features": ["Window View"],
+    "comments": "Prime location table",
+    "createdAt": "2025-01-20T10:30:00Z"
   }
 ]
 ```
 
-### Create Reservation
-```http
-POST /api/reservations
-Content-Type: application/json
+#### POST /api/tables
+Create a new table.
 
+**Request:**
+```json
 {
-  "guestName": "Alice Johnson",
-  "guestPhone": "+1122334455",
-  "date": "2025-05-25",
-  "time": "18:30",
-  "guests": 2,
-  "specialRequests": "Anniversary dinner",
-  "source": "web"
+  "name": "Table 10",
+  "minGuests": 2,
+  "maxGuests": 6,
+  "features": ["Outdoor", "Quiet"],
+  "comments": "Perfect for couples"
 }
 ```
+
+#### PATCH /api/tables/:id
+Update table configuration.
+
+**Request:**
+```json
+{
+  "name": "Updated Table Name",
+  "maxGuests": 8,
+  "status": "unavailable"
+}
+```
+
+#### DELETE /api/tables/:id
+Delete a table.
 
 **Response:**
 ```json
 {
-  "success": true,
-  "reservation": {
-    "id": 15,
-    "confirmationCode": "ABC123",
-    "tableName": "Table 3",
-    "status": "confirmed"
-  },
-  "message": "Reservation created successfully"
+  "message": "Table deleted successfully"
 }
 ```
 
-### Update Reservation
-```http
-PUT /api/reservations/:id
-Content-Type: application/json
+## Table Availability & Scheduling
 
-{
-  "status": "confirmed",
-  "tableId": 2,
-  "specialRequests": "Updated special requests"
-}
-```
+#### GET /api/tables/availability/schedule
+Get detailed table availability schedule for a specific date.
 
-### Cancel Reservation
-```http
-POST /api/reservations/:id/cancel
-Content-Type: application/json
-
-{
-  "reason": "Guest requested cancellation"
-}
-```
-
-## 🤖 Sofia AI Hostess & Intelligent Booking
-
-### Check Real Availability with Sofia AI Analysis
-```http
-GET /api/booking/availability?date=2025-05-23&time=19:00&guests=4
-```
+**Query Parameters:**
+- `date`: Date in YYYY-MM-DD format (required)
+- `restaurantId`: Restaurant ID (optional)
 
 **Response:**
 ```json
-{
-  "available": false,
-  "requestedSlot": {
-    "date": "2025-05-23",
-    "time": "19:00",
-    "guests": 4
-  },
-  "alternatives": [
-    {
-      "time": "18:30",
-      "tableName": "Table 2",
-      "tableCapacity": 4,
-      "confidence": 0.95,
-      "aiReasoning": "30 minutes earlier, perfect table size match",
-      "features": ["window", "quiet"]
-    },
-    {
-      "time": "20:00", 
-      "tableName": "Table 1",
-      "tableCapacity": 6,
-      "confidence": 0.85,
-      "aiReasoning": "Larger table available, premium seating",
-      "features": ["premium", "spacious"]
-    }
-  ],
-  "aiInsights": {
-    "recommendedChoice": "18:30 - Table 2",
-    "reasoning": "Optimal match for party size with preferred features",
-    "guestSatisfactionPrediction": 0.92
+[
+  {
+    "time": "18:00",
+    "tables": [
+      {
+        "id": 5,
+        "name": "5",
+        "minGuests": 1,
+        "maxGuests": 4,
+        "status": "reserved",
+        "reservation": {
+          "id": 69,
+          "guestName": "Эрик", // Uses booking_guest_name if set, otherwise guest.name
+          "guestCount": 2,
+          "timeSlot": "18:00",
+          "phone": "+7-912-345-6789",
+          "status": "confirmed",
+          "bookingGuestName": "Эрик" // Specific name used for this booking
+        }
+      }
+    ]
   }
-}
+]
 ```
 
-### Get Available Times for Date
-```http
-GET /api/booking/available-times?date=2025-05-23&guests=2
-```
+#### GET /api/booking/available-times
+Get available booking times for a specific date and guest count.
+
+**Query Parameters:**
+- `date`: Date in YYYY-MM-DD format (required)
+- `guests`: Number of guests (required)
 
 **Response:**
 ```json
 {
-  "date": "2025-05-23",
-  "guests": 2,
-  "availableSlots": [
+  "availableTimes": [
     {
-      "time": "17:30",
-      "availableTables": 3,
-      "recommendedTable": "Table 1"
-    },
-    {
-      "time": "18:00",
-      "availableTables": 2,
-      "recommendedTable": "Table 2"
-    }
-  ]
-}
-```
-
-### Sofia AI Smart Booking with Context Awareness
-```http
-POST /api/booking/create
-Content-Type: application/json
-
-{
-  "guestName": "Bob Wilson",
-  "guestPhone": "+1555666777",
-  "date": "2025-05-24",
-  "time": "19:30",
-  "guests": 3,
-  "preferences": {
-    "seating": "quiet",
-    "occasion": "business"
-  },
-  "source": "ai_assistant",
-  "conversationId": "conv_12345",
-  "guestHistory": {
-    "visitCount": 2,
-    "lastVisit": "2025-04-15",
-    "preferredFeatures": ["quiet", "business-friendly"]
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "reservation": {
-    "id": 20,
-    "confirmationCode": "XYZ789",
-    "assignedTable": {
-      "id": 4,
-      "name": "Table 4",
-      "features": ["quiet", "business-friendly", "premium"]
-    },
-    "sofiaAnalysis": {
-      "confidence": 0.94,
-      "reasoning": "Perfect match - quiet business table for returning guest",
-      "personalizedMessage": "Welcome back Bob! I've reserved your preferred quiet table for your business meeting.",
-      "guestSatisfactionPrediction": 0.96,
-      "revenueOptimization": "Table upgraded based on guest loyalty"
-    },
-    "aiMetrics": {
-      "processingTime": 1650,
-      "contextPreserved": true,
-      "alternativesConsidered": 3
-    }
-  },
-  "message": "Reservation confirmed with Sofia AI optimization and personalization"
-}
-```
-
-### Get Alternative Suggestions
-```http
-GET /api/booking/alternatives?date=2025-05-23&time=19:00&guests=4&limit=5
-```
-
-**Response:**
-```json
-{
-  "original": {
-    "date": "2025-05-23",
-    "time": "19:00",
-    "guests": 4
-  },
-  "alternatives": [
-    {
-      "type": "time_shift",
-      "date": "2025-05-23",
-      "time": "18:30",
-      "tableName": "Table 2",
-      "tableCapacity": 4,
-      "confidence": 0.95,
-      "reasoning": "30 minutes earlier, same table size"
-    },
-    {
-      "type": "table_upgrade",
-      "date": "2025-05-23", 
       "time": "19:00",
-      "tableName": "Table 1",
-      "tableCapacity": 6,
-      "confidence": 0.88,
-      "reasoning": "Larger table available at requested time"
+      "availableTables": [
+        {
+          "id": 6,
+          "name": "6",
+          "maxGuests": 4
+        }
+      ]
     }
   ]
 }
 ```
 
-## 📱 Integration Management
+## Guest Management
 
-### Get Telegram Integration Settings
-```http
-GET /api/integrations/telegram
+#### GET /api/guests
+Get all guests for the authenticated restaurant.
+
+**Query Parameters:**
+- `restaurantId`: Restaurant ID (optional)
+
+**Response:**
+```json
+[
+  {
+    "id": 55,
+    "name": "Миса",
+    "phone": "+7-912-345-6789",
+    "email": null,
+    "telegramUserId": "123456789",
+    "language": "ru",
+    "birthday": null,
+    "comments": "Regular customer",
+    "tags": ["VIP", "Vegetarian"],
+    "createdAt": "2025-01-15T14:20:00Z"
+  }
+]
 ```
+
+#### POST /api/guests
+Create a new guest profile.
+
+**Request:**
+```json
+{
+  "name": "John Doe",
+  "phone": "+1-555-0123",
+  "email": "john@example.com",
+  "language": "en",
+  "birthday": "1990-05-15",
+  "tags": ["Business Client"]
+}
+```
+
+#### PATCH /api/guests/:id
+Update guest information.
+
+**Request:**
+```json
+{
+  "name": "Updated Name",
+  "comments": "Updated preferences",
+  "tags": ["VIP", "Anniversary"]
+}
+```
+
+## Reservation Management ⭐ **Enhanced with Booking Guest Name Feature**
+
+#### GET /api/reservations
+Get reservations with advanced filtering options.
+
+**Query Parameters:**
+- `restaurantId`: Restaurant ID (required)
+- `date`: Filter by specific date (YYYY-MM-DD)
+- `status`: Filter by status (created, confirmed, canceled, completed)
+- `upcoming`: Boolean to get only upcoming reservations
+
+**Response:**
+```json
+[
+  {
+    "id": 69,
+    "restaurantId": 1,
+    "guestId": 55,
+    "tableId": 5,
+    "date": "2025-05-26",
+    "time": "18:00:00",
+    "duration": 90,
+    "guests": 2,
+    "status": "confirmed",
+    "bookingGuestName": "Эрик", // ⭐ Name used for this specific booking
+    "comments": "Special occasion",
+    "specialRequests": "Window table preferred",
+    "staffNotes": "Regular customer",
+    "source": "telegram",
+    "createdAt": "2025-01-20T15:30:00Z",
+    "guestName": "Эрик", // Computed display name (booking_guest_name or guest.name)
+    "guestPhone": "+7-912-345-6789",
+    "tableName": "5"
+  }
+]
+```
+
+#### POST /api/reservations
+Create a new reservation with flexible guest name handling.
+
+**Request:**
+```json
+{
+  "guestId": 55,
+  "tableId": 5,
+  "date": "2025-05-27",
+  "time": "19:00",
+  "guests": 3,
+  "bookingGuestName": "Настя", // ⭐ Optional: Name to use for this booking
+  "comments": "Birthday celebration",
+  "specialRequests": "Birthday cake setup",
+  "source": "telegram"
+}
+```
+
+**Key Features:**
+- If `bookingGuestName` is provided, the reservation shows that name
+- If `bookingGuestName` is null/empty, shows the guest's profile name
+- Guest profile remains unchanged regardless of booking name
+- Enables complex scenarios like "Alex booking as Sarah"
+
+#### PATCH /api/reservations/:id
+Update existing reservation, including table moves and time changes.
+
+**Request:**
+```json
+{
+  "tableId": 6,
+  "time": "20:00",
+  "date": "2025-05-27",
+  "status": "confirmed",
+  "bookingGuestName": "Updated Booking Name", // ⭐ Can change booking name
+  "staffNotes": "Moved to larger table"
+}
+```
+
+#### DELETE /api/reservations/:id
+Cancel/delete a reservation.
+
+**Response:**
+```json
+{
+  "message": "Reservation deleted successfully"
+}
+```
+
+## Dashboard & Analytics
+
+#### GET /api/dashboard/stats
+Get restaurant performance statistics.
+
+**Query Parameters:**
+- `restaurantId`: Restaurant ID (required)
+
+**Response:**
+```json
+{
+  "todayReservations": 3,
+  "confirmedReservations": 2,
+  "pendingReservations": 1,
+  "totalGuests": 8
+}
+```
+
+#### GET /api/dashboard/upcoming
+Get upcoming reservations for the next few hours.
+
+**Query Parameters:**
+- `restaurantId`: Restaurant ID (required)
+- `hours`: Look-ahead hours (default: 3)
+
+**Response:**
+```json
+[
+  {
+    "id": 69,
+    "guestName": "Эрик", // Display name (booking_guest_name or guest.name)
+    "tableName": "5",
+    "time": "18:00",
+    "guests": 2,
+    "phone": "+7-912-345-6789",
+    "status": "confirmed"
+  }
+]
+```
+
+## Timeslot Management
+
+#### GET /api/timeslots/stats
+Get timeslot generation statistics.
+
+**Response:**
+```json
+{
+  "lastDate": "2025-05-22",
+  "totalCount": 1080
+}
+```
+
+#### POST /api/timeslots/generate
+Generate timeslots for upcoming days.
+
+**Request:**
+```json
+{
+  "daysAhead": 7
+}
+```
+
+**Response:**
+```json
+{
+  "generated": 168,
+  "message": "Generated 168 timeslots for 7 days"
+}
+```
+
+## AI Integration
+
+#### GET /api/ai/activities
+Get AI activity log for the restaurant.
+
+**Query Parameters:**
+- `restaurantId`: Restaurant ID (required)
+- `limit`: Number of activities to return (default: 10)
+
+**Response:**
+```json
+[
+  {
+    "id": 195,
+    "restaurantId": 1,
+    "type": "telegram_interaction",
+    "description": "Sofia handled booking request for Эрик (2 guests, 2025-05-26 18:00)",
+    "data": {
+      "guestName": "Эрик",
+      "guests": 2,
+      "date": "2025-05-26",
+      "time": "18:00",
+      "telegramUserId": "123456789"
+    },
+    "createdAt": "2025-01-20T15:30:00Z"
+  }
+]
+```
+
+#### POST /api/ai/activity
+Log new AI activity.
+
+**Request:**
+```json
+{
+  "type": "reservation_create",
+  "description": "AI created reservation for guest",
+  "data": {
+    "reservationId": 69,
+    "guestId": 55,
+    "automated": true
+  }
+}
+```
+
+## Integration Settings
+
+#### GET /api/integration/settings/:type
+Get integration settings for a specific type.
+
+**Parameters:**
+- `type`: Integration type (telegram, email, google, web_widget)
 
 **Response:**
 ```json
 {
   "id": 1,
+  "restaurantId": 1,
   "type": "telegram",
-  "isActive": true,
+  "enabled": true,
   "settings": {
-    "botToken": "****hidden****",
-    "webhookUrl": "https://api.telegram.org/bot****",
-    "features": ["booking", "cancellation", "status_check"]
+    "botUsername": "sofia_restaurant_bot",
+    "language": "ru",
+    "autoConfirm": false
+  }
+}
+```
+
+#### POST /api/integration/settings
+Save integration settings.
+
+**Request:**
+```json
+{
+  "type": "telegram",
+  "apiKey": "your_telegram_bot_token",
+  "enabled": true,
+  "settings": {
+    "language": "ru",
+    "autoConfirm": false,
+    "businessHours": true
+  }
+}
+```
+
+## WebSocket Events (Real-time Updates)
+
+The platform supports real-time updates via WebSocket connection at `/ws`.
+
+### Events Sent to Clients:
+- `reservation_created`: New reservation added
+- `reservation_updated`: Reservation modified
+- `reservation_deleted`: Reservation cancelled
+- `table_status_changed`: Table availability updated
+- `guest_updated`: Guest information modified
+
+### Event Format:
+```json
+{
+  "type": "reservation_created",
+  "data": {
+    "reservationId": 69,
+    "tableId": 5,
+    "guestName": "Эрик", // Display name with booking_guest_name support
+    "date": "2025-05-26",
+    "time": "18:00"
   },
-  "status": {
-    "connected": true,
-    "lastSync": "2025-05-23T12:00:00Z",
-    "messageCount": 1250
-  }
+  "timestamp": "2025-01-20T15:30:00Z"
 }
 ```
 
-### Update Telegram Integration
-```http
-POST /api/integrations/telegram
-Content-Type: application/json
+## Error Handling
 
-{
-  "botToken": "your-telegram-bot-token",
-  "features": ["booking", "cancellation", "status_check", "promotions"]
-}
-```
+All endpoints return appropriate HTTP status codes:
 
-### Get AI Activity Log
-```http
-GET /api/ai/activities?limit=50&type=booking_attempt
-```
+- `200`: Success
+- `201`: Created
+- `400`: Bad Request (validation errors)
+- `401`: Unauthorized (authentication required)
+- `403`: Forbidden (insufficient permissions)
+- `404`: Not Found
+- `500`: Internal Server Error
 
-**Response:**
-```json
-[
-  {
-    "id": 100,
-    "type": "booking_attempt",
-    "description": "Successful booking via Telegram",
-    "confidence": 0.92,
-    "processingTime": 1850,
-    "conversationId": "conv_12345",
-    "success": true,
-    "metadata": {
-      "guestSentiment": "positive",
-      "alternativesOffered": 2,
-      "bookingSource": "telegram"
-    },
-    "createdAt": "2025-05-23T11:45:00Z"
-  }
-]
-```
-
-## 📊 Analytics & Reporting
-
-### Get Reservation Statistics
-```http
-GET /api/analytics/reservations?period=week
-```
-
-**Response:**
+### Error Response Format:
 ```json
 {
-  "period": "week",
-  "startDate": "2025-05-17",
-  "endDate": "2025-05-23",
-  "stats": {
-    "totalReservations": 85,
-    "confirmedReservations": 72,
-    "cancelledReservations": 8,
-    "noShows": 5,
-    "averagePartySize": 3.2,
-    "totalGuests": 272,
-    "peakTime": "19:00",
-    "busiest_day": "Friday"
-  },
-  "conversionRate": 0.847,
-  "satisfactionScore": 4.3
-}
-```
-
-### Get AI Performance Metrics
-```http
-GET /api/analytics/ai-performance?period=month
-```
-
-**Response:**
-```json
-{
-  "period": "month",
-  "metrics": {
-    "totalConversations": 450,
-    "successfulBookings": 385,
-    "automationRate": 0.856,
-    "averageResponseTime": 1.8,
-    "userSatisfaction": 4.2,
-    "costPerConversation": 0.15,
-    "topIntents": [
-      { "intent": "make_reservation", "count": 320 },
-      { "intent": "check_availability", "count": 85 },
-      { "intent": "cancel_reservation", "count": 45 }
-    ]
-  }
-}
-```
-
-### Get Table Utilization
-```http
-GET /api/analytics/table-utilization?date=2025-05-23
-```
-
-**Response:**
-```json
-{
-  "date": "2025-05-23",
-  "tables": [
-    {
-      "tableId": 1,
-      "tableName": "Table 1",
-      "capacity": 4,
-      "reservations": 3,
-      "utilizationRate": 0.75,
-      "revenue": 285.50,
-      "averageServiceTime": 95
-    }
-  ],
-  "overall": {
-    "totalCapacity": 20,
-    "totalReservations": 12,
-    "utilizationRate": 0.68,
-    "totalRevenue": 1425.75
-  }
-}
-```
-
-## ⚡ Real-time Features
-
-### WebSocket Connection
-```javascript
-const socket = new WebSocket('wss://your-domain.replit.app/ws');
-
-socket.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  
-  switch(data.type) {
-    case 'reservation_created':
-      console.log('New reservation:', data.reservation);
-      break;
-    case 'table_status_changed':
-      console.log('Table status updated:', data.table);
-      break;
-    case 'ai_conversation_update':
-      console.log('AI conversation:', data.conversation);
-      break;
-  }
-};
-```
-
-### Real-time Events
-- `reservation_created`: New reservation made
-- `reservation_updated`: Reservation status changed
-- `reservation_cancelled`: Reservation cancelled
-- `table_status_changed`: Table availability changed
-- `ai_conversation_update`: AI conversation progress
-- `guest_arrived`: Guest checked in
-- `system_alert`: System notifications
-
-## 🔧 Error Handling
-
-### Standard Error Response Format
-```json
-{
-  "error": true,
-  "message": "Human-readable error message",
-  "code": "ERROR_CODE",
+  "error": "Validation failed",
+  "message": "Guest count exceeds table capacity",
   "details": {
-    "field": "Specific field error",
-    "validation": "Validation details"
-  },
-  "timestamp": "2025-05-23T12:00:00Z"
+    "field": "guests",
+    "value": 6,
+    "max": 4
+  }
 }
 ```
 
-## 📱 Sofia AI Telegram Integration
+## Advanced Features
 
-### Revolutionary AI Hostess Features
-**Sofia AI** represents a breakthrough in restaurant automation, delivering human-like conversations with exceptional performance:
+### Booking Guest Name System
+The API supports flexible guest name management:
 
-**Core Capabilities:**
-- **Frustration Detection & Recovery:** Recognizes when guests repeat information and responds with genuine apologies
-- **Advanced Context Preservation:** Never forgets conversation details across multiple messages
-- **Moscow Timezone Intelligence:** Accurate "today/tomorrow" processing for local business operations
-- **Real Availability Engine:** Uses authentic table data instead of mock suggestions
-- **90-Minute Dining Logic:** Realistic conflict detection with proper service duration
-- **Professional Personality:** Consistent Sofia character with emotional intelligence
+1. **Same Name Booking**: Omit `bookingGuestName` to use profile name
+2. **Different Name Booking**: Provide `bookingGuestName` for specific booking identity
+3. **Historical Preservation**: Each reservation maintains its original booking name
+4. **Display Logic**: Response includes both `bookingGuestName` (raw) and `guestName` (computed display name)
 
-**Performance Metrics:**
-- Response Time: 1.8 seconds average (faster than human responses)
-- Automation Rate: 85%+ for complete bookings (industry leading)
-- Loop Prevention: 95% reduction in repetitive conversation circles
-- Guest Satisfaction: 4.2/5 average rating
-- Cost Efficiency: $0.15 average per AI conversation
+### Real-time Synchronization
+- All data modifications trigger cache invalidation
+- WebSocket events notify connected clients immediately
+- Optimistic UI updates with server-side validation
+- Background sync ensures data consistency
 
-### Common Error Codes
-- `AUTHENTICATION_REQUIRED`: User not authenticated
-- `AUTHORIZATION_FAILED`: Insufficient permissions
-- `VALIDATION_ERROR`: Request data validation failed
-- `RESOURCE_NOT_FOUND`: Requested resource doesn't exist
-- `CONFLICT`: Resource conflict (e.g., double booking)
-- `RATE_LIMIT_EXCEEDED`: Too many requests
-- `AI_SERVICE_UNAVAILABLE`: OpenAI API temporarily unavailable
-- `DATABASE_ERROR`: Database operation failed
-- `AI_CONTEXT_OVERFLOW`: Conversation context too large
-- `TIMEZONE_ERROR`: Invalid timezone processing
+### Multi-language Support
+- Guest language preferences automatically detected
+- AI responses adapt to guest's preferred language
+- Restaurant configuration supports multiple languages
+- All user-facing text supports internationalization
 
-### Rate Limiting
-- **Standard endpoints:** 100 requests per minute per user
-- **AI endpoints:** 20 requests per minute per user
-- **Booking endpoints:** 10 reservations per minute per user
-
-## 🔐 Security
-
-### Authentication Headers
-```http
-Cookie: connect.sid=s%3A...
-```
-
-### CORS Policy
-- Allowed origins: Same domain only
-- Allowed methods: GET, POST, PUT, DELETE
-- Allowed headers: Content-Type, Authorization
-
-### Input Validation
-- All inputs sanitized and validated
-- SQL injection prevention
-- XSS protection
-- CSRF tokens for state-changing operations
-
-## 📝 API Usage Examples
-
-### Complete Booking Flow
-```javascript
-// 1. Check availability
-const availability = await fetch('/api/booking/availability?date=2025-05-23&time=19:00&guests=4');
-const availData = await availability.json();
-
-// 2. If not available, get alternatives
-if (!availData.available) {
-  const alternatives = await fetch('/api/booking/alternatives?date=2025-05-23&time=19:00&guests=4');
-  const altData = await alternatives.json();
-  // Show alternatives to user
-}
-
-// 3. Create reservation
-const reservation = await fetch('/api/booking/create', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    guestName: 'John Doe',
-    guestPhone: '+1234567890',
-    date: '2025-05-23',
-    time: '18:30', // Selected alternative
-    guests: 4,
-    source: 'web'
-  })
-});
-
-const resData = await reservation.json();
-console.log('Reservation confirmed:', resData.reservation.confirmationCode);
-```
-
----
-
-**API Status:** All endpoints are production-ready with comprehensive error handling, rate limiting, and security measures. The API supports both traditional REST operations and real-time features through WebSocket connections.
-
-**Support:** For API questions or issues, refer to the error codes and response formats above, or check the implementation in `server/routes.ts`.
+This API documentation covers the complete ToBeOut platform functionality including advanced guest name management, real-time updates, and AI integration features.
