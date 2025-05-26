@@ -27,12 +27,12 @@ export interface NameConflictDetails {
 }
 
 export interface ConversationFlow {
-  stage: 'greeting' | 'collecting' | 'confirming' | 'suggesting_alternatives' | 'completed' | 'frustrated_recovery' | 'awaiting_name_choice'; // <--- Новый стейт
+  stage: 'greeting' | 'collecting' | 'confirming' | 'suggesting_alternatives' | 'completed' | 'frustrated_recovery' | 'awaiting_name_choice'; 
   collectedInfo: {
     date?: string;
     time?: string;
     guests?: number;
-    name?: string; // Это имя используется для текущей попытки бронирования
+    name?: string; 
     phone?: string;
     special_requests?: string;
   };
@@ -41,7 +41,7 @@ export interface ConversationFlow {
   guestFrustrationLevel: number;
   responsesSent: number;
   currentLanguage: Language;
-  nameConflictDetails?: NameConflictDetails; // <--- Новое поле для деталей конфликта
+  nameConflictDetails?: NameConflictDetails; 
 }
 
 export interface AIAnalysisResult {
@@ -84,7 +84,7 @@ export interface ResponseFormatter {
   generateAvailabilityConfirmationMessage(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
   generateGreetingMessage(restaurantName: string): string;
 
-  createBookingSummary(collectedInfo: ConversationFlow['collectedInfo']): string;
+  createBookingSummary(collectedInfo: ConversationFlow['collectedInfo'], forConfirmation?: boolean): string; 
   getMissingFields(collectedInfo: ConversationFlow['collectedInfo']): string[];
   formatMissingFieldsText(missingFields: string[]): string;
   createSpecificRequestText(missingFields: string[]): string;
@@ -97,9 +97,9 @@ export interface ResponseFormatter {
 // --- Main Conversation Management Class ---
 
 export class ActiveConversation {
-  public flow: ConversationFlow; // Сделали публичным для доступа из telegram.ts, но используйте с осторожностью
+  public flow: ConversationFlow;
   private aiService: AIService;
-  public responseFormatter: ResponseFormatter; // Сделали публичным для доступа из telegram.ts
+  public responseFormatter: ResponseFormatter;
 
   constructor(
     aiService: AIService,
@@ -119,7 +119,7 @@ export class ActiveConversation {
       guestFrustrationLevel: 0,
       responsesSent: 0,
       currentLanguage: defaultLanguage,
-      nameConflictDetails: undefined, // Инициализируем новое поле
+      nameConflictDetails: undefined,
       ...existingFlow,
     };
     this.responseFormatter.setLanguage(this.flow.currentLanguage);
@@ -129,7 +129,6 @@ export class ActiveConversation {
     return { ...this.flow };
   }
 
-  // Методы для управления состоянием nameConflict
   public setAwaitingNameChoice(details: NameConflictDetails): void {
     this.flow.stage = 'awaiting_name_choice';
     this.flow.nameConflictDetails = details;
@@ -137,7 +136,6 @@ export class ActiveConversation {
   }
 
   public clearNameChoiceState(): void {
-    // Возвращаемся к сбору информации, так как после выбора имени может потребоваться еще что-то
     this.flow.stage = 'collecting'; 
     delete this.flow.nameConflictDetails;
     console.log('[ActiveConversation] Name choice state cleared. Stage set to collecting.');
@@ -181,13 +179,8 @@ export class ActiveConversation {
   }
 
   public async handleMessage(newMessage: string, restaurantName?: string): Promise<string> {
-    // Если мы ожидаем выбор имени через кнопки, а пользователь пишет текст,
-    // telegram.ts должен перехватить это и отправить напоминание.
-    // Здесь мы не будем обрабатывать сообщение через AI, если находимся в этом состоянии.
     if (this.flow.stage === 'awaiting_name_choice') {
         console.log('[ActiveConversation] In awaiting_name_choice stage. Text message ignored by AI processing. Awaiting button press.');
-        // Можно вернуть предыдущий ответ или специальное сообщение, но лучше, чтобы telegram.ts сам обработал это.
-        // Для безопасности, вернем предыдущий ответ, чтобы не было неожиданного поведения.
         return this.flow.lastResponse || this.responseFormatter.generateFriendlyResponse(this.flow, "Please use buttons.", {} as AIAnalysisResult);
     }
 
@@ -199,20 +192,27 @@ export class ActiveConversation {
     const aiResult = await this.aiService.analyzeMessage(newMessage, this.flow);
 
     if (aiResult.detectedLanguage && aiResult.detectedLanguage !== this.flow.currentLanguage) {
-        console.log(`[ActiveConversation] Language changed/detected by AI to: ${aiResult.detectedLanguage}`);
-        this.flow.currentLanguage = aiResult.detectedLanguage;
-        this.responseFormatter.setLanguage(this.flow.currentLanguage);
+        const isShortOrNumeric = newMessage.length < 5 || /^\d+$/.test(newMessage);
+        // Only switch if AI's detected language is different AND (it's not short/numeric OR it's early in conversation)
+        if (!isShortOrNumeric || (isShortOrNumeric && this.flow.responsesSent <= 2) ) {
+            console.log(`[ActiveConversation] Language changed/detected by AI from ${this.flow.currentLanguage} to: ${aiResult.detectedLanguage}`);
+            this.flow.currentLanguage = aiResult.detectedLanguage;
+            this.responseFormatter.setLanguage(this.flow.currentLanguage);
+        } else {
+            console.log(`[ActiveConversation] AI detected ${aiResult.detectedLanguage}, but sticking with ${this.flow.currentLanguage} due to short/numeric input ('${newMessage}') mid-conversation.`);
+        }
+    } else if (!aiResult.detectedLanguage) { 
+        if (/[\u0400-\u04FF]/.test(newMessage) && this.flow.currentLanguage !== 'ru') {
+            console.log(`[ActiveConversation] Cyrillic detected in user message, switching to Russian for response.`);
+            this.flow.currentLanguage = 'ru';
+            this.responseFormatter.setLanguage('ru');
+        } else if (!/[\u0400-\u04FF]/.test(newMessage) && this.flow.currentLanguage === 'ru' && !/^\d+$/.test(newMessage)) { 
+            console.log(`[ActiveConversation] Non-Cyrillic (and not purely numeric) detected in user message, switching back to English for response.`);
+            this.flow.currentLanguage = 'en';
+            this.responseFormatter.setLanguage('en');
+        }
     }
-    else if (!aiResult.detectedLanguage && /[\u0400-\u04FF]/.test(newMessage) && this.flow.currentLanguage !== 'ru') {
-        console.log(`[ActiveConversation] Cyrillic detected in user message, switching to Russian for response.`);
-        this.flow.currentLanguage = 'ru';
-        this.responseFormatter.setLanguage('ru');
-    }
-    else if (!aiResult.detectedLanguage && !/[\u0400-\u04FF]/.test(newMessage) && this.flow.currentLanguage === 'ru') {
-        console.log(`[ActiveConversation] Non-Cyrillic detected in user message, switching back to English for response.`);
-        this.flow.currentLanguage = 'en';
-        this.responseFormatter.setLanguage('en');
-    }
+
 
     this.updateCollectedInfo(aiResult.entities);
 
@@ -224,14 +224,16 @@ export class ActiveConversation {
     }
 
     let responseText = "";
-    const summary = this.responseFormatter.createBookingSummary(this.flow.collectedInfo);
+    const summaryForConfirmation = this.responseFormatter.createBookingSummary(this.flow.collectedInfo, true);
+    const summaryForCollection = this.responseFormatter.createBookingSummary(this.flow.collectedInfo, false);
+
     const missingFields = this.responseFormatter.getMissingFields(this.flow.collectedInfo);
     const missingFieldsText = this.responseFormatter.formatMissingFieldsText(missingFields);
 
     const currentRestaurantName = restaurantName || (this.flow.currentLanguage === 'ru' ? "Ваш Ресторан" : "Your Restaurant");
 
     if (this.flow.stage === 'frustrated_recovery') {
-      responseText = this.responseFormatter.generateApology(this.flow, summary, missingFieldsText);
+      responseText = this.responseFormatter.generateApology(this.flow, summaryForCollection, missingFieldsText);
       if (this.hasCompleteBookingInfo()) {
         this.flow.stage = 'confirming';
       } else {
@@ -240,14 +242,15 @@ export class ActiveConversation {
       if (aiResult.guest_sentiment !== 'frustrated') this.flow.guestFrustrationLevel = 0;
     } else if (this.hasCompleteBookingInfo() && aiResult.conversation_action !== 'show_alternatives') {
       this.flow.stage = 'confirming';
-      responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
+      responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summaryForConfirmation);
     } else {
       if (missingFields.length > 0) {
         this.flow.stage = 'collecting';
       }
 
       const lowerNewMessage = newMessage.toLowerCase();
-      const isGreeting = /^\s*(\/start|hello|hi|hey|привет|здравствуй|добрый день)\s*$/i.test(lowerNewMessage);
+      const isGreeting = /^\s*(\/start|hello|hi|hey|привет|здравствуй|добрый день|ку)\s*$/i.test(lowerNewMessage);
+
 
       if (this.flow.responsesSent === 1 && isGreeting) {
         this.flow.stage = 'greeting';
@@ -258,35 +261,35 @@ export class ActiveConversation {
           case 'collect_info':
             const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
             const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
-            responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
+            responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summaryForCollection, missingFieldsText, specificRequest, urgentRequest);
             break;
-          case 'ready_to_book':
+          case 'ready_to_book': 
             if (this.hasCompleteBookingInfo()) {
               this.flow.stage = 'confirming';
-              responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summary);
-            } else {
+              responseText = this.responseFormatter.generateBookingConfirmation(this.flow, summaryForConfirmation);
+            } else { 
               this.flow.stage = 'collecting';
               const specificRequest = this.responseFormatter.createSpecificRequestText(missingFields);
               const urgentRequest = this.responseFormatter.createUrgentRequestText(missingFields);
-              responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summary, missingFieldsText, specificRequest, urgentRequest);
+              responseText = this.responseFormatter.generateSmartInfoRequest(this.flow, summaryForCollection, missingFieldsText, specificRequest, urgentRequest);
             }
             break;
           case 'show_alternatives':
             this.flow.stage = 'suggesting_alternatives';
-            responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summary);
+            responseText = this.responseFormatter.generateAlternativeRequest(this.flow, summaryForCollection);
             break;
           case 'general_inquiry':
             responseText = this.responseFormatter.generateFriendlyResponse(this.flow, newMessage, aiResult);
             break;
           case 'reset_and_restart':
-            responseText = this.responseFormatter.generateResetResponse(this.flow, summary);
+            responseText = this.responseFormatter.generateResetResponse(this.flow, summaryForCollection);
             this.flow.collectedInfo = {};
             this.flow.guestFrustrationLevel = 0;
             this.flow.stage = 'greeting';
-            delete this.flow.nameConflictDetails; // Очищаем детали конфликта при рестарте
+            delete this.flow.nameConflictDetails;
             break;
           default:
-            responseText = this.responseFormatter.generateContextualResponse(this.flow, summary, missingFieldsText);
+            responseText = this.responseFormatter.generateContextualResponse(this.flow, summaryForCollection, missingFieldsText);
             break;
         }
       }
@@ -299,13 +302,13 @@ export class ActiveConversation {
   public shouldCheckAvailability(): { needsCheck: boolean; date?: string; guests?: number } {
     const { date, time, guests } = this.flow.collectedInfo;
     if (date && !time) {
-      return { needsCheck: true, date, guests: guests || 2 };
+      return { needsCheck: true, date, guests: guests || 2 }; 
     }
     return { needsCheck: false };
   }
 
   public handleAvailabilityResult(hasAvailability: boolean): string {
-    const summary = this.responseFormatter.createBookingSummary(this.flow.collectedInfo);
+    const summary = this.responseFormatter.createBookingSummary(this.flow.collectedInfo, false);
     const missingFields = this.responseFormatter.getMissingFields(this.flow.collectedInfo);
     const missingFieldsText = this.responseFormatter.formatMissingFieldsText(missingFields);
 
@@ -324,12 +327,13 @@ interface LocalizedStrings {
   tomorrow: string;
   onDate: (formattedDate: string) => string;
   atTime: (formattedTime: string) => string;
-  person: string;
-  people: string;
+  person: string; 
+  people_2_4: string; 
+  people_many: string; 
   guestsCount: (count: number) => string;
   phonePrefix: string;
   specialRequestsPrefix: string;
-  your: string;
+  your: string; 
   your_one: string;
   your_many: string;
   and: string;
@@ -341,60 +345,78 @@ interface LocalizedStrings {
     phone_number: string;
   };
   specificRequest: {
-    phoneNumber: string;
-    name: string;
-    date: string;
-    time: string;
-    partySize: string;
+    phoneNumber: string[]; // Array for variety
+    name: string[];
+    date: string[];
+    time: string[];
+    partySize: string[];
     default: (field: string) => string;
   };
   urgentRequest: {
-    phoneNumber: string;
-    name: string;
-    date: string;
-    time: string;
-    partySize: string;
+    phoneNumber: string[];
+    name: string[];
+    date: string[];
+    time: string[];
+    partySize: string[];
     default: (field: string) => string;
   };
   apologies: string[];
   confirmAllDetails: (summary: string) => string;
-  confirmNotedDetails: (summary: string, missingText: string) => string;
+  confirmNotedDetails: (summary: string, missingText: string) => string[]; // Array for variety
   askAgainForAllDetails: string;
   smartInfoRequest: {
-    initialWithSummary: (summary: string, missingText: string) => string;
-    initialWithoutSummary: string;
-    secondWithSummary: (summary: string, specificReq: string) => string;
-    secondWithoutSummary: string;
-    urgentWithSummary: (summary: string, urgentReq: string) => string;
-    urgentWithoutSummary: (missingText: string) => string;
+    initialWithSummary: (summary: string, missingText: string) => string[]; // Array for variety
+    initialWithoutSummary: string[]; // Array for variety
+    secondWithSummary: (summary: string, specificReq: string) => string[];
+    secondWithoutSummary: string[];
+    urgentWithSummary: (summary: string, urgentReq: string) => string[];
+    urgentWithoutSummary: (missingText: string) => string[];
   };
-  bookingConfirmation: (summary: string) => string;
+  bookingConfirmation: (summary: string) => string[]; // Array for variety
   alternativeRequest: (summary: string) => string;
   friendlyResponse: {
-    greeting: string;
-    thankYou: string;
-    default: string;
+    greeting: string[]; // Array for variety
+    thankYou: string[];
+    default: string[];
   };
   contextualResponse: {
-    withSummaryAndMissing: (summary: string, missingText: string) => string;
-    withSummaryComplete: (summary: string) => string;
-    withoutSummary: string;
+    withSummaryAndMissing: (summary: string, missingText: string) => string[];
+    withSummaryComplete: (summary: string) => string[];
+    withoutSummary: string[];
   };
   resetResponse: {
     withSummary: (summary: string) => string;
     withoutSummary: string;
   };
   noAvailabilityMessage: (displayDate: string) => string;
-  availabilityConfirmationMessage: (summary: string, missingText: string) => string;
-  greetingMessage: (restaurantName: string) => string;
+  availabilityConfirmationMessage: (summary: string, missingText: string) => string[]; // Array for variety
+  greetingMessage: (restaurantName: string) => string[]; // Array for variety
   smartAlternative: {
-    notFound: (name: string, time: string, guests: number, guestSuffix: string) => string;
-    found: (name: string, time: string, guests: number, guestSuffix: string, alternatives: string) => string;
-    tableCapacityFormat: (min: number, max: number) => string;
+        notFound: (name: string, time: string, guests: number, guestSuffix: string) => string;
+        found: (name: string, time: string, guests: number, guestSuffix: string, alternatives: string) => string;
+        tableCapacityFormat: (min: number, max: number) => string;
   };
   needToCompleteBooking_plural: (missingFieldsText: string) => string;
   needToCompleteBooking_singular: (missingFieldText: string) => string;
+  summaryConnectors: { 
+    forName: string;
+    forGuests: string; // Simplified for direct use
+    onDate: string;
+    atTime: string;
+    withPhoneShort: string; // Shorter phone connector
+    withRequests: string;
+    detailsSoFar: string[]; // Array for variety
+    isThatCorrect: string[]; // Array for variety
+    leadInToMissing: string[]; // Array for variety
+  }
 }
+
+// Helper function to pick a random string from an array
+function pickRandom(arr: string[]): string {
+    if (!arr || arr.length === 0) return "";
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
 
 const translations: Record<Language, LocalizedStrings> = {
   en: {
@@ -403,8 +425,9 @@ const translations: Record<Language, LocalizedStrings> = {
     onDate: (formattedDate) => `on ${formattedDate}`,
     atTime: (formattedTime) => `at ${formattedTime}`,
     person: "person",
-    people: "people",
-    guestsCount: (count) => `${count} ${count === 1 ? "person" : "people"}`,
+    people_2_4: "people", 
+    people_many: "people",
+    guestsCount: (count) => `${count} ${count === 1 ? translations.en.person : translations.en.people_many}`,
     phonePrefix: "📞",
     specialRequestsPrefix: "with special requests:",
     your: "your",
@@ -412,27 +435,27 @@ const translations: Record<Language, LocalizedStrings> = {
     your_many: "your",
     and: "and",
     missing: {
-      date: "date",
-      time: "time",
-      party_size: "party size",
-      name: "name",
-      phone_number: "phone number",
+      date: "the date",
+      time: "the time",
+      party_size: "the number of guests",
+      name: "a name for the booking",
+      phone_number: "a contact phone number",
     },
     specificRequest: {
-      phoneNumber: "What's the best phone number to reach you at?",
-      name: "What name should I put the reservation under?",
-      date: "What date would you like to visit us?",
-      time: "What time works best for you?",
-      partySize: "How many people will be joining you?",
-      default: (field) => `I just need your ${field}!`,
+      phoneNumber: ["And what's the best phone number to reach you at?", "Could I get a phone number for the reservation, please?"],
+      name: ["Great, and under what name should I make the reservation?", "Perfect! What name shall I use for the booking?"],
+      date: ["Which date were you thinking of?", "What date would you like to come in?"],
+      time: ["Perfect! What time works best for you?", "And what time were you considering?"],
+      partySize: ["Got it. And how many people will be joining?", "Understood. How many guests will that be?"],
+      default: (field) => `I just need ${field} to continue!`,
     },
     urgentRequest: {
-      phoneNumber: "Last thing - your phone number and we're all set!",
-      name: "Just need a name for the reservation!",
-      date: "Which date would you prefer?",
-      time: "What time should I book for you?",
-      partySize: "How many guests total?",
-      default: (field) => `Just need your ${field} and we're done!`,
+      phoneNumber: ["Last thing - your phone number, and we'll be all set!", "Just your phone number now, and we're good to go!"],
+      name: ["Nearly there! Just a name for the reservation, please.", "Almost done! What name should I use?"],
+      date: ["Which date would you prefer?", "Just need the date now."],
+      time: ["What time should I book for you?", "And the time?"],
+      partySize: ["And how many guests in total?", "How many people for the table?"],
+      default: (field) => `Just need ${field}, and we're done!`,
     },
     apologies: [
       "I sincerely apologize for the confusion! You're absolutely right.",
@@ -441,36 +464,71 @@ const translations: Record<Language, LocalizedStrings> = {
       "I'm sorry for the mix-up. I'll use the information you've already provided.",
       "My mistake! I'll make sure to keep track of that. Thanks for your patience."
     ],
-    confirmAllDetails: (summary) => `I confirm I have all your details: ${summary}.\n\nLet me check availability and confirm your reservation right away! 🙏✨`,
-    confirmNotedDetails: (summary, missingText) => `I have noted: ${summary}.\n\nI just need ${missingText} to complete your reservation! 🙏`,
-    askAgainForAllDetails: "Let's get this right. Could you please share your reservation details again: date, time, party size, and your name? I'll pay close attention! �🙏",
+    confirmAllDetails: (summary) => `Okay, great! So that's: ${summary}. Let me check availability and confirm that for you right away! 🙏✨`,
+    confirmNotedDetails: (summary, missingText) => [
+        `Alright, I have: ${summary}. I just need ${missingText} to complete your reservation! 🙏`,
+        `Okay, so far: ${summary}. Just need ${missingText} and we'll be set! 👍`,
+        `Got it: ${summary}. Could you also provide ${missingText}, please? 😊`
+    ],
+    askAgainForAllDetails: "Let's get this right. Could you please share your reservation details again: date, time, party size, and your name? I'll pay close attention! 😊🙏",
     smartInfoRequest: {
-      initialWithSummary: (summary, missingText) => `Excellent! I can help you with ${summary}.\n\n${missingText} ✨`,
-      initialWithoutSummary: "I'd love to help you with a reservation! What details can you share - date, time, party size, and your name? 😊",
-      secondWithSummary: (summary, specificReq) => `Great! I have ${summary}.\n\n${specificReq} 🎯`,
-      secondWithoutSummary: "Wonderful! What information can you provide for your booking?",
-      urgentWithSummary: (summary, urgentReq) => `Excellent! I have ${summary}.\n\n${urgentReq} 🎯`,
-      urgentWithoutSummary: (missingText) => `Almost there! ${missingText}`,
+      initialWithSummary: (summary, missingText) => [
+          `Excellent! So, ${summary}. ${missingText} ✨`,
+          `Great, I have ${summary}. Now, ${missingText} 😊`
+      ],
+      initialWithoutSummary: [
+          "I'd love to help you with a reservation! When were you thinking of visiting, for how many people, and at what time? And what name should I use for the booking? 😊",
+          "Happy to assist with your booking! Could you tell me the date, time, number of guests, and a name for the reservation, please? ✨"
+      ],
+      secondWithSummary: (summary, specificReq) => [
+          `Great! So, ${summary}. ${specificReq} 🎯`,
+          `Okay, I've got: ${summary}. Next, ${specificReq} 👍`
+      ],
+      secondWithoutSummary: ["Wonderful! What information can you provide for your booking?", "Perfect! What are the details for your reservation?"],
+      urgentWithSummary: (summary, urgentReq) => [
+          `Excellent! So, ${summary}. ${urgentReq} 🎯`,
+          `Perfect, ${summary}. Lastly, ${urgentReq} ✨`
+      ],
+      urgentWithoutSummary: (missingText) => [
+          `Almost there! ${missingText}`,
+          `Just a couple more things! ${missingText}`
+      ],
     },
-    bookingConfirmation: (summary) => `Perfect! I have everything: ${summary}.\n\nI'll now check availability and confirm your reservation. One moment, please! 🎉`,
-    alternativeRequest: (summary) => `Understood. You're looking for ${summary}.\n\nLet me check for some excellent alternative times for you right now! 🔍`,
+    bookingConfirmation: (summary) => [
+        `Perfect! So, to confirm: ${summary}. I'll now check availability and confirm your reservation. One moment, please! 🎉`,
+        `Excellent! Just to double-check: ${summary}. Let me see if that's available... ⏳`,
+        `All set with the details: ${summary}. I'll just confirm this with our system now. ✨`
+    ],
+    alternativeRequest: (summary) => `Understood. You're looking for ${summary}. Let me check for some excellent alternative times for you right now! 🔍`,
     friendlyResponse: {
-      greeting: "Hello there! I'm here to help you with restaurant reservations. What can I do for you today? ?",
-      thankYou: "You're very welcome! Is there anything else I can assist you with today? 😊",
-      default: "I'd be happy to help you with a reservation! What date, time, and party size are you considering? 😊",
+      greeting: ["Hello there! How can I help you with a reservation today? 😊", "Hi! I'm here to help you book a table. What did you have in mind?"],
+      thankYou: ["You're very welcome! Is there anything else I can assist you with today? 😊", "Happy to help! Let me know if there's anything else. 👍"],
+      default: ["I'd be happy to help you with a reservation! What date, time, and party size are you considering? 😊", "Sure, I can help with that! What are the details for your booking?"],
     },
     contextualResponse: {
-      withSummaryAndMissing: (summary, missingText) => `Thank you! I have these details so far: ${summary}. ${missingText} ✨`,
-      withSummaryComplete: (summary) => `Perfect! I have everything: ${summary}.\n\nI'll now check availability and confirm your reservation. One moment, please! 🎉`,
-      withoutSummary: "I'm ready to help with your reservation! What information can you share with me? 😊",
+      withSummaryAndMissing: (summary, missingText) => [
+          `Thank you! So far, we have: ${summary}. ${missingText} ✨`,
+          `Okay, got it: ${summary}. Now, ${missingText} 👍`
+      ],
+      withSummaryComplete: (summary) => [
+          `Perfect! So, to confirm: ${summary}. I'll now check availability and confirm your reservation. One moment, please! 🎉`,
+          `Great, all details noted: ${summary}. Let me just check that for you. ⏳`
+      ],
+      withoutSummary: ["I'm ready to help with your reservation! What information can you share with me? 😊", "Sure! What are the details for your booking?"],
     },
     resetResponse: {
-      withSummary: (summary) => `Okay, let's start fresh. So far, I understand: ${summary}.\n\nWhat other details can you provide for your reservation, or what would you like to change? 🔄`,
+      withSummary: (summary) => `Okay, let's start fresh. So far, I understand: ${summary}. What other details can you provide for your reservation, or what would you like to change? 🔄`,
       withoutSummary: "Alright, let's begin anew to make sure I get everything perfect for you. Could you please tell me:\n- The date you'd like to visit\n- Your preferred time\n- The number of people in your party\n- And the name for the reservation?\n\nI'll make sure to get it right this time! 🔄😊",
     },
-    noAvailabilityMessage: (displayDate) => `I'm sorry, but we're fully booked ${displayDate}. 😔\n\nWould you like me to check availability for a different date? I'd be happy to help you find another time that works perfectly for you! 📅✨`,
-    availabilityConfirmationMessage: (summary, missingText) => `Excellent! I have tables available ${summary}! 🎉\n\n${missingText} ✨`,
-    greetingMessage: (restaurantName) => `🌟 Hello! Welcome to ${restaurantName}! I'm Sofia, and I'm absolutely delighted to help you secure the perfect table! ✨\n\nI can assist you with making a reservation right now. Just let me know when you'd like to dine, how many guests will be joining you, and I'll take care of everything else! 🥂\n\nWhat sounds good to you?`,
+    noAvailabilityMessage: (displayDate) => `I'm sorry, but we're fully booked ${displayDate}. 😔 Would you like me to check availability for a different date? I'd be happy to help you find another time that works perfectly for you! 📅✨`,
+    availabilityConfirmationMessage: (summary, missingText) => [ // summary is for date, missingText is for time
+        `Excellent! We have tables available ${summary}! 🎉 ${missingText} ✨`,
+        `Good news! ${summary} looks good for availability. ${missingText} 😊`
+    ],
+    greetingMessage: (restaurantName) => [
+        `🌟 Hello! Welcome to ${restaurantName}! I'm Sofia, and I'm delighted to help you find the perfect table! ✨\n\nTo get started, could you let me know when you'd like to visit, for how many guests, and your preferred time? 🥂`,
+        `Hi there! Thanks for contacting ${restaurantName}. I'm Sofia, ready to assist with your booking! What date, time, and party size are you thinking of? 😊`
+    ],
     smartAlternative: {
         notFound: (name, time, guests, guestSuffix) => `I'm sorry ${name}, but we seem to be fully booked around ${time} for ${guests} ${guestSuffix}. Would you like to try a different date, or perhaps I can check for a different number of guests? 📅`,
         found: (name, time, guests, guestSuffix, alternatives) => `I'm sorry ${name}, but ${time} is unfortunately not available for ${guests} ${guestSuffix}. 😔\n\nHowever, I found these other options that might work for you:\n\n${alternatives}\n\nWould you like to book one of these? Please tell me the number. Alternatively, we can explore other dates or times! 🎯`,
@@ -478,22 +536,35 @@ const translations: Record<Language, LocalizedStrings> = {
     },
     needToCompleteBooking_plural: (missingFieldsText) => `To complete your booking, please provide: ${missingFieldsText}.`,
     needToCompleteBooking_singular: (missingFieldText) => `To complete your booking, I just need ${missingFieldText}.`,
+    summaryConnectors: { // For constructing natural summaries
+        forName: "for ", // e.g. "for Peter"
+        forGuests: " for ", // e.g. "for 5 guests"
+        onDate: " on ", // e.g. "on May 26th"
+        atTime: " at ", // e.g. "at 3:00 PM"
+        withPhoneShort: ", 📞 ", // e.g. ", 📞 (123) 456-7890"
+        withRequests: ", with special requests: ",
+        detailsSoFar: ["Okay, so the details I have are: ", "Alright, so far I've got: ", "Let me confirm what I have: "],
+        isThatCorrect: ["Is that all correct?", "Does that look right?", "Is everything correct there?"],
+        leadInToMissing: ["Great, I just need ", "Okay, could you also provide ", "Perfect, now I just need "]
+    }
   },
   ru: {
     today: "сегодня",
     tomorrow: "завтра",
     onDate: (formattedDate) => `на ${formattedDate}`,
     atTime: (formattedTime) => `в ${formattedTime}`,
-    person: "человек",
-    people: "человек",
+    person: "гость",
+    people_2_4: "гостя",
+    people_many: "гостей",
     guestsCount: (count) => {
-        if (count === 1) return `${count} человек`;
-        if (count >= 2 && count <= 4) return `${count} человека`;
-        return `${count} человек`;
+        if (count === 1) return `${count} ${translations.ru.person}`;
+        if (count % 10 === 1 && count % 100 !== 11) return `${count} ${translations.ru.person}`;
+        if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) return `${count} ${translations.ru.people_2_4}`;
+        return `${count} ${translations.ru.people_many}`;
     },
     phonePrefix: "📞",
-    specialRequestsPrefix: "с особыми пожеланиями:",
-    your: "ваши",
+    specialRequestsPrefix: "особые пожелания:",
+    your: "ваши", 
     your_one: "ваше",
     your_many: "ваши",
     and: "и",
@@ -501,23 +572,23 @@ const translations: Record<Language, LocalizedStrings> = {
       date: "дату",
       time: "время",
       party_size: "количество гостей",
-      name: "имя",
-      phone_number: "номер телефона",
+      name: "имя для бронирования",
+      phone_number: "контактный номер телефона",
     },
     specificRequest: {
-      phoneNumber: "Какой номер телефона использовать для связи?",
-      name: "На какое имя оформить бронирование?",
-      date: "На какую дату вы хотели бы прийти?",
-      time: "Какое время вам подходит?",
-      partySize: "Сколько вас будет человек?",
+      phoneNumber: ["Отлично! И какой номер телефона для связи мы можем использовать?", "Хорошо, подскажите ваш контактный номер, пожалуйста."],
+      name: ["Хорошо! А на какое имя оформить бронирование?", "Замечательно! На чье имя будет бронь?"],
+      date: ["На какую дату вы хотели бы прийти?", "Подскажите, пожалуйста, дату визита."],
+      time: ["Прекрасно! Какое время вам подходит?", "И на какое время вас записать?"],
+      partySize: ["Поняла. И сколько вас будет человек?", "Хорошо, сколько гостей ожидать?"],
       default: (field) => `Уточните, пожалуйста, ${field}.`,
     },
     urgentRequest: {
-      phoneNumber: "Осталось только уточнить ваш номер телефона!",
-      name: "Пожалуйста, укажите имя для бронирования.",
-      date: "Уточните, пожалуйста, желаемую дату.",
-      time: "Какое время вам будет удобно?",
-      partySize: "Сколько всего будет гостей?",
+      phoneNumber: ["Осталось только уточнить ваш номер телефона, и всё будет готово!", "И ваш номер телефона, пожалуйста, для завершения."],
+      name: ["Почти всё! Пожалуйста, укажите имя для бронирования.", "Осталось имя, и всё!"],
+      date: ["Уточните, пожалуйста, желаемую дату.", "И дату, пожалуйста."],
+      time: ["Какое время вам будет удобно?", "На какое время?"],
+      partySize: ["Сколько всего будет гостей?", "И сколько человек?"],
       default: (field) => `Пожалуйста, укажите ${field}, и мы почти закончили!`,
     },
     apologies: [
@@ -527,43 +598,89 @@ const translations: Record<Language, LocalizedStrings> = {
       "Извините за путаницу. Я буду использовать уже предоставленную вами информацию.",
       "Моя ошибка! Я обязательно учту это. Спасибо за ваше терпение."
     ],
-    confirmAllDetails: (summary) => `Подтверждаю, у меня есть все ваши данные: ${summary}.\n\nСейчас я проверю наличие мест и сразу подтвержу ваше бронирование! 🙏✨`,
-    confirmNotedDetails: (summary, missingText) => `Я записала: ${summary}.\n\n${missingText} 🙏`,
+    confirmAllDetails: (summary) => `Отлично! Итак: ${summary}. Позвольте, я проверю наличие мест и сразу всё подтвержу! 🙏✨`,
+    confirmNotedDetails: (summary, missingText) => [
+        `Хорошо, я записала: ${summary}. Мне нужно только ${missingText}, чтобы завершить бронирование! 🙏`,
+        `Так, у меня есть: ${summary}. Осталось ${missingText}, и готово! 👍`,
+        `Принято: ${summary}. Не хватает только ${missingText}. 😊`
+    ],
     askAgainForAllDetails: "Давайте все уточним. Не могли бы вы еще раз сообщить детали вашего бронирования: дату, время, количество гостей и ваше имя? Я буду очень внимательна! 😊🙏",
     smartInfoRequest: {
-      initialWithSummary: (summary, missingText) => `Отлично! У меня есть: ${summary}.\n\n${missingText} ✨`,
-      initialWithoutSummary: "Я с удовольствием помогу вам с бронированием! Какие детали вы можете сообщить: дату, время, количество гостей и ваше имя? 😊",
-      secondWithSummary: (summary, specificReq) => `Замечательно! У меня есть ${summary}.\n\n${specificReq} 🎯`,
-      secondWithoutSummary: "Прекрасно! Какую информацию вы можете предоставить для вашего бронирования?",
-      urgentWithSummary: (summary, urgentReq) => `Отлично! У меня есть ${summary}.\n\n${urgentReq} 🎯`,
-      urgentWithoutSummary: (missingText) => `Почти готово! ${missingText}`,
+      initialWithSummary: (summary, missingText) => [
+          `Замечательно! ${pickRandom(translations.ru.summaryConnectors.detailsSoFar)}${summary}. ${pickRandom(translations.ru.summaryConnectors.leadInToMissing)}${missingText}. ✨`,
+          `Отлично, ${summary}. ${pickRandom(translations.ru.summaryConnectors.leadInToMissing)}${missingText}. 😊`
+      ],
+      initialWithoutSummary: [
+          "С удовольствием помогу вам с бронированием! Когда бы вы хотели прийти, на сколько человек и на какое время? И на какое имя сделать бронь? 😊",
+          "Рада помочь с бронью! Подскажите, пожалуйста, дату, время, количество гостей и имя для заказа. ✨"
+      ],
+      secondWithSummary: (summary, specificReq) => [
+          `Отлично! ${pickRandom(translations.ru.summaryConnectors.detailsSoFar)}${summary}. ${specificReq} 🎯`,
+          `Хорошо, записала: ${summary}. Теперь ${specificReq} 👍`
+      ],
+      secondWithoutSummary: ["Прекрасно! Какую информацию вы можете предоставить для вашего бронирования?", "Замечательно! Какие детали для вашего заказа?"],
+      urgentWithSummary: (summary, urgentReq) => [
+          `Замечательно! ${pickRandom(translations.ru.summaryConnectors.detailsSoFar)}${summary}. ${urgentReq} 🎯`,
+          `Отлично, ${summary}. И последнее: ${urgentReq} ✨`
+      ],
+      urgentWithoutSummary: (missingText) => [
+          `Почти готово! ${missingText}`,
+          `Еще немного, и всё! ${missingText}`
+      ],
     },
-    bookingConfirmation: (summary) => `Идеально! У меня есть всё: ${summary}.\n\nСейчас я проверю наличие мест и подтвержу ваше бронирование. Одну минутку, пожалуйста! 🎉`,
-    alternativeRequest: (summary) => `Поняла. Вы ищете ${summary}.\n\nСейчас я проверю для вас несколько отличных альтернативных вариантов времени! 🔍`,
+    bookingConfirmation: (summary) => [
+        `Идеально! Итак, подтверждаю: ${summary}. Сейчас я проверю наличие мест и подтвержу ваше бронирование. Одну минутку, пожалуйста! �`,
+        `Отлично! Давайте сверим: ${summary}. Проверяю доступность... ⏳`,
+        `Все детали записаны: ${summary}. Сейчас всё подтвержу с нашей системой. ✨`
+    ],
+    alternativeRequest: (summary) => `Поняла. Вы ищете ${summary}. Сейчас я проверю для вас несколько отличных альтернативных вариантов времени! 🔍`,
     friendlyResponse: {
-      greeting: "Здравствуйте! Я здесь, чтобы помочь вам с бронированием столика в ресторане. Чем могу быть полезна сегодня? 😊",
-      thankYou: "Пожалуйста! Могу ли я еще чем-нибудь помочь вам сегодня? 😊",
-      default: "Я с удовольствием помогу вам с бронированием! Какую дату, время и количество гостей вы рассматриваете? 😊",
+      greeting: ["Здравствуйте! Чем могу помочь вам с бронированием сегодня? 😊", "Добрый день! Готова помочь вам забронировать столик. Что бы вы хотели?"],
+      thankYou: ["Пожалуйста! Могу ли я еще чем-нибудь помочь вам сегодня? 😊", "Рада помочь! Обращайтесь, если что-то еще понадобится. 👍"],
+      default: ["Я с удовольствием помогу вам с бронированием! Какую дату, время и количество гостей вы рассматриваете? 😊", "Конечно, помогу! Какие у вас пожелания по дате, времени и числу гостей?"],
     },
     contextualResponse: {
-      withSummaryAndMissing: (summary, missingText) => `Спасибо! У меня есть следующие данные: ${summary}. ${missingText} ✨`,
-      withSummaryComplete: (summary) => `Идеально! У меня есть всё: ${summary}.\n\nСейчас я проверю наличие мест и подтвержу ваше бронирование. Одну минутку, пожалуйста! 🎉`,
-      withoutSummary: "Я готова помочь с вашим бронированием! Какую информацию вы можете мне сообщить? 😊",
+      withSummaryAndMissing: (summary, missingText) => [
+          `Спасибо! ${pickRandom(translations.ru.summaryConnectors.detailsSoFar)}${summary}. ${pickRandom(translations.ru.summaryConnectors.leadInToMissing)}${missingText}. ✨`,
+          `Хорошо, поняла: ${summary}. ${pickRandom(translations.ru.summaryConnectors.leadInToMissing)}${missingText}. 👍`
+      ],
+      withSummaryComplete: (summary) =>[
+          `Идеально! ${pickRandom(translations.ru.summaryConnectors.detailsSoFar)}${summary}. ${pickRandom(translations.ru.summaryConnectors.isThatCorrect)} Сейчас я проверю наличие мест и подтвержу ваше бронирование. Одну минутку, пожалуйста! 🎉`,
+          `Отлично, все детали есть: ${summary}. ${pickRandom(translations.ru.summaryConnectors.isThatCorrect)} Проверяю... ⏳`
+      ],
+      withoutSummary: ["Я готова помочь с вашим бронированием! Какую информацию вы можете мне сообщить? 😊", "Конечно! Какие детали для вашего заказа?"],
     },
     resetResponse: {
-      withSummary: (summary) => `Хорошо, давайте начнем сначала. Насколько я понимаю: ${summary}.\n\nКакие еще детали вы можете предоставить для вашего бронирования, или что бы вы хотели изменить? 🔄`,
+      withSummary: (summary) => `Хорошо, давайте начнем сначала. Насколько я понимаю: ${summary}. Какие еще детали вы можете предоставить для вашего бронирования, или что бы вы хотели изменить? 🔄`,
       withoutSummary: "Хорошо, давайте начнем заново, чтобы я все сделала идеально для вас. Не могли бы вы сказать мне:\n- Дату, когда вы хотели бы прийти\n- Предпочтительное время\n- Количество человек в вашей компании\n- И имя для бронирования?\n\nЯ постараюсь все сделать правильно на этот раз! 🔄😊",
     },
-    noAvailabilityMessage: (displayDate) => `К сожалению, ${displayDate} у нас все занято. 😔\n\nХотите, я проверю наличие мест на другую дату? Я с удовольствием помогу вам найти другое время, которое идеально вам подойдет! 📅✨`,
-    availabilityConfirmationMessage: (summary, missingText) => `Отлично! У нас есть свободные столики ${summary}! 🎉\n\n${missingText} ✨`,
-    greetingMessage: (restaurantName) => `🌟 Здравствуйте! Добро пожаловать в ${restaurantName}! Я София, и я очень рада помочь вам забронировать идеальный столик! ✨\n\nЯ могу помочь вам сделать бронирование прямо сейчас. Просто дайте мне знать, когда вы хотели бы поужинать, сколько гостей будет с вами, и я позабочусь обо всем остальном! 🥂\n\nЧто вам подходит?`,
+    noAvailabilityMessage: (displayDate) => `К сожалению, ${displayDate} у нас все занято. 😔 Хотите, я проверю наличие мест на другую дату? Я с удовольствием помогу вам найти другое время, которое идеально вам подойдет! 📅✨`,
+    availabilityConfirmationMessage: (summary, missingText) => [ // summary is for date, missingText is for time
+        `Отлично! У нас есть свободные столики ${summary}! 🎉 ${missingText} ✨`,
+        `Хорошие новости! ${summary} выглядит свободным. ${missingText} 😊`
+    ],
+    greetingMessage: (restaurantName) => [
+        `🌟 Здравствуйте! Добро пожаловать в ${restaurantName}! Я София, и я очень рада помочь вам забронировать идеальный столик! ✨\n\nЧтобы начать, скажите, пожалуйста, когда вы хотели бы нас посетить, сколько будет гостей и какое время предпочитаете? 🥂`,
+        `Добрый день! Это ${restaurantName}. Я София, помогу вам с бронированием. На какое число, время и сколько человек вы планируете? 😊`
+    ],
     smartAlternative: {
         notFound: (name, time, guests, guestSuffix) => `Извините, ${name}, но, похоже, у нас все занято около ${time} для ${guests} ${guestSuffix}. Хотите попробовать другую дату, или, возможно, я могу проверить на другое количество гостей? 📅`,
         found: (name, time, guests, guestSuffix, alternatives) => `Извините, ${name}, но ${time}, к сожалению, недоступно для ${guests} ${guestSuffix}. 😔\n\nОднако, я нашла эти другие варианты, которые могут вам подойти:\n\n${alternatives}\n\nХотите забронировать один из этих вариантов? Пожалуйста, сообщите мне номер. Или мы можем рассмотреть другие даты или время! 🎯`,
         tableCapacityFormat: (min, max) => `(на ${min}-${max} гостей)`,
     },
-    needToCompleteBooking_plural: (missingFieldsText) => `Для завершения бронирования, пожалуйста, уточните: ${missingFieldsText}.`,
-    needToCompleteBooking_singular: (missingFieldText) => `Для завершения бронирования, пожалуйста, уточните ${missingFieldText}.`,
+    needToCompleteBooking_plural: (missingFieldsText) => `Чтобы завершить бронирование, пожалуйста, уточните: ${missingFieldsText}.`,
+    needToCompleteBooking_singular: (missingFieldText) => `Чтобы завершить бронирование, пожалуйста, уточните ${missingFieldText}.`,
+    summaryConnectors: { 
+        forName: "для ", 
+        forGuests: " для ",
+        onDate: " на ",
+        atTime: " в ",
+        withPhoneShort: ", тел. ", 
+        withRequests: ", особые пожелания: ",
+        detailsSoFar: ["Итак, информация, которую я записала: ", "Хорошо, давайте сверим: ", "Так, у меня есть следующие данные: "],
+        isThatCorrect: ["Всё верно?", "Правильно я поняла?", "Это корректно?"],
+        leadInToMissing: ["Теперь мне нужно ", "Осталось уточнить ", "Подскажите еще, пожалуйста, "]
+    }
   },
 };
 
@@ -615,16 +732,25 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     if (this.currentLang === 'ru') {
         if (cleaned.length === 11 && (cleaned.startsWith('7') || cleaned.startsWith('8'))) {
           return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
-        } else if (cleaned.length === 10) {
+        } else if (cleaned.length === 10 && !cleaned.startsWith('7') && !cleaned.startsWith('8')) { 
           return `8 (${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6, 8)}-${cleaned.slice(8)}`;
+        } else if (cleaned.length === 10 && (cleaned.startsWith('7') || cleaned.startsWith('8'))) { 
+             return `+${cleaned.charAt(0)} (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7,9)}-${cleaned.slice(9)}`;
         }
     }
-    if (cleaned.length === 11 && (cleaned.startsWith('1') || cleaned.startsWith('7') || cleaned.startsWith('8'))) {
-      return `+${cleaned.charAt(0)} (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
-    } else if (cleaned.length === 10) {
-      return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+    if (cleaned.length === 11 && cleaned.startsWith('1')) { 
+      return `+1 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
     }
-    return cleaned;
+    if (cleaned.length > 7) {
+        let formatted = '';
+        if (cleaned.startsWith('+')) {
+            formatted = '+' + cleaned.substring(1, 4) + ' ' + cleaned.substring(4, 7) + ' ' + cleaned.substring(7);
+        } else {
+            formatted = cleaned.substring(0, 3) + ' ' + cleaned.substring(3, 6) + ' ' + cleaned.substring(6);
+        }
+        return formatted.trim();
+    }
+    return cleaned; 
   }
 
   public formatDateForDisplay(dateInput?: string): string {
@@ -634,9 +760,9 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     if (dateInput === moscowDates.tomorrow) return this.strings.tomorrow;
     try {
       const [year, month, day] = dateInput.split('-').map(Number);
-      const dateObj = new Date(Date.UTC(year, month - 1, day));
+      const dateObj = new Date(Date.UTC(year, month - 1, day)); 
       const options: Intl.DateTimeFormatOptions = {
-        weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow',
+        weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow', 
       };
       return dateObj.toLocaleDateString(this.currentLang === 'ru' ? 'ru-RU' : 'en-US', options);
     } catch (e) {
@@ -645,16 +771,61 @@ export class DefaultResponseFormatter implements ResponseFormatter {
     }
   }
 
-  createBookingSummary(info: ConversationFlow['collectedInfo']): string {
-    const parts = [];
-    if (info.name) parts.push(info.name);
-    if (info.guests) parts.push(this.strings.guestsCount(info.guests));
-    if (info.date) parts.push(this.strings.onDate(this.formatDateForDisplay(info.date)));
-    if (info.time) parts.push(this.strings.atTime(this.formatTimeForDisplay(info.time)));
-    if (info.phone) parts.push(`(${this.strings.phonePrefix} ${this.formatPhoneNumber(info.phone)})`);
-    if (info.special_requests) parts.push(`${this.strings.specialRequestsPrefix} "${info.special_requests}"`);
-    return parts.length > 0 ? parts.join(', ') : '';
-  }
+  createBookingSummary(info: ConversationFlow['collectedInfo'], forConfirmation: boolean = false): string {
+    const parts: string[] = [];
+    const s = this.strings.summaryConnectors;
+
+    let namePart = info.name ? `${s.forName}'${info.name}'` : "";
+    let guestsPart = info.guests ? `${s.forGuests}${this.strings.guestsCount(info.guests)}` : "";
+    let datePart = info.date ? `${s.onDate}${this.formatDateForDisplay(info.date)}` : "";
+    let timePart = info.time ? `${s.atTime}${this.formatTimeForDisplay(info.time)}` : "";
+    let phonePart = info.phone ? `${s.withPhoneShort}${this.formatPhoneNumber(info.phone)}` : "";
+    let requestsPart = info.special_requests ? `${s.withRequests}"${info.special_requests}"` : "";
+
+    if (forConfirmation) {
+        if (namePart) parts.push(namePart);
+        if (guestsPart) parts.push(guestsPart.replace(s.forGuests, "")); // Avoid double "for"
+        if (datePart) parts.push(datePart.replace(s.onDate, this.strings.onDate("").trim())); // Use "on" from LocalizedStrings
+        if (timePart) parts.push(timePart.replace(s.atTime, this.strings.atTime("").trim())); // Use "at" from LocalizedStrings
+        if (phonePart) parts.push(phonePart.replace(s.withPhoneShort, `, ${this.strings.phonePrefix} `));
+        if (requestsPart) parts.push(requestsPart);
+
+        let finalSummary = parts.join(', ');
+        // Polish Russian sentence structure for confirmation
+        if (this.currentLang === 'ru' && info.name && info.guests && info.date && info.time) {
+            finalSummary = `${s.forName}'${info.name}', ${this.strings.guestsCount(info.guests!)} ${s.onDate.trim()}${this.formatDateForDisplay(info.date!)} ${s.atTime.trim()}${this.formatTimeForDisplay(info.time!)}`;
+            if (info.phone) finalSummary += `${s.withPhoneShort.trim()}${this.formatPhoneNumber(info.phone!)}`;
+            if (info.special_requests) finalSummary += `${s.withRequests.trim()}"${info.special_requests!}"`;
+        }
+        return finalSummary;
+    } else {
+        // Conversational summary for collection phase
+        let summary = "";
+        if (namePart) summary += namePart;
+
+        if (guestsPart) {
+            if (summary) summary += ", ";
+            summary += guestsPart.replace(s.forGuests, "").trim(); // "5 guests" instead of "for 5 guests"
+        }
+        if (datePart) {
+            if (summary && !summary.endsWith(s.onDate.trim())) summary += (summary.includes(this.strings.guestsCount(info.guests || 0).split(" ")[1])) ? " " : ", ";
+            summary += datePart;
+        }
+        if (timePart) {
+            if (summary && !summary.endsWith(s.atTime.trim())) summary += (summary.includes(this.formatDateForDisplay(info.date || ""))) ? " " : ", ";
+            summary += timePart;
+        }
+        if (phonePart) {
+            if (summary) summary += " ";
+            summary += phonePart.replace(s.withPhoneShort, `(${this.strings.phonePrefix} `) + ")";
+        }
+        if (requestsPart) {
+            if (summary) summary += ", ";
+            summary += requestsPart;
+        }
+        return summary.trim();
+    }
+}
 
   getMissingFields(info: ConversationFlow['collectedInfo']): string[] {
     const missingKeys: (keyof LocalizedStrings['missing'])[] = [];
@@ -669,7 +840,12 @@ export class DefaultResponseFormatter implements ResponseFormatter {
   formatMissingFieldsText(missing: string[]): string {
     if (missing.length === 0) return '';
     if (missing.length === 1) {
-        return this.strings.missing[Object.keys(this.strings.missing).find(k => this.strings.missing[k as keyof LocalizedStrings['missing']] === missing[0]) as keyof LocalizedStrings['missing']];
+        const keyInMissingStrings = Object.keys(this.strings.missing).find(
+            k => this.strings.missing[k as keyof LocalizedStrings['missing']] === missing[0]
+        ) as keyof LocalizedStrings['missing'] | undefined;
+
+        if (keyInMissingStrings) return this.strings.missing[keyInMissingStrings];
+        return missing[0]; 
     }
     const last = missing.pop()!;
     return `${missing.join(', ')} ${this.strings.and} ${last}`;
@@ -683,7 +859,7 @@ export class DefaultResponseFormatter implements ResponseFormatter {
 
       if (key && this.strings.specificRequest[key]) {
         const entry = this.strings.specificRequest[key as keyof typeof this.strings.specificRequest];
-        return typeof entry === 'function' ? entry(missing[0]) : entry;
+        return pickRandom(typeof entry === 'function' ? [entry(missing[0])] : entry);
       }
       return this.strings.specificRequest.default(missing[0]);
     }
@@ -698,64 +874,59 @@ export class DefaultResponseFormatter implements ResponseFormatter {
 
       if (key && this.strings.urgentRequest[key]) {
         const entry = this.strings.urgentRequest[key as keyof typeof this.strings.urgentRequest];
-        return typeof entry === 'function' ? entry(missing[0]) : entry;
+        return pickRandom(typeof entry === 'function' ? [entry(missing[0])] : entry);
       }
       return this.strings.urgentRequest.default(missing[0]);
     }
-    return this.strings.smartInfoRequest.urgentWithoutSummary(this.formatMissingFieldsText(missing));
+    return pickRandom(this.strings.smartInfoRequest.urgentWithoutSummary(this.formatMissingFieldsText(missing)));
   }
 
   generateApology(flow: ConversationFlow, summary: string, missingFieldsText: string): string {
     const apologyIndex = Math.min(flow.guestFrustrationLevel || 0, this.strings.apologies.length - 1);
     const apology = this.strings.apologies[apologyIndex];
-    if (summary) {
+    const detailsCollected = this.createBookingSummary(flow.collectedInfo, false); 
+
+    if (detailsCollected) {
       const hasAllInfo = this.getMissingFields(flow.collectedInfo).length === 0;
-      if (hasAllInfo) return `${apology}\n\n${this.strings.confirmAllDetails(summary)}`;
-      return `${apology}\n\n${this.strings.confirmNotedDetails(summary, missingFieldsText)}`;
+      if (hasAllInfo) return `${apology}\n\n${this.strings.confirmAllDetails(this.createBookingSummary(flow.collectedInfo, true))}`; 
+      return `${apology}\n\n${pickRandom(this.strings.confirmNotedDetails(detailsCollected, missingFieldsText))}`;
     }
     return `${apology}\n\n${this.strings.askAgainForAllDetails}`;
   }
 
   generateSmartInfoRequest(flow: ConversationFlow, summary: string, missingFieldsText: string, specificRequest: string, urgentRequest: string): string {
     const missingFieldsArray = this.getMissingFields(flow.collectedInfo);
-    if (missingFieldsArray.length === 0) {
-      return this.generateBookingConfirmation(flow, summary);
+    if (missingFieldsArray.length === 0) { 
+      return pickRandom(this.strings.bookingConfirmation(this.createBookingSummary(flow.collectedInfo, true)));
     }
+
+    const conversationalSummary = summary ? `${pickRandom(this.strings.summaryConnectors.detailsSoFar)}${summary}. ` : "";
 
     if (missingFieldsArray.length === 1) {
         const singleMissingFieldText = this.formatMissingFieldsText(missingFieldsArray);
-        if (flow.responsesSent <= 1) {
-            return summary
-                ? this.strings.smartInfoRequest.initialWithSummary(summary, this.strings.needToCompleteBooking_singular(singleMissingFieldText))
-                : this.strings.smartInfoRequest.initialWithoutSummary;
+        if (flow.responsesSent <= 2) { 
+            return `${conversationalSummary}${pickRandom(this.strings.summaryConnectors.leadInToMissing)}${singleMissingFieldText}.`;
         }
-        if (flow.responsesSent === 2) {
-            return summary
-                ? this.strings.smartInfoRequest.secondWithSummary(summary, specificRequest)
-                : this.strings.smartInfoRequest.secondWithoutSummary;
-        }
-        return summary
-            ? this.strings.smartInfoRequest.urgentWithSummary(summary, urgentRequest)
-            : this.strings.smartInfoRequest.urgentWithoutSummary(this.strings.needToCompleteBooking_singular(singleMissingFieldText));
+        return `${conversationalSummary}${specificRequest}`;
     }
 
-    if (flow.responsesSent <= 1) {
+    if (flow.responsesSent <= 1) { 
       return summary
-        ? this.strings.smartInfoRequest.initialWithSummary(summary, this.strings.needToCompleteBooking_plural(missingFieldsText))
-        : this.strings.smartInfoRequest.initialWithoutSummary;
+        ? pickRandom(this.strings.smartInfoRequest.initialWithSummary(summary, this.strings.needToCompleteBooking_plural(missingFieldsText)))
+        : pickRandom(this.strings.smartInfoRequest.initialWithoutSummary);
     }
-    if (flow.responsesSent === 2) {
+    if (flow.responsesSent === 2) { 
       return summary
-        ? this.strings.smartInfoRequest.secondWithSummary(summary, specificRequest)
-        : this.strings.smartInfoRequest.secondWithoutSummary;
+        ? pickRandom(this.strings.smartInfoRequest.secondWithSummary(summary, specificRequest))
+        : pickRandom(this.strings.smartInfoRequest.secondWithoutSummary);
     }
     return summary
-        ? this.strings.smartInfoRequest.urgentWithSummary(summary, urgentRequest)
-        : this.strings.smartInfoRequest.urgentWithoutSummary(this.strings.needToCompleteBooking_plural(missingFieldsText));
+        ? pickRandom(this.strings.smartInfoRequest.urgentWithSummary(summary, urgentRequest))
+        : pickRandom(this.strings.smartInfoRequest.urgentWithoutSummary(this.strings.needToCompleteBooking_plural(missingFieldsText)));
   }
 
-  generateBookingConfirmation(_flow: ConversationFlow, summary: string): string {
-    return this.strings.bookingConfirmation(summary);
+  generateBookingConfirmation(_flow: ConversationFlow, summaryForConfirmation: string): string {
+    return pickRandom(this.strings.bookingConfirmation(summaryForConfirmation));
   }
 
   generateAlternativeRequest(_flow: ConversationFlow, summary: string): string {
@@ -765,30 +936,32 @@ export class DefaultResponseFormatter implements ResponseFormatter {
   generateFriendlyResponse(_flow: ConversationFlow, message: string, _aiResult: AIAnalysisResult): string {
     const lowerMessage = message.toLowerCase();
     if (this.currentLang === 'ru') {
-        if (lowerMessage.includes('привет') || lowerMessage.includes('здравствуй')) return this.strings.friendlyResponse.greeting;
-        if (lowerMessage.includes('спасибо')) return this.strings.friendlyResponse.thankYou;
+        if (lowerMessage.includes('привет') || lowerMessage.includes('здравствуй') || lowerMessage.includes('ку')) return pickRandom(this.strings.friendlyResponse.greeting);
+        if (lowerMessage.includes('спасибо') || lowerMessage.includes('благодарю')) return pickRandom(this.strings.friendlyResponse.thankYou);
     } else {
-        if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) return this.strings.friendlyResponse.greeting;
-        if (lowerMessage.includes('thank')) return this.strings.friendlyResponse.thankYou;
+        if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) return pickRandom(this.strings.friendlyResponse.greeting);
+        if (lowerMessage.includes('thank')) return pickRandom(this.strings.friendlyResponse.thankYou);
     }
-    return this.strings.friendlyResponse.default;
+    return pickRandom(this.strings.friendlyResponse.default);
   }
 
   generateContextualResponse(flow: ConversationFlow, summary: string, missingFieldsText: string): string {
-    if (summary) {
+    const detailsCollected = this.createBookingSummary(flow.collectedInfo, false);
+    if (detailsCollected) {
       return this.getMissingFields(flow.collectedInfo).length === 0
-        ? this.strings.contextualResponse.withSummaryComplete(summary)
-        : this.strings.contextualResponse.withSummaryAndMissing(summary, missingFieldsText);
+        ? pickRandom(this.strings.contextualResponse.withSummaryComplete(this.createBookingSummary(flow.collectedInfo, true))) 
+        : pickRandom(this.strings.contextualResponse.withSummaryAndMissing(detailsCollected, missingFieldsText));
     }
-    return this.strings.contextualResponse.withoutSummary;
+    return pickRandom(this.strings.contextualResponse.withoutSummary);
   }
 
   generateResetResponse(_flow: ConversationFlow, summary: string): string {
-    return summary ? this.strings.resetResponse.withSummary(summary) : this.strings.resetResponse.withoutSummary;
+    const detailsCollected = this.createBookingSummary(_flow.collectedInfo, false);
+    return detailsCollected ? this.strings.resetResponse.withSummary(detailsCollected) : this.strings.resetResponse.withoutSummary;
   }
 
   generateGreetingMessage(restaurantName: string): string {
-      return this.strings.greetingMessage(restaurantName);
+      return pickRandom(this.strings.greetingMessage(restaurantName));
   }
 
   generateNoAvailabilityMessage(date: string): string {
@@ -798,10 +971,14 @@ export class DefaultResponseFormatter implements ResponseFormatter {
 
   generateAvailabilityConfirmationMessage(flow: ConversationFlow, summary: string, missingFieldsText: string): string {
     const missingFieldsArray = this.getMissingFields(flow.collectedInfo);
-    if (missingFieldsArray.length === 1) {
-        return this.strings.availabilityConfirmationMessage(summary, this.strings.needToCompleteBooking_singular(this.formatMissingFieldsText(missingFieldsArray)));
+    let promptForTime = pickRandom(this.strings.specificRequest.time); 
+    if (missingFieldsArray.length === 1 && missingFieldsArray[0] === this.strings.missing.time) {
+        // Already using specific prompt for time
+    } else if (missingFieldsArray.length > 0) {
+        promptForTime = missingFieldsText; // Fallback if more than just time is missing
     }
-    return this.strings.availabilityConfirmationMessage(summary, this.strings.needToCompleteBooking_plural(missingFieldsText));
+    // Summary here is for the date, missingText (promptForTime) is for the time.
+    return pickRandom(this.strings.availabilityConfirmationMessage(summary, promptForTime));
   }
 
   public generateSmartAlternativeMessageText(
@@ -824,8 +1001,6 @@ export class DefaultResponseFormatter implements ResponseFormatter {
       .slice(0, 3)
       .map((slot, index) => {
         const capacityText = this.strings.smartAlternative.tableCapacityFormat(slot.tableCapacity.min, slot.tableCapacity.max);
-        // Убедимся, что slot.tableName и slot.timeDisplay локализованы или не требуют локализации
-        // slot.timeDisplay уже должен быть локализован из availability.service
         return `${index + 1}. ${slot.timeDisplay} - ${slot.tableName} ${capacityText}`;
       }
       ).join('\n');
