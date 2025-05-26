@@ -1,0 +1,52 @@
+1. Database Changes:
+
+Table Modified: reservations
+Field Added: booking_guest_name (type: TEXT, nullable).
+Purpose: To store the specific name under which an individual reservation was made, independent of the guest's main profile name.
+Action for Coder AI:
+Ensure this schema change is applied to the development/production database (e.g., run a migration script).
+2. Backend Code Changes (Summary):
+
+schema.ts:
+Updated to include the booking_guest_name field in the reservations table definition and its corresponding insertReservationSchema.
+storage.ts:
+Reservation fetching methods (getReservations, getReservation, getUpcomingReservations) now retrieve booking_guest_name.
+These methods dynamically determine a guestName for display, prioritizing booking_guest_name over the guest's profile name (guests.name).
+createReservation and updateReservation methods now handle and store the booking_guest_name field.
+telegram_booking.ts:
+The createTelegramReservation function was modified to ensure that nameForThisSpecificBooking (the name provided by the user for the current booking transaction) is always stored in the booking_guest_name field of the new reservation.
+The confirmedName parameter is now used solely to determine if the guest's main profile name (guests.name) should be updated.
+booking.ts:
+The BookingRequest interface was updated to include an optional booking_guest_name field.
+The createReservation function now correctly receives and passes the booking_guest_name to storage.createReservation.
+routes.ts:
+The POST /api/reservations endpoint (for manual/dashboard bookings) was updated to determine and pass booking_guest_name to the createReservation service if the name provided in the API request differs from an existing guest's profile name.
+3. Actions for Coder AI:
+
+Apply Code: Integrate all the updated files (schema.ts, storage.ts, telegram_booking.ts, booking.ts, routes.ts) into the project.
+
+Verify Parameter Passing:
+
+Double-check that telegram.ts (specifically the callback_query handler for confirm_name:) correctly passes:
+nameForThisBooking (from conflictDetails.requestName) as the name argument to createTelegramReservation.
+confirmedNameForProfileUpdate (derived from user's choice) as the confirmedName argument to createTelegramReservation.
+(Based on my review, this already seemed correct in the provided telegram.ts structure).
+Thorough Testing (Critical):
+
+Scenario 1 (Name Match): Existing guest books with their current profile name. Verify booking_guest_name is likely stored as the same name (or null if it exactly matches the profile, depending on the final exact logic in telegram_booking.ts which now always stores it). Display should be correct.
+Scenario 2 (New Name, Profile Update): Existing guest "Alex" books as "Oleg". User chooses to update profile to "Oleg".
+Verify new reservation for "Oleg" has booking_guest_name: "Oleg".
+Verify guest profile name for that guestId is now "Oleg".
+Crucially, verify previous reservations made when profile was "Alex" still display as "Alex" (due to their booking_guest_name or the display logic in storage.ts correctly handling older records if they didn't have this field populated).
+Scenario 3 (New Name, Profile Kept): Existing guest "Alex" books as "Oleg". User chooses to keep profile as "Alex" (if UI supports this; if not, this might be equivalent to user choosing "Use DB name" where profile isn't changed by confirmedName).
+Verify new reservation for "Oleg" has booking_guest_name: "Oleg".
+Verify guest profile name is still "Alex".
+Verify previous "Alex" reservations still display as "Alex".
+Scenario 4 (New Guest): New guest books. Verify reservation name and profile name are set correctly.
+Scenario 5 (Manual Booking via API): Test POST /api/reservations with:
+A new guest.
+An existing guest, providing a guestName in the request that differs from their profile name. Verify booking_guest_name is set and display is correct.
+Display Logic: Check all UIs/views that display reservation lists or details to ensure they show the correct guest name based on the updated logic in storage.ts.
+Review Logs: Monitor application logs during testing for any errors or unexpected behavior in the booking and guest update flows.
+
+Pay attention to logs from TelegramBooking, BookingService, and Storage related to guest identification, name handling, and reservation creation.

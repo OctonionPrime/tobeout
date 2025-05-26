@@ -2,8 +2,7 @@ import OpenAI from "openai";
 import type {
   ConversationFlow,
   AIAnalysisResult,
-  AIService,
-  Language
+  AIService
 } from './conversation-manager';
 
 const openaiClient = new OpenAI({
@@ -64,14 +63,8 @@ export class OpenAIServiceImpl implements AIService {
       }
 
       const systemPrompt = `You are Sofia, an expert AI assistant for a restaurant, tasked with understanding guest messages to facilitate bookings.
-Your goal is to extract key information (entities), determine guest sentiment, decide the next logical conversation action, and identify the language of the user's message.
+Your goal is to extract key information (entities), determine guest sentiment, and decide the next logical conversation action.
 The restaurant operates in MOSCOW TIMEZONE. All date interpretations MUST be based on this.
-
-**LANGUAGE HANDLING & DETECTION:**
-- Analyze the "CURRENT MESSAGE TO ANALYZE" to determine if it is primarily in Russian ('ru') or English ('en').
-- Set the "detectedLanguage" field in your JSON output to either "ru" or "en".
-- If the detected language is Russian, your entire JSON output, especially any string values intended for user display or further processing (like entities or suggested replies), MUST be in RUSSIAN.
-- If the detected language is English or any other language, assume English for "detectedLanguage" and ensure your JSON output values are in ENGLISH.
 
 CURRENT MOSCOW DATE/TIME CONTEXT:
 - Today in Moscow is: ${todayString} (Day of week: ${currentMoscowDateTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Moscow' })})
@@ -83,47 +76,43 @@ CONVERSATION HISTORY & STATE:
 - Information already collected by you: ${existingInfoSummary}
 - Guest frustration level (0-5, higher is more frustrated): ${context.guestFrustrationLevel || 0}
 - What you (the bot) last asked the guest for: ${lastAskedHint}
-- Current conversation language context (used by bot for its previous response): ${context.currentLanguage}
 
 YOUR TASK: Analyze the CURRENT MESSAGE TO ANALYZE from the user.
 
 CRITICAL ANALYSIS & EXTRACTION RULES:
-1. Detected Language (detectedLanguage): Determine if the user's message is 'ru' or 'en'.
-2. Entities Extraction:
-   - date: If a date is mentioned, resolve to YYYY-MM-DD format.
-   - time: If a time is mentioned, parse to HH:MM 24-hour format.
-   - guests: Number of people.
-   - name: Guest name if provided.
-   - phone: Phone number (normalize to digits only).
-   - special_requests: Any specific requests.
-   (Ensure these entity values are in the detectedLanguage if they are strings).
+1. Entities Extraction:
+   - date: If a date is mentioned, resolve to YYYY-MM-DD format
+   - time: If a time is mentioned, parse to HH:MM 24-hour format
+   - guests: Number of people
+   - name: Guest name if provided
+   - phone: Phone number (normalize to digits only)
+   - special_requests: Any specific requests
 
-3. Confidence Score (confidence): 0.0 to 1.0 - How certain are you that this message is related to making or modifying a booking?
+2. Confidence Score (confidence): 0.0 to 1.0 - How certain are you that this message is related to making or modifying a booking?
 
-4. Conversation Action (conversation_action): Choose ONE:
-   - collect_info: If more information is needed for a booking.
-   - ready_to_book: If ALL necessary information seems to be collected.
-   - acknowledge_frustration: If guest expresses frustration.
-   - show_alternatives: If user is asking for alternatives.
-   - general_inquiry: For general questions about the restaurant.
-   - reset_and_restart: If conversation is stuck.
-   - unknown_intent: If message intent is unclear.
+3. Conversation Action (conversation_action): Choose ONE:
+   - collect_info: If more information is needed for a booking
+   - ready_to_book: If ALL necessary information seems to be collected
+   - acknowledge_frustration: If guest expresses frustration
+   - show_alternatives: If user is asking for alternatives
+   - general_inquiry: For general questions about the restaurant
+   - reset_and_restart: If conversation is stuck
+   - unknown_intent: If message intent is unclear
 
-5. Guest Sentiment: Choose ONE: positive, neutral, frustrated, confused, impatient, appreciative.
-6. Next Response Tone: Choose ONE: friendly, empathetic, professional, direct, enthusiastic, concise, apologetic.
+4. Guest Sentiment: Choose ONE: positive, neutral, frustrated, confused, impatient, appreciative
+5. Next Response Tone: Choose ONE: friendly, empathetic, professional, direct, enthusiastic, concise, apologetic
 
 CURRENT MESSAGE TO ANALYZE: ${message}
 
-OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the language specified by "detectedLanguage"):
+OUTPUT FORMAT (Strictly JSON, no extra text):
 {
-  "detectedLanguage": "en_or_ru",
   "entities": {
     "date": "YYYY-MM-DD or null",
-    "time": "HH:MM or null",
+    "time": "HH:MM or null", 
     "guests": "number or null",
-    "name": "string or null (in detectedLanguage)",
+    "name": "string or null",
     "phone": "string (digits only) or null",
-    "special_requests": "string or null (in detectedLanguage)"
+    "special_requests": "string or null"
   },
   "confidence": 0.8,
   "conversation_action": "collect_info",
@@ -139,23 +128,13 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         ],
         temperature: 0.2,
         response_format: { type: "json_object" },
-        max_tokens: 800 // Slightly increased for the new field and potentially longer Russian entity strings
+        max_tokens: 750
       });
 
       const rawResult = completion.choices[0].message.content;
-      const parsedResult = JSON.parse(rawResult || '{}') as Partial<AIAnalysisResult & {entities: AIAnalysisResult['entities'], detectedLanguage: Language}>;
-
-      // Determine detected language, default to 'en' if not provided or invalid
-      let detectedLang: Language = 'en';
-      if (parsedResult.detectedLanguage === 'ru' || parsedResult.detectedLanguage === 'en') {
-        detectedLang = parsedResult.detectedLanguage;
-      } else if (context.currentLanguage) { // Fallback to current conversation language if AI fails to provide
-        detectedLang = context.currentLanguage;
-      }
-
+      const parsedResult = JSON.parse(rawResult || '{}') as Partial<AIAnalysisResult & {entities: AIAnalysisResult['entities']}>;
 
       const aiResult: AIAnalysisResult = {
-        detectedLanguage: detectedLang, // Ensure this is set
         entities: parsedResult.entities || {},
         confidence: parsedResult.confidence !== undefined ? Math.max(0, Math.min(1, parsedResult.confidence)) : 0,
         conversation_action: parsedResult.conversation_action || (parsedResult.confidence && parsedResult.confidence > 0.5 ? 'collect_info' : 'unknown_intent'),
@@ -163,7 +142,6 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         next_response_tone: parsedResult.next_response_tone || 'friendly'
       };
 
-      // Entity validation and sanitization (remains largely the same)
       if (aiResult.entities) {
         for (const key in aiResult.entities) {
           const entityKey = key as keyof NonNullable<AIAnalysisResult['entities']>;
@@ -209,13 +187,12 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         }
       }
 
-      console.log(`[AIService] analyzeMessage processed AI result (lang: ${aiResult.detectedLanguage}):`, aiResult);
+      console.log(`[AIService] analyzeMessage processed AI result:`, aiResult);
       return aiResult;
 
     } catch (error) {
       console.error("[AIService] Error in analyzeMessage:", error);
       return {
-        detectedLanguage: context.currentLanguage || 'en', // Fallback language
         entities: {},
         confidence: 0,
         conversation_action: 'unknown_intent',
@@ -225,30 +202,16 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
     }
   }
 
-  // The ...Text generation functions (generateReservationConfirmationText, etc.)
-  // already accept a targetLanguage parameter or infer it.
-  // No changes needed to their signatures here, but ensure the calling code
-  // (e.g., telegram.ts or ActiveConversation if it were to call them directly)
-  // passes the correct language from ConversationFlow.currentLanguage.
-
   async generateReservationConfirmationText(
     guestName: string, date: string, time: string, guests: number,
-    restaurantName: string, tableFeatures?: string[],
-    targetLanguage: Language = 'en' // Added parameter to control output language
+    restaurantName: string, tableFeatures?: string[]
   ): Promise<string> {
     const featuresText = tableFeatures && tableFeatures.length > 0
-      ? (targetLanguage === 'ru' ? `Ваш столик включает следующие особенности: ${tableFeatures.join(', ')}.` :`Your table includes the following features: ${tableFeatures.join(', ')}.`)
+      ? `Your table includes the following features: ${tableFeatures.join(', ')}.`
       : '';
-
-    const languageInstruction = targetLanguage === 'ru'
-        ? "The guest's name might be in Russian. Generate the confirmation message in RUSSIAN."
-        : "Generate the confirmation message in ENGLISH.";
-
     const systemPrompt = `You are Sofia, a warm and highly professional restaurant hostess for "${restaurantName}".
 Your task is to generate a brief, enthusiastic, and welcoming confirmation message for a successful reservation.
-Use emojis tastefully. Ensure the guest feels valued and excited.
-${languageInstruction}`;
-
+Use emojis tastefully. Ensure the guest feels valued and excited.`;
     const userPrompt = `Please craft a reservation confirmation for ${guestName}.
 Details: ${guests} people on ${date} at ${time}.
 ${featuresText}
@@ -260,72 +223,45 @@ The message should be friendly, confirm all details clearly, and express anticip
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
         max_tokens: 220, temperature: 0.65
       });
-      return completion.choices[0].message.content || (
-        targetLanguage === 'ru'
-        ? `🎉 Отлично, ${guestName}! Ваше бронирование на ${guests} ${guests === 1 ? 'человека' : 'человек'} ${date} в ${time} подтверждено. С нетерпением ждем вас в ${restaurantName}!`
-        : `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`
-      );
+      return completion.choices[0].message.content || `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`;
     } catch (error) {
       console.error("[AIService] Error generating reservation confirmation text:", error);
-      return targetLanguage === 'ru'
-        ? `🎉 Отлично, ${guestName}! Ваше бронирование на ${guests} ${guests === 1 ? 'человека' : 'человек'} ${date} в ${time} подтверждено. С нетерпением ждем вас в ${restaurantName}!`
-        : `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`;
+      return `🎉 Excellent, ${guestName}! Your reservation for ${guests} people on ${date} at ${time} is confirmed. We look forward to welcoming you to ${restaurantName}!`;
     }
   }
 
   async generateAlternativeSuggestionText(
     restaurantName: string, requestedDate: string, requestedTime: string, guests: number,
-    alternativesListString: string, // This list should be pre-formatted in the target language by the caller
-    noAlternativesFound: boolean,
-    targetLanguage: Language = 'en'
+    alternativesListString: string,
+    noAlternativesFound: boolean
   ): Promise<string> {
     try {
-      const languageInstruction = targetLanguage === 'ru'
-        ? "The response MUST be in RUSSIAN."
-        : "The response MUST be in ENGLISH.";
-
       if (noAlternativesFound) {
         const systemPrompt = `You are Sofia, a helpful and empathetic restaurant hostess for "${restaurantName}".
 The guest's requested time is unavailable, and no immediate alternatives were found for that specific request.
 Politely inform them and suggest trying a different date or time, or perhaps modifying the number of guests.
-Maintain a positive and helpful tone, encouraging them to continue interacting.
-${languageInstruction}`;
+Maintain a positive and helpful tone, encouraging them to continue interacting.`;
         const userPrompt = `Inform the guest that their request for ${guests} people on ${requestedDate} at ${requestedTime} is unfortunately unavailable, and no other slots were found for this exact request.
 Encourage them to try another date/time or adjust their party size, and offer your assistance in finding a suitable slot.`;
         const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 180, temperature: 0.7 });
-        return completion.choices[0].message.content || (
-          targetLanguage === 'ru'
-          ? `Очень жаль, но у нас нет свободных мест для ${guests} гостей на ${requestedDate} в ${requestedTime}, и я не смогла найти других вариантов для этого запроса. Хотите, я проверю другие даты или время, или, возможно, другое количество гостей? Я буду рада помочь найти идеальное место для вас! 📅`
-          : `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}, and I couldn't find immediate alternatives for that specific request. Would you like me to check for other dates or times, or perhaps for a different number of guests? I'd be happy to help find the perfect spot for you! 📅`
-        );
+        return completion.choices[0].message.content || `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}, and I couldn't find immediate alternatives for that specific request. Would you like me to check for other dates or times, or perhaps for a different number of guests? I'd be happy to help find the perfect spot for you! 📅`;
       } else {
-        // alternativesListString is assumed to be already localized by the calling code
         const systemPrompt = `You are Sofia, an engaging and helpful restaurant hostess for "${restaurantName}".
 The guest's original request was unavailable. You need to present a list of alternative times that have been found.
-Make these alternatives sound appealing and clear. Ask them to choose one by number, or request other options.
-${languageInstruction}
-The alternatives list itself ("alternativesListString" which is: ${alternativesListString}) will be provided in the user prompt. Ensure your surrounding text matches the target language.`;
+Make these alternatives sound appealing and clear. Ask them to choose one by number, or request other options.`;
         const userPrompt = `The guest's request for ${guests} people on ${requestedDate} at ${requestedTime} was not available.
-Please present the following alternatives in a friendly and inviting way (the list of alternatives is already in the correct language if needed):
+Please present the following alternatives in a friendly and inviting way:
 ${alternativesListString}
 Ask them to select one by providing the number, or if they'd like to explore other dates/times.`;
         const completion = await openaiClient.chat.completions.create({ model: "gpt-4o", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], max_tokens: 280, temperature: 0.65 });
-        return completion.choices[0].message.content || (
-          targetLanguage === 'ru'
-          ? `Хотя ${requestedTime} на ${requestedDate} недоступно для ${guests} гостей, я нашла для вас эти другие отличные варианты:\n\n${alternativesListString}\n\nКакой-нибудь из этих вариантов подойдет? Сообщите мне номер, или мы можем посмотреть другие даты! 🎯`
-          : `While ${requestedTime} on ${requestedDate} isn't available for ${guests} people, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`
-        );
+        return completion.choices[0].message.content || `While ${requestedTime} on ${requestedDate} isn't available for ${guests} people, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`;
       }
     } catch (error) {
       console.error("[AIService] Error generating alternative suggestion text:", error);
       if (noAlternativesFound) {
-        return targetLanguage === 'ru'
-          ? `Очень жаль, но у нас нет свободных мест для ${guests} гостей на ${requestedDate} в ${requestedTime}. Хотите, я проверю другие даты или время? Я буду рада помочь! 📅`
-          : `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like me to check for other dates or times? I'd be happy to help! 📅`;
+        return `I'm so sorry, but we don't seem to have availability for ${guests} people on ${requestedDate} at ${requestedTime}. Would you like me to check for other dates or times? I'd be happy to help! 📅`;
       } else {
-        return targetLanguage === 'ru'
-          ? `Хотя ${requestedTime} недоступно, я нашла для вас эти другие отличные варианты:\n\n${alternativesListString}\n\nКакой-нибудь из этих вариантов подойдет? Сообщите мне номер, или мы можем посмотреть другие даты! 🎯`
-          : `While ${requestedTime} isn't available, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`;
+        return `While ${requestedTime} isn't available, I found these other great options for you:\n\n${alternativesListString}\n\nWould any of these work? Let me know the number, or we can look at different dates! 🎯`;
       }
     }
   }
@@ -339,33 +275,27 @@ Ask them to select one by providing the number, or if they'd like to explore oth
       cuisine?: string;
       phoneNumber?: string;
       description?: string;
-    },
-    targetLanguage: Language = 'en'
+    }
   ): Promise<string> {
     try {
-      const languageInstruction = targetLanguage === 'ru'
-        ? "The user's message might be in Russian. Your response MUST be in RUSSIAN."
-        : "The user's message might be in English. Your response MUST be in ENGLISH.";
-
       const systemPrompt = `You are Sofia, a friendly, knowledgeable, and professional AI assistant for the restaurant "${restaurantName}".
 Your primary goal is to answer guest inquiries accurately using the provided restaurant information.
 If specific information isn't available in the provided context, politely state that and smoothly transition to offering help with a reservation or suggesting they contact staff directly for details you don't have.
 Maintain a warm, welcoming, and enthusiastic tone. Use emojis appropriately to enhance friendliness.
-${languageInstruction}
 
-Restaurant Information (use ONLY this information for your answer - if information is missing, state it politely in the target language):
+Restaurant Information (use ONLY this information for your answer):
 - Name: ${restaurantName}
-- Address: ${restaurantInfo.address || (targetLanguage === 'ru' ? 'Для уточнения нашего точного местоположения, пожалуйста, свяжитесь с персоналом или проверьте наш веб-сайт!' : 'For our exact location, please feel free to ask our staff or check our website!')}
-- Opening Hours: ${restaurantInfo.openingHours || (targetLanguage === 'ru' ? 'Актуальные часы работы можно уточнить, связавшись с нами напрямую или проверив онлайн.' : 'Our current opening hours can be confirmed by contacting us directly or checking online.')}
-- Cuisine Type: ${restaurantInfo.cuisine || (targetLanguage === 'ru' ? `Мы предлагаем восхитительное меню. Я могу помочь вам забронировать столик, чтобы вы могли его попробовать!` : `We offer a delightful menu. I can help you make a reservation to experience it!`)}
-- Phone Number: ${restaurantInfo.phoneNumber || (targetLanguage === 'ru' ? 'Для прямых звонков, пожалуйста, проверьте наши официальные контактные данные. Я могу помочь с бронированием здесь!' : 'For direct calls, please check our official contact details. I can assist with bookings here!')}
-- Description: ${restaurantInfo.description || (targetLanguage === 'ru' ? `Попробуйте замечательные блюда в ${restaurantName}!` : `Experience wonderful dining at ${restaurantName}!`)}
+- Address: ${restaurantInfo.address || 'For our exact location, please feel free to ask our staff or check our website!'}
+- Opening Hours: ${restaurantInfo.openingHours || 'Our current opening hours can be confirmed by contacting us directly or checking online.'}
+- Cuisine Type: ${restaurantInfo.cuisine || `We offer a delightful menu. I can help you make a reservation to experience it!`}
+- Phone Number: ${restaurantInfo.phoneNumber || 'For direct calls, please check our official contact details. I can assist with bookings here!'}
+- Description: ${restaurantInfo.description || `Experience wonderful dining at ${restaurantName}!`}
 
 Guidelines:
 - Be conversational and positive.
 - If asked about reservations, seamlessly guide them towards making one.
 - For menu details beyond cuisine type, suggest they ask staff upon arrival or check an online menu if available from other sources.
-- If you lack specific information from the "Restaurant Information" above, never invent it. Politely redirect or offer booking assistance in the target language.`;
+- If you lack specific information from the "Restaurant Information" above, never invent it. Politely redirect or offer booking assistance.`;
 
       const completion = await openaiClient.chat.completions.create({
         model: "gpt-4o",
@@ -373,16 +303,10 @@ Guidelines:
         max_tokens: 350,
         temperature: 0.7
       });
-      return completion.choices[0].message.content || (
-        targetLanguage === 'ru'
-        ? `Спасибо, что спросили о ${restaurantName}! Я здесь, чтобы помочь с бронированием или общими вопросами. Что вас интересует? 😊`
-        : `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`
-      );
+      return completion.choices[0].message.content || `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`;
     } catch (error) {
       console.error("[AIService] Error generating general inquiry response:", error);
-      return targetLanguage === 'ru'
-        ? `Спасибо, что спросили о ${restaurantName}! Я здесь, чтобы помочь с бронированием или общими вопросами. Что вас интересует? 😊`
-        : `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`;
+      return `Thanks for asking about ${restaurantName}! I'm here to help with reservations or general questions. What's on your mind? 😊`;
     }
   }
 }

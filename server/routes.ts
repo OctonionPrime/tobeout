@@ -2,12 +2,13 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { initializeTelegramBot } from "./services/telegram";
+// import { initializeTelegramBot } from "./services/telegram"; // initializeTelegramBot is in telegram.ts
 import { 
  insertUserSchema, insertRestaurantSchema, 
  insertTableSchema, insertGuestSchema, 
  insertReservationSchema, insertIntegrationSettingSchema,
- timeslots
+ timeslots,
+ type Guest // Import Guest type
 } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -17,13 +18,13 @@ import { Strategy as LocalStrategy } from "passport-local";
 import MemoryStore from "memorystore";
 
 // ✅ UPDATED IMPORTS - Using new refactored services
-import { setupTelegramBot, initializeAllTelegramBots } from "./services/telegram";
+import { initializeTelegramBot, initializeAllTelegramBots } from "./services/telegram"; // Corrected import
 import { 
- findAvailableTables, 
- findAlternativeSlots,
- createReservation, 
+ // findAvailableTables, // Legacy, direct usage of getAvailableTimeSlots is preferred
+ // findAlternativeSlots, // Legacy
+ createReservation, // This is the primary booking service function
  cancelReservation, 
- getDateAvailability 
+ // getDateAvailability // Legacy
 } from "./services/booking";
 import { getAvailableTimeSlots } from "./services/availability.service"; // ✅ NEW IMPORT
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
@@ -149,8 +150,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
          },
        });
      });
-   } catch (error) {
+   } catch (error: any) { // Changed error to any for type safety with ZodError
      console.error("Registration error:", error);
+     if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+     }
      res.status(400).json({ message: error.message });
    }
  });
@@ -166,8 +170,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
  });
 
  app.post("/api/auth/logout", (req, res) => {
-   req.logout(() => {
-     res.json({ success: true });
+   req.logout((err) => { // Added error handling for logout
+    if (err) { 
+        console.error("Logout error:", err);
+        return res.status(500).json({ message: "Error logging out" });
+    }
+    res.json({ success: true });
    });
  });
 
@@ -196,7 +204,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
      }
 
      res.json(restaurant);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -214,8 +222,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
      const updatedRestaurant = await storage.updateRestaurant(restaurant.id, validatedData);
 
      res.json(updatedRestaurant);
-   } catch (error) {
-     res.status(400).json({ message: error.message });
+   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    res.status(400).json({ message: error.message });
    }
  });
 
@@ -231,7 +242,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
      const tables = await storage.getTables(restaurant.id);
      res.json(tables);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -252,8 +263,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
      const newTable = await storage.createTable(validatedData);
      res.status(201).json(newTable);
-   } catch (error) {
-     res.status(400).json({ message: error.message });
+   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    res.status(400).json({ message: error.message });
    }
  });
 
@@ -277,8 +291,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
      const updatedTable = await storage.updateTable(tableId, validatedData);
 
      res.json(updatedTable);
-   } catch (error) {
-     res.status(400).json({ message: error.message });
+   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    res.status(400).json({ message: error.message });
    }
  });
 
@@ -300,7 +317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
      await storage.deleteTable(tableId);
      res.json({ success: true });
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -320,9 +337,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
        return res.status(400).json({ message: "Date parameter is required" });
      }
 
-     const timeslots = await storage.getTimeslots(restaurant.id, date);
-     res.json(timeslots);
-   } catch (error) {
+     const timeslotsData = await storage.getTimeslots(restaurant.id, date); // Renamed to avoid conflict
+     res.json(timeslotsData);
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -340,7 +357,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
      const count = await storage.generateTimeslots(restaurant.id, daysAhead);
 
      res.json({ message: `Generated ${count} timeslots` });
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -354,7 +371,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
        return res.status(404).json({ message: "Restaurant not found" });
      }
 
-     // Get the last date for which timeslots are available
      const lastDateResult = await db.select({
        date: timeslots.date,
      })
@@ -365,15 +381,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
      const lastDate = lastDateResult[0]?.date;
 
-     // Count total available timeslots
-     const totalCount = await db.select({
+     const totalCountResult = await db.select({ // Renamed to avoid conflict
        count: sql<number>`count(*)`,
      })
      .from(timeslots)
      .where(eq(timeslots.restaurantId, restaurant.id));
 
-     // Count free timeslots
-     const freeCount = await db.select({
+     const freeCountResult = await db.select({ // Renamed to avoid conflict
        count: sql<number>`count(*)`,
      })
      .from(timeslots)
@@ -384,10 +398,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
      res.json({
        lastDate,
-       totalCount: totalCount[0]?.count || 0,
-       freeCount: freeCount[0]?.count || 0,
+       totalCount: totalCountResult[0]?.count || 0,
+       freeCount: freeCountResult[0]?.count || 0,
      });
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
    }
  });
@@ -402,9 +416,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
        return res.status(404).json({ message: "Restaurant not found" });
      }
 
-     const guests = await storage.getGuests(restaurant.id);
-     res.json(guests);
-   } catch (error) {
+     const guestsData = await storage.getGuests(restaurant.id); // Renamed
+     res.json(guestsData);
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -412,21 +426,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
  app.post("/api/guests", isAuthenticated, async (req, res) => {
    try {
      const validatedData = insertGuestSchema.parse(req.body);
-
-     // Check if guest already exists by phone
-     let guest = await storage.getGuestByPhone(validatedData.phone);
+     let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string); // Added type assertion
 
      if (guest) {
-       // Update existing guest
        guest = await storage.updateGuest(guest.id, validatedData);
      } else {
-       // Create new guest
        guest = await storage.createGuest(validatedData);
      }
-
      res.status(201).json(guest);
-   } catch (error) {
-     res.status(400).json({ message: error.message });
+   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    res.status(400).json({ message: error.message });
    }
  });
 
@@ -440,125 +452,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      if (!date || !time) {
        return res.status(400).json({ message: "Date and time are required" });
      }
 
-     // Smart caching: Cache for 30 seconds to reduce database load
      const cacheKey = CacheKeys.tableAvailability(restaurant.id, `${date}_${time}`);
-     const tableAvailability = await withCache(cacheKey, async () => {
-       // Get tables and reservations for the specific date/time
-       const tables = await storage.getTables(restaurant.id);
-       const reservations = await storage.getReservations(restaurant.id, { date: date as string });
+     const tableAvailabilityData = await withCache(cacheKey, async () => { // Renamed
+       const tablesData = await storage.getTables(restaurant.id); // Renamed
+       const reservationsData = await storage.getReservations(restaurant.id, { date: date as string }); // Renamed
 
-     // Helper function to check if a time slot conflicts with a reservation
-     const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
-       const startTime = reservation.time; // e.g., "17:30"
-       const duration = reservation.duration || 90; // minutes
+       const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
+         const startTime = reservation.time;
+         const duration = reservation.duration || 90;
+         const [checkHour, checkMin] = checkTime.split(':').map(Number);
+         const checkMinutes = checkHour * 60 + checkMin;
+         const [startHour, startMin] = startTime.split(':').map(Number);
+         const startMinutes = startHour * 60 + startMin;
+         const endMinutes = startMinutes + duration;
+         return checkMinutes >= startMinutes && checkMinutes < endMinutes;
+       };
 
-       // Convert times to minutes for calculation
-       const [checkHour, checkMin] = checkTime.split(':').map(Number);
-       const checkMinutes = checkHour * 60 + checkMin;
-
-       const [startHour, startMin] = startTime.split(':').map(Number);
-       const startMinutes = startHour * 60 + startMin;
-       const endMinutes = startMinutes + duration;
-
-       // Check if the requested time slot (30 min window) overlaps with reservation
-       return checkMinutes >= startMinutes && checkMinutes < endMinutes;
-     };
-
-     const tableAvailability = tables.map(table => {
-       // Debug: Log reservations for this table to see what's happening
-       const tableReservations = reservations.filter(r => r.tableId === table.id);
-       if (tableReservations.length > 0) {
-         console.log(`🔍 Table ${table.id} reservations:`, tableReservations.map(r => ({
-           guestName: r.guestName, 
-           status: r.status, 
-           time: r.time, 
-           date: r.date
-         })));
-       }
-
-       // Find any reservation that occupies this specific time slot
-       const conflictingReservation = reservations.find(r => 
-         r.tableId === table.id && 
-         ['confirmed', 'created'].includes(r.status || '') &&
-         isTimeSlotOccupied(r, time as string)
-       );
-
-       if (conflictingReservation) {
-         const startTime = conflictingReservation.time;
-         const duration = conflictingReservation.duration || 90;
-         const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
-         const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
-         const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
-
-         return {
-           ...table,
-           status: 'reserved',
-           reservation: {
-             id: conflictingReservation.id, // Add reservation ID for drag & drop
-             guestName: conflictingReservation.guestName || 'Reserved',
-             guestCount: conflictingReservation.guests,
-             timeSlot: `${startTime}-${endTime}`,
-             phone: conflictingReservation.guestPhone || '',
-             status: conflictingReservation.status
-           }
-         };
-       }
-
-       return { ...table, status: 'available', reservation: null };
-     });
-
-       return tableAvailability;
-     }, 30); // Cache for 30 seconds
-
-     res.json(tableAvailability);
-   } catch (error) {
+       const availabilityResult = tablesData.map(table => { // Renamed
+         const tableReservations = reservationsData.filter(r => r.tableId === table.id);
+         if (tableReservations.length > 0) {
+           console.log(`🔍 Table ${table.id} reservations:`, tableReservations.map(r => ({
+             guestName: r.guestName, 
+             status: r.status, 
+             time: r.time, 
+             date: r.date
+           })));
+         }
+         const conflictingReservation = reservationsData.find(r => 
+           r.tableId === table.id && 
+           ['confirmed', 'created'].includes(r.status || '') &&
+           isTimeSlotOccupied(r, time as string)
+         );
+         if (conflictingReservation) {
+           const startTime = conflictingReservation.time;
+           const duration = conflictingReservation.duration || 90;
+           const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
+           const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
+           const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+           return {
+             ...table,
+             status: 'reserved',
+             reservation: {
+               id: conflictingReservation.id,
+               guestName: conflictingReservation.guestName || 'Reserved',
+               guestCount: conflictingReservation.guests,
+               timeSlot: `${startTime}-${endTime}`,
+               phone: conflictingReservation.guestPhone || '',
+               status: conflictingReservation.status
+             }
+           };
+         }
+         return { ...table, status: 'available', reservation: null };
+       });
+       return availabilityResult;
+     }, 30);
+     res.json(tableAvailabilityData);
+   } catch (error: any) {
      console.error("Error getting table availability:", error);
      res.status(500).json({ message: "Internal server error" });
    }
  });
 
- // ✅ UPDATED: Available time slots endpoint - uses new availability service
  app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response) => {
    try {
      const { restaurantId, date, guests } = req.query;
-
      if (!restaurantId || !date || !guests) {
        return res.status(400).json({ message: "Missing required parameters" });
      }
-
      console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests}`);
-
-     // ✅ Use new availability service instead of old logic
      const availableSlots = await getAvailableTimeSlots(
        parseInt(restaurantId as string),
        date as string,
        parseInt(guests as string),
-       {
-         maxResults: 20 // Get up to 20 available time slots
-       }
+       { maxResults: 20 }
      );
-
-     // Convert to frontend-expected format
      const timeSlots = availableSlots.map(slot => ({
-       time: slot.time, // Internal HH:MM:SS format
-       timeDisplay: slot.timeDisplay, // User-friendly format
+       time: slot.time,
+       timeDisplay: slot.timeDisplay,
        available: true,
        tableName: slot.tableName,
        tableCapacity: slot.tableCapacity.max,
        canAccommodate: true,
-       tablesCount: 1, // Each slot represents the best table for that time
+       tablesCount: 1,
        message: `Table ${slot.tableName} available (seats up to ${slot.tableCapacity.max})`
      }));
-
      console.log(`[Routes] Found ${timeSlots.length} available time slots`);
      res.json({ availableSlots: timeSlots });
-
-   } catch (error) {
+   } catch (error: any) {
      console.error("Error getting available times:", error);
      res.status(500).json({ message: "Internal server error" });
    }
@@ -569,142 +553,133 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const filters = {
        date: req.query.date as string,
        status: req.query.status ? (req.query.status as string).split(',') : undefined,
        upcoming: req.query.upcoming === 'true',
      };
-
-     const reservations = await storage.getReservations(restaurant.id, filters);
-     res.json(reservations);
-   } catch (error) {
+     const reservationsData = await storage.getReservations(restaurant.id, filters); // Renamed
+     res.json(reservationsData);
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
 
- // Get single reservation by ID
  app.get("/api/reservations/:id", isAuthenticated, async (req, res) => {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const reservationId = parseInt(req.params.id);
      const reservation = await storage.getReservation(reservationId);
-
      if (!reservation || reservation.restaurantId !== restaurant.id) {
        return res.status(404).json({ message: "Reservation not found" });
      }
-
      res.json(reservation);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
 
- // ✅ UPDATED: Reservation creation endpoint - uses new booking service
  app.post("/api/reservations", isAuthenticated, async (req, res) => {
-   console.log('🔥 RESERVATION ENDPOINT HIT!');
+   console.log('🔥 RESERVATION ENDPOINT HIT (POST /api/reservations)!');
    try {
-     console.log('Received reservation request:', req.body);
+     console.log('Received reservation request body:', req.body);
 
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
 
-     // Validate required fields manually
-     if (!req.body.guestName || !req.body.guestPhone || !req.body.date || !req.body.time || !req.body.guests) {
+     // Validate required fields from req.body
+     const { guestName, guestPhone, date, time, guests: numGuests } = req.body; // Renamed guests to numGuests
+     if (!guestName || !guestPhone || !date || !time || !numGuests) {
        return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
      }
 
-     // First, ensure guest exists or create one
-     let guest = null;
-
-     console.log('Looking for guest with phone:', req.body.guestPhone);
-
-     if (req.body.guestPhone) {
-       // Try to find existing guest by phone
-       guest = await storage.getGuestByPhone(req.body.guestPhone);
-       console.log('Found existing guest:', guest);
-
-       if (!guest && req.body.guestName) {
-         // Create a new guest
-         console.log('Creating new guest...');
-         guest = await storage.createGuest({
-           name: req.body.guestName,
-           phone: req.body.guestPhone,
-           email: req.body.guestEmail || null,
-         });
-         console.log('Created new guest:', guest);
-       }
-     }
+     let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone);
+     console.log('Guest lookup by phone result:', guest);
 
      if (!guest) {
-       return res.status(400).json({ message: "Guest information is required" });
+       console.log('Creating new guest as none found by phone.');
+       guest = await storage.createGuest({
+         name: guestName, // Use guestName from request for new guest profile
+         phone: guestPhone,
+         email: req.body.guestEmail || null,
+         // language and other fields can be set to defaults or extracted if available
+       });
+       console.log('Created new guest:', guest);
+     } else {
+        // Optionally, update existing guest's name if guestName from request differs
+        // For now, we prioritize the existing guest's profile name unless explicitly told to update.
+        // The booking_guest_name will handle the name for this specific booking.
+        console.log(`Existing guest found: ID ${guest.id}, Profile Name: ${guest.name}`);
      }
 
-     // ✅ UPDATED: Always use smart table assignment through new booking service
-     console.log('🎯 Using new smart booking service for reservation creation');
+     if (!guest) { // Should not happen if creation above is successful
+       return res.status(400).json({ message: "Guest information processing failed." });
+     }
+
+     // Determine booking_guest_name: Use guestName from request if it's different from the guest's profile name.
+     // Otherwise, it can be null (storage will use profile name).
+     const bookingGuestNameForThisReservation = (guestName !== guest.name) ? guestName : null;
+     console.log(`Name for this specific booking (booking_guest_name): ${bookingGuestNameForThisReservation}, Guest profile name: ${guest.name}`);
 
      const bookingResult = await createReservation({
        restaurantId: restaurant.id,
        guestId: guest.id,
-       date: req.body.date,
-       time: req.body.time,
-       guests: parseInt(req.body.guests),
+       date: date,
+       time: time,
+       guests: parseInt(numGuests as string), // Ensure guests is a number
        comments: req.body.comments || '',
-       source: req.body.source || 'manual'
+       source: req.body.source || 'manual',
+       booking_guest_name: bookingGuestNameForThisReservation, // Pass the specific name for this booking
+       lang: req.body.lang || restaurant.languages?.[0] || 'en', // Pass language
      });
 
-     if (!bookingResult.success) {
+     if (!bookingResult.success || !bookingResult.reservation) { // Check reservation existence
        return res.status(400).json({ 
          message: bookingResult.message,
-         details: 'Smart table assignment could not find available slot'
+         details: 'Smart table assignment could not find available slot or booking failed'
        });
      }
 
-     const newReservation = bookingResult.reservation;
      console.log('✅ New booking service completed! Table assigned:', bookingResult.table?.name);
+     CacheInvalidation.onReservationChange(restaurant.id, date);
 
-     // Invalidate cache after creating reservation
-     CacheInvalidation.onReservationChange(restaurant.id, req.body.date);
-
-     // Log AI activity if source is an AI channel
      if (['telegram', 'web_chat', 'facebook'].includes(req.body.source || 'manual')) {
        await storage.logAiActivity({
          restaurantId: restaurant.id,
          type: 'reservation_create',
-         description: `Smart table assignment: ${bookingResult.table?.name} for ${guest.name} (${req.body.guests} guests) via ${req.body.source}`,
+         description: `Smart table assignment: ${bookingResult.table?.name} for ${bookingGuestNameForThisReservation || guest.name} (${numGuests} guests) via ${req.body.source}`,
          data: {
-           reservationId: newReservation.id,
+           reservationId: bookingResult.reservation.id,
            guestId: guest.id,
-           tableId: newReservation.tableId,
+           tableId: bookingResult.reservation.tableId,
            tableName: bookingResult.table?.name,
            smartAssignment: true
          }
        });
      }
-
      return res.status(201).json({
-       ...newReservation,
+       ...bookingResult.reservation,
+       guestName: bookingGuestNameForThisReservation || guest.name, // Ensure guestName in response reflects booking
        table: bookingResult.table,
        smartAssignment: true
      });
 
-   } catch (error: unknown) {
-     console.error('❌ Error in reservation creation:', error);
-     res.status(400).json({ message: error instanceof Error ? error.message : "Unknown error" });
+   } catch (error: any) {
+     console.error('❌ Error in reservation creation (POST /api/reservations):', error);
+     if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+     res.status(400).json({ message: error instanceof Error ? error.message : "Unknown error during reservation creation" });
    }
  });
 
@@ -712,81 +687,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const reservationId = parseInt(req.params.id);
-     const reservation = await storage.getReservation(reservationId);
-
-     if (!reservation || reservation.restaurantId !== restaurant.id) {
+     const existingReservation = await storage.getReservation(reservationId); // Use existingReservation to avoid conflict
+     if (!existingReservation || existingReservation.restaurantId !== restaurant.id) {
        return res.status(404).json({ message: "Reservation not found" });
      }
 
      const validatedData = insertReservationSchema.partial().parse(req.body);
 
-     // ✅ UPDATED: Use smart table assignment for edits when needed
-     if ((!validatedData.tableId || validatedData.tableId === null) && 
-         validatedData.date && validatedData.time && validatedData.guests) {
+     // If tableId is explicitly set to null or not provided, and other details change, try smart assignment
+     if ((validatedData.tableId === null || validatedData.tableId === undefined) && 
+         (validatedData.date || validatedData.time || validatedData.guests)) {
+       console.log('🎯 Using smart table assignment for reservation edit due to tableId being null/undefined and other changes.');
+       const guestForUpdate = await storage.getGuest(existingReservation.guestId);
+       if (!guestForUpdate) return res.status(404).json({ message: "Guest not found for reservation update." });
 
-       console.log('🎯 Using smart table assignment for reservation edit');
+       // Use existing booking_guest_name if not provided in update, else use new one or profile name
+       let nameForBookingUpdate = validatedData.booking_guest_name !== undefined 
+                                ? validatedData.booking_guest_name 
+                                : existingReservation.booking_guest_name;
+       if (nameForBookingUpdate === null && validatedData.booking_guest_name === undefined) { // If still null, use profile name
+            nameForBookingUpdate = guestForUpdate.name;
+       }
+
 
        const bookingResult = await createReservation({
          restaurantId: restaurant.id,
-         guestId: reservation.guestId,
-         date: validatedData.date,
-         time: validatedData.time,
-         guests: validatedData.guests,
-         comments: validatedData.comments || '',
-         source: validatedData.source || 'manual'
+         guestId: existingReservation.guestId,
+         date: validatedData.date || existingReservation.date,
+         time: validatedData.time || existingReservation.time,
+         guests: validatedData.guests || existingReservation.guests,
+         comments: validatedData.comments || existingReservation.comments || '',
+         source: validatedData.source || existingReservation.source || 'manual',
+         booking_guest_name: nameForBookingUpdate, // Pass the determined name
+         lang: req.body.lang || restaurant.languages?.[0] || 'en',
        });
-
-       if (!bookingResult.success) {
-         return res.status(400).json({ message: bookingResult.message });
+       if (!bookingResult.success || !bookingResult.reservation) {
+         return res.status(400).json({ message: bookingResult.message || "Failed to re-assign table smartly." });
        }
-
-       // Update with smart assignment data
        validatedData.tableId = bookingResult.reservation.tableId;
-       validatedData.status = 'confirmed'; // Auto-confirm with smart assignment
-
+       validatedData.status = validatedData.status || 'confirmed'; // Keep existing or confirm
+       validatedData.booking_guest_name = nameForBookingUpdate; // Ensure this is set for the update
        console.log('✅ Smart assignment for edit completed! Table assigned:', bookingResult.table?.name);
-
-       // Log AI activity for smart assignment
-       const guest = await storage.getGuest(reservation.guestId);
        await storage.logAiActivity({
          restaurantId: restaurant.id,
-         type: 'reservation_update',
-         description: `Smart table assignment during edit: ${bookingResult.table?.name} assigned for ${guest?.name || 'Guest'}`,
-         data: {
-           reservationId: reservationId,
-           tableId: bookingResult.reservation.tableId,
-           tableName: bookingResult.table?.name,
-           smartAssignment: true
-         }
+         type: 'reservation_update_smart',
+         description: `Smart table re-assignment: ${bookingResult.table?.name} for ${nameForBookingUpdate || guestForUpdate.name}`,
+         data: { reservationId, tableId: bookingResult.reservation.tableId, tableName: bookingResult.table?.name }
        });
      }
 
      const updatedReservation = await storage.updateReservation(reservationId, validatedData);
-
-     // Log AI activity if status was updated to confirmed/canceled
      if (validatedData.status && ['confirmed', 'canceled'].includes(validatedData.status)) {
-       const guest = await storage.getGuest(reservation.guestId);
+       const guest = await storage.getGuest(existingReservation.guestId);
        await storage.logAiActivity({
          restaurantId: restaurant.id,
          type: `reservation_${validatedData.status}`,
-         description: `Reservation for ${guest?.name || 'Guest'} was ${validatedData.status}`,
-         data: {
-           reservationId: reservation.id,
-           guestId: reservation.guestId,
-           previousStatus: reservation.status,
-         }
+         description: `Reservation for ${updatedReservation.booking_guest_name || guest?.name || 'Guest'} was ${validatedData.status}`,
+         data: { reservationId, guestId: existingReservation.guestId, previousStatus: existingReservation.status }
        });
      }
-
      res.json(updatedReservation);
-   } catch (error) {
-     res.status(400).json({ message: error.message });
+   } catch (error: any) {
+    if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    res.status(400).json({ message: error.message });
    }
  });
 
@@ -795,14 +764,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const stats = await storage.getReservationStatistics(restaurant.id);
      res.json(stats);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -811,15 +778,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const hours = parseInt(req.query.hours as string) || 3;
      const upcoming = await storage.getUpcomingReservations(restaurant.id, hours);
      res.json(upcoming);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -829,15 +794,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const limit = parseInt(req.query.limit as string) || 10;
      const activities = await storage.getAiActivities(restaurant.id, limit);
      res.json(activities);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
@@ -847,49 +810,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
    try {
      const user = req.user as any;
      const restaurant = await storage.getRestaurantByUserId(user.id);
-
      if (!restaurant) {
        return res.status(404).json({ message: "Restaurant not found" });
      }
-
      const type = req.params.type;
      const settings = await storage.getIntegrationSettings(restaurant.id, type);
-
      if (!settings) {
-       return res.json({ enabled: false });
+       return res.json({ enabled: false }); // Return a default structure
      }
-
      res.json(settings);
-   } catch (error) {
+   } catch (error: any) {
      res.status(500).json({ message: error.message });
    }
  });
 
-  // Test Telegram Bot Integration
-   app.get("/api/integrations/telegram/test", isAuthenticated, async (req, res) => {
+  app.get("/api/integrations/telegram/test", isAuthenticated, async (req, res) => {
      try {
        const user = req.user as any;
        const restaurant = await storage.getRestaurantByUserId(user.id);
-
        if (!restaurant) {
          return res.status(404).json({ message: "Restaurant not found" });
        }
-
-       // Get Telegram bot settings
        const settings = await storage.getIntegrationSettings(restaurant.id, 'telegram');
-
        if (!settings || !settings.enabled || !settings.token) {
          return res.status(400).json({ message: "Telegram bot is not configured or enabled" });
        }
-
-       // Test the connection by trying to get the bot information
        try {
-         const TelegramBot = require('node-telegram-bot-api');
+         const TelegramBot = require('node-telegram-bot-api'); // Consider moving to top-level import if always used
          const bot = new TelegramBot(settings.token);
          const botInfo = await bot.getMe();
-
-         // Save the bot information to settings
-         const updatedSettings = {
+         const updatedSettingsData = { // Renamed to avoid conflict
            ...settings,
            settings: {
              ...(settings.settings || {}),
@@ -897,16 +847,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
              botName: botInfo.first_name
            }
          };
-         await storage.saveIntegrationSettings(updatedSettings);
-
-         // Log the successful test
+         await storage.saveIntegrationSettings(updatedSettingsData);
          await storage.logAiActivity({
            restaurantId: restaurant.id,
            type: 'telegram_test',
            description: `Telegram bot connection test successful`,
            data: { botInfo }
          });
-
          return res.json({ 
            success: true, 
            message: `Successfully connected to Telegram bot: @${botInfo.username}`,
@@ -925,170 +872,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
      }
    });
 
-   // Booking API endpoints
-   app.get("/api/booking/availability", isAuthenticated, async (req: Request, res: Response) => {
-     try {
-       const { restaurantId, date, time, guests } = req.query;
-
-       if (!restaurantId || !date || !time || !guests) {
-         return res.status(400).json({ message: "Missing required parameters: restaurantId, date, time, guests" });
-       }
-
-       const availableSlots = await findAvailableTables(
-         Number(restaurantId),
-         String(date),
-         String(time),
-         Number(guests)
-       );
-
-       res.json({ available: availableSlots.length > 0, slots: availableSlots });
-     } catch (error: unknown) {
-       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
-     }
-   });
-
-   app.get("/api/booking/alternatives", isAuthenticated, async (req: Request, res: Response) => {
-     try {
-       const { restaurantId, date, time, guests } = req.query;
-
-       if (!restaurantId || !date || !time || !guests) {
-         return res.status(400).json({ message: "Missing required parameters: restaurantId, date, time, guests" });
-       }
-
-       const alternatives = await findAlternativeSlots(
-         Number(restaurantId),
-         String(date),
-         String(time),
-         Number(guests)
-       );
-
-       res.json({ alternatives });
-     } catch (error: unknown) {
-       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
-     }
-   });
-
-   app.post("/api/booking/create", isAuthenticated, async (req: Request, res: Response) => {
-     try {
-       const { restaurantId, guestId, date, time, guests, comments, source } = req.body;
-
-       if (!restaurantId || !guestId || !date || !time || !guests) {
-         return res.status(400).json({ message: "Missing required fields" });
-       }
-
-       const result = await createReservation({
-         restaurantId: Number(restaurantId),
-         guestId: Number(guestId),
-         date: String(date),
-         time: String(time),
-         guests: Number(guests),
-         comments: String(comments || ''),
-         source: String(source || 'manual')
-       });
-
-       if (result.success) {
-         res.json(result);
-       } else {
-         res.status(400).json(result);
-       }
-     } catch (error: unknown) {
-       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
-     }
-   });
-
-   app.post("/api/booking/cancel/:id", isAuthenticated, async (req: Request, res: Response) => {
-     try {
-       const { id } = req.params;
-
-       const result = await cancelReservation(Number(id));
-
-       if (result.success) {
-         res.json(result);
-       } else {
-         res.status(400).json(result);
-       }
-     } catch (error: unknown) {
-       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
-     }
-   });
-
-   app.get("/api/booking/date-availability", isAuthenticated, async (req: Request, res: Response) => {
-     try {
-       const { restaurantId, date } = req.query;
-
-       if (!restaurantId || !date) {
-         return res.status(400).json({ message: "Missing required parameters: restaurantId, date" });
-       }
-
-       const availability = await getDateAvailability(
-         Number(restaurantId),
-         String(date)
-       );
-
-       res.json(availability);
-     } catch (error: unknown) {
-       res.status(500).json({ message: error instanceof Error ? error.message : "Unknown error" });
-     }
-   });
-
    app.post("/api/integrations/:type", isAuthenticated, async (req, res) => {
      try {
        const user = req.user as any;
        const restaurant = await storage.getRestaurantByUserId(user.id);
-
        if (!restaurant) {
          return res.status(404).json({ message: "Restaurant not found" });
        }
-
        const type = req.params.type;
-
-       // Save any additional custom data (like botUsername) in the settings field
-       let settings = {};
+       let customSettings = {}; // Renamed
        if (req.body.botUsername) {
-         settings = { botUsername: req.body.botUsername };
-         delete req.body.botUsername; // Remove from top level so it doesn't cause validation issues
+         customSettings = { botUsername: req.body.botUsername };
+         delete req.body.botUsername;
        }
-
        const validatedData = insertIntegrationSettingSchema.parse({
          ...req.body,
          restaurantId: restaurant.id,
          type,
-         settings
+         settings: customSettings // Use renamed variable
        });
-
        const savedSettings = await storage.saveIntegrationSettings(validatedData);
-
-       // If telegram integration is enabled, setup the bot
        if (type === 'telegram' && savedSettings.enabled && savedSettings.token) {
          try {
-           await initializeTelegramBot(restaurant.id);
-
-           // Log successful bot setup
+           await initializeTelegramBot(restaurant.id); // Ensure this is awaited
            await storage.logAiActivity({
              restaurantId: restaurant.id,
              type: 'telegram_setup',
              description: `Telegram bot successfully configured and activated`,
-             data: { 
-               token: savedSettings.token.substring(0, 10) + '...', // Don't log full token
-               enabled: savedSettings.enabled
-             }
+             data: { token: savedSettings.token.substring(0, 10) + '...', enabled: savedSettings.enabled }
            });
-
          } catch (error: unknown) {
-           console.error("Error setting up Telegram bot:", error);
-           return res.status(400).json({ 
-             message: "Error setting up Telegram bot: " + (error instanceof Error ? error.message : "Unknown error") 
-           });
+           console.error("Error setting up Telegram bot after saving settings:", error);
+           // Decide if this should be a fatal error for the response
+           // For now, we'll log it but still return success for saving settings
          }
        }
-
        res.json(savedSettings);
-     } catch (error) {
-       res.status(400).json({ message: error.message });
+     } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation failed", errors: error.errors });
+      }
+      res.status(400).json({ message: error.message });
      }
    });
 
    const httpServer = createServer(app);
-
    return httpServer;
   }

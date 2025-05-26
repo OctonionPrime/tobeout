@@ -1,14 +1,12 @@
 import {
-  users, restaurants, tables, timeslots, guests, reservations, 
+  users, restaurants, tables, timeslots, guests, reservations,
   integrationSettings, aiActivities,
-  type User, type InsertUser, 
+  type User, type InsertUser,
   type Restaurant, type InsertRestaurant,
   type Table, type InsertTable,
   type Timeslot, type InsertTimeslot,
   type Guest, type InsertGuest,
-  type Reservation, type InsertReservation,
-  type IntegrationSetting, type InsertIntegrationSetting,
-  type AiActivity, type InsertAiActivity
+  type Reservation, type InsertReservation
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
@@ -53,11 +51,11 @@ export interface IStorage {
     date?: string;
     status?: string[];
     upcoming?: boolean;
-  }): Promise<Reservation[]>;
-  getReservation(id: number): Promise<Reservation | undefined>;
+  }): Promise<any[]>; // Return type changed to any[] to accommodate dynamic guestName
+  getReservation(id: number): Promise<any | undefined>; // Return type changed for dynamic guestName
   createReservation(reservation: InsertReservation): Promise<Reservation>;
   updateReservation(id: number, reservation: Partial<InsertReservation>): Promise<Reservation>;
-  getUpcomingReservations(restaurantId: number, hours: number): Promise<Reservation[]>;
+  getUpcomingReservations(restaurantId: number, hours: number): Promise<any[]>; // Return type changed
   getReservationStatistics(restaurantId: number): Promise<{
     todayReservations: number;
     confirmedReservations: number;
@@ -209,7 +207,7 @@ export class DatabaseStorage implements IStorage {
         // Parse opening and closing times
         const startTime = parse(restaurant.openingTime, 'HH:mm:ss', new Date());
         const endTime = parse(restaurant.closingTime, 'HH:mm:ss', new Date());
-        
+
         // Account for restaurant.avgReservationDuration
         // Last slot should allow for full duration before closing
         const lastSlotTime = new Date(endTime);
@@ -219,7 +217,7 @@ export class DatabaseStorage implements IStorage {
         let currentTime = new Date(startTime);
         while (currentTime <= lastSlotTime) {
           const timeString = format(currentTime, 'HH:mm:ss');
-          
+
           // Check if timeslot already exists
           const existingSlots = await db
             .select()
@@ -232,7 +230,7 @@ export class DatabaseStorage implements IStorage {
                 eq(timeslots.time, timeString)
               )
             );
-          
+
           // If slot doesn't exist, create it
           if (existingSlots.length === 0) {
             await db.insert(timeslots).values({
@@ -244,7 +242,7 @@ export class DatabaseStorage implements IStorage {
             });
             timeslotsCreated++;
           }
-          
+
           // Move to next timeslot
           currentTime = addMinutes(currentTime, timeSlotInterval);
         }
@@ -323,26 +321,20 @@ export class DatabaseStorage implements IStorage {
   }): Promise<any[]> {
     let whereConditions = [eq(reservations.restaurantId, restaurantId)];
 
-    // Apply date filter
     if (filters?.date) {
       whereConditions.push(eq(reservations.date, filters.date));
     }
-
-    // Apply status filter - explicitly use reservations.status to avoid ambiguity
     if (filters?.status && filters.status.length > 0) {
       whereConditions.push(inArray(reservations.status, filters.status));
     }
-
-    // Apply upcoming filter
     if (filters?.upcoming) {
       const now = new Date();
       const currentDate = now.toISOString().split('T')[0];
       whereConditions.push(sql`${reservations.date} >= '${currentDate}'`);
     }
 
-    const reservationsWithDetails = await db
+    const results = await db
       .select({
-        // Reservation fields
         id: reservations.id,
         restaurantId: reservations.restaurantId,
         guestId: reservations.guestId,
@@ -353,15 +345,14 @@ export class DatabaseStorage implements IStorage {
         duration: reservations.duration,
         guests: reservations.guests,
         status: reservations.status,
+        booking_guest_name: reservations.booking_guest_name, // Fetch the override name
         comments: reservations.comments,
         source: reservations.source,
         createdAt: reservations.createdAt,
-        // Guest fields (flattened for easy access)
-        guestName: guests.name,
+        profileGuestName: guests.name, // Guest's main profile name
         guestPhone: guests.phone,
         guestEmail: guests.email,
         guestLanguage: guests.language,
-        // Table fields (flattened for easy access)
         tableName: tables.name,
         tableMinGuests: tables.minGuests,
         tableMaxGuests: tables.maxGuests
@@ -372,13 +363,17 @@ export class DatabaseStorage implements IStorage {
       .where(whereConditions.length > 1 ? and(...whereConditions) : whereConditions[0])
       .orderBy(reservations.date, reservations.time);
 
-    return reservationsWithDetails;
+    // Determine the effective guest name for display
+    return results.map(r => ({
+      ...r,
+      // Use booking_guest_name if available, otherwise use profileGuestName
+      guestName: r.booking_guest_name || r.profileGuestName 
+    }));
   }
 
-  async getReservation(id: number): Promise<any> {
-    const [reservation] = await db
+  async getReservation(id: number): Promise<any | undefined> {
+    const [result] = await db
       .select({
-        // Reservation fields
         id: reservations.id,
         restaurantId: reservations.restaurantId,
         guestId: reservations.guestId,
@@ -389,15 +384,14 @@ export class DatabaseStorage implements IStorage {
         duration: reservations.duration,
         guests: reservations.guests,
         status: reservations.status,
+        booking_guest_name: reservations.booking_guest_name, // Fetch the override name
         comments: reservations.comments,
         source: reservations.source,
         createdAt: reservations.createdAt,
-        // Guest fields (flattened for easy access)
-        guestName: guests.name,
+        profileGuestName: guests.name, // Guest's main profile name
         guestPhone: guests.phone,
         guestEmail: guests.email,
         guestLanguage: guests.language,
-        // Table fields (flattened for easy access)
         tableName: tables.name,
         tableMinGuests: tables.minGuests,
         tableMaxGuests: tables.maxGuests
@@ -406,65 +400,65 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(guests, eq(reservations.guestId, guests.id))
       .leftJoin(tables, eq(reservations.tableId, tables.id))
       .where(eq(reservations.id, id));
-    return reservation;
+
+    if (!result) return undefined;
+
+    // Determine the effective guest name for display
+    return {
+      ...result,
+      // Use booking_guest_name if available, otherwise use profileGuestName
+      guestName: result.booking_guest_name || result.profileGuestName
+    };
   }
 
   async createReservation(reservation: InsertReservation): Promise<Reservation> {
+    // The `booking_guest_name` should be part of the `reservation` object if needed
     const [newReservation] = await db.insert(reservations).values(reservation).returning();
-    
-    // If timeslotId is provided, update the timeslot status
+
     if (newReservation.timeslotId) {
       await db
         .update(timeslots)
         .set({ status: 'pending' })
         .where(eq(timeslots.id, newReservation.timeslotId));
     }
-
-    // Automatically update table status when reservation is created
     if (newReservation.tableId) {
       await this.updateTableStatusFromReservations(newReservation.tableId);
     }
-
     return newReservation;
   }
 
   async updateReservation(id: number, reservation: Partial<InsertReservation>): Promise<Reservation> {
+    // The `booking_guest_name` can be part of the `reservation` update object
     const [updatedReservation] = await db
       .update(reservations)
       .set(reservation)
       .where(eq(reservations.id, id))
       .returning();
 
-    // If status changed to confirmed, update the timeslot
     if (reservation.status === 'confirmed' && updatedReservation.timeslotId) {
       await db
         .update(timeslots)
         .set({ status: 'occupied' })
         .where(eq(timeslots.id, updatedReservation.timeslotId));
     }
-    
-    // If status changed to canceled, update the timeslot
     if (reservation.status === 'canceled' && updatedReservation.timeslotId) {
       await db
         .update(timeslots)
         .set({ status: 'free' })
         .where(eq(timeslots.id, updatedReservation.timeslotId));
     }
-
-    // Automatically update table status when reservation is modified
     if (updatedReservation.tableId) {
       await this.updateTableStatusFromReservations(updatedReservation.tableId);
     }
-
     return updatedReservation;
   }
 
-  async getUpcomingReservations(restaurantId: number, hours: number = 3): Promise<Reservation[]> {
+  async getUpcomingReservations(restaurantId: number, hours: number = 3): Promise<any[]> {
     const currentDate = format(new Date(), 'yyyy-MM-dd');
     const currentTime = format(new Date(), 'HH:mm:ss');
     const endTime = format(addMinutes(new Date(), hours * 60), 'HH:mm:ss');
 
-    return db
+    const results = await db
       .select({
         reservation: reservations,
         guest: guests,
@@ -483,6 +477,19 @@ export class DatabaseStorage implements IStorage {
       )
       .orderBy(reservations.time)
       .limit(10);
+
+    // Determine the effective guest name for display
+    return results.map(r => ({
+      ...r.reservation,
+      // Use booking_guest_name if available, otherwise use guest's profile name
+      guestName: r.reservation.booking_guest_name || r.guest?.name,
+      guestPhone: r.guest?.phone,
+      guestEmail: r.guest?.email,
+      tableName: r.table?.name,
+      // Spread other guest and table details if needed, or flatten them
+      guestDetails: r.guest,
+      tableDetails: r.table
+    }));
   }
 
   async getReservationStatistics(restaurantId: number): Promise<{
@@ -493,7 +500,6 @@ export class DatabaseStorage implements IStorage {
   }> {
     const today = format(new Date(), 'yyyy-MM-dd');
 
-    // Get total reservations for today
     const [todayCount] = await db
       .select({ count: count() })
       .from(reservations)
@@ -503,8 +509,6 @@ export class DatabaseStorage implements IStorage {
           eq(reservations.date, today)
         )
       );
-
-    // Get confirmed reservations for today
     const [confirmedCount] = await db
       .select({ count: count() })
       .from(reservations)
@@ -515,8 +519,6 @@ export class DatabaseStorage implements IStorage {
           eq(reservations.status, 'confirmed')
         )
       );
-
-    // Get pending reservations for today
     const [pendingCount] = await db
       .select({ count: count() })
       .from(reservations)
@@ -524,13 +526,11 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(reservations.restaurantId, restaurantId),
           eq(reservations.date, today),
-          eq(reservations.status, 'created')
+          eq(reservations.status, 'created') // Assuming 'created' is pending
         )
       );
-
-    // Get total guests for today
     const [guestsResult] = await db
-      .select({ total: sql`SUM(${reservations.guests})` })
+      .select({ total: sql<number>`SUM(${reservations.guests})` })
       .from(reservations)
       .where(
         and(
@@ -543,7 +543,7 @@ export class DatabaseStorage implements IStorage {
       todayReservations: todayCount?.count || 0,
       confirmedReservations: confirmedCount?.count || 0,
       pendingReservations: pendingCount?.count || 0,
-      totalGuests: guestsResult?.total || 0,
+      totalGuests: Number(guestsResult?.total) || 0,
     };
   }
 
@@ -562,14 +562,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async saveIntegrationSettings(settings: InsertIntegrationSetting): Promise<IntegrationSetting> {
-    // Check if settings already exist
     const existingSettings = await this.getIntegrationSettings(
       settings.restaurantId,
       settings.type
     );
-
     if (existingSettings) {
-      // Update existing settings
       const [updatedSettings] = await db
         .update(integrationSettings)
         .set(settings)
@@ -577,7 +574,6 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return updatedSettings;
     } else {
-      // Create new settings
       const [newSettings] = await db
         .insert(integrationSettings)
         .values(settings)
@@ -607,10 +603,9 @@ export class DatabaseStorage implements IStorage {
   // Real-time table availability methods
   async updateTableStatusFromReservations(tableId: number): Promise<void> {
     const now = new Date();
-    const today = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const currentTime = now.toTimeString().split(' ')[0]; // HH:mm:ss
+    const today = now.toISOString().split('T')[0];
+    const currentTime = now.toTimeString().split(' ')[0];
 
-    // Check if table has any active reservations right now
     const [activeReservation] = await db
       .select()
       .from(reservations)
@@ -619,12 +614,10 @@ export class DatabaseStorage implements IStorage {
           eq(reservations.tableId, tableId),
           eq(reservations.date, today),
           lte(reservations.time, currentTime),
-          gte(sql`${reservations.time} + INTERVAL '2 hours'`, currentTime), // Assuming 2-hour duration
+          gte(sql`${reservations.time} + INTERVAL '2 hours'`, currentTime),
           inArray(reservations.status, ['confirmed', 'created'])
         )
       );
-
-    // Check if table has upcoming reservations
     const [upcomingReservation] = await db
       .select()
       .from(reservations)
@@ -639,16 +632,12 @@ export class DatabaseStorage implements IStorage {
         )
       );
 
-    // Determine new status
     let newStatus: 'free' | 'occupied' | 'reserved' | 'unavailable' = 'free';
-    
     if (activeReservation) {
       newStatus = 'occupied';
     } else if (upcomingReservation) {
       newStatus = 'reserved';
     }
-
-    // Update table status
     await db
       .update(tables)
       .set({ status: newStatus })
@@ -657,14 +646,12 @@ export class DatabaseStorage implements IStorage {
 
   async updateAllTableStatuses(restaurantId: number): Promise<void> {
     const restaurantTables = await this.getTables(restaurantId);
-    
     for (const table of restaurantTables) {
       await this.updateTableStatusFromReservations(table.id);
     }
   }
 
   async getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]> {
-    // Get available tables for specific date/time
     const availableTables = await db
       .select()
       .from(tables)
@@ -686,9 +673,9 @@ export class DatabaseStorage implements IStorage {
           )
         )
       );
-
     return availableTables;
   }
 }
 
 export const storage = new DatabaseStorage();
+

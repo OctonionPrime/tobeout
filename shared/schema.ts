@@ -114,7 +114,7 @@ export const timeslotsRelations = relations(timeslots, ({ one, many }) => ({
 // Guests table
 export const guests = pgTable("guests", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull(),
+  name: text("name").notNull(), // This is the guest's main profile name
   phone: text("phone"),
   email: text("email"),
   telegram_user_id: text("telegram_user_id").unique(),
@@ -141,6 +141,8 @@ export const reservations = pgTable("reservations", {
   duration: integer("duration").default(90), // in minutes
   guests: integer("guests").notNull(),
   status: reservationStatusEnum("status").default('created'),
+  // New field to store the name specifically used for this booking, if different from guest's profile
+  booking_guest_name: text("booking_guest_name"), 
   comments: text("comments"),
   specialRequests: text("special_requests"), // dietary preferences, seating requests, etc.
   staffNotes: text("staff_notes"), // internal staff observations
@@ -214,7 +216,10 @@ export const insertRestaurantSchema = createInsertSchema(restaurants).omit({ id:
 export const insertTableSchema = createInsertSchema(tables).omit({ id: true, createdAt: true });
 export const insertTimeslotSchema = createInsertSchema(timeslots).omit({ id: true, createdAt: true });
 export const insertGuestSchema = createInsertSchema(guests).omit({ id: true, createdAt: true });
-export const insertReservationSchema = createInsertSchema(reservations).omit({ id: true, createdAt: true });
+// Ensure new field is optional in insert schema
+export const insertReservationSchema = createInsertSchema(reservations, {
+  booking_guest_name: z.string().optional().nullable(), // Make it optional and nullable
+}).omit({ id: true, createdAt: true });
 export const insertIntegrationSettingSchema = createInsertSchema(integrationSettings).omit({ id: true, createdAt: true });
 export const insertAiActivitySchema = createInsertSchema(aiActivities).omit({ id: true, createdAt: true });
 
@@ -242,3 +247,4 @@ export type InsertIntegrationSetting = z.infer<typeof insertIntegrationSettingSc
 
 export type AiActivity = typeof aiActivities.$inferSelect;
 export type InsertAiActivity = z.infer<typeof insertAiActivitySchema>;
+

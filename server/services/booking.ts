@@ -3,30 +3,80 @@
 import { storage } from '../storage';
 import {
  getAvailableTimeSlots,
- type AvailabilitySlot as ServiceAvailabilitySlot,
+ type AvailabilitySlot as ServiceAvailabilitySlot, // Это из availability.service.ts
+ formatTimeForDisplay as formatTimeFromAvailabilityService, // Импортируем функцию форматирования
 } from './availability.service';
 
 import type {
  Restaurant,
  Reservation as SchemaReservation,
- InsertReservation,
+ InsertReservation, // Make sure this is imported
+ Guest // Import Guest type if needed for guest details
 } from '@shared/schema';
+import type { Language } from './conversation-manager'; // Импортируем тип Language
 
-// Interface for the booking request
+// --- Локализованные строки для booking.ts ---
+interface BookingServiceStrings {
+  restaurantNotFound: (restaurantId: number | string) => string;
+  noTablesAvailable: (guests: number, date: string, time: string) => string;
+  reservationConfirmed: (guests: number, tableName: string, date: string, timeDisplay: string, guestName: string) => string; // Added guestName
+  failedToCreateReservation: (errorMsg: string) => string;
+  reservationNotFound: (reservationId: number | string) => string;
+  reservationAlreadyCancelled: (reservationId: number | string) => string;
+  reservationCancelledSuccessfully: string;
+  failedToCancelReservation: (errorMsg: string) => string;
+  unknownErrorCreating: string;
+  unknownErrorCancelling: string;
+  guestNotFound: (guestId: number) => string;
+}
+
+const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
+  en: {
+    restaurantNotFound: (restaurantId) => `Restaurant with ID ${restaurantId} not found.`,
+    noTablesAvailable: (guests, date, time) => `No tables available for ${guests} guests on ${date} at ${time}.`,
+    reservationConfirmed: (guests, tableName, date, timeDisplay, guestName) => `Reservation confirmed for ${guestName} (${guests} guests) at Table ${tableName} on ${date} at ${timeDisplay}.`,
+    failedToCreateReservation: (errorMsg) => `Failed to create reservation: ${errorMsg}`,
+    reservationNotFound: (reservationId) => `Reservation ID ${reservationId} not found.`,
+    reservationAlreadyCancelled: (reservationId) => `Reservation ID ${reservationId} is already canceled.`,
+    reservationCancelledSuccessfully: 'Reservation cancelled successfully.',
+    failedToCancelReservation: (errorMsg) => `Failed to cancel reservation: ${errorMsg}`,
+    unknownErrorCreating: 'An unknown error occurred while creating the reservation.',
+    unknownErrorCancelling: 'Unknown error while cancelling reservation.',
+    guestNotFound: (guestId) => `Guest with ID ${guestId} not found. Cannot determine booking name.`,
+  },
+  ru: {
+    restaurantNotFound: (restaurantId) => `Ресторан с ID ${restaurantId} не найден.`,
+    noTablesAvailable: (guests, date, time) => `Нет доступных столиков для ${guests} гостей на ${date} в ${time}.`,
+    reservationConfirmed: (guests, tableName, date, timeDisplay, guestName) => `Бронирование подтверждено для ${guestName} (${guests} гостей) за столиком ${tableName} на ${date} в ${timeDisplay}.`,
+    failedToCreateReservation: (errorMsg) => `Не удалось создать бронирование: ${errorMsg}`,
+    reservationNotFound: (reservationId) => `Бронирование с ID ${reservationId} не найдено.`,
+    reservationAlreadyCancelled: (reservationId) => `Бронирование с ID ${reservationId} уже отменено.`,
+    reservationCancelledSuccessfully: 'Бронирование успешно отменено.',
+    failedToCancelReservation: (errorMsg) => `Не удалось отменить бронирование: ${errorMsg}`,
+    unknownErrorCreating: 'Произошла неизвестная ошибка при создании бронирования.',
+    unknownErrorCancelling: 'Произошла неизвестная ошибка при отмене бронирования.',
+    guestNotFound: (guestId) => `Гость с ID ${guestId} не найден. Невозможно определить имя для бронирования.`,
+  }
+};
+
+// Интерфейс для запроса на бронирование
 export interface BookingRequest {
  restaurantId: number;
  guestId: number;
- date: string; // YYYY-MM-DD format
- time: string; // HH:MM or HH:MM:SS format
+ date: string; // Формат YYYY-MM-DD
+ time: string; // Формат HH:MM или HH:MM:SS
  guests: number;
  comments?: string;
  source?: string;
+ lang?: Language; // Добавляем язык для локализации сообщений
+ booking_guest_name?: string | null; // <<< НОВОЕ ПОЛЕ: Имя гостя специфичное для этого бронирования
+ // tableId и timeslotId не должны быть здесь, они определяются логикой доступности
 }
 
-// Legacy interface for backward compatibility with routes.ts
+// Устаревший интерфейс для обратной совместимости с routes.ts
 export interface AvailableSlot {
  tableId: number;
- timeslotId: number;
+ timeslotId: number; // Это поле может быть устаревшим, если timeslots не используются активно
  date: string;
  time: string;
  tableName: string;
@@ -34,7 +84,7 @@ export interface AvailableSlot {
 }
 
 /**
-* Create a reservation using the new availability service.
+* Создание бронирования с использованием нового сервиса доступности.
 */
 export async function createReservation(bookingRequest: BookingRequest): Promise<{
  success: boolean;
@@ -42,23 +92,36 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
  message: string;
  table?: { id: number; name: string };
 }> {
- try {
-   const { restaurantId, date, time, guests, guestId, comments, source } = bookingRequest;
-   console.log(`[BookingService] Attempting to create reservation: Restaurant ${restaurantId}, Date ${date}, Time ${time}, Guests ${guests}`);
+  const lang = bookingRequest.lang || 'en'; // По умолчанию английский
+  const locale = bookingLocaleStrings[lang];
 
-   // 1. Fetch restaurant details
+ try {
+   const { restaurantId, date, time, guests, guestId, comments, source, booking_guest_name } = bookingRequest;
+   console.log(`[BookingService] Attempting to create reservation: Restaurant ${restaurantId}, Date ${date}, Time ${time}, Guests ${guests}, GuestID ${guestId}, BookingName: ${booking_guest_name}, Lang: ${lang}`);
+
    const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
    if (!restaurant) {
      console.error(`[BookingService] Restaurant with ID ${restaurantId} not found.`);
      return {
        success: false,
-       message: `Restaurant with ID ${restaurantId} not found.`,
+       message: locale.restaurantNotFound(restaurantId),
      };
    }
 
+   const guestInfo: Guest | undefined = await storage.getGuest(guestId);
+   if (!guestInfo) {
+    console.error(`[BookingService] Guest with ID ${guestId} not found.`);
+    return {
+        success: false,
+        message: locale.guestNotFound(guestId),
+      };
+   }
+   // Определяем имя для подтверждения: используем booking_guest_name если есть, иначе имя из профиля гостя
+   const nameForConfirmationMessage = booking_guest_name || guestInfo.name;
+
+
    const slotDurationMinutes = restaurant.avgReservationDuration;
 
-   // 2. Find the best available slot using availability service
    const availableSlots: ServiceAvailabilitySlot[] = await getAvailableTimeSlots(
      restaurantId,
      date,
@@ -67,63 +130,65 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
        requestedTime: time,
        maxResults: 1,
        slotDurationMinutes: slotDurationMinutes,
+       lang: lang, 
      }
    );
 
    if (!availableSlots || availableSlots.length === 0) {
+     const displayTime = formatTimeFromAvailabilityService(time, lang);
      console.log(`[BookingService] No available slots found for Restaurant ${restaurantId}, Date ${date}, Time ${time}, Guests ${guests}.`);
      return {
        success: false,
-       message: `No tables available for ${guests} guests on ${date} at ${time}.`,
+       message: locale.noTablesAvailable(guests, date, displayTime),
      };
    }
 
    const selectedSlot = availableSlots[0];
    console.log(`[BookingService] Best available slot found: Table ID ${selectedSlot.tableId} (${selectedSlot.tableName}) at ${selectedSlot.timeDisplay}`);
 
-   // 3. Create the reservation
    const reservationData: InsertReservation = {
      restaurantId: restaurantId,
      guestId: guestId,
      tableId: selectedSlot.tableId,
-     timeslotId: null,
+     timeslotId: null, 
      date: date,
-     time: selectedSlot.time,
+     time: selectedSlot.time, 
      duration: slotDurationMinutes,
      guests: guests,
      status: 'confirmed',
      comments: comments || '',
      source: source || 'direct',
+     booking_guest_name: booking_guest_name, // <<< ПЕРЕДАЕМ booking_guest_name в storage
    };
 
    const newReservation: SchemaReservation = await storage.createReservation(reservationData);
-
-   console.log(`[BookingService] ✅ Reservation ID ${newReservation.id} created successfully for Table ${selectedSlot.tableName}.`);
+   console.log(`[BookingService] ✅ Reservation ID ${newReservation.id} created successfully for Table ${selectedSlot.tableName}. Booking Guest Name: ${newReservation.booking_guest_name || 'using profile name'}`);
 
    return {
      success: true,
      reservation: newReservation,
-     message: `Reservation confirmed for ${guests} guests at Table ${selectedSlot.tableName} on ${date} at ${selectedSlot.timeDisplay}.`,
+     message: locale.reservationConfirmed(guests, selectedSlot.tableName, date, selectedSlot.timeDisplay, nameForConfirmationMessage),
      table: { id: selectedSlot.tableId, name: selectedSlot.tableName },
    };
 
  } catch (error: unknown) {
    console.error('[BookingService] ❌ Error during createReservation:', error);
-   const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred while creating the reservation.';
+   const errorMessage = error instanceof Error ? error.message : locale.unknownErrorCreating;
    return {
      success: false,
-     message: `Failed to create reservation: ${errorMessage}`,
+     message: locale.failedToCreateReservation(errorMessage),
    };
  }
 }
 
 /**
-* Cancel a reservation and update relevant statuses.
+* Отмена бронирования и обновление соответствующих статусов.
 */
-export async function cancelReservation(reservationId: number): Promise<{
+export async function cancelReservation(reservationId: number, lang: Language = 'en'): Promise<{
  success: boolean;
  message: string;
 }> {
+  const locale = bookingLocaleStrings[lang];
  try {
    console.log(`[BookingService] Attempting to cancel reservation ID ${reservationId}`);
 
@@ -132,21 +197,19 @@ export async function cancelReservation(reservationId: number): Promise<{
    if (!reservation) {
      return {
        success: false,
-       message: `Reservation ID ${reservationId} not found.`,
+       message: locale.reservationNotFound(reservationId),
      };
    }
 
    if (reservation.status === 'canceled') {
      return {
        success: false,
-       message: `Reservation ID ${reservationId} is already canceled.`,
+       message: locale.reservationAlreadyCancelled(reservationId),
      };
    }
 
-   // Update reservation status to 'canceled'
    await storage.updateReservation(reservationId, { status: 'canceled' });
 
-   // Update timeslot status if linked
    if (reservation.timeslotId) {
      await storage.updateTimeslot(reservation.timeslotId, { status: 'free' });
      console.log(`[BookingService] Timeslot ID ${reservation.timeslotId} status updated to 'free'.`);
@@ -155,22 +218,21 @@ export async function cancelReservation(reservationId: number): Promise<{
    console.log(`[BookingService] ✅ Reservation ID ${reservationId} cancelled successfully.`);
    return {
      success: true,
-     message: 'Reservation cancelled successfully.',
+     message: locale.reservationCancelledSuccessfully,
    };
 
  } catch (error: unknown) {
    console.error(`[BookingService] ❌ Error cancelling reservation ID ${reservationId}:`, error);
-   const errorMessage = error instanceof Error ? error.message : 'Unknown error while cancelling reservation.';
+   const errorMessage = error instanceof Error ? error.message : locale.unknownErrorCancelling;
    return {
      success: false,
-     message: `Failed to cancel reservation: ${errorMessage}`,
+     message: locale.failedToCancelReservation(errorMessage),
    };
  }
 }
 
-/**
-* Get availability overview from the pre-generated timeslots table for a specific date.
-*/
+// --- Функции для обратной совместимости и другие ---
+
 export async function getDateAvailabilityFromTimeslots(
  restaurantId: number,
  date: string
@@ -185,7 +247,6 @@ export async function getDateAvailabilityFromTimeslots(
  }>;
 }> {
  const timeslotsForDate = await storage.getTimeslots(restaurantId, date);
-
  const timeGroups: { [time: string]: { free: number, pending: number, occupied: number, total: number } } = {};
 
  for (const slot of timeslotsForDate) {
@@ -222,84 +283,62 @@ export async function getDateAvailabilityFromTimeslots(
  };
 }
 
-// ===========================================
-// BACKWARD COMPATIBILITY WRAPPER FUNCTIONS
-// ===========================================
-
-/**
-* Legacy wrapper for findAvailableTables (used by routes.ts)
-* Translates old API to new availability service
-*/
 export async function findAvailableTables(
  restaurantId: number,
  date: string,
  time: string,
- guests: number
+ guests: number,
+ lang: Language = 'en' 
 ): Promise<AvailableSlot[]> {
  try {
-   console.log(`[Legacy] findAvailableTables called: ${restaurantId}, ${date}, ${time}, ${guests}`);
-
-   // Use new availability service
+   console.log(`[Legacy] findAvailableTables called: ${restaurantId}, ${date}, ${time}, ${guests}, Lang: ${lang}`);
    const slots = await getAvailableTimeSlots(restaurantId, date, guests, {
      requestedTime: time,
-     maxResults: 10
+     maxResults: 10,
+     lang: lang, 
    });
-
-   // Convert to legacy format
    return slots.map(slot => ({
      tableId: slot.tableId,
-     timeslotId: 0, // Legacy field, not used in new system
+     timeslotId: 0, 
      date: slot.date,
-     time: slot.time,
+     time: slot.time, 
      tableName: slot.tableName,
-     tableCapacity: slot.tableCapacity
+     tableCapacity: slot.tableCapacity,
    }));
-
  } catch (error) {
    console.error('[Legacy] Error in findAvailableTables wrapper:', error);
    return [];
  }
 }
 
-/**
-* Legacy wrapper for findAlternativeSlots (used by routes.ts)
-*/
 export async function findAlternativeSlots(
  restaurantId: number,
  date: string,
  time: string,
  guests: number,
- hoursBefore: number = 2,
- hoursAfter: number = 2
+ lang: Language = 'en' 
 ): Promise<AvailableSlot[]> {
  try {
-   console.log(`[Legacy] findAlternativeSlots called: ${restaurantId}, ${date}, ${time}, ${guests}`);
-
-   // Use new availability service to find alternatives
+   console.log(`[Legacy] findAlternativeSlots called: ${restaurantId}, ${date}, ${time}, ${guests}, Lang: ${lang}`);
    const slots = await getAvailableTimeSlots(restaurantId, date, guests, {
      requestedTime: time,
-     maxResults: 5
+     maxResults: 5,
+     lang: lang, 
    });
-
-   // Convert to legacy format
    return slots.map(slot => ({
      tableId: slot.tableId,
-     timeslotId: 0,
+     timeslotId: 0, 
      date: slot.date,
      time: slot.time,
      tableName: slot.tableName,
-     tableCapacity: slot.tableCapacity
+     tableCapacity: slot.tableCapacity,
    }));
-
  } catch (error) {
    console.error('[Legacy] Error in findAlternativeSlots wrapper:', error);
    return [];
  }
 }
 
-/**
-* Legacy wrapper for getDateAvailability (used by routes.ts)
-*/
 export async function getDateAvailability(
  restaurantId: number,
  date: string
@@ -315,10 +354,7 @@ export async function getDateAvailability(
 }> {
  try {
    console.log(`[Legacy] getDateAvailability called: ${restaurantId}, ${date}`);
-
    const result = await getDateAvailabilityFromTimeslots(restaurantId, date);
-
-   // Convert to legacy format
    return {
      totalSlots: result.totalDefinedSlots,
      availableSlots: result.availableDefinedSlots,
@@ -329,7 +365,6 @@ export async function getDateAvailability(
        total: slot.totalCount
      }))
    };
-
  } catch (error) {
    console.error('[Legacy] Error in getDateAvailability wrapper:', error);
    return {
