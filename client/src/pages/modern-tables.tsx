@@ -183,9 +183,9 @@ export default function ModernTables() {
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            // Only clear non-overlapping source slots
+            // Clear source table slots when moving to different table
             if (table.id === draggedReservation.currentTableId && 
-                slotsToActuallyClear.includes(slot.time) &&
+                sourceSlots.includes(slot.time) &&
                 table.reservation?.id === reservationId) {
               return { 
                 ...table, 
@@ -194,8 +194,8 @@ export default function ModernTables() {
               };
             }
             
-            // Add to non-overlapping target slots
-            if (table.id === newTableId && slotsToActuallyAdd.includes(slot.time)) {
+            // Add reservation to target table slots
+            if (table.id === newTableId && targetSlots.includes(slot.time)) {
               return { 
                 ...table, 
                 status: 'reserved',
@@ -204,8 +204,10 @@ export default function ModernTables() {
                   guestName: draggedReservation.guestName,
                   guestCount: draggedReservation.guestCount,
                   timeSlot: slot.time,
-                  phone: '',
-                  status: 'confirmed'
+                  phone: draggedReservation.phone || '',
+                  status: 'confirmed',
+                  tableId: newTableId,
+                  tableName: table.name
                 }
               };
             }
