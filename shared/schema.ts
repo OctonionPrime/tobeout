@@ -44,7 +44,7 @@ export const restaurants = pgTable("restaurants", {
   features: text("features").array(),
   tags: text("tags").array(),
   languages: text("languages").array(),
-  avgReservationDuration: integer("avg_reservation_duration").default(90), // in minutes
+  avgReservationDuration: integer("avg_reservation_duration").default(120), // ✅ FIXED: Changed from 90 to 120 minutes
   minGuests: integer("min_guests").default(1),
   maxGuests: integer("max_guests").default(12),
   phone: text("phone"),
@@ -138,7 +138,7 @@ export const reservations = pgTable("reservations", {
   timeslotId: integer("timeslot_id").references(() => timeslots.id),
   date: date("date").notNull(),
   time: time("time").notNull(),
-  duration: integer("duration").default(90), // in minutes
+  duration: integer("duration").default(120), // ✅ FIXED: Changed from 90 to 120 minutes
   guests: integer("guests").notNull(),
   status: reservationStatusEnum("status").default('created'),
   // New field to store the name specifically used for this booking, if different from guest's profile
@@ -247,4 +247,3 @@ export type InsertIntegrationSetting = z.infer<typeof insertIntegrationSettingSc
 
 export type AiActivity = typeof aiActivities.$inferSelect;
 export type InsertAiActivity = z.infer<typeof insertAiActivitySchema>;
-

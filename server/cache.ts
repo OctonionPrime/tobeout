@@ -1,15 +1,4 @@
-/**
- * Smart Caching Layer for ToBeOut Restaurant Booking System
- * 
- * This cache dramatically improves performance by storing frequently
- * requested data in memory, reducing database load by 70-80%.
- * 
- * Features:
- * - Automatic expiration (30 seconds for availability data)
- * - Cache invalidation when data changes
- * - Zero breaking changes - falls back to database on cache miss
- * - Memory efficient with size limits
- */
+
 
 interface CacheEntry<T> {
   data: T;

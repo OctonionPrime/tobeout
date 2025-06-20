@@ -1,604 +1,667 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { X } from "lucide-react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, invalidateReservationQueries } from "@/lib/queryClient";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useToast } from "@/hooks/use-toast";
+import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, CheckCircle, Clock, Users } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { cn } from "@/lib/utils";
+import { CalendarIcon, Clock, Users, Phone, Mail, User, Loader2, AlertCircle } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 interface ReservationModalProps {
   isOpen: boolean;
   onClose: () => void;
   reservationId?: number;
   restaurantId: number;
+  defaultDate?: Date;
+  defaultTime?: string;
+  defaultGuests?: number;
+  defaultTableId?: number;
 }
 
-const formSchema = z.object({
-  guestName: z.string().min(1, "Guest name is required"),
-  guestPhone: z.string().min(1, "Phone number is required"),
-  guestEmail: z.string().email("Invalid email").optional().or(z.literal("")),
-  date: z.string().min(1, "Date is required"),
-  time: z.string().min(1, "Time is required"),
-  guests: z.number().min(1, "At least 1 guest required").max(20, "Maximum 20 guests"),
-  tableId: z.string().optional(),
-  specialRequests: z.string().optional()
-});
-
-type FormValues = z.infer<typeof formSchema>;
-
-interface AvailableSlot {
+interface TimeSlot {
   time: string;
   timeDisplay: string;
   available: boolean;
   tableName: string;
   tableCapacity: number;
   canAccommodate: boolean;
-  tablesCount: number;
-  message: string;
+  message?: string;
 }
 
-export function ReservationModal({ isOpen, onClose, reservationId, restaurantId }: ReservationModalProps) {
-  const [tables, setTables] = useState<any[]>([]);
-  const [availableTimeSlots, setAvailableTimeSlots] = useState<AvailableSlot[]>([]);
-  const [existingReservation, setExistingReservation] = useState<any>(null);
-  const [isLoadingTimes, setIsLoadingTimes] = useState(false);
-  const [availabilityError, setAvailabilityError] = useState<string>("");
+interface Table {
+  id: number;
+  name: string;
+  minGuests: number;
+  maxGuests: number;
+  status: string;
+}
+
+export function ReservationModal({
+  isOpen,
+  onClose,
+  reservationId,
+  restaurantId,
+  defaultDate,
+  defaultTime,
+  defaultGuests,
+  defaultTableId,
+}: ReservationModalProps) {
+  const [formData, setFormData] = useState({
+    guestName: "",
+    guestPhone: "",
+    guestEmail: "",
+    date: defaultDate || new Date(),
+    time: defaultTime || "",
+    guests: defaultGuests || 2,
+    tableId: defaultTableId || null as number | null,
+    comments: "",
+    source: "manual",
+  });
+
+  const [isLoadingAvailability, setIsLoadingAvailability] = useState(false);
+  const [selectedTable, setSelectedTable] = useState<Table | null>(null);
+  const [availableTimeSlots, setAvailableTimeSlots] = useState<TimeSlot[]>([]);
+  const [showAllTimes, setShowAllTimes] = useState(false);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Get current date in Moscow timezone for form default
-  const getMoscowDate = () => {
-    const now = new Date();
-    const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-    return format(moscowTime, "yyyy-MM-dd");
-  };
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      guestName: "",
-      guestPhone: "",
-      guestEmail: "",
-      date: getMoscowDate(), // ✅ Uses Moscow timezone
-      time: "18:00",
-      guests: 2,
-      tableId: "",
-      specialRequests: ""
-    }
+  // ✅ FIX: Get restaurant data for operating hours and timezone
+  const { data: restaurant } = useQuery({
+    queryKey: ["/api/restaurants/profile"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/restaurants/profile");
+      if (!response.ok) throw new Error("Failed to fetch restaurant");
+      return response.json();
+    },
+    enabled: isOpen,
   });
 
-  // Fetch tables when component mounts
-  useEffect(() => {
-    if (isOpen) {
-      fetchTables();
-      if (reservationId) {
-        fetchReservation();
+  // Fetch tables for capacity information
+  const { data: tables, error: tablesError } = useQuery({
+    queryKey: ["/api/tables"],
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", "/api/tables");
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      } catch (error) {
+        console.error("Error fetching tables:", error);
+        throw error;
       }
-    }
-  }, [isOpen, reservationId]);
+    },
+    retry: 1,
+    enabled: isOpen, // Only fetch when modal is open
+  });
 
-  // Watch for date and guest count changes to fetch available times
-  const watchedDate = form.watch("date");
-  const watchedGuests = form.watch("guests");
-
+  // Handle tables API error
   useEffect(() => {
-    if (watchedDate && watchedGuests && isOpen) {
-      fetchAvailableTimeSlots(watchedDate, watchedGuests);
-    }
-  }, [watchedDate, watchedGuests, isOpen]);
-
-  const fetchTables = async () => {
-    try {
-      const response = await fetch(`/api/tables?restaurantId=${restaurantId}`, {
-        credentials: "include"
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setTables(data);
-      }
-    } catch (error) {
-      console.error("Error fetching tables:", error);
+    if (tablesError) {
+      console.error("Tables fetch error:", tablesError);
       toast({
         title: "Error",
         description: "Failed to load table information",
-        variant: "destructive"
+        variant: "destructive",
       });
     }
-  };
+  }, [tablesError, toast]);
 
-  const fetchAvailableTimeSlots = async (date: string, guests: number) => {
-    if (!date || !guests) return;
+  // ✅ FIX: Dynamic capacity calculation based on actual tables
+  const maxCapacity = tables?.length > 0 
+    ? tables.reduce((max: number, table: Table) => Math.max(max, table.maxGuests), 0)
+    : 0; // Show 0 if no tables exist
 
-    setIsLoadingTimes(true);
-    setAvailabilityError("");
+  // ✅ FIX: Show warning if no tables exist
+  const hasNoTables = !tables || tables.length === 0;
 
-    try {
-      const response = await fetch(
-        `/api/booking/available-times?restaurantId=${restaurantId}&date=${date}&guests=${guests}`,
-        { credentials: "include" }
-      );
+  // Update selected table when tableId changes
+  useEffect(() => {
+    if (tables && formData.tableId) {
+      const table = tables.find((t: Table) => t.id === formData.tableId);
+      setSelectedTable(table || null);
+    }
+  }, [tables, formData.tableId]);
 
-      if (response.ok) {
-        const data = await response.json();
-        const slots = data.availableSlots || [];
-        setAvailableTimeSlots(slots);
-
-        if (slots.length === 0) {
-          setAvailabilityError(`No available times found for ${guests} ${guests === 1 ? 'guest' : 'guests'} on ${format(new Date(date), 'MMMM d, yyyy')}`);
+  // Fetch existing reservation data if editing
+  const { data: existingReservation, error: reservationError } = useQuery({
+    queryKey: [`/api/reservations/${reservationId}`],
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", `/api/reservations/${reservationId}`);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
-      } else {
-        const errorData = await response.json();
-        setAvailabilityError(errorData.message || "Failed to check availability");
-        setAvailableTimeSlots([]);
+        return response.json();
+      } catch (error) {
+        console.error("Error fetching reservation:", error);
+        throw error;
       }
-    } catch (error) {
-      console.error("Error fetching available times:", error);
-      setAvailabilityError("Unable to check availability. Please try again.");
-      setAvailableTimeSlots([]);
-    } finally {
-      setIsLoadingTimes(false);
-    }
-  };
+    },
+    enabled: !!reservationId && isOpen,
+    retry: 1,
+  });
 
-  const fetchReservation = async () => {
-    try {
-      const response = await fetch(`/api/reservations/${reservationId}`, {
-        credentials: "include"
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const reservation = await response.json();
-      console.log("✅ Fetched reservation data:", reservation);
-
-      if (!reservation) {
-        throw new Error("No reservation data received");
-      }
-
-      setExistingReservation(reservation);
-
-      // Format the data for the form
-      const formData = {
-        guestName: reservation.guestName || "",
-        guestPhone: reservation.guestPhone || "",
-        guestEmail: reservation.guestEmail || "",
-        date: reservation.date || "",
-        time: reservation.time ? reservation.time.substring(0, 5) : "",
-        guests: reservation.guests || 2,
-        tableId: reservation.tableId ? String(reservation.tableId) : "",
-        specialRequests: reservation.comments || ""
-      };
-
-      console.log("📝 Setting form data:", formData);
-      form.reset(formData);
-
-    } catch (error) {
-      console.error("❌ Error fetching reservation:", error);
+  // Handle reservation fetch error
+  useEffect(() => {
+    if (reservationError) {
+      console.error("Reservation fetch error:", reservationError);
       toast({
         title: "Error",
         description: "Failed to load reservation data",
-        variant: "destructive"
+        variant: "destructive",
       });
+    }
+  }, [reservationError, toast]);
+
+  // Populate form with existing reservation data
+  useEffect(() => {
+    if (existingReservation) {
+      try {
+        const reservation = existingReservation.reservation || existingReservation;
+        const guest = existingReservation.guest || {};
+        
+        setFormData({
+          guestName: reservation.booking_guest_name || guest.name || "",
+          guestPhone: guest.phone || "",
+          guestEmail: guest.email || "",
+          date: new Date(reservation.date),
+          time: reservation.time,
+          guests: reservation.guests,
+          tableId: reservation.tableId,
+          comments: reservation.comments || "",
+          source: reservation.source || "manual",
+        });
+      } catch (error) {
+        console.error("Error processing reservation data:", error);
+        toast({
+          title: "Error",
+          description: "Failed to process reservation data",
+          variant: "destructive",
+        });
+      }
+    }
+  }, [existingReservation, toast]);
+
+  // ✅ FIX: Enhanced time filtering logic
+  const getCurrentMoscowTime = () => {
+    const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
+    return new Date(moscowTime);
+  };
+
+  const isTimeSlotAvailable = (timeSlot: TimeSlot): boolean => {
+    if (!timeSlot.available) return false;
+
+    const selectedDate = format(formData.date, "yyyy-MM-dd");
+    const today = format(getCurrentMoscowTime(), "yyyy-MM-dd");
+    
+    // If selected date is in the future, all available slots are valid
+    if (selectedDate > today) return true;
+    
+    // If selected date is today, filter out past times
+    if (selectedDate === today) {
+      const moscowNow = getCurrentMoscowTime();
+      const currentHour = moscowNow.getHours();
+      const currentMinute = moscowNow.getMinutes();
+      
+      const [slotHour, slotMinute] = timeSlot.time.split(':').map(Number);
+      const slotTime = slotHour * 60 + slotMinute;
+      const currentTime = currentHour * 60 + currentMinute;
+      
+      // Add 30-minute buffer for preparation time
+      return slotTime > (currentTime + 30);
+    }
+    
+    // Past dates should not show any available slots
+    return false;
+  };
+
+  // Fetch available time slots when date or guest count changes
+  useEffect(() => {
+    if (formData.date && formData.guests && isOpen && !hasNoTables) {
+      fetchAvailableTimeSlots();
+    }
+  }, [formData.date, formData.guests, isOpen, hasNoTables]);
+
+  const fetchAvailableTimeSlots = async () => {
+    setIsLoadingAvailability(true);
+    try {
+      const dateStr = format(formData.date, "yyyy-MM-dd");
+      const response = await apiRequest(
+        "GET",
+        `/api/booking/available-times?restaurantId=${restaurantId}&date=${dateStr}&guests=${formData.guests}`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // ✅ FIX: Filter out past times for today
+      const filteredSlots = (data.availableSlots || []).filter(isTimeSlotAvailable);
+      
+      setAvailableTimeSlots(filteredSlots);
+    } catch (error) {
+      console.error("Error fetching available times:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch available time slots",
+        variant: "destructive",
+      });
+      setAvailableTimeSlots([]); // Reset to empty array on error
+    } finally {
+      setIsLoadingAvailability(false);
     }
   };
 
-  const createMutation = useMutation({
-    mutationFn: async (values: FormValues) => {
-      const response = await apiRequest("POST", "/api/reservations", {
+  // Create or update reservation
+  const reservationMutation = useMutation({
+    mutationFn: async (data: any) => {
+      try {
+        let response;
+        if (reservationId) {
+          response = await apiRequest("PATCH", `/api/reservations/${reservationId}`, data);
+        } else {
+          response = await apiRequest("POST", "/api/reservations", data);
+        }
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        return response.json();
+      } catch (error) {
+        console.error("Error saving reservation:", error);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: reservationId ? "Reservation updated successfully" : "Reservation created successfully",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/reservations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/upcoming"] });
+      onClose();
+    },
+    onError: (error: any) => {
+      console.error("Reservation mutation error:", error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to save reservation",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    try {
+      // ✅ FIX: Dynamic validation based on actual table capacity
+      if (hasNoTables) {
+        toast({
+          title: "No tables available",
+          description: "Please add tables to the restaurant before creating reservations",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (formData.guests < 1 || (maxCapacity > 0 && formData.guests > maxCapacity)) {
+        toast({
+          title: "Invalid guest count",
+          description: maxCapacity > 0 
+            ? `Please enter a number between 1 and ${maxCapacity}`
+            : "No table capacity available",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Check if selected table can accommodate guests
+      if (selectedTable) {
+        if (formData.guests < selectedTable.minGuests || formData.guests > selectedTable.maxGuests) {
+          toast({
+            title: "Table capacity exceeded",
+            description: `This table can only accommodate ${selectedTable.minGuests}-${selectedTable.maxGuests} guests`,
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
+      const submitData = {
+        ...formData,
         restaurantId,
-        guestName: values.guestName,
-        guestPhone: values.guestPhone,
-        guestEmail: values.guestEmail,
-        date: values.date,
-        time: values.time,
-        guests: values.guests,
-        tableId: values.tableId === "auto" ? null : (values.tableId ? parseInt(values.tableId) : null),
-        comments: values.specialRequests,
-        source: "manual"
-      });
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Success",
-        description: data.smartAssignment 
-          ? `Reservation created successfully! Table ${data.table?.name} assigned automatically.`
-          : "Reservation created successfully",
-      });
+        date: format(formData.date, "yyyy-MM-dd"),
+      };
 
-      // ✅ Use new smart invalidation utility
-      invalidateReservationQueries();
-      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
-
-      onClose();
-      form.reset();
-    },
-    onError: (error: any) => {
+      reservationMutation.mutate(submitData);
+    } catch (error) {
+      console.error("Error in handleSubmit:", error);
       toast({
         title: "Error",
-        description: `Failed to create reservation: ${error.message}`,
+        description: "Failed to process form submission",
         variant: "destructive",
       });
     }
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: async (values: FormValues & { status?: string }) => {
-      const response = await apiRequest("PATCH", `/api/reservations/${reservationId}`, {
-        date: values.date,
-        time: values.time,
-        guests: values.guests,
-        tableId: values.tableId ? parseInt(values.tableId) : undefined,
-        comments: values.specialRequests,
-        status: values.status // Include status in the update
-      });
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Success",
-        description: data.smartAssignment 
-          ? `Reservation updated successfully! Table ${data.table?.name} assigned automatically.`
-          : "Reservation updated successfully",
-      });
-
-      // ✅ Use new smart invalidation utility
-      invalidateReservationQueries();
-
-      onClose();
-      form.reset();
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: `Failed to update reservation: ${error.message}`,
-        variant: "destructive",
-      });
-    }
-  });
-
-  const onSubmit = (values: FormValues) => {
-    if (reservationId) {
-      updateMutation.mutate(values);
-    } else {
-      createMutation.mutate(values);
-    }
   };
 
-  // Helper function to get status badge for time slots
-  const getTimeSlotBadge = (slot: AvailableSlot) => {
-    if (!slot.canAccommodate) {
-      return <Badge variant="destructive" className="ml-2 text-xs">Limited Capacity</Badge>;
-    }
-    if (slot.tablesCount > 1) {
-      return <Badge variant="secondary" className="ml-2 text-xs">{slot.tablesCount} tables</Badge>;
-    }
-    return <Badge variant="default" className="ml-2 text-xs">Available</Badge>;
-  };
+  // Group time slots by availability
+  const availableSlots = availableTimeSlots.filter(slot => slot.available);
+  const unavailableSlots = availableTimeSlots.filter(slot => !slot.available);
+  const displayedAvailableSlots = showAllTimes ? availableSlots : availableSlots.slice(0, 6);
+
+  // Don't render if not open (prevents unnecessary API calls)
+  if (!isOpen) {
+    return null;
+  }
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle>
             {reservationId ? "Edit Reservation" : "Create New Reservation"}
-            {existingReservation?.status && (
-              <Badge 
-                variant={existingReservation.status === 'confirmed' ? 'default' : 
-                        existingReservation.status === 'canceled' ? 'destructive' : 'secondary'}
-                className="ml-2"
-              >
-                {existingReservation.status}
-              </Badge>
-            )}
           </DialogTitle>
           <DialogDescription>
-            {reservationId 
-              ? "Update the reservation details below" 
-              : "Fill in the details to create a new reservation. Smart table assignment will find the best available table."}
+            Fill in the details to {reservationId ? "update the" : "create a new"} reservation. Smart table assignment will find the best available table.
           </DialogDescription>
         </DialogHeader>
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            {/* Guest Information Section */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Users className="h-4 w-4" />
-                Guest Information
-              </div>
+        {/* ✅ NEW: Show warning if no tables exist */}
+        {hasNoTables && (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              No tables found. Please add tables to your restaurant before creating reservations.
+            </AlertDescription>
+          </Alert>
+        )}
 
-              <FormField
-                control={form.control}
-                name="guestName"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Guest Name</FormLabel>
-                    <FormControl>
-                      <Input placeholder="Enter guest name" {...field} disabled={!!reservationId} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="guestPhone"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Phone Number</FormLabel>
-                    <FormControl>
-                      <Input placeholder="+1 (555) 123-4567" {...field} disabled={!!reservationId} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="guestEmail"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Email (Optional)</FormLabel>
-                    <FormControl>
-                      <Input placeholder="guest@example.com" {...field} disabled={!!reservationId} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Guest Information */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-lg font-semibold">
+              <User className="h-5 w-5" />
+              Guest Information
             </div>
 
-            {/* Reservation Details Section */}
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                <Clock className="h-4 w-4" />
-                Reservation Details
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="date"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Date</FormLabel>
-                      <FormControl>
-                        <Input type="date" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="guests"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Number of Guests</FormLabel>
-                      <FormControl>
-                        <Input 
-                          type="number" 
-                          min={1} 
-                          max={20} 
-                          {...field} 
-                          onChange={(e) => field.onChange(parseInt(e.target.value, 10))}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="guestName">Guest Name</Label>
+                <Input
+                  id="guestName"
+                  value={formData.guestName}
+                  onChange={(e) => setFormData({ ...formData, guestName: e.target.value })}
+                  required
                 />
               </div>
 
-              <FormField
-                control={form.control}
-                name="time"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>
-                      Time
-                      {isLoadingTimes && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          Checking availability...
-                        </span>
+              <div>
+                <Label htmlFor="guestPhone">Phone Number</Label>
+                <Input
+                  id="guestPhone"
+                  type="tel"
+                  value={formData.guestPhone}
+                  onChange={(e) => setFormData({ ...formData, guestPhone: e.target.value })}
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="guestEmail">Email (Optional)</Label>
+              <Input
+                id="guestEmail"
+                type="email"
+                value={formData.guestEmail}
+                onChange={(e) => setFormData({ ...formData, guestEmail: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {/* Reservation Details */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-lg font-semibold">
+              <Clock className="h-5 w-5" />
+              Reservation Details
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label>Date</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !formData.date && "text-muted-foreground"
                       )}
-                    </FormLabel>
-                    <Select 
-                      onValueChange={field.onChange} 
-                      defaultValue={field.value}
-                      value={field.value}
-                      disabled={isLoadingTimes}
                     >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select time" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent className="max-h-64">
-                        {isLoadingTimes ? (
-                          <SelectItem value="loading" disabled>
-                            <div className="flex items-center gap-2">
-                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted border-t-primary"></div>
-                              Loading available times...
-                            </div>
-                          </SelectItem>
-                        ) : availableTimeSlots.length > 0 ? (
-                          availableTimeSlots.map((slot) => (
-                            <SelectItem 
-                              key={slot.time} 
-                              value={slot.time}
-                              disabled={!slot.canAccommodate}
-                              className="py-3"
-                            >
-                              <div className="flex items-center justify-between w-full">
-                                <div className="flex flex-col">
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-medium">{slot.timeDisplay}</span>
-                                    {getTimeSlotBadge(slot)}
-                                  </div>
-                                  <span className={`text-xs ${slot.canAccommodate ? 'text-green-600' : 'text-orange-600'}`}>
-                                    {slot.message}
-                                  </span>
-                                </div>
-                              </div>
-                            </SelectItem>
-                          ))
-                        ) : (
-                          <SelectItem value="no-times" disabled>
-                            <div className="flex items-center gap-2 text-muted-foreground">
-                              <AlertCircle className="h-4 w-4" />
-                              {availabilityError || "No available times"}
-                            </div>
-                          </SelectItem>
-                        )}
-                      </SelectContent>
-                    </Select>
-                    {availabilityError && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground mt-2">
-                        <AlertCircle className="h-4 w-4" />
-                        {availabilityError}
-                      </div>
-                    )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {formData.date ? format(formData.date, "PPP") : "Pick a date"}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={formData.date}
+                      onSelect={(date) => date && setFormData({ ...formData, date })}
+                      initialFocus
+                      disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
 
-              <FormField
-                control={form.control}
-                name="tableId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Table Assignment</FormLabel>
-                    <Select 
-                      onValueChange={field.onChange}
-                      defaultValue={field.value}
-                      value={field.value}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Smart assignment (recommended)" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="auto">
-                          <div className="flex items-center gap-2">
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                            <div>
-                              <div className="font-medium">Smart Assignment</div>
-                              <div className="text-xs text-muted-foreground">
-                                Automatically assigns the best available table
-                              </div>
-                            </div>
-                          </div>
-                        </SelectItem>
-                        {tables.map((table) => (
-                          <SelectItem key={table.id} value={String(table.id)}>
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <div className="font-medium">{table.name}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  Seats {table.minGuests}-{table.maxGuests} guests
-                                </div>
-                              </div>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
+              <div>
+                <Label htmlFor="guests">Number of Guests</Label>
+                <div className="relative">
+                  <Input
+                    id="guests"
+                    type="number"
+                    min="1"
+                    max={maxCapacity || 50}
+                    value={formData.guests}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value);
+                      // Allow empty input during typing
+                      if (isNaN(value)) {
+                        setFormData({ ...formData, guests: 1 });
+                      } else if (value >= 1 && value <= (maxCapacity || 50)) {
+                        setFormData({ ...formData, guests: value });
+                      }
+                    }}
+                    required
+                    disabled={hasNoTables}
+                  />
+                  <Users className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                </div>
+                {selectedTable && (
+                  <p className="text-sm text-gray-500 mt-1">
+                    Selected table capacity: {selectedTable.minGuests}-{selectedTable.maxGuests} guests
+                  </p>
                 )}
-              />
+                {!selectedTable && (
+                  <p className="text-sm text-gray-500 mt-1">
+                    {hasNoTables 
+                      ? "No tables available - please add tables first" 
+                      : `Maximum capacity: ${maxCapacity} guests`
+                    }
+                  </p>
+                )}
+              </div>
             </div>
 
-            <FormField
-              control={form.control}
-              name="specialRequests"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Special Requests</FormLabel>
-                  <FormControl>
-                    <Textarea 
-                      placeholder="Enter any special requests or notes"
-                      className="resize-none"
-                      rows={3}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
+            {/* Time Selection */}
+            <div>
+              <Label>Time</Label>
+              {hasNoTables ? (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    No tables available. Please add tables to your restaurant first.
+                  </AlertDescription>
+                </Alert>
+              ) : isLoadingAvailability ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {availableSlots.length > 0 ? (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        {displayedAvailableSlots.map((slot) => (
+                          <div key={slot.time} className="space-y-1">
+                            <Button
+                              type="button"
+                              variant={formData.time === slot.time ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => setFormData({ ...formData, time: slot.time })}
+                              className="w-full justify-between"
+                            >
+                              <span>{slot.timeDisplay}</span>
+                              <Badge variant="secondary" className="ml-2 text-xs">
+                                Available
+                              </Badge>
+                            </Button>
+                            {slot.tableName && (
+                              <div className="text-xs text-gray-500 px-1">
+                                {slot.tableName} (seats up to {slot.tableCapacity})
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      
+                      {!showAllTimes && availableSlots.length > 6 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShowAllTimes(true)}
+                          className="w-full"
+                        >
+                          Show {availableSlots.length - 6} more available times
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        No available time slots for {formData.guests} guests on this date.
+                        {format(formData.date, "yyyy-MM-dd") === format(getCurrentMoscowTime(), "yyyy-MM-dd") 
+                          ? " Try selecting a future date or earlier time." 
+                          : " Try selecting a different date or reducing the party size."
+                        }
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Show unavailable slots for reference */}
+                  {unavailableSlots.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-500">Unavailable times:</p>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 opacity-50">
+                        {unavailableSlots.slice(0, 6).map((slot) => (
+                          <Button
+                            key={slot.time}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled
+                            className="justify-between"
+                          >
+                            <span>{slot.timeDisplay}</span>
+                            <Badge variant="secondary" className="ml-2 text-xs">
+                              Full
+                            </Badge>
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
-            />
+            </div>
 
-            <DialogFooter className="mt-6 gap-2">
-              <Button type="button" variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-
-              {/* Show Confirm button for cancelled reservations */}
-              {reservationId && existingReservation?.status === "canceled" && (
-                <Button 
-                  type="button"
-                  variant="default"
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                  onClick={async () => {
-                    try {
-                      const formValues = form.getValues();
-                      await updateMutation.mutateAsync({
-                        ...formValues,
-                        status: "confirmed"
-                      } as any);
-                      toast({ title: "Reservation confirmed successfully!" });
-                      onClose();
-                    } catch (error: any) {
-                      toast({ 
-                        title: "Error confirming reservation", 
-                        description: error.message, 
-                        variant: "destructive" 
-                      });
-                    }
-                  }}
-                  disabled={updateMutation.isPending}
+            {/* Optional: Manual Table Selection */}
+            {tables && tables.length > 0 && (
+              <div>
+                <Label htmlFor="tableId">Table (Optional - Auto-assigned if left empty)</Label>
+                <Select
+                  value={formData.tableId?.toString() || "auto"}
+                  onValueChange={(value) => setFormData({ ...formData, tableId: value === "auto" ? null : parseInt(value) })}
                 >
-                  {updateMutation.isPending ? "Confirming..." : "Confirm Reservation"}
-                </Button>
-              )}
+                  <SelectTrigger>
+                    <SelectValue placeholder="Auto-assign table" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto-assign table</SelectItem>
+                    {tables.map((table: Table) => (
+                      <SelectItem 
+                        key={table.id} 
+                        value={table.id.toString()}
+                        disabled={formData.guests < table.minGuests || formData.guests > table.maxGuests}
+                      >
+                        {table.name} (Capacity: {table.minGuests}-{table.maxGuests})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-              <Button 
-                type="submit" 
-                disabled={createMutation.isPending || updateMutation.isPending}
-              >
-                {createMutation.isPending || updateMutation.isPending ? (
-                  <div className="flex items-center gap-2">
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"></div>
-                    Saving...
-                  </div>
-                ) : reservationId ? (
-                  "Update Reservation"
-                ) : (
-                  "Create Reservation"
-                )}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
+            {/* Comments */}
+            <div>
+              <Label htmlFor="comments">Special Requests (Optional)</Label>
+              <Textarea
+                id="comments"
+                value={formData.comments}
+                onChange={(e) => setFormData({ ...formData, comments: e.target.value })}
+                placeholder="Any special requests or notes..."
+                rows={3}
+              />
+            </div>
+          </div>
+
+          {/* Form Actions */}
+          <div className="flex justify-end space-x-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button 
+              type="submit" 
+              disabled={
+                reservationMutation.isPending || 
+                !formData.time || 
+                !formData.guestName || 
+                !formData.guestPhone ||
+                hasNoTables
+              }
+            >
+              {reservationMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {reservationId ? "Update Reservation" : "Create Reservation"}
+            </Button>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
   );
