@@ -32,6 +32,9 @@ interface BookingServiceStrings {
     guestNotFound: (guestId: number) => string;
     errorCreatingLinkedReservation: (tableName: string) => string;
     timeSlotConflict: (time: string, conflicts: string) => string;
+    tableNoLongerAvailable: string;
+    transactionConflict: string;
+    deadlockDetected: string;
 }
 
 const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
@@ -50,6 +53,9 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         guestNotFound: (guestId) => `Guest with ID ${guestId} not found. Cannot determine booking name.`,
         errorCreatingLinkedReservation: (tableName: string) => `There was an issue securing all parts of the combined table booking (specifically table ${tableName}). Please contact the restaurant.`,
         timeSlotConflict: (time, conflicts) => `Time slot ${time} is not available. ${conflicts}`,
+        tableNoLongerAvailable: 'This table was just booked by another customer. Please select a different time or table.',
+        transactionConflict: 'Booking conflict detected. Please try again with a different time.',
+        deadlockDetected: 'System busy - please try your booking again in a moment.',
     },
     ru: {
         restaurantNotFound: (restaurantId) => `Ресторан с ID ${restaurantId} не найден.`,
@@ -66,6 +72,9 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         guestNotFound: (guestId) => `Гость с ID ${guestId} не найден. Невозможно определить имя для бронирования.`,
         errorCreatingLinkedReservation: (tableName: string) => `Возникла проблема с обеспечением всех частей комбинированного бронирования (в частности, столика ${tableName}). Пожалуйста, свяжитесь с рестораном.`,
         timeSlotConflict: (time, conflicts) => `Время ${time} недоступно. ${conflicts}`,
+        tableNoLongerAvailable: 'Этот столик только что был забронирован другим клиентом. Пожалуйста, выберите другое время или столик.',
+        transactionConflict: 'Обнаружен конфликт бронирования. Пожалуйста, попробуйте еще раз с другим временем.',
+        deadlockDetected: 'Система занята - пожалуйста, повторите бронирование через мгновение.',
     }
 };
 
@@ -93,6 +102,7 @@ export interface BookingRequest {
     lang?: Language;
     booking_guest_name?: string | null;
     selected_slot_info?: ServiceAvailabilitySlot;
+    tableId?: number; // ✅ NEW: Add optional tableId for manual table selection
 }
 
 export interface BookingResponse {
@@ -106,6 +116,7 @@ export interface BookingResponse {
         constituentTables?: Array<{ id: number; name: string }>;
     };
     allReservationIds?: number[];
+    conflictType?: 'AVAILABILITY' | 'TRANSACTION' | 'DEADLOCK';
 }
 
 // Helper function to safely get locale with fallback
@@ -114,76 +125,30 @@ function getLocale(lang?: Language): BookingServiceStrings {
     return bookingLocaleStrings[validLang] || bookingLocaleStrings['en'];
 }
 
-// ✅ FIXED: Validates specific table/time combination instead of just "any table"
-async function validateSpecificSlot(
-    slot: ServiceAvailabilitySlot,
-    restaurantId: number,
-    date: string,
-    duration: number = 120
-): Promise<{ isAvailable: boolean; conflicts: any[] }> {
-    logger.info(`🔍 Validating specific slot: Table ${slot.tableName} (ID: ${slot.tableId}) at ${slot.time} for ${duration}min`);
+// ✅ NEW: Detect transaction conflict types from errors
+function detectConflictType(error: any): 'AVAILABILITY' | 'TRANSACTION' | 'DEADLOCK' {
+    const errorMessage = error?.message?.toLowerCase() || '';
+    const errorCode = error?.code || '';
     
-    try {
-        // Get all active reservations for the date and specific table
-        const existingReservations = await storage.getReservations(restaurantId, {
-            date: date,
-            status: ['created', 'confirmed']
-        });
-        
-        // Filter to only reservations for this specific table
-        const tableReservations = existingReservations.filter(r => {
-            const reservation = r.reservation || r;
-            return reservation.tableId === slot.tableId;
-        });
-        
-        // Parse requested time
-        const [requestHour, requestMin] = slot.time.split(':').map(Number);
-        const requestStartMinutes = requestHour * 60 + requestMin;
-        const requestEndMinutes = requestStartMinutes + duration;
-        
-        const conflicts: any[] = [];
-        
-        // Check for conflicts with existing reservations on this table
-        for (const existingRes of tableReservations) {
-            const reservation = existingRes.reservation || existingRes;
-            const [existingHour, existingMin] = reservation.time.split(':').map(Number);
-            const existingStartMinutes = existingHour * 60 + existingMin;
-            const existingDuration = reservation.duration || 120;
-            const existingEndMinutes = existingStartMinutes + existingDuration;
-            
-            // Check for overlap: A_start < B_end AND A_end > B_start
-            const overlaps = requestStartMinutes < existingEndMinutes && requestEndMinutes > existingStartMinutes;
-            
-            if (overlaps) {
-                const guestName = existingRes.guestName || reservation.booking_guest_name || 'Guest';
-                const endHour = Math.floor(existingEndMinutes / 60);
-                const endMin = existingEndMinutes % 60;
-                
-                conflicts.push({
-                    tableId: slot.tableId,
-                    tableName: slot.tableName,
-                    existingReservation: {
-                        id: reservation.id,
-                        time: reservation.time,
-                        endTime: `${endHour.toString().padStart(2, '0')}:${endMin.toString().padStart(2, '0')}`,
-                        duration: existingDuration,
-                        guestName: guestName,
-                        status: reservation.status
-                    }
-                });
-                
-                logger.error(`❌ CONFLICT: Table ${slot.tableName} occupied by ${guestName} from ${reservation.time} to ${endHour}:${endMin.toString().padStart(2, '0')}`);
-                return { isAvailable: false, conflicts };
-            }
-        }
-        
-        logger.info(`✅ Table ${slot.tableName} is available for ${slot.time}-${Math.floor(requestEndMinutes/60)}:${(requestEndMinutes%60).toString().padStart(2,'0')}`);
-        return { isAvailable: true, conflicts: [] };
-        
-    } catch (error) {
-        logger.error(`Error validating slot:`, error);
-        return { isAvailable: false, conflicts: [`Validation error: ${error}`] };
+    // PostgreSQL deadlock error code
+    if (errorCode === '40P01') {
+        return 'DEADLOCK';
     }
+    
+    // Our custom conflict messages
+    if (errorMessage.includes('no longer available') || 
+        errorMessage.includes('conflict detected')) {
+        return 'AVAILABILITY';
+    }
+    
+    // Transaction-related errors
+    if (errorMessage.includes('transaction') || 
+        errorMessage.includes('serialization') ||
+        errorCode.startsWith('40')) {
+        return 'TRANSACTION';
+    }
+    
+    return 'AVAILABILITY'; // Default fallback
 }
 
 export async function createReservation(bookingRequest: BookingRequest): Promise<BookingResponse> {
@@ -200,7 +165,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
     }
 
     try {
-        const { restaurantId, date, time, guests, guestId, comments, source, booking_guest_name, selected_slot_info } = bookingRequest;
+        const { restaurantId, date, time, guests, guestId, comments, source, booking_guest_name, selected_slot_info, tableId } = bookingRequest;
 
         logger.info(`Create reservation request: R${restaurantId}, D:${date}, T:${time}, G:${guests}, GuestID:${guestId}, BookingName: ${booking_guest_name}, Lang:${bookingRequest.lang}`);
 
@@ -227,7 +192,46 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
         let selectedSlot: ServiceAvailabilitySlot | undefined = selected_slot_info;
 
-        // ✅ FIXED: Find available slot first, then validate the SPECIFIC slot that will be used
+        // ✅ COMPREHENSIVE FIX: Handle manual table selection from frontend
+        if (!selectedSlot && tableId) {
+            logger.info(`Manual table selection detected: TableID ${tableId}`);
+            
+            // Validate the manually selected table
+            const selectedTable = await storage.getTable(tableId);
+            if (!selectedTable || selectedTable.restaurantId !== restaurantId) {
+                logger.error(`Selected table ${tableId} not found or doesn't belong to restaurant ${restaurantId}`);
+                return {
+                    success: false,
+                    message: locale.failedToCreateReservation('Selected table not found or invalid')
+                };
+            }
+            
+            // Check if manually selected table can accommodate guests
+            if (guests < selectedTable.minGuests || guests > selectedTable.maxGuests) {
+                logger.error(`Table ${tableId} capacity (${selectedTable.minGuests}-${selectedTable.maxGuests}) cannot accommodate ${guests} guests`);
+                return {
+                    success: false,
+                    message: locale.failedToCreateReservation(
+                        `Selected table "${selectedTable.name}" can only accommodate ${selectedTable.minGuests}-${selectedTable.maxGuests} guests, but you requested ${guests} guests`
+                    )
+                };
+            }
+            
+            // Create slot object for manual selection
+            selectedSlot = {
+                tableId: selectedTable.id,
+                tableName: selectedTable.name,
+                time: time,
+                timeDisplay: formatTimeFromAvailabilityService(time, bookingRequest.lang || 'en'),
+                isCombined: false,
+                tableCapacity: { min: selectedTable.minGuests, max: selectedTable.maxGuests },
+                available: true // Will be validated in atomic transaction
+            };
+            
+            logger.info(`✅ Created slot object for manual selection: TableID ${selectedSlot.tableId}, Name ${selectedSlot.tableName}`);
+        }
+
+        // Find available slot if not pre-selected and no manual table selected
         if (!selectedSlot) {
             logger.info(`No pre-selected slot. Calling getAvailableTimeSlots...`);
             const availableSlots: ServiceAvailabilitySlot[] = await getAvailableTimeSlots(
@@ -240,9 +244,6 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     allowCombinations: true
                 }
             );
-
-            // 🐛 [DEBUG] Log what getAvailableTimeSlots returned
-            console.log(`🐛 [DEBUG] getAvailableTimeSlots returned:`, availableSlots);
 
             if (!availableSlots || availableSlots.length === 0) {
                 const displayTime = formatTimeFromAvailabilityService(time, bookingRequest.lang || 'en');
@@ -259,34 +260,12 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             return { success: false, message: locale.noTablesAvailable(guests, date, displayTime) };
         }
 
-        // ✅ FIXED: Now validate the SPECIFIC slot that will actually be booked
-        logger.info(`🔍 Validating the specific slot that will be booked...`);
-        const validation = await validateSpecificSlot(selectedSlot, restaurantId, date, slotDurationMinutes);
-        
-        if (!validation.isAvailable) {
-            const displayTime = formatTimeFromAvailabilityService(selectedSlot.time, bookingRequest.lang || 'en');
-            logger.error(`❌ BOOKING REJECTED: Conflicts found for selected slot:`, validation.conflicts);
-            
-            // Return detailed conflict information
-            const conflictMessages = validation.conflicts.map(conflict => {
-                if (typeof conflict === 'string') return conflict;
-                return `Table ${conflict.tableName} occupied by ${conflict.existingReservation?.guestName} (${conflict.existingReservation?.time}-${conflict.existingReservation?.endTime})`;
-            });
-            
-            return { 
-                success: false, 
-                message: locale.timeSlotConflict(displayTime, conflictMessages.join(', '))
-            };
-        }
-        logger.info(`✅ Specific slot validation passed. Proceeding with booking...`);
-
         const allCreatedReservationIds: number[] = [];
         let primaryReservation: SchemaReservation | undefined;
-        let createdReservations: SchemaReservation[] = [];
 
-        // Handle single table booking
+        // ✅ NEW: Handle single table booking with atomic transaction
         if (!selectedSlot.isCombined || !selectedSlot.constituentTables || selectedSlot.constituentTables.length === 0) {
-            logger.info(`Proceeding with single table booking for table ID: ${selectedSlot.tableId}`);
+            logger.info(`Proceeding with atomic single table booking for table ID: ${selectedSlot.tableId}`);
 
             const reservationData: InsertReservation = {
                 restaurantId,
@@ -303,9 +282,15 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             };
 
             try {
-                primaryReservation = await storage.createReservation(reservationData);
+                // ✅ NEW: Atomic reservation creation with built-in conflict detection
+                primaryReservation = await storage.createReservationAtomic(reservationData, {
+                    tableId: selectedSlot.tableId,
+                    time: selectedSlot.time,
+                    duration: slotDurationMinutes
+                });
+                
                 allCreatedReservationIds.push(primaryReservation.id);
-                logger.info(`✅ Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName}.`);
+                logger.info(`✅ Atomic Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName}.`);
 
                 const tableDetails = await storage.getTable(selectedSlot.tableId) as Table;
 
@@ -316,18 +301,40 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     table: { id: tableDetails.id, name: tableDetails.name, isCombined: false },
                     allReservationIds: allCreatedReservationIds,
                 };
-            } catch (error) {
-                logger.error('Failed to create single reservation', error);
-                throw error;
+
+            } catch (error: any) {
+                const conflictType = detectConflictType(error);
+                logger.error(`Failed to create atomic single reservation: ${conflictType}`, error);
+                
+                let errorMessage: string;
+                switch (conflictType) {
+                    case 'DEADLOCK':
+                        errorMessage = locale.deadlockDetected;
+                        break;
+                    case 'AVAILABILITY':
+                        errorMessage = locale.tableNoLongerAvailable;
+                        break;
+                    case 'TRANSACTION':
+                        errorMessage = locale.transactionConflict;
+                        break;
+                    default:
+                        errorMessage = locale.failedToCreateReservation(error.message);
+                }
+                
+                return {
+                    success: false,
+                    message: errorMessage,
+                    conflictType
+                };
             }
 
         } else {
-            // Handle combined table booking with transaction-like approach
-            logger.info(`Proceeding with combined table booking using: ${selectedSlot.tableName}`);
+            // ✅ NEW: Handle combined table booking with atomic transaction for each table
+            logger.info(`Proceeding with atomic combined table booking using: ${selectedSlot.tableName}`);
             const primaryTableInfo = selectedSlot.constituentTables[0];
 
             try {
-                // Create primary reservation
+                // Create primary reservation atomically
                 const primaryReservationData: InsertReservation = {
                     restaurantId,
                     guestId,
@@ -342,12 +349,19 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     booking_guest_name: booking_guest_name,
                 };
 
-                primaryReservation = await storage.createReservation(primaryReservationData);
+                // ✅ NEW: Atomic primary reservation creation
+                primaryReservation = await storage.createReservationAtomic(primaryReservationData, {
+                    tableId: primaryTableInfo.id,
+                    time: selectedSlot.time,
+                    duration: slotDurationMinutes
+                });
+                
                 allCreatedReservationIds.push(primaryReservation.id);
-                createdReservations.push(primaryReservation);
-                logger.info(`✅ Primary Reservation ID ${primaryReservation.id} for combined booking (Table ${primaryTableInfo.name}) created.`);
+                logger.info(`✅ Atomic Primary Reservation ID ${primaryReservation.id} for combined booking (Table ${primaryTableInfo.name}) created.`);
 
-                // Create linked reservations
+                // Create linked reservations atomically
+                const createdReservations: SchemaReservation[] = [primaryReservation];
+                
                 for (let i = 1; i < selectedSlot.constituentTables.length; i++) {
                     const linkedTableInfo = selectedSlot.constituentTables[i];
                     const linkedReservationData: InsertReservation = {
@@ -365,14 +379,22 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     };
 
                     try {
-                        const linkedRes = await storage.createReservation(linkedReservationData);
+                        // ✅ NEW: Atomic linked reservation creation
+                        const linkedRes = await storage.createReservationAtomic(linkedReservationData, {
+                            tableId: linkedTableInfo.id,
+                            time: selectedSlot.time,
+                            duration: slotDurationMinutes
+                        });
+                        
                         allCreatedReservationIds.push(linkedRes.id);
                         createdReservations.push(linkedRes);
-                        logger.info(`✅ Linked Reservation ID ${linkedRes.id} for combined booking (Table ${linkedTableInfo.name}) created.`);
+                        logger.info(`✅ Atomic Linked Reservation ID ${linkedRes.id} for combined booking (Table ${linkedTableInfo.name}) created.`);
+                        
                     } catch (linkedError: any) {
-                        // ROLLBACK: Cancel all created reservations on failure
-                        logger.error(`Error creating linked reservation for table ${linkedTableInfo.name}, rolling back...`, linkedError);
+                        const conflictType = detectConflictType(linkedError);
+                        logger.error(`Error creating atomic linked reservation for table ${linkedTableInfo.name}, rolling back...`, linkedError);
 
+                        // ROLLBACK: Cancel all created reservations on failure
                         for (const createdRes of createdReservations) {
                             try {
                                 await storage.updateReservation(createdRes.id, { status: 'canceled' });
@@ -382,16 +404,32 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                             }
                         }
 
+                        let errorMessage: string;
+                        switch (conflictType) {
+                            case 'DEADLOCK':
+                                errorMessage = locale.deadlockDetected;
+                                break;
+                            case 'AVAILABILITY':
+                                errorMessage = locale.errorCreatingLinkedReservation(linkedTableInfo.name);
+                                break;
+                            case 'TRANSACTION':
+                                errorMessage = locale.transactionConflict;
+                                break;
+                            default:
+                                errorMessage = locale.errorCreatingLinkedReservation(linkedTableInfo.name);
+                        }
+
                         return {
                             success: false,
                             reservation: primaryReservation,
-                            message: locale.errorCreatingLinkedReservation(linkedTableInfo.name),
+                            message: errorMessage,
                             table: {
                                 id: primaryTableInfo.id,
                                 name: primaryTableInfo.name,
                                 isCombined: false,
                             },
                             allReservationIds: [], // Return empty array since we rolled back
+                            conflictType
                         };
                     }
                 }
@@ -408,8 +446,10 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     },
                     allReservationIds: allCreatedReservationIds,
                 };
-            } catch (error) {
-                logger.error('Failed to create combined reservation', error);
+
+            } catch (error: any) {
+                const conflictType = detectConflictType(error);
+                logger.error(`Failed to create atomic combined reservation: ${conflictType}`, error);
 
                 // Attempt to rollback any created reservations
                 for (const resId of allCreatedReservationIds) {
@@ -421,14 +461,37 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     }
                 }
 
-                throw error;
+                let errorMessage: string;
+                switch (conflictType) {
+                    case 'DEADLOCK':
+                        errorMessage = locale.deadlockDetected;
+                        break;
+                    case 'AVAILABILITY':
+                        errorMessage = locale.tableNoLongerAvailable;
+                        break;
+                    case 'TRANSACTION':
+                        errorMessage = locale.transactionConflict;
+                        break;
+                    default:
+                        errorMessage = locale.failedToCreateReservation(error.message);
+                }
+
+                return {
+                    success: false,
+                    message: errorMessage,
+                    conflictType
+                };
             }
         }
 
     } catch (error: unknown) {
         logger.error('Error during createReservation:', error);
         const errorMessage = error instanceof Error ? error.message : locale.unknownErrorCreating;
-        return { success: false, message: locale.failedToCreateReservation(errorMessage) };
+        return { 
+            success: false, 
+            message: locale.failedToCreateReservation(errorMessage),
+            conflictType: 'TRANSACTION'
+        };
     }
 }
 

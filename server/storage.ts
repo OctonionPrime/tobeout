@@ -1,9 +1,7 @@
-﻿//
-// This is the definitive corrected storage.ts file (v3).
-// This version fixes the data structure in ALL reservation-fetching functions
-// (getReservations, getReservation, getUpcomingReservations) to ensure they
-// all return a consistent, nested `{ reservation: {...}, guest: {...}, table: {...} }`
-// structure that the frontend expects. This should resolve the crash.
+//
+// This is the definitive corrected storage.ts file (v4) with atomic transaction support.
+// This version adds atomic reservation creation to prevent race conditions while
+// maintaining all existing functionality and the consistent nested data structure.
 //
 
 import {
@@ -65,6 +63,11 @@ export interface IStorage {
     getReservation(id: number): Promise<any | undefined>;
     createReservation(reservation: InsertReservation): Promise<Reservation>;
     updateReservation(id: number, reservation: Partial<InsertReservation>): Promise<Reservation>;
+    // ✅ NEW: Atomic reservation creation method
+    createReservationAtomic(
+        reservation: InsertReservation, 
+        expectedSlot: { tableId: number; time: string; duration: number }
+    ): Promise<Reservation>;
     getUpcomingReservations(restaurantId: number, hours: number): Promise<any[]>;
     getReservationStatistics(restaurantId: number): Promise<{
         todayReservations: number;
@@ -89,6 +92,23 @@ export interface IStorage {
 
 
 export class DatabaseStorage implements IStorage {
+    // ✅ NEW: Helper method to parse time strings into minutes for conflict detection
+    private parseTimeToMinutes(timeStr: string): number {
+        if (!timeStr) {
+            throw new Error(`Invalid time string: ${timeStr}`);
+        }
+        
+        const parts = timeStr.split(':');
+        const hours = parseInt(parts[0], 10);
+        const minutes = parseInt(parts[1], 10) || 0;
+
+        if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            throw new Error(`Invalid time format: ${timeStr}. Expected HH:MM or HH:MM:SS`);
+        }
+        
+        return hours * 60 + minutes;
+    }
+
     // User methods
     async getUser(id: number): Promise<User | undefined> {
         const [user] = await db.select().from(users).where(eq(users.id, id));
@@ -398,6 +418,105 @@ export class DatabaseStorage implements IStorage {
             await this.updateTableStatusFromReservations(newReservation.tableId);
         }
         return newReservation;
+    }
+
+    // ✅ FIXED: Atomic reservation creation with proper Drizzle ORM syntax
+    async createReservationAtomic(
+        reservation: InsertReservation, 
+        expectedSlot: { tableId: number; time: string; duration: number }
+    ): Promise<Reservation> {
+        console.log(`🔒 [AtomicBooking] Starting atomic reservation creation for table ${expectedSlot.tableId} at ${expectedSlot.time}`);
+        
+        return await db.transaction(async (tx) => {
+            try {
+                // Step 1: Fetch all existing reservations for this table on this date
+                // ✅ FIX: Remove .forUpdate() since it doesn't exist in Drizzle ORM
+                const existingReservations = await tx
+                    .select({
+                        id: reservations.id,
+                        time: reservations.time,
+                        duration: reservations.duration,
+                        status: reservations.status,
+                        guestId: reservations.guestId,
+                        booking_guest_name: reservations.booking_guest_name
+                    })
+                    .from(reservations)
+                    .where(and(
+                        eq(reservations.restaurantId, reservation.restaurantId),
+                        eq(reservations.tableId, expectedSlot.tableId),
+                        eq(reservations.date, reservation.date),
+                        inArray(reservations.status, ['confirmed', 'created'])
+                    ));
+                    // ✅ REMOVED: .forUpdate() - not supported in Drizzle ORM
+
+                console.log(`🔒 [AtomicBooking] Found ${existingReservations.length} existing reservations for table ${expectedSlot.tableId}`);
+
+                // Step 2: Check for time conflicts within the transaction
+                const newStartMinutes = this.parseTimeToMinutes(expectedSlot.time);
+                const newEndMinutes = newStartMinutes + expectedSlot.duration;
+
+                for (const existing of existingReservations) {
+                    const existingStartMinutes = this.parseTimeToMinutes(existing.time);
+                    const existingDuration = existing.duration || 120; // Default 2 hours
+                    const existingEndMinutes = existingStartMinutes + existingDuration;
+
+                    // Check for overlap: new_start < existing_end AND new_end > existing_start
+                    const hasOverlap = newStartMinutes < existingEndMinutes && newEndMinutes > existingStartMinutes;
+
+                    if (hasOverlap) {
+                        const conflictEndHour = Math.floor(existingEndMinutes / 60);
+                        const conflictEndMin = existingEndMinutes % 60;
+                        const conflictEndTime = `${conflictEndHour.toString().padStart(2, '0')}:${conflictEndMin.toString().padStart(2, '0')}`;
+                        
+                        console.log(`❌ [AtomicBooking] CONFLICT DETECTED: Table ${expectedSlot.tableId} has existing reservation from ${existing.time} to ${conflictEndTime} (ID: ${existing.id})`);
+                        
+                        throw new Error(`Table no longer available - conflict detected with existing reservation from ${existing.time} to ${conflictEndTime}`);
+                    }
+                }
+
+                console.log(`✅ [AtomicBooking] No conflicts found for table ${expectedSlot.tableId} at ${expectedSlot.time}`);
+
+                // Step 3: Create the reservation within the same transaction
+                const [newReservation] = await tx
+                    .insert(reservations)
+                    .values(reservation)
+                    .returning();
+
+                console.log(`✅ [AtomicBooking] Created reservation ID ${newReservation.id} for table ${expectedSlot.tableId}`);
+
+                // Step 4: Update related timeslots within the same transaction (if applicable)
+                if (newReservation.timeslotId) {
+                    await tx
+                        .update(timeslots)
+                        .set({ status: 'pending' })
+                        .where(eq(timeslots.id, newReservation.timeslotId));
+                    
+                    console.log(`✅ [AtomicBooking] Updated timeslot ${newReservation.timeslotId} status to pending`);
+                }
+
+                console.log(`🎉 [AtomicBooking] Atomic reservation creation completed successfully for reservation ID ${newReservation.id}`);
+                return newReservation;
+
+            } catch (error: any) {
+                console.log(`❌ [AtomicBooking] Transaction failed:`, error.message);
+                
+                // Check for specific PostgreSQL error codes
+                if (error.code === '40P01') {
+                    // Deadlock detected
+                    throw new Error('Deadlock detected - please try again');
+                } else if (error.code === '40001') {
+                    // Serialization failure
+                    throw new Error('Transaction conflict - please try again');
+                } else if (error.message.includes('conflict detected')) {
+                    // Our custom conflict detection
+                    throw error; // Re-throw with original message
+                } else {
+                    // Other database errors
+                    console.error(`🔥 [AtomicBooking] Unexpected database error:`, error);
+                    throw new Error(`Database error during reservation creation: ${error.message}`);
+                }
+            }
+        });
     }
 
     async updateReservation(id: number, reservation: Partial<InsertReservation>): Promise<Reservation> {

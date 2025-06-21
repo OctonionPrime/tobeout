@@ -576,6 +576,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ ENHANCED: Reservation creation with atomic transactions + granular cache invalidation + manual table selection
     app.post("/api/reservations", isAuthenticated, async (req, res, next) => {
         console.log('🔥 RESERVATION ENDPOINT HIT (POST /api/reservations)!');
         try {
@@ -601,41 +602,145 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Guest information processing failed." });
             }
 
-            const bookingResult = await createReservation({
-                restaurantId: restaurant.id,
-                guestId: guest.id,
-                date: date,
-                time: time,
-                guests: parseInt(numGuests as string),
-                comments: req.body.comments || '',
-                source: req.body.source || 'manual',
-                booking_guest_name: guestName, // Always use the name from the form for this specific booking
-                lang: req.body.lang || restaurant.languages?.[0] || 'en',
-            });
+            // ✅ ENHANCED: Atomic booking with granular cache invalidation + manual table selection
+            try {
+                const bookingResult = await createReservation({
+                    restaurantId: restaurant.id,
+                    guestId: guest.id,
+                    date: date,
+                    time: time,
+                    guests: parseInt(numGuests as string),
+                    comments: req.body.comments || '',
+                    source: req.body.source || 'manual',
+                    booking_guest_name: guestName, // Always use the name from the form for this specific booking
+                    lang: req.body.lang || restaurant.languages?.[0] || 'en',
+                    tableId: req.body.tableId || undefined, // ✅ NEW: Pass tableId for manual table selection
+                });
 
-            if (!bookingResult.success || !bookingResult.reservation) {
-                return res.status(400).json({
-                    message: bookingResult.message,
-                    details: 'Smart table assignment could not find available slot or booking failed'
+                if (!bookingResult.success || !bookingResult.reservation) {
+                    // ✅ ENHANCED: Sophisticated error handling with proper status codes
+                    let statusCode = 400;
+                    let errorType = 'VALIDATION_ERROR';
+
+                    if (bookingResult.conflictType) {
+                        switch (bookingResult.conflictType) {
+                            case 'AVAILABILITY':
+                                statusCode = 409; // Conflict
+                                errorType = 'TABLE_UNAVAILABLE';
+                                break;
+                            case 'DEADLOCK':
+                                statusCode = 503; // Service Temporarily Unavailable
+                                errorType = 'SYSTEM_BUSY';
+                                break;
+                            case 'TRANSACTION':
+                                statusCode = 409; // Conflict
+                                errorType = 'BOOKING_CONFLICT';
+                                break;
+                            default:
+                                statusCode = 400;
+                                errorType = 'VALIDATION_ERROR';
+                        }
+                    }
+
+                    console.log(`❌ [Reservation Creation] Failed with type ${errorType}:`, bookingResult.message);
+
+                    return res.status(statusCode).json({
+                        message: bookingResult.message,
+                        details: 'Smart table assignment could not find available slot or booking failed',
+                        errorType: errorType,
+                        conflictType: bookingResult.conflictType,
+                        retryable: statusCode === 503 || statusCode === 409, // Client can retry deadlocks and conflicts
+                        timestamp: new Date().toISOString()
+                    });
+                }
+
+                // ✅ SUCCESS: Granular cache invalidation instead of broad invalidation
+                CacheInvalidation.onReservationTimeRangeChange(
+                    restaurant.id, 
+                    date, 
+                    bookingResult.reservation.time,
+                    bookingResult.reservation.duration || 120
+                );
+
+                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with granular cache invalidation`);
+
+                return res.status(201).json({
+                    ...bookingResult.reservation,
+                    guestName: guestName,
+                    table: bookingResult.table,
+                    smartAssignment: true,
+                    allReservationIds: bookingResult.allReservationIds,
+                    timestamp: new Date().toISOString()
+                });
+
+            } catch (bookingError: any) {
+                // ✅ ENHANCED: Handle unexpected booking service errors with atomic transaction support
+                console.error('❌ [Reservation Creation] Unexpected booking service error:', bookingError);
+
+                // Check for database-specific errors
+                if (bookingError.code === '40P01') {
+                    // PostgreSQL deadlock
+                    return res.status(503).json({
+                        message: "System busy - please try your booking again in a moment",
+                        errorType: 'SYSTEM_BUSY',
+                        conflictType: 'DEADLOCK',
+                        retryable: true,
+                        timestamp: new Date().toISOString()
+                    });
+                } else if (bookingError.code?.startsWith('40')) {
+                    // Other PostgreSQL transaction conflicts
+                    return res.status(409).json({
+                        message: "Booking conflict detected - please try again",
+                        errorType: 'BOOKING_CONFLICT',
+                        conflictType: 'TRANSACTION',
+                        retryable: true,
+                        timestamp: new Date().toISOString()
+                    });
+                } else if (bookingError.message?.includes('no longer available')) {
+                    // Atomic availability conflict
+                    return res.status(409).json({
+                        message: bookingError.message,
+                        errorType: 'TABLE_UNAVAILABLE',
+                        conflictType: 'AVAILABILITY',
+                        retryable: true,
+                        timestamp: new Date().toISOString()
+                    });
+                } else {
+                    // Unknown error - don't expose internal details
+                    return res.status(500).json({
+                        message: "An unexpected error occurred while processing your reservation",
+                        errorType: 'INTERNAL_ERROR',
+                        retryable: false,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            }
+
+        } catch (error: any) {
+            // ✅ ENHANCED: Handle top-level route errors
+            console.error('❌ [Reservation Route] Top-level error:', error);
+
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ 
+                    message: "Validation failed", 
+                    errors: error.errors,
+                    errorType: 'VALIDATION_ERROR',
+                    retryable: false,
+                    timestamp: new Date().toISOString()
                 });
             }
 
-            CacheInvalidation.onReservationChange(restaurant.id, date);
-
-            return res.status(201).json({
-                ...bookingResult.reservation,
-                guestName: guestName,
-                table: bookingResult.table,
-                smartAssignment: true
+            // Log the full error for debugging but don't expose to client
+            return res.status(500).json({
+                message: "An unexpected error occurred",
+                errorType: 'INTERNAL_ERROR',
+                retryable: false,
+                timestamp: new Date().toISOString()
             });
-        } catch (error: any) {
-            if (error instanceof z.ZodError) {
-                return res.status(400).json({ message: "Validation failed", errors: error.errors });
-            }
-            next(error);
         }
     });
 
+    // ✅ ENHANCED: Reservation update with granular cache invalidation
     app.patch("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -653,9 +758,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const existingReservation = existingResult.reservation;
             const validatedData = insertReservationSchema.partial().parse(req.body);
 
-            CacheInvalidation.onReservationChange(restaurant.id, existingReservation.date);
+            // ✅ ENHANCED: Granular cache invalidation for existing reservation
+            CacheInvalidation.onReservationTimeRangeChange(
+                restaurant.id, 
+                existingReservation.date,
+                existingReservation.time,
+                existingReservation.duration || 120
+            );
+
+            // ✅ ENHANCED: Granular cache invalidation for new date/time if changed
             if (validatedData.date && validatedData.date !== existingReservation.date) {
-                CacheInvalidation.onReservationChange(restaurant.id, validatedData.date);
+                CacheInvalidation.onReservationTimeRangeChange(
+                    restaurant.id, 
+                    validatedData.date,
+                    validatedData.time || existingReservation.time,
+                    validatedData.duration || existingReservation.duration || 120
+                );
             }
 
             const updatedReservation = await storage.updateReservation(reservationId, validatedData);
@@ -669,7 +787,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // [FIX] Added missing reservation deletion endpoint
+    // ✅ ENHANCED: Reservation deletion with granular cache invalidation
     app.delete("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -691,8 +809,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // This is a "soft delete" and is generally safer than hard deleting records.
             await cancelReservation(reservationId, restaurant.languages?.[0] || 'en');
 
-            // Invalidate cache for the date of the canceled reservation
-            CacheInvalidation.onReservationChange(restaurant.id, existingReservation.date);
+            // ✅ ENHANCED: Granular cache invalidation for deleted reservation
+            CacheInvalidation.onReservationTimeRangeChange(
+                restaurant.id, 
+                existingReservation.date,
+                existingReservation.time,
+                existingReservation.duration || 120
+            );
 
             // Return a valid JSON object on success to prevent frontend parse errors
             res.json({ success: true, message: "Reservation canceled successfully." });
