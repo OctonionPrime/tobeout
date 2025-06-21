@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { db, pool } from "./db";
+import { db, pool, getDatabaseHealth } from "./db"; // ✅ ADDED: getDatabaseHealth import
 import {
     insertUserSchema, insertRestaurantSchema,
     insertTableSchema, insertGuestSchema,
@@ -977,6 +977,146 @@ export async function registerRoutes(app: Express): Promise<Server> {
             next(error);
         }
     });
+
+    // ===========================================
+    // MONITORING ENDPOINTS (No Authentication Required)
+    // ===========================================
+    
+    // Health check endpoint for monitoring tools (Uptime Robot, DataDog, etc.)
+    app.get("/api/health", async (req, res) => {
+        try {
+            const startTime = Date.now();
+            
+            // Get database health from existing function
+            const dbHealth = getDatabaseHealth();
+            
+            // Get basic application metrics
+            const uptime = process.uptime();
+            const memoryUsage = process.memoryUsage();
+            
+            // Test database connectivity with a simple query
+            let dbTestResult;
+            try {
+                const testQuery = await pool.query('SELECT NOW() as current_time, version() as version');
+                dbTestResult = {
+                    connected: true,
+                    responseTime: Date.now() - startTime,
+                    version: testQuery.rows[0]?.version || 'unknown'
+                };
+            } catch (dbError: any) {
+                dbTestResult = {
+                    connected: false,
+                    error: dbError.message,
+                    responseTime: Date.now() - startTime
+                };
+            }
+            
+            // Determine overall health status
+            const isHealthy = dbHealth.healthy && dbTestResult.connected;
+            const statusCode = isHealthy ? 200 : 503;
+            
+            // Create comprehensive health response
+            const healthResponse = {
+                status: isHealthy ? "healthy" : "unhealthy",
+                timestamp: new Date().toISOString(),
+                uptime: {
+                    seconds: uptime,
+                    human: `${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`
+                },
+                database: {
+                    healthy: dbHealth.healthy,
+                    connected: dbTestResult.connected,
+                    consecutiveFailures: dbHealth.consecutiveFailures,
+                    lastHealthCheck: dbHealth.lastHealthCheck,
+                    responseTime: dbTestResult.responseTime,
+                    connections: dbHealth.connections,
+                    version: dbTestResult.version || null,
+                    error: dbTestResult.error || null
+                },
+                application: {
+                    nodeVersion: process.version,
+                    environment: process.env.NODE_ENV || 'development',
+                    memory: {
+                        used: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+                        total: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+                        external: Math.round(memoryUsage.external / 1024 / 1024),
+                        rss: Math.round(memoryUsage.rss / 1024 / 1024)
+                    },
+                    pid: process.pid
+                },
+                checks: {
+                    database: dbTestResult.connected ? "pass" : "fail",
+                    memory: memoryUsage.heapUsed < (512 * 1024 * 1024) ? "pass" : "warn", // 512MB threshold
+                    uptime: uptime > 60 ? "pass" : "starting" // Consider healthy after 1 minute
+                }
+            };
+            
+            // Log health check for monitoring
+            if (!isHealthy) {
+                console.warn(`[Health] Health check failed: DB=${dbHealth.healthy}, Connected=${dbTestResult.connected}`);
+            }
+            
+            res.status(statusCode).json(healthResponse);
+            
+        } catch (error: any) {
+            console.error('[Health] Health check endpoint error:', error);
+            res.status(503).json({
+                status: "unhealthy",
+                timestamp: new Date().toISOString(),
+                error: "Health check failed",
+                message: error.message
+            });
+        }
+    });
+    
+    // Simple ping endpoint for basic uptime monitoring
+    app.get("/api/ping", (req, res) => {
+        res.json({
+            status: "ok",
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime()
+        });
+    });
+    
+    // Database-specific health endpoint
+    app.get("/api/health/database", async (req, res) => {
+        try {
+            const startTime = Date.now();
+            const dbHealth = getDatabaseHealth();
+            
+            // Test actual database query
+            const testResult = await pool.query('SELECT NOW() as time, current_database() as db_name');
+            const responseTime = Date.now() - startTime;
+            
+            const response = {
+                healthy: true,
+                timestamp: new Date().toISOString(),
+                database: {
+                    name: testResult.rows[0]?.db_name,
+                    serverTime: testResult.rows[0]?.time,
+                    responseTime,
+                    connections: dbHealth.connections,
+                    consecutiveFailures: dbHealth.consecutiveFailures,
+                    lastHealthCheck: dbHealth.lastHealthCheck
+                }
+            };
+            
+            res.status(200).json(response);
+            
+        } catch (error: any) {
+            console.error('[Health] Database health check failed:', error);
+            res.status(503).json({
+                healthy: false,
+                timestamp: new Date().toISOString(),
+                error: error.message,
+                database: getDatabaseHealth()
+            });
+        }
+    });
+
+    // ===========================================
+    // END MONITORING ENDPOINTS
+    // ===========================================
 
     // START: TEMPORARY DEBUG ROUTES
     app.get("/api/debug/data-consistency", isAuthenticated, async (req, res, next) => {
