@@ -4,22 +4,28 @@ import { format } from "date-fns";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ReservationModal } from "@/components/reservations/ReservationModal";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Plus, Calendar as CalendarIcon, Edit, Trash2, UserCheck, XCircle, Phone, Mail } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { 
+    Search, Plus, Calendar as CalendarIcon, Edit, Phone, Mail, 
+    UserCheck, XCircle, Users, MoreHorizontal, AlertCircle,
+    Clock, RefreshCw
+} from "lucide-react";
 import { RollingCalendar } from "@/components/ui/rolling-calendar";
 
 const restaurantId = 1;
 
 export default function Reservations() {
+    // ✅ ENHANCED STATE MANAGEMENT
     const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
     const [dateRangeFilter, setDateRangeFilter] = useState<{
         type: 'default' | 'today' | 'thisWeek' | 'nextWeek' | 'custom';
@@ -31,15 +37,55 @@ export default function Reservations() {
     const [statusFilter, setStatusFilter] = useState<string>("all");
     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
     const [selectedReservationId, setSelectedReservationId] = useState<number | undefined>(undefined);
-    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-    const [reservationToDelete, setReservationToDelete] = useState<number | undefined>(undefined);
-    const [activeTab, setActiveTab] = useState("upcoming");
     const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+    
+    // ✅ NEW: Smart Restaurant Tabs State
+    const [activeSmartTab, setActiveSmartTab] = useState("attention");
 
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
-    // ✅ FIXED: Week range calculations using Moscow timezone
+    // ✅ SMART RESTAURANT TABS CONFIGURATION
+    const smartTabs = [
+        {
+            id: "attention",
+            label: "⚠️ Needs Attention", 
+            description: "AI bookings + Late arrivals",
+            priority: "critical" as const
+        },
+        {
+            id: "active", 
+            label: "🔥 Dining Now",
+            description: "Currently at tables",
+            priority: "high" as const
+        },
+        {
+            id: "arriving",
+            label: "⏰ Arriving Soon", 
+            description: "Next 2 hours",
+            priority: "medium" as const
+        },
+        {
+            id: "completed",
+            label: "✅ Done Today",
+            description: "Finished dining", 
+            priority: "low" as const
+        },
+        {
+            id: "upcoming",
+            label: "📅 Tomorrow+",
+            description: "Future confirmed",
+            priority: "low" as const
+        }
+    ];
+
+    // ✅ MOSCOW TIMEZONE UTILITIES
+    const getMoscowDate = () => {
+        const now = new Date();
+        const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
+        return moscowTime;
+    };
+
     const getCurrentWeekRange = () => {
         const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
         const today = new Date(moscowTime);
@@ -59,7 +105,7 @@ export default function Reservations() {
         return { start: nextWeekStart, end: nextWeekEnd };
     };
 
-    // ✅ FIX: Improved API call with better error handling
+    // ✅ DATA FETCHING
     const { data: reservations, isLoading, error } = useQuery({
         queryKey: ["/api/reservations"],
         queryFn: async () => {
@@ -81,7 +127,6 @@ export default function Reservations() {
         refetchOnWindowFocus: true,
     });
 
-    // ✅ FIX: Get restaurant data
     const { data: restaurant } = useQuery({
         queryKey: ["/api/restaurants/profile"],
         queryFn: async () => {
@@ -92,75 +137,402 @@ export default function Reservations() {
         staleTime: 10 * 60 * 1000, // 10 minutes
     });
 
-    // ✅ FIX: Moscow timezone handling
+    // ✅ SMART TAB FILTERING LOGIC
+    const getSmartTabReservations = (tabId: string, allReservations: any[]) => {
+        const moscowNow = getMoscowDate();
+        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
+        
+        return allReservations.filter(reservationData => {
+            const reservation = reservationData.reservation || reservationData;
+            const reservationDate = reservation.date;
+            const reservationTime = reservation.time;
+            const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+            const duration = reservation.duration || 120;
+            const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
+            
+            switch (tabId) {
+                case "attention":
+                    // AI bookings needing confirmation + Late arrivals
+                    return (
+                        reservation.status === 'created' || // AI bookings
+                        (reservation.status === 'confirmed' && 
+                         reservationDate === todayDateString && 
+                         reservationDateTime <= moscowNow && // Should have arrived
+                         endDateTime > moscowNow && // Still dining period
+                         (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000) // 15min late
+                    );
+                
+                case "active":
+                    // Currently dining (arrival time <= now <= end time)
+                    return (
+                        reservation.status === 'confirmed' &&
+                        reservationDate === todayDateString &&
+                        reservationDateTime <= moscowNow &&
+                        endDateTime > moscowNow
+                    );
+                
+                case "arriving":
+                    // Next 2 hours today
+                    return (
+                        reservation.status === 'confirmed' &&
+                        reservationDate === todayDateString &&
+                        reservationDateTime > moscowNow &&
+                        reservationDateTime <= new Date(moscowNow.getTime() + 2 * 60 * 60 * 1000)
+                    );
+                
+                case "completed":
+                    // Finished today or marked completed
+                    return (
+                        (reservation.status === 'completed') ||
+                        (reservationDate === todayDateString && endDateTime < moscowNow)
+                    );
+                
+                case "upcoming":
+                    // Future dates (tomorrow and beyond)
+                    return (
+                        reservation.status === 'confirmed' &&
+                        reservationDate > todayDateString
+                    );
+                
+                default:
+                    return true;
+            }
+        });
+    };
+
+    // ✅ SMART ACTION BUTTONS LOGIC
+    const getSmartActions = (reservation: any, guest: any) => {
+        const status = reservation.status;
+        const reservationDate = reservation.date;
+        const reservationTime = reservation.time;
+        const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+        const duration = reservation.duration || 120;
+        const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
+        const moscowNow = getMoscowDate();
+        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
+        
+        const isToday = reservationDate === todayDateString;
+        const isPast = reservationDate < todayDateString;
+        const isFuture = reservationDate > todayDateString;
+        
+        // Time-based status for today's reservations
+        const hasArrived = isToday && reservationDateTime <= moscowNow;
+        const isLate = isToday && hasArrived && (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000;
+        const isDining = isToday && hasArrived && endDateTime > moscowNow;
+        const hasFinished = isToday && endDateTime < moscowNow;
+        const isArriving = isToday && !hasArrived && reservationDateTime <= new Date(moscowNow.getTime() + 2 * 60 * 60 * 1000);
+
+        const actions = [];
+
+        // ✅ CORE ACTIONS - Always available
+        if (guest.phone) {
+            actions.push({
+                type: "phone",
+                label: "Call",
+                icon: Phone,
+                action: () => window.open(`tel:${guest.phone}`, '_self'),
+                variant: "outline" as const,
+                priority: "low" as const
+            });
+        }
+
+        if (guest.email) {
+            actions.push({
+                type: "email", 
+                label: "Email",
+                icon: Mail,
+                action: () => window.open(`mailto:${guest.email}`, '_self'),
+                variant: "outline" as const,
+                priority: "low" as const
+            });
+        }
+
+        actions.push({
+            type: "edit",
+            label: "Edit",
+            icon: Edit,
+            action: () => {
+                setSelectedReservationId(reservation.id);
+                setIsReservationModalOpen(true);
+            },
+            variant: "outline" as const,
+            priority: "medium" as const
+        });
+
+        // ✅ WORKFLOW-SPECIFIC ACTIONS - Based on status and timing
+        
+        // AI Booking Confirmation (status = created)
+        if (status === 'created') {
+            actions.unshift({
+                type: "confirm",
+                label: "✅ Confirm AI Booking",
+                icon: UserCheck,
+                action: () => handleConfirmReservation(reservation.id),
+                variant: "default" as const,
+                priority: "critical" as const,
+                className: "bg-green-600 hover:bg-green-700 text-white"
+            });
+        }
+
+        // Arrival Management (today's confirmed reservations)
+        if (status === 'confirmed' && isToday) {
+            if (!hasArrived && isArriving) {
+                // Arriving soon - prepare
+                actions.unshift({
+                    type: "prepare",
+                    label: "🍽️ Prepare Table",
+                    icon: Users,
+                    action: () => toast({ title: "Table Preparation", description: "Mark table as being prepared" }),
+                    variant: "default" as const,
+                    priority: "high" as const,
+                    className: "bg-blue-600 hover:bg-blue-700 text-white"
+                });
+            } else if (hasArrived && !isDining) {
+                // Should have arrived - mark as arrived
+                actions.unshift({
+                    type: "arrived",
+                    label: isLate ? "⚠️ Mark Arrived (Late)" : "👋 Mark Arrived",
+                    icon: UserCheck,
+                    action: () => toast({ title: "Guest Arrived", description: "Guest marked as arrived" }),
+                    variant: isLate ? "destructive" : "default" as const,
+                    priority: "critical" as const
+                });
+            } else if (isDining) {
+                // Currently dining - mark as completed
+                actions.unshift({
+                    type: "complete",
+                    label: "✅ Mark Completed",
+                    icon: Users,
+                    action: () => {
+                        handleStatusUpdate(reservation.id, 'completed');
+                    },
+                    variant: "default" as const,
+                    priority: "medium" as const,
+                    className: "bg-green-600 hover:bg-green-700 text-white"
+                });
+            }
+            
+            // Late arrival - option to mark as no-show
+            if (isLate && !isDining) {
+                actions.push({
+                    type: "noshow",
+                    label: "❌ Mark No-Show",
+                    icon: XCircle,
+                    action: () => {
+                        if (confirm("Mark this reservation as no-show? This cannot be undone.")) {
+                            handleStatusUpdate(reservation.id, 'canceled');
+                        }
+                    },
+                    variant: "destructive" as const,
+                    priority: "medium" as const
+                });
+            }
+        }
+
+        // Future reservations (tomorrow+)
+        if (status === 'confirmed' && isFuture) {
+            actions.push({
+                type: "cancel",
+                label: "Cancel",
+                icon: XCircle,
+                action: () => handleCancelReservation(reservation.id),
+                variant: "outline" as const,
+                priority: "low" as const,
+                className: "text-red-600 hover:text-red-700 border-red-200 hover:border-red-300"
+            });
+        }
+
+        // Past reservations - limited actions
+        if (isPast || hasFinished) {
+            return actions.filter(action => ['phone', 'email', 'edit'].includes(action.type));
+        }
+
+        return actions;
+    };
+
+    // ✅ SMART ACTION BUTTONS COMPONENT
+    const SmartActionButtons = ({ reservation, guest }: { reservation: any, guest: any }) => {
+        const actions = getSmartActions(reservation, guest);
+        
+        // Sort by priority: critical > high > medium > low
+        const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+        const sortedActions = actions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+        
+        // Show max 4 actions, prioritize by importance
+        const visibleActions = sortedActions.slice(0, 4);
+        const hiddenActions = sortedActions.slice(4);
+        
+        return (
+            <div className="flex items-center space-x-2">
+                {/* Primary actions */}
+                {visibleActions.map((action) => (
+                    <Button
+                        key={action.type}
+                        variant={action.variant}
+                        size="sm"
+                        onClick={action.action}
+                        className={cn(action.className)}
+                        title={action.label}
+                    >
+                        <action.icon className="h-4 w-4" />
+                        <span className="sr-only">{action.label}</span>
+                    </Button>
+                ))}
+                
+                {/* Overflow menu for additional actions */}
+                {hiddenActions.length > 0 && (
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm">
+                                <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                            {hiddenActions.map((action) => (
+                                <DropdownMenuItem
+                                    key={action.type}
+                                    onClick={action.action}
+                                    className="flex items-center gap-2"
+                                >
+                                    <action.icon className="h-4 w-4" />
+                                    {action.label}
+                                </DropdownMenuItem>
+                            ))}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                )}
+            </div>
+        );
+    };
+
+    // ✅ ENHANCED STATUS BADGE
+    const SmartStatusBadge = ({ reservation }: { reservation: any }) => {
+        const status = reservation.status;
+        const reservationDate = reservation.date;
+        const reservationTime = reservation.time;
+        const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+        const duration = reservation.duration || 120;
+        const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
+        const moscowNow = getMoscowDate();
+        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
+        
+        const isToday = reservationDate === todayDateString;
+        const hasArrived = isToday && reservationDateTime <= moscowNow;
+        const isLate = isToday && hasArrived && (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000;
+        const isDining = isToday && hasArrived && endDateTime > moscowNow;
+        
+        // Enhanced status with context
+        if (status === 'created') {
+            return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">🤖 AI Booking</Badge>;
+        }
+        
+        if (status === 'confirmed' && isToday) {
+            if (isDining) {
+                return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">🍽️ Dining Now</Badge>;
+            } else if (isLate) {
+                return <Badge className="bg-red-100 text-red-800 hover:bg-red-100">⚠️ Late Arrival</Badge>;
+            } else if (hasArrived) {
+                return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">👋 Arrived</Badge>;
+            }
+        }
+        
+        // Fall back to standard status badges
+        return renderStatusBadge(status);
+    };
+
+    // ✅ STANDARD STATUS BADGE FUNCTION
+    const renderStatusBadge = (status: string) => {
+        switch (status) {
+            case 'confirmed':
+                return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">🟢 Confirmed</Badge>;
+            case 'created':
+                return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">🟡 Pending</Badge>;
+            case 'canceled':
+                return <Badge className="bg-red-100 text-red-800 hover:bg-red-100">🔴 Cancelled</Badge>;
+            case 'completed':
+                return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">✅ Completed</Badge>;
+            default:
+                return <Badge>{status}</Badge>;
+        }
+    };
+
+    // ✅ SMART TAB COMPONENT
+    const SmartTabButton = ({ tab, isActive, count, onClick }: {
+        tab: typeof smartTabs[0],
+        isActive: boolean,
+        count: number,
+        onClick: () => void
+    }) => (
+        <Button
+            variant={isActive ? "default" : "outline"}
+            onClick={onClick}
+            className={cn(
+                "relative flex-1 min-w-0 h-auto py-3",
+                tab.priority === "critical" && !isActive && "border-orange-200 hover:border-orange-300",
+                tab.priority === "critical" && isActive && "bg-orange-600 hover:bg-orange-700",
+                tab.priority === "high" && !isActive && "border-blue-200 hover:border-blue-300",
+                tab.priority === "high" && isActive && "bg-blue-600 hover:bg-blue-700"
+            )}
+        >
+            <div className="text-center min-w-0 w-full">
+                <div className="flex items-center justify-center gap-1 mb-1">
+                    <span className="truncate text-sm font-medium">{tab.label}</span>
+                    {count > 0 && (
+                        <Badge 
+                            variant={isActive ? "secondary" : "outline"}
+                            className="ml-1 text-xs px-1.5 min-w-[1.5rem] h-5"
+                        >
+                            {count}
+                        </Badge>
+                    )}
+                </div>
+                <div className="text-xs opacity-75 truncate">
+                    {tab.description}
+                </div>
+            </div>
+        </Button>
+    );
+
+    // ✅ FILTERING LOGIC - Apply additional filters to smart tab results
     const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
     const moscowDate = new Date(moscowTime);
     const todayDateString = format(moscowDate, 'yyyy-MM-dd');
 
-    // ✅ FIXED: Smart datetime-based filtering logic with proper date range support
-    const filteredReservations = reservations ? reservations.filter((reservationData: any) => {
-        // Extract the nested reservation object
+    // Get smart tab filtered reservations
+    const smartFilteredReservations = reservations 
+        ? getSmartTabReservations(activeSmartTab, reservations)
+        : [];
+
+    // Apply additional filters (search, status, date) to smart filtered results
+    const finalFilteredReservations = smartFilteredReservations.filter((reservationData: any) => {
         const reservation = reservationData.reservation || reservationData;
         const guest = reservationData.guest || reservation.guest || {};
         
-        // ✅ NEW: Smart datetime-based filtering
-        const reservationDate = reservation.date;
-        const reservationTime = reservation.time;
-        const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
-        const duration = reservation.duration || 120; // Default 2 hours
-        const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
-        
-        let timeMatch = true;
-        if (activeTab === "upcoming") {
-            // ✅ FIX: Future reservations (tomorrow and beyond) OR today's future reservations
-            if (reservationDate > todayDateString) {
-                timeMatch = true; // Future dates = always upcoming
-            } else if (reservationDate === todayDateString) {
-                timeMatch = reservationDateTime > moscowDate; // Today but not started yet
-            } else {
-                timeMatch = false; // Past dates = never upcoming
-            }
-        } else if (activeTab === "past") {
-            // ✅ FIX: Past dates OR today's completed reservations
-            if (reservationDate < todayDateString) {
-                timeMatch = true; // Past dates = always past
-            } else if (reservationDate === todayDateString) {
-                timeMatch = endDateTime < moscowDate; // Today but already finished
-            } else {
-                timeMatch = false; // Future dates = never past
-            }
-        }
-        // activeTab === "all" keeps timeMatch = true
-
-        // Status filtering - works independently of time filter
+        // Status filtering
         let statusMatch = true;
         if (statusFilter !== "all") {
             statusMatch = reservation.status === statusFilter;
         }
 
-        // ✅ FIXED: Date filtering that handles both single dates and date ranges
+        // Date filtering
         let dateMatch = true;
         if (dateRangeFilter.type !== 'default') {
             if (dateRangeFilter.type === 'today') {
-                // Today only
                 dateMatch = reservation.date === todayDateString;
             } else if (dateRangeFilter.type === 'thisWeek' || dateRangeFilter.type === 'nextWeek') {
-                // Week range filtering
                 if (dateRangeFilter.startDate && dateRangeFilter.endDate) {
                     const startDateString = format(dateRangeFilter.startDate, 'yyyy-MM-dd');
                     const endDateString = format(dateRangeFilter.endDate, 'yyyy-MM-dd');
                     dateMatch = reservation.date >= startDateString && reservation.date <= endDateString;
                 }
             } else if (dateRangeFilter.type === 'custom' && selectedDate) {
-                // Custom single date selection
                 dateMatch = reservation.date === format(selectedDate, 'yyyy-MM-dd');
             }
         } else if (selectedDate) {
-            // Fallback: single date selection when no range filter is active
             dateMatch = reservation.date === format(selectedDate, 'yyyy-MM-dd');
         }
 
-        // Search filtering - ✅ FIXED: Access nested guest object
+        // Search filtering
         let searchMatch = true;
         if (searchQuery) {
             const searchLower = searchQuery.toLowerCase();
@@ -170,16 +542,22 @@ export default function Reservations() {
                 (reservation.comments || '').toLowerCase().includes(searchLower);
         }
 
-        return timeMatch && statusMatch && dateMatch && searchMatch;
-    }) : [];
+        return statusMatch && dateMatch && searchMatch;
+    });
 
-    // ✅ FIX: Get today's statistics properly
+    // Calculate tab counts
+    const tabCounts = smartTabs.reduce((acc, tab) => {
+        acc[tab.id] = getSmartTabReservations(tab.id, reservations || []).length;
+        return acc;
+    }, {} as Record<string, number>);
+
+    // Get today's statistics
     const todayReservations = reservations ? reservations.filter((reservationData: any) => {
         const reservation = reservationData.reservation || reservationData;
         return reservation.date === todayDateString && reservation.status !== 'canceled';
     }) : [];
 
-    // Mutations for reservation management
+    // ✅ MUTATION HANDLERS
     const confirmReservationMutation = useMutation({
         mutationFn: async (id: number) => {
             const response = await apiRequest("PATCH", `/api/reservations/${id}`, {
@@ -234,22 +612,30 @@ export default function Reservations() {
         cancelReservationMutation.mutate(id);
     };
 
-    const renderStatusBadge = (status: string) => {
-        switch (status) {
-            case 'confirmed':
-                return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">🟢 Confirmed</Badge>;
-            case 'created':
-                return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">🟡 Pending</Badge>;
-            case 'canceled':
-                return <Badge className="bg-red-100 text-red-800 hover:bg-red-100">🔴 Cancelled</Badge>;
-            case 'completed':
-                return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">✅ Completed</Badge>;
-            default:
-                return <Badge>{status}</Badge>;
+    const handleStatusUpdate = async (reservationId: number, newStatus: string) => {
+        try {
+            const response = await apiRequest("PATCH", `/api/reservations/${reservationId}`, {
+                status: newStatus
+            });
+            
+            if (!response.ok) throw new Error('Failed to update status');
+            
+            toast({
+                title: "Status Updated",
+                description: `Reservation marked as ${newStatus}`,
+            });
+            
+            queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+        } catch (error: any) {
+            toast({
+                title: "Error",
+                description: `Failed to update status: ${error.message}`,
+                variant: "destructive",
+            });
         }
     };
 
-    // ✅ FIX: Show loading and error states
+    // Handle loading and error states
     if (error) {
         return (
             <DashboardLayout>
@@ -268,17 +654,15 @@ export default function Reservations() {
     return (
         <DashboardLayout>
             <div className="px-4 py-6 lg:px-8">
-                {/* Header with Moscow Time Display */}
+                {/* ✅ ENHANCED HEADER */}
                 <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
                     <div>
-                        <h1 className="text-2xl font-bold text-gray-900">Reservations</h1>
+                        <h1 className="text-2xl font-bold text-gray-900">Reservations Management</h1>
                         <p className="mt-1 text-sm text-gray-500">
                             {restaurant?.name || 'Restaurant'} Moscow Time: {format(moscowDate, 'PPp')}
                         </p>
-                        {/* ✅ FIXED: Enhanced status display with all filters */}
                         <p className="text-xs text-gray-400">
-                            Showing {filteredReservations.length} reservations 
-                            {activeTab !== 'all' && ` • ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}`}
+                            Showing {finalFilteredReservations.length} reservations 
                             {statusFilter !== 'all' && ` • Status: ${statusFilter}`}
                             {dateRangeFilter.type !== 'default' && ` • ${dateRangeFilter.displayText}`}
                             {selectedDate && dateRangeFilter.type === 'default' && ` • ${format(selectedDate, 'MMM d, yyyy')}`}
@@ -293,42 +677,37 @@ export default function Reservations() {
                 </header>
 
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-                    {/* Sidebar Filters */}
+                    {/* ✅ ENHANCED SIDEBAR FILTERS */}
                     <div className="lg:col-span-1">
                         <Card>
                             <CardHeader>
                                 <CardTitle>Filters</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-6">
-                                {/* Tab Selection */}
+                                {/* ✅ SMART RESTAURANT TABS */}
                                 <div>
-                                    <label className="text-sm font-medium text-gray-700">Time Period</label>
-                                    <div className="mt-2 flex space-x-1">
-                                        <Button
-                                            variant={activeTab === "upcoming" ? "default" : "outline"}
-                                            size="sm"
-                                            onClick={() => setActiveTab("upcoming")}
-                                            className="flex-1 text-xs"
-                                        >
-                                            Upcoming
-                                        </Button>
-                                        <Button
-                                            variant={activeTab === "past" ? "default" : "outline"}
-                                            size="sm"
-                                            onClick={() => setActiveTab("past")}
-                                            className="flex-1 text-xs"
-                                        >
-                                            Past
-                                        </Button>
-                                        <Button
-                                            variant={activeTab === "all" ? "default" : "outline"}
-                                            size="sm"
-                                            onClick={() => setActiveTab("all")}
-                                            className="flex-1 text-xs"
-                                        >
-                                            All
-                                        </Button>
+                                    <label className="text-sm font-medium text-gray-700 mb-3 block">Restaurant Workflow</label>
+                                    <div className="grid grid-cols-1 gap-2">
+                                        {smartTabs.map(tab => (
+                                            <SmartTabButton
+                                                key={tab.id}
+                                                tab={tab}
+                                                isActive={activeSmartTab === tab.id}
+                                                count={tabCounts[tab.id]}
+                                                onClick={() => setActiveSmartTab(tab.id)}
+                                            />
+                                        ))}
                                     </div>
+                                    
+                                    {/* Priority notifications */}
+                                    {tabCounts.attention > 0 && activeSmartTab !== "attention" && (
+                                        <Alert className="border-orange-200 bg-orange-50 mt-3">
+                                            <AlertCircle className="h-4 w-4 text-orange-600" />
+                                            <AlertDescription className="text-orange-800">
+                                                {tabCounts.attention} reservation{tabCounts.attention > 1 ? 's' : ''} need{tabCounts.attention === 1 ? 's' : ''} your attention
+                                            </AlertDescription>
+                                        </Alert>
+                                    )}
                                 </div>
 
                                 {/* Status Filter */}
@@ -348,7 +727,7 @@ export default function Reservations() {
                                     </Select>
                                 </div>
 
-                                {/* ✅ FIXED: Date Selection with proper week functionality */}
+                                {/* Date Selection */}
                                 <div>
                                     <label className="text-sm font-medium text-gray-700">Date Selection</label>
                                     <div className="mt-2 space-y-3">
@@ -452,7 +831,7 @@ export default function Reservations() {
                             </CardContent>
                         </Card>
 
-                        {/* ✅ FIXED: Today's Statistics using proper filtered data */}
+                        {/* Today's Statistics */}
                         <Card className="mt-4">
                             <CardHeader>
                                 <CardTitle>Today's Overview</CardTitle>
@@ -475,29 +854,43 @@ export default function Reservations() {
                                             {todayReservations.filter((r: any) => (r.reservation || r).status === 'created').length}
                                         </span>
                                     </div>
+                                    <div className="flex justify-between text-sm">
+                                        <span>Need Attention:</span>
+                                        <span className="font-medium text-orange-600">
+                                            {tabCounts.attention}
+                                        </span>
+                                    </div>
                                 </div>
                             </CardContent>
                         </Card>
                     </div>
 
-                    {/* Main Reservation List */}
+                    {/* ✅ MAIN RESERVATION LIST */}
                     <div className="lg:col-span-3">
                         <Card>
                             <CardHeader>
-                                <CardTitle>
-                                    {activeTab === 'upcoming' ? 'Upcoming' : activeTab === 'past' ? 'Past' : 'All'} Reservations
-                                </CardTitle>
+                                <div className="flex items-center justify-between">
+                                    <CardTitle>
+                                        {smartTabs.find(t => t.id === activeSmartTab)?.label || 'Reservations'} 
+                                        {finalFilteredReservations.length > 0 && (
+                                            <Badge variant="outline" className="ml-2">
+                                                {finalFilteredReservations.length}
+                                            </Badge>
+                                        )}
+                                    </CardTitle>
+                                    {isLoading && (
+                                        <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
+                                    )}
+                                </div>
                             </CardHeader>
                             <CardContent>
                                 {isLoading ? (
                                     <div className="flex justify-center py-8">
                                         <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-900 border-t-transparent"></div>
                                     </div>
-                                ) : filteredReservations.length > 0 ? (
+                                ) : finalFilteredReservations.length > 0 ? (
                                     <div className="space-y-4">
-                                        {/* ✅ FIXED: Handle nested reservation structure in JSX */}
-                                        {filteredReservations.map((reservationData: any) => {
-                                            // Extract the nested objects
+                                        {finalFilteredReservations.map((reservationData: any) => {
                                             const reservation = reservationData.reservation || reservationData;
                                             const guest = reservationData.guest || reservation.guest || {};
                                             const table = reservationData.table || reservation.table || {};
@@ -523,7 +916,8 @@ export default function Reservations() {
                                                         {/* Reservation Details */}
                                                         <div className="flex items-center space-x-6">
                                                             <div className="text-center">
-                                                                <p className="text-sm font-medium text-gray-900">
+                                                                <p className="text-sm font-medium text-gray-900 flex items-center gap-1">
+                                                                    <Clock className="h-4 w-4" />
                                                                     {format(new Date(`${reservation.date}T${reservation.time}`), 'HH:mm')}
                                                                 </p>
                                                                 <p className="text-xs text-gray-500">
@@ -535,73 +929,18 @@ export default function Reservations() {
                                                                 <p className="text-sm font-medium text-gray-900">
                                                                     {table.name || `Table ${reservation.tableId}` || 'Table not assigned'}
                                                                 </p>
-                                                                <p className="text-xs text-gray-500">{reservation.guests} guests</p>
+                                                                <p className="text-xs text-gray-500 flex items-center gap-1">
+                                                                    <Users className="h-3 w-3" />
+                                                                    {reservation.guests} guests
+                                                                </p>
                                                             </div>
 
                                                             <div>
-                                                                {renderStatusBadge(reservation.status)}
+                                                                <SmartStatusBadge reservation={reservation} />
                                                             </div>
 
-                                                            {/* Action Buttons - ✅ FIXED: Use correct guest object */}
-                                                            <div className="flex space-x-2">
-                                                                {guest.phone && (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => window.open(`tel:${guest.phone}`, '_self')}
-                                                                        title="Call guest"
-                                                                    >
-                                                                        <Phone className="h-4 w-4" />
-                                                                    </Button>
-                                                                )}
-
-                                                                {guest.email && (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => window.open(`mailto:${guest.email}`, '_self')}
-                                                                        title="Email guest"
-                                                                    >
-                                                                        <Mail className="h-4 w-4" />
-                                                                    </Button>
-                                                                )}
-
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    onClick={() => {
-                                                                        setSelectedReservationId(reservation.id);
-                                                                        setIsReservationModalOpen(true);
-                                                                    }}
-                                                                    title="Edit reservation"
-                                                                >
-                                                                    <Edit className="h-4 w-4" />
-                                                                </Button>
-
-                                                                {reservation.status === 'created' && (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => handleConfirmReservation(reservation.id)}
-                                                                        className="text-green-600 hover:text-green-700"
-                                                                        title="Confirm reservation"
-                                                                    >
-                                                                        <UserCheck className="h-4 w-4" />
-                                                                    </Button>
-                                                                )}
-
-                                                                {reservation.status !== 'canceled' && (
-                                                                    <Button
-                                                                        variant="outline"
-                                                                        size="sm"
-                                                                        onClick={() => handleCancelReservation(reservation.id)}
-                                                                        className="text-red-600 hover:text-red-700"
-                                                                        title="Cancel reservation"
-                                                                    >
-                                                                        <XCircle className="h-4 w-4" />
-                                                                    </Button>
-                                                                )}
-                                                            </div>
+                                                            {/* ✅ SMART ACTION BUTTONS */}
+                                                            <SmartActionButtons reservation={reservation} guest={guest} />
                                                         </div>
                                                     </div>
 
@@ -622,8 +961,8 @@ export default function Reservations() {
                                         <CalendarIcon className="mx-auto h-12 w-12 text-gray-400" />
                                         <h3 className="mt-2 text-sm font-medium text-gray-900">No reservations found</h3>
                                         <p className="mt-1 text-sm text-gray-500">
-                                            {searchQuery || statusFilter !== 'all' || activeTab !== 'all'
-                                                ? 'Try adjusting your filters'
+                                            {searchQuery || statusFilter !== 'all' || activeSmartTab !== 'upcoming'
+                                                ? 'Try adjusting your filters or tab selection'
                                                 : 'Get started by creating a new reservation.'}
                                         </p>
                                     </div>
@@ -633,7 +972,7 @@ export default function Reservations() {
                     </div>
                 </div>
 
-                {/* Calendar Selection Modal */}
+                {/* ✅ CALENDAR SELECTION MODAL */}
                 <Dialog open={isCalendarModalOpen} onOpenChange={setIsCalendarModalOpen}>
                     <DialogContent className="max-w-4xl">
                         <DialogHeader>
@@ -654,7 +993,7 @@ export default function Reservations() {
                                         setIsCalendarModalOpen(false);
                                     }
                                 }}
-                                capacityData={{}} // ✅ Empty for now to avoid build issues
+                                capacityData={{}}
                             />
                             <div className="mt-4 text-center text-sm text-gray-600">
                                 💡 Click dates to select, Ctrl+Click for multiple dates
@@ -663,7 +1002,7 @@ export default function Reservations() {
                     </DialogContent>
                 </Dialog>
 
-                {/* Reservation Modal */}
+                {/* ✅ RESERVATION MODAL */}
                 <ReservationModal
                     isOpen={isReservationModalOpen}
                     onClose={() => {
@@ -673,34 +1012,7 @@ export default function Reservations() {
                     reservationId={selectedReservationId}
                     restaurantId={restaurantId}
                 />
-
-                {/* Delete Confirmation Dialog */}
-                <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-                    <AlertDialogContent>
-                        <AlertDialogHeader>
-                            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                                This action cannot be undone. This will permanently cancel the reservation.
-                            </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction
-                                onClick={() => {
-                                    if (reservationToDelete) {
-                                        handleCancelReservation(reservationToDelete);
-                                    }
-                                    setDeleteConfirmOpen(false);
-                                    setReservationToDelete(undefined);
-                                }}
-                            >
-                                Confirm
-                            </AlertDialogAction>
-                        </AlertDialogFooter>
-                    </AlertDialogContent>
-                </AlertDialog>
             </div>
         </DashboardLayout>
     );
 }
-                                
