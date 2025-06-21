@@ -44,12 +44,13 @@ export const restaurants = pgTable("restaurants", {
   features: text("features").array(),
   tags: text("tags").array(),
   languages: text("languages").array(),
-  avgReservationDuration: integer("avg_reservation_duration").default(120), // ✅ FIXED: Changed from 90 to 120 minutes
+  avgReservationDuration: integer("avg_reservation_duration").default(120),
   minGuests: integer("min_guests").default(1),
   maxGuests: integer("max_guests").default(12),
   phone: text("phone"),
   googleMapsLink: text("google_maps_link"),
   tripAdvisorLink: text("trip_advisor_link"),
+  timezone: text("timezone").notNull().default('Europe/Moscow'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -212,7 +213,18 @@ export const aiActivitiesRelations = relations(aiActivities, ({ one }) => ({
 
 // Create insert schemas
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
-export const insertRestaurantSchema = createInsertSchema(restaurants).omit({ id: true, createdAt: true });
+export const insertRestaurantSchema = createInsertSchema(restaurants, {
+  timezone: z.string().min(1, "Timezone is required")
+    .refine((tz) => {
+      // Validate timezone format using Intl.supportedValuesOf if available, or basic validation
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: tz });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Invalid timezone format")
+}).omit({ id: true, createdAt: true });
 export const insertTableSchema = createInsertSchema(tables).omit({ id: true, createdAt: true });
 export const insertTimeslotSchema = createInsertSchema(timeslots).omit({ id: true, createdAt: true });
 export const insertGuestSchema = createInsertSchema(guests).omit({ id: true, createdAt: true });
