@@ -3,6 +3,8 @@
 // This version adds atomic reservation creation to prevent race conditions while
 // maintaining all existing functionality and the consistent nested data structure.
 //
+// ✅ SURGICAL FIX APPLIED: Added missing innerJoin to getReservationStatistics()
+//
 
 import {
     users, restaurants, tables, timeslots, guests, reservations,
@@ -583,6 +585,7 @@ export class DatabaseStorage implements IStorage {
         }));
     }
 
+    // ✅ SURGICAL FIX: Added missing innerJoin with tables to ALL queries
     async getReservationStatistics(restaurantId: number): Promise<{
         todayReservations: number;
         confirmedReservations: number;
@@ -593,15 +596,14 @@ export class DatabaseStorage implements IStorage {
 
         console.log(`📊 [DEBUG] Getting stats for restaurant ${restaurantId} on ${today}`);
 
-        // ✅ FIX: Make sure we're using the exact same date format and filtering
         const [todayCount] = await db
             .select({ count: count() })
             .from(reservations)
+            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
                     eq(reservations.date, today),
-                    // ✅ FIX: Only count non-canceled reservations
                     ne(reservations.status, 'canceled')
                 )
             );
@@ -609,6 +611,7 @@ export class DatabaseStorage implements IStorage {
         const [confirmedCount] = await db
             .select({ count: count() })
             .from(reservations)
+            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
@@ -620,22 +623,23 @@ export class DatabaseStorage implements IStorage {
         const [pendingCount] = await db
             .select({ count: count() })
             .from(reservations)
+            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
                     eq(reservations.date, today),
-                    eq(reservations.status, 'created') // ✅ FIX: Changed from 'created' to match your enum
+                    eq(reservations.status, 'created')
                 )
             );
 
         const [guestsResult] = await db
             .select({ total: sql<number>`SUM(${reservations.guests})`.mapWith(Number) })
             .from(reservations)
+            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
                     eq(reservations.date, today),
-                    // ✅ FIX: Only count guest numbers from non-canceled reservations
                     ne(reservations.status, 'canceled')
                 )
             );
