@@ -42,6 +42,7 @@ export type CreateTelegramReservationResult = {
   };
 };
 
+// ✅ CRITICAL FIX: Add restaurantTimezone parameter
 export async function createTelegramReservation(
  restaurantId: number,
  date: string,
@@ -53,10 +54,11 @@ export async function createTelegramReservation(
  comments?: string,
  lang?: Language,
  confirmedName?: string,
- selected_slot_info?: ServiceAvailabilitySlot // Added selected_slot_info
+ selected_slot_info?: ServiceAvailabilitySlot, // Added selected_slot_info
+ restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
 ): Promise<CreateTelegramReservationResult> {
  try {
-   console.log(`[TelegramBooking] Initiating reservation: R${restaurantId}, UserReqName:${name}, Date:${date}, Time:${time}, Guests:${guests}, TGUser:${telegramUserId}, Lang:${lang}, ConfirmedProfileName:${confirmedName}`);
+   console.log(`[TelegramBooking] Initiating reservation: R${restaurantId}, UserReqName:${name}, Date:${date}, Time:${time}, Guests:${guests}, TGUser:${telegramUserId}, Lang:${lang}, ConfirmedProfileName:${confirmedName}, Timezone:${restaurantTimezone}`);
    if (selected_slot_info) {
     console.log(`[TelegramBooking] Using pre-selected slot: TableName ${selected_slot_info.tableName}, IsCombined: ${selected_slot_info.isCombined}`);
    }
@@ -70,6 +72,10 @@ export async function createTelegramReservation(
        console.error(`[TelegramBooking] Restaurant not found: ${restaurantId}`);
        return { success: false, status: 'error', message: `Restaurant not found.` }; // Consider localizing
    }
+
+   // ✅ ENHANCEMENT: Use restaurant timezone from database if not provided
+   const effectiveTimezone = restaurant.timezone || restaurantTimezone;
+   console.log(`[TelegramBooking] Using timezone: ${effectiveTimezone}`);
 
    if (!guest) {
      guest = await storage.getGuestByPhone(phone);
@@ -128,6 +134,7 @@ export async function createTelegramReservation(
      }
    }
 
+   // ✅ CRITICAL FIX: Pass timezone to core booking service
    const bookingServiceRequest: CoreBookingRequest = {
      restaurantId,
      guestId: guest.id,
@@ -136,7 +143,8 @@ export async function createTelegramReservation(
      source: 'telegram',
      booking_guest_name: nameForThisSpecificBooking,
      lang: effectiveLang,
-     selected_slot_info: selected_slot_info // Pass the selected slot if available
+     selected_slot_info: selected_slot_info, // Pass the selected slot if available
+     timezone: effectiveTimezone // ✅ CRITICAL ADDITION
    };
 
    console.log('[TelegramBooking] Calling coreCreateReservation with request:', bookingServiceRequest);
@@ -174,15 +182,14 @@ export async function createTelegramReservation(
 }
 
 
-// This function is primarily used by telegram.ts after name confirmation,
-// where it might reconstruct the confirmation message.
-// The main confirmation message should come from the coreCreateReservation result.
+// ✅ CRITICAL FIX: Add restaurantTimezone parameter to confirmation message
 export function generateTelegramConfirmationMessage(
  reservation: SchemaReservation,
  guestNameForThisBooking: string,
  tableNameFromSlot?: string, // This will be the descriptive name like "Tables T1 & T2" or "Table A5"
  restaurantName?: string,
- lang: Language = 'en'
+ lang: Language = 'en',
+ restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
 ): string {
   interface ConfirmationStrings {
     header: string;
@@ -229,9 +236,15 @@ export function generateTelegramConfirmationMessage(
  const locale = confirmationLocaleStrings[lang] || confirmationLocaleStrings.en;
 
  const timeFormatted = formatTimeForTelegram(reservation.time, lang);
+ 
+ // ✅ CRITICAL FIX: Use restaurant timezone instead of hardcoded Moscow
  const dateFormatted = new Date(reservation.date + 'T00:00:00Z')
     .toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow'
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      timeZone: restaurantTimezone // ✅ CRITICAL FIX: Use restaurant timezone
  });
 
  let message = locale.header;
@@ -253,7 +266,6 @@ export function generateTelegramConfirmationMessage(
         message += `${locale.specialRequestsPrefix} ${originalComment.trim()}\n`;
     }
  }
-
 
  if (restaurantName) {
    message += locale.footerWithRestaurant(restaurantName);

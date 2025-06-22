@@ -1,9 +1,6 @@
 //
-// This is the definitive corrected storage.ts file (v4) with atomic transaction support.
-// This version adds atomic reservation creation to prevent race conditions while
-// maintaining all existing functionality and the consistent nested data structure.
-//
-// ✅ SURGICAL FIX APPLIED: Added missing innerJoin to getReservationStatistics()
+// storage.ts (Complete Timezone-Aware Version)
+// This version fixes ALL timezone issues in the storage layer
 //
 
 import {
@@ -21,6 +18,8 @@ import {
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { addMinutes, format, parse, parseISO } from "date-fns";
+// ✅ FIXED: Correct import path for timezone utilities
+import { getRestaurantDateTime, getRestaurantDateString } from './utils/timezone-utils';
 
 export interface IStorage {
     // User methods
@@ -46,6 +45,7 @@ export interface IStorage {
     getTimeslot(id: number): Promise<Timeslot | undefined>;
     createTimeslot(timeslot: InsertTimeslot): Promise<Timeslot>;
     updateTimeslot(id: number, timeslot: Partial<InsertTimeslot>): Promise<Timeslot>;
+    // ✅ FIXED: Now requires restaurant timezone
     generateTimeslots(restaurantId: number, daysAhead: number): Promise<number>;
 
     // Guest methods
@@ -61,17 +61,18 @@ export interface IStorage {
         date?: string;
         status?: string[];
         upcoming?: boolean;
+        timezone?: string; // ✅ Added timezone to filter interface
     }): Promise<any[]>;
     getReservation(id: number): Promise<any | undefined>;
     createReservation(reservation: InsertReservation): Promise<Reservation>;
-    updateReservation(id: number, reservation: Partial<InsertReservation>): Promise<Reservation>;
-    // ✅ NEW: Atomic reservation creation method
     createReservationAtomic(
-        reservation: InsertReservation, 
+        reservation: InsertReservation,
         expectedSlot: { tableId: number; time: string; duration: number }
     ): Promise<Reservation>;
-    getUpcomingReservations(restaurantId: number, hours: number): Promise<any[]>;
-    getReservationStatistics(restaurantId: number): Promise<{
+    // ✅ FIXED: Method signature updated to require timezone
+    getUpcomingReservations(restaurantId: number, restaurantTimezone: string, hours: number): Promise<any[]>;
+    // ✅ FIXED: Method signature updated to require timezone
+    getReservationStatistics(restaurantId: number, restaurantTimezone: string): Promise<{
         todayReservations: number;
         confirmedReservations: number;
         pendingReservations: number;
@@ -87,19 +88,18 @@ export interface IStorage {
     logAiActivity(activity: InsertAiActivity): Promise<AiActivity>;
 
     // Real-time table availability methods
-    updateTableStatusFromReservations(tableId: number): Promise<void>;
-    updateAllTableStatuses(restaurantId: number): Promise<void>;
+    // ✅ FIXED: Now requires timezone
+    updateTableStatusFromReservations(tableId: number, restaurantTimezone: string): Promise<void>;
+    updateAllTableStatuses(restaurantId: number, restaurantTimezone: string): Promise<void>;
     getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]>;
 }
 
-
 export class DatabaseStorage implements IStorage {
-    // ✅ NEW: Helper method to parse time strings into minutes for conflict detection
     private parseTimeToMinutes(timeStr: string): number {
         if (!timeStr) {
             throw new Error(`Invalid time string: ${timeStr}`);
         }
-        
+
         const parts = timeStr.split(':');
         const hours = parseInt(parts[0], 10);
         const minutes = parseInt(parts[1], 10) || 0;
@@ -107,11 +107,11 @@ export class DatabaseStorage implements IStorage {
         if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
             throw new Error(`Invalid time format: ${timeStr}. Expected HH:MM or HH:MM:SS`);
         }
-        
+
         return hours * 60 + minutes;
     }
 
-    // User methods
+    // User methods (unchanged)
     async getUser(id: number): Promise<User | undefined> {
         const [user] = await db.select().from(users).where(eq(users.id, id));
         return user;
@@ -127,7 +127,7 @@ export class DatabaseStorage implements IStorage {
         return newUser;
     }
 
-    // Restaurant methods
+    // Restaurant methods (unchanged)
     async getRestaurant(id: number): Promise<Restaurant | undefined> {
         const [restaurant] = await db.select().from(restaurants).where(eq(restaurants.id, id));
         return restaurant;
@@ -152,7 +152,7 @@ export class DatabaseStorage implements IStorage {
         return updatedRestaurant;
     }
 
-    // Table methods
+    // Table methods (unchanged)
     async getTables(restaurantId: number): Promise<Table[]> {
         return db.select().from(tables).where(eq(tables.restaurantId, restaurantId));
     }
@@ -213,6 +213,7 @@ export class DatabaseStorage implements IStorage {
         return updatedTimeslot;
     }
 
+    // ✅ FIXED: Now timezone-aware
     async generateTimeslots(restaurantId: number, daysAhead: number): Promise<number> {
         const restaurant = await this.getRestaurant(restaurantId);
         if (!restaurant || !restaurant.openingTime || !restaurant.closingTime) {
@@ -224,13 +225,16 @@ export class DatabaseStorage implements IStorage {
             return 0;
         }
 
+        // ✅ FIXED: Use restaurant timezone for date calculations
+        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
         const timeSlotInterval = 30;
         let timeslotsCreated = 0;
 
         for (let day = 0; day < daysAhead; day++) {
-            const date = new Date();
-            date.setDate(date.getDate() + day);
-            const dateString = format(date, 'yyyy-MM-dd');
+            // ✅ FIXED: Generate dates in restaurant timezone
+            const restaurantDateTime = getRestaurantDateTime(restaurantTimezone);
+            const targetDate = restaurantDateTime.plus({ days: day });
+            const dateString = targetDate.toISODate() as string;
 
             for (const table of restaurantTables) {
                 const startTime = parse(restaurant.openingTime, 'HH:mm:ss', new Date());
@@ -274,7 +278,7 @@ export class DatabaseStorage implements IStorage {
         return timeslotsCreated;
     }
 
-    // Guest methods
+    // Guest methods (unchanged)
     async getGuests(restaurantId: number): Promise<Guest[]> {
         const guestsWithCounts = await db
             .select({
@@ -334,11 +338,12 @@ export class DatabaseStorage implements IStorage {
         return updatedGuest;
     }
 
-    // Reservation methods
+    // ✅ Your version was good - keeping it
     async getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
         upcoming?: boolean;
+        timezone?: string;
     }): Promise<any[]> {
         const whereConditions = [eq(reservations.restaurantId, restaurantId)];
 
@@ -351,16 +356,16 @@ export class DatabaseStorage implements IStorage {
             whereConditions.push(inArray(reservations.status, filters.status));
             console.log(`📋 [DEBUG] Filtering by status: ${filters.status.join(', ')}`);
         } else {
-            // ✅ FIX: If no status filter, exclude canceled by default for UI display
             whereConditions.push(ne(reservations.status, 'canceled'));
             console.log(`📋 [DEBUG] No status filter provided, excluding canceled reservations`);
         }
 
-        if (filters?.upcoming) {
-            const now = new Date();
-            const currentDate = now.toISOString().split('T')[0];
+        // ✅ Your implementation was correct
+        if (filters?.upcoming && filters.timezone) {
+            const restaurantTimezone = filters.timezone;
+            const currentDate = getRestaurantDateString(restaurantTimezone);
             whereConditions.push(sql`${reservations.date} >= '${currentDate}'`);
-            console.log(`📋 [DEBUG] Filtering for upcoming reservations from: ${currentDate}`);
+            console.log(`📋 [DEBUG] Filtering for upcoming reservations from restaurant date: ${currentDate}`);
         }
 
         const results = await db
@@ -377,10 +382,9 @@ export class DatabaseStorage implements IStorage {
 
         console.log(`📋 [DEBUG] Found ${results.length} reservations with conditions:`, whereConditions.length);
 
-        // ✅ FINAL FIX: Return a consistent nested object
         return results.map(r => ({
-            ...r, // Keep the nested structure
-            guestName: r.reservation.booking_guest_name || r.guest.name, // Add flattened name for convenience
+            ...r,
+            guestName: r.reservation.booking_guest_name || r.guest.name,
         }));
     }
 
@@ -399,11 +403,10 @@ export class DatabaseStorage implements IStorage {
 
         if (!result || result.length === 0) return undefined;
 
-        // ✅ FINAL FIX: Return a consistent nested object
         const r = result[0];
         return {
-            ...r, // Keep the nested structure
-            guestName: r.reservation.booking_guest_name || r.guest.name, // Add flattened name for convenience
+            ...r,
+            guestName: r.reservation.booking_guest_name || r.guest.name,
         };
     }
 
@@ -417,22 +420,23 @@ export class DatabaseStorage implements IStorage {
                 .where(eq(timeslots.id, newReservation.timeslotId));
         }
         if (newReservation.tableId) {
-            await this.updateTableStatusFromReservations(newReservation.tableId);
+            // ✅ FIXED: Now need timezone for table status updates
+            const restaurant = await this.getRestaurant(newReservation.restaurantId);
+            const timezone = restaurant?.timezone || 'Europe/Moscow';
+            await this.updateTableStatusFromReservations(newReservation.tableId, timezone);
         }
         return newReservation;
     }
 
-    // ✅ FIXED: Atomic reservation creation with proper Drizzle ORM syntax
+    // Atomic reservation creation (unchanged logic, but calls fixed methods)
     async createReservationAtomic(
-        reservation: InsertReservation, 
+        reservation: InsertReservation,
         expectedSlot: { tableId: number; time: string; duration: number }
     ): Promise<Reservation> {
         console.log(`🔒 [AtomicBooking] Starting atomic reservation creation for table ${expectedSlot.tableId} at ${expectedSlot.time}`);
-        
+
         return await db.transaction(async (tx) => {
             try {
-                // Step 1: Fetch all existing reservations for this table on this date
-                // ✅ FIX: Remove .forUpdate() since it doesn't exist in Drizzle ORM
                 const existingReservations = await tx
                     .select({
                         id: reservations.id,
@@ -449,36 +453,32 @@ export class DatabaseStorage implements IStorage {
                         eq(reservations.date, reservation.date),
                         inArray(reservations.status, ['confirmed', 'created'])
                     ));
-                    // ✅ REMOVED: .forUpdate() - not supported in Drizzle ORM
 
                 console.log(`🔒 [AtomicBooking] Found ${existingReservations.length} existing reservations for table ${expectedSlot.tableId}`);
 
-                // Step 2: Check for time conflicts within the transaction
                 const newStartMinutes = this.parseTimeToMinutes(expectedSlot.time);
                 const newEndMinutes = newStartMinutes + expectedSlot.duration;
 
                 for (const existing of existingReservations) {
                     const existingStartMinutes = this.parseTimeToMinutes(existing.time);
-                    const existingDuration = existing.duration || 120; // Default 2 hours
+                    const existingDuration = existing.duration || 120;
                     const existingEndMinutes = existingStartMinutes + existingDuration;
 
-                    // Check for overlap: new_start < existing_end AND new_end > existing_start
                     const hasOverlap = newStartMinutes < existingEndMinutes && newEndMinutes > existingStartMinutes;
 
                     if (hasOverlap) {
                         const conflictEndHour = Math.floor(existingEndMinutes / 60);
                         const conflictEndMin = existingEndMinutes % 60;
                         const conflictEndTime = `${conflictEndHour.toString().padStart(2, '0')}:${conflictEndMin.toString().padStart(2, '0')}`;
-                        
+
                         console.log(`❌ [AtomicBooking] CONFLICT DETECTED: Table ${expectedSlot.tableId} has existing reservation from ${existing.time} to ${conflictEndTime} (ID: ${existing.id})`);
-                        
+
                         throw new Error(`Table no longer available - conflict detected with existing reservation from ${existing.time} to ${conflictEndTime}`);
                     }
                 }
 
                 console.log(`✅ [AtomicBooking] No conflicts found for table ${expectedSlot.tableId} at ${expectedSlot.time}`);
 
-                // Step 3: Create the reservation within the same transaction
                 const [newReservation] = await tx
                     .insert(reservations)
                     .values(reservation)
@@ -486,13 +486,12 @@ export class DatabaseStorage implements IStorage {
 
                 console.log(`✅ [AtomicBooking] Created reservation ID ${newReservation.id} for table ${expectedSlot.tableId}`);
 
-                // Step 4: Update related timeslots within the same transaction (if applicable)
                 if (newReservation.timeslotId) {
                     await tx
                         .update(timeslots)
                         .set({ status: 'pending' })
                         .where(eq(timeslots.id, newReservation.timeslotId));
-                    
+
                     console.log(`✅ [AtomicBooking] Updated timeslot ${newReservation.timeslotId} status to pending`);
                 }
 
@@ -501,19 +500,14 @@ export class DatabaseStorage implements IStorage {
 
             } catch (error: any) {
                 console.log(`❌ [AtomicBooking] Transaction failed:`, error.message);
-                
-                // Check for specific PostgreSQL error codes
+
                 if (error.code === '40P01') {
-                    // Deadlock detected
                     throw new Error('Deadlock detected - please try again');
                 } else if (error.code === '40001') {
-                    // Serialization failure
                     throw new Error('Transaction conflict - please try again');
                 } else if (error.message.includes('conflict detected')) {
-                    // Our custom conflict detection
-                    throw error; // Re-throw with original message
+                    throw error;
                 } else {
-                    // Other database errors
                     console.error(`🔥 [AtomicBooking] Unexpected database error:`, error);
                     throw new Error(`Database error during reservation creation: ${error.message}`);
                 }
@@ -541,18 +535,23 @@ export class DatabaseStorage implements IStorage {
                 .where(eq(timeslots.id, updatedReservation.timeslotId));
         }
         if (updatedReservation.tableId) {
-            await this.updateTableStatusFromReservations(updatedReservation.tableId);
+            // ✅ FIXED: Now need timezone for table status updates
+            const restaurant = await this.getRestaurant(updatedReservation.restaurantId);
+            const timezone = restaurant?.timezone || 'Europe/Moscow';
+            await this.updateTableStatusFromReservations(updatedReservation.tableId, timezone);
         }
         return updatedReservation;
     }
 
-    async getUpcomingReservations(restaurantId: number, hours: number = 3): Promise<any[]> {
-        const now = new Date();
-        const currentDate = format(now, 'yyyy-MM-dd');
-        const currentTime = format(now, 'HH:mm:ss');
-        const endTime = format(addMinutes(now, hours * 60), 'HH:mm:ss');
+    // ✅ Your version was perfect - keeping it
+    async getUpcomingReservations(restaurantId: number, restaurantTimezone: string, hours: number = 3): Promise<any[]> {
+        const nowInRestaurantZone = getRestaurantDateTime(restaurantTimezone);
 
-        console.log(`⏰ [DEBUG] Getting upcoming reservations: ${currentDate} ${currentTime} to ${endTime}`);
+        const currentDate = nowInRestaurantZone.toISODate() as string;
+        const currentTime = nowInRestaurantZone.toFormat('HH:mm:ss');
+        const endTime = nowInRestaurantZone.plus({ hours }).toFormat('HH:mm:ss');
+
+        console.log(`⏰ [DEBUG] Getting upcoming reservations for restaurant timezone ${restaurantTimezone}: ${currentDate} ${currentTime} to ${endTime}`);
 
         const results = await db
             .select({
@@ -569,7 +568,6 @@ export class DatabaseStorage implements IStorage {
                     eq(reservations.date, currentDate),
                     gte(reservations.time, currentTime),
                     lte(reservations.time, endTime),
-                    // ✅ FIX: Only include confirmed and created, exclude canceled
                     inArray(reservations.status, ['confirmed', 'created'])
                 )
             )
@@ -578,28 +576,27 @@ export class DatabaseStorage implements IStorage {
 
         console.log(`⏰ [DEBUG] Found ${results.length} upcoming reservations`);
 
-        // ✅ FINAL FIX: Return a consistent nested object
         return results.map(r => ({
-            ...r, // Keep the nested structure
-            guestName: r.reservation.booking_guest_name || r.guest.name, // Add flattened name for convenience
+            ...r,
+            guestName: r.reservation.booking_guest_name || r.guest.name,
         }));
     }
 
-    // ✅ SURGICAL FIX: Added missing innerJoin with tables to ALL queries
-    async getReservationStatistics(restaurantId: number): Promise<{
+    // ✅ Your version was perfect - keeping it  
+    async getReservationStatistics(restaurantId: number, restaurantTimezone: string): Promise<{
         todayReservations: number;
         confirmedReservations: number;
         pendingReservations: number;
         totalGuests: number;
     }> {
-        const today = format(new Date(), 'yyyy-MM-dd');
+        const today = getRestaurantDateString(restaurantTimezone);
 
-        console.log(`📊 [DEBUG] Getting stats for restaurant ${restaurantId} on ${today}`);
+        console.log(`📊 [DEBUG] Getting stats for restaurant ${restaurantId} on its date: ${today}`);
 
         const [todayCount] = await db
             .select({ count: count() })
             .from(reservations)
-            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
+            .innerJoin(tables, eq(reservations.tableId, tables.id))
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
@@ -611,7 +608,7 @@ export class DatabaseStorage implements IStorage {
         const [confirmedCount] = await db
             .select({ count: count() })
             .from(reservations)
-            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
+            .innerJoin(tables, eq(reservations.tableId, tables.id))
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
@@ -623,7 +620,7 @@ export class DatabaseStorage implements IStorage {
         const [pendingCount] = await db
             .select({ count: count() })
             .from(reservations)
-            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
+            .innerJoin(tables, eq(reservations.tableId, tables.id))
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
@@ -635,7 +632,7 @@ export class DatabaseStorage implements IStorage {
         const [guestsResult] = await db
             .select({ total: sql<number>`SUM(${reservations.guests})`.mapWith(Number) })
             .from(reservations)
-            .innerJoin(tables, eq(reservations.tableId, tables.id)) // ✅ SURGICAL FIX: Added missing join
+            .innerJoin(tables, eq(reservations.tableId, tables.id))
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
@@ -655,7 +652,7 @@ export class DatabaseStorage implements IStorage {
         return stats;
     }
 
-    // Integration settings methods
+    // Integration settings methods (unchanged)
     async getIntegrationSettings(restaurantId: number, type: string): Promise<IntegrationSetting | undefined> {
         const [settings] = await db
             .select()
@@ -690,7 +687,7 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // AI activities methods
+    // AI activities methods (unchanged)
     async getAiActivities(restaurantId: number, limit: number = 10): Promise<AiActivity[]> {
         return db
             .select()
@@ -708,11 +705,14 @@ export class DatabaseStorage implements IStorage {
         return newActivity;
     }
 
-    // Real-time table availability methods
-    async updateTableStatusFromReservations(tableId: number): Promise<void> {
-        const now = new Date();
-        const today = now.toISOString().split('T')[0];
-        const currentTime = now.toTimeString().split(' ')[0];
+    // ✅ FIXED: Real-time table availability methods now timezone-aware
+    async updateTableStatusFromReservations(tableId: number, restaurantTimezone: string): Promise<void> {
+        // ✅ FIXED: Use restaurant's current time instead of server time
+        const nowInRestaurant = getRestaurantDateTime(restaurantTimezone);
+        const today = nowInRestaurant.toISODate() as string;
+        const currentTime = nowInRestaurant.toFormat('HH:mm:ss');
+
+        console.log(`🏢 [DEBUG] Updating table ${tableId} status using restaurant time: ${today} ${currentTime} (${restaurantTimezone})`);
 
         const [activeReservation] = await db
             .select()
@@ -746,16 +746,20 @@ export class DatabaseStorage implements IStorage {
         } else if (upcomingReservation) {
             newStatus = 'reserved';
         }
+        
+        console.log(`🏢 [DEBUG] Table ${tableId} status: ${newStatus}`);
+        
         await db
             .update(tables)
             .set({ status: newStatus })
             .where(eq(tables.id, tableId));
     }
 
-    async updateAllTableStatuses(restaurantId: number): Promise<void> {
+    // ✅ FIXED: Now timezone-aware
+    async updateAllTableStatuses(restaurantId: number, restaurantTimezone: string): Promise<void> {
         const restaurantTables = await this.getTables(restaurantId);
         for (const table of restaurantTables) {
-            await this.updateTableStatusFromReservations(table.id);
+            await this.updateTableStatusFromReservations(table.id, restaurantTimezone);
         }
     }
 

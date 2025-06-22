@@ -6,34 +6,26 @@ import type {
   Language
 } from './conversation-manager';
 
+// ✅ IMPORT the dynamic timezone utility instead of hardcoded Moscow function
+import { getRestaurantTimeContext } from '../utils/timezone-utils';
+
 const openaiClient = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || "sk-dummy-key-for-development-openai-service"
 });
 
-function getMoscowDatesForPromptContext() {
-  const now = new Date();
-  const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
-
-  const year = moscowTime.getFullYear();
-  const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
-  const day = moscowTime.getDate().toString().padStart(2, '0');
-  const todayString = `${year}-${month}-${day}`;
-
-  const tomorrowMoscow = new Date(moscowTime);
-  tomorrowMoscow.setDate(moscowTime.getDate() + 1);
-  const tomorrowYear = tomorrowMoscow.getFullYear();
-  const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
-  const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
-  const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
-
-  console.log(`[AIService/MoscowDatesCtx] Server UTC: ${now.toISOString()}, Moscow Time: ${moscowTime.toISOString()}, Today: ${todayString}, Tomorrow: ${tomorrowString}`);
-  return { todayString, tomorrowString, currentMoscowDateTime: moscowTime };
-}
+// ❌ REMOVED: getMoscowDatesForPromptContext() - replaced with dynamic utility
 
 export class OpenAIServiceImpl implements AIService {
-  async analyzeMessage(message: string, context: ConversationFlow): Promise<AIAnalysisResult> {
+  // ✅ FIX: Add restaurantTimezone parameter to the method signature
+  async analyzeMessage(
+    message: string, 
+    context: ConversationFlow, 
+    restaurantTimezone: string = 'Europe/Moscow'
+  ): Promise<AIAnalysisResult> {
     try {
-      const { todayString, tomorrowString, currentMoscowDateTime } = getMoscowDatesForPromptContext();
+      // ✅ FIX: Use dynamic timezone context instead of hardcoded Moscow
+      const timeContext = getRestaurantTimeContext(restaurantTimezone);
+      const { todayDate, tomorrowDate, currentTime, dayOfWeek, hour } = timeContext;
 
       const existingInfoSummary = Object.entries(context.collectedInfo || {})
         .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
@@ -63,10 +55,11 @@ export class OpenAIServiceImpl implements AIService {
         }
       }
 
-      // --- System Prompt for analyzeMessage ---
+      // ✅ FIX: Dynamic timezone context in system prompt
       const systemPrompt = `You are Sofia, an expert AI assistant for a restaurant, tasked with understanding guest messages to facilitate bookings.
 Your goal is to extract key information (entities), determine guest sentiment, decide the next logical conversation action, and identify the language of the user's message.
-The restaurant operates in MOSCOW TIMEZONE. All date interpretations MUST be based on this.
+
+**IMPORTANT: The restaurant operates in ${restaurantTimezone} timezone. All date interpretations MUST be based on this timezone.**
 
 **LANGUAGE HANDLING & DETECTION (CRITICAL):**
 - Analyze the "CURRENT MESSAGE TO ANALYZE" to determine if it is primarily in Russian ('ru') or English ('en').
@@ -77,10 +70,10 @@ The restaurant operates in MOSCOW TIMEZONE. All date interpretations MUST be bas
 - If the "detectedLanguage" is Russian, your entire JSON output, especially any string values (entities, etc.), MUST be in RUSSIAN.
 - If "detectedLanguage" is English, ensure your JSON output values are in ENGLISH.
 
-CURRENT MOSCOW DATE/TIME CONTEXT:
-- Today in Moscow is: ${todayString} (Day of week: ${currentMoscowDateTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Moscow' })})
-- Tomorrow in Moscow is: ${tomorrowString}
-- Current Moscow hour (24h format): ${currentMoscowDateTime.getHours()}
+CURRENT ${restaurantTimezone.toUpperCase()} DATE/TIME CONTEXT:
+- Today in ${restaurantTimezone} is: ${todayDate} (Day of week: ${dayOfWeek})
+- Tomorrow in ${restaurantTimezone} is: ${tomorrowDate}
+- Current ${restaurantTimezone} hour (24h format): ${hour}
 
 CONVERSATION HISTORY & STATE:
 - Recent messages (last 3, newest first): ${JSON.stringify(context.conversationHistory?.slice(-3).reverse() || [])}
@@ -101,7 +94,7 @@ CRITICAL ANALYSIS & EXTRACTION RULES:
          2. Extract the 'time' from the 'CURRENT MESSAGE TO ANALYZE'.
          3. In your JSON output, set the 'date' field to this PRESERVED date.
          4. Set the 'time' field to the newly extracted time.
-       - Phrases like "сегодня" (today), "завтра" (tomorrow), "послезавтра" (day after tomorrow) are explicit date changes if they introduce a new date relative to '${todayString}'.
+       - Phrases like "сегодня" (today), "завтра" (tomorrow), "послезавтра" (day after tomorrow) are explicit date changes if they introduce a new date relative to '${todayDate}'.
        - For Russian: If a date like "сегодня" or a specific calendar date is already established in the context, interpret phrases like "X часа дня", "X дня", "в X часов" (e.g., "3 часа дня", "3 дня") as a TIME reference for the *established date*. Do NOT change the established date unless a new, clear date specifier (like "завтра", "28го", "в следующий вторник") is provided. For example, if date is '2025-05-26' (сегодня) and user says "в 3 дня", output date should remain '2025-05-26' and time should be '15:00'.
    - time: If a time is mentioned, parse to HH:MM 24-hour format.
    - guests: Number of people.
@@ -142,7 +135,8 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
   "guest_sentiment": "neutral",
   "next_response_tone": "friendly"
 }`;
-      // --- End of System Prompt for analyzeMessage ---
+
+      console.log(`[AIService] Using timezone context for ${restaurantTimezone}:`, timeContext);
 
       const completion = await openaiClient.chat.completions.create({
         model: "gpt-4o",
@@ -168,7 +162,6 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
             detectedLang = parsedResult.detectedLanguage;
           }
       }
-
 
       const aiResult: AIAnalysisResult = {
         detectedLanguage: detectedLang,
@@ -228,7 +221,7 @@ OUTPUT FORMAT (Strictly JSON, no extra text. All string values must be in the la
         }
       }
 
-      console.log(`[AIService] analyzeMessage processed AI result (FINAL detectedLanguage: ${aiResult.detectedLanguage}):`, aiResult);
+      console.log(`[AIService] analyzeMessage processed AI result for ${restaurantTimezone} (FINAL detectedLanguage: ${aiResult.detectedLanguage}):`, aiResult);
       return aiResult;
 
     } catch (error) {
@@ -429,14 +422,15 @@ Guidelines:
   }
 }
 
-export function debugMoscowTimezone(): void {
-  const now = new Date();
-  const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-  console.log('[MOSCOW TIMEZONE DEBUGGER]');
-  console.log('  Server System Time (UTC or local):', now.toISOString(), `(${now.toString()})`);
-  console.log('  Moscow Equivalent Time:', moscowTime.toISOString(), `(${moscowTime.toString()})`);
-  console.log('  Moscow Date (YYYY-MM-DD):', moscowTime.toISOString().split('T')[0]);
-  console.log('  Moscow Day of the Week:', moscowTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Moscow' }));
-  console.log('  Moscow Hour (24h):', moscowTime.getHours());
-  console.log('  NodeJS Timezone Offset (minutes from UTC for server):', now.getTimezoneOffset());
+// ✅ UPDATED: Debug function now accepts timezone parameter for testing
+export function debugRestaurantTimezone(restaurantTimezone: string = 'Europe/Moscow'): void {
+  const timeContext = getRestaurantTimeContext(restaurantTimezone);
+  console.log(`[RESTAURANT TIMEZONE DEBUGGER - ${restaurantTimezone}]`);
+  console.log('  Restaurant Time Context:', timeContext);
+  console.log('  Current Time:', timeContext.currentTime);
+  console.log('  Today Date:', timeContext.todayDate);
+  console.log('  Tomorrow Date:', timeContext.tomorrowDate);
+  console.log('  Day of Week:', timeContext.dayOfWeek);
+  console.log('  Current Hour:', timeContext.hour);
+  console.log('  Timezone Offset (minutes):', timeContext.offset);
 }

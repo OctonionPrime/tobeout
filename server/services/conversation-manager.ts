@@ -1,11 +1,19 @@
 /**
- * conversation-manager.ts
+ * conversation-manager.ts - TIMEZONE-AWARE VERSION
  *
  * Manages individual restaurant AI assistant conversations.
  * Each conversation is an instance of ActiveConversation.
+ * 
+ * ✅ FIXES APPLIED:
+ * - ActiveConversation constructor accepts restaurantTimezone
+ * - AIService interface includes timezone parameter
+ * - DefaultResponseFormatter uses restaurant timezone instead of hardcoded Moscow
+ * - All date/time operations use restaurant's local time
  */
 
 import type { AvailabilitySlot } from './availability.service';
+// ✅ CRITICAL FIX: Import timezone utilities
+import { getRestaurantTimeContext } from '../utils/timezone-utils';
 
 // --- Interface Definitions ---
 
@@ -60,13 +68,15 @@ export interface AIAnalysisResult {
     detectedLanguage?: Language;
 }
 
+// ✅ CRITICAL FIX: AIService interface now includes timezone parameter
 export interface AIService {
-    analyzeMessage(message: string, currentFlow: ConversationFlow): Promise<AIAnalysisResult>;
+    analyzeMessage(message: string, currentFlow: ConversationFlow, restaurantTimezone: string): Promise<AIAnalysisResult>;
 }
-
 
 export interface ResponseFormatter {
     setLanguage(language: Language): void;
+    // ✅ CRITICAL FIX: Add setTimezone method
+    setTimezone(timezone: string): void;
     generateApology(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
     generateSmartInfoRequest(flow: ConversationFlow, summary: string, missingFieldsText: string, specificRequest: string, urgentRequest: string): string;
     generateBookingConfirmation(flow: ConversationFlow, summary: string): string;
@@ -78,7 +88,7 @@ export interface ResponseFormatter {
         guestName: string | undefined,
         requestedTime: string,
         guests: number,
-        availableSlots: AvailabilitySlot[] // These are expected to be the closest direct slots
+        availableSlots: AvailabilitySlot[]
     ): string;
     generateNoAvailabilityMessage(date: string): string;
     generateAvailabilityConfirmationMessage(flow: ConversationFlow, summary: string, missingFieldsText: string): string;
@@ -100,16 +110,19 @@ export class ActiveConversation {
     public flow: ConversationFlow;
     private aiService: AIService;
     public responseFormatter: ResponseFormatter;
+    private timezone: string; // ✅ CRITICAL FIX: Store restaurant timezone
 
     constructor(
         aiService: AIService,
         responseFormatter: ResponseFormatter,
         initialHistory: string[] = [],
         existingFlow?: Partial<ConversationFlow>,
-        defaultLanguage: Language = 'en'
+        defaultLanguage: Language = 'en',
+        restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL FIX: Accept timezone parameter
     ) {
         this.aiService = aiService;
         this.responseFormatter = responseFormatter;
+        this.timezone = restaurantTimezone; // ✅ CRITICAL FIX: Store timezone
 
         this.flow = {
             stage: 'greeting',
@@ -122,7 +135,13 @@ export class ActiveConversation {
             nameConflictDetails: undefined,
             ...existingFlow,
         };
+        
         this.responseFormatter.setLanguage(this.flow.currentLanguage);
+        
+        // ✅ CRITICAL FIX: Set timezone on response formatter
+        this.responseFormatter.setTimezone(this.timezone);
+        
+        console.log(`[ActiveConversation] Initialized with timezone: ${this.timezone}`);
     }
 
     public getConversationFlow(): Readonly<ConversationFlow> {
@@ -140,7 +159,6 @@ export class ActiveConversation {
         delete this.flow.nameConflictDetails;
         console.log('[ActiveConversation] Name choice state cleared. Stage set to collecting.');
     }
-
 
     private updateCollectedInfo(entitiesFromAI: AIAnalysisResult['entities']): void {
         if (!entitiesFromAI) return;
@@ -189,7 +207,8 @@ export class ActiveConversation {
         }
         this.flow.responsesSent++;
 
-        const aiResult = await this.aiService.analyzeMessage(newMessage, this.flow);
+        // ✅ CRITICAL FIX: Pass restaurant timezone to AI service
+        const aiResult = await this.aiService.analyzeMessage(newMessage, this.flow, this.timezone);
 
         if (aiResult.detectedLanguage && aiResult.detectedLanguage !== this.flow.currentLanguage) {
             const isShortOrNumeric = newMessage.length < 5 || /^\d+$/.test(newMessage);
@@ -211,7 +230,6 @@ export class ActiveConversation {
                 this.responseFormatter.setLanguage('en');
             }
         }
-
 
         this.updateCollectedInfo(aiResult.entities);
 
@@ -249,7 +267,6 @@ export class ActiveConversation {
 
             const lowerNewMessage = newMessage.toLowerCase();
             const isGreeting = /^\s*(\/start|hello|hi|hey|привет|здравствуй|добрый день|ку|йо)\s*$/i.test(lowerNewMessage);
-
 
             if (this.flow.responsesSent === 1 && isGreeting) {
                 this.flow.stage = 'greeting';
@@ -326,7 +343,6 @@ export class ActiveConversation {
         }
     }
 }
-
 
 // --- Localized Strings Store ---
 interface LocalizedStrings {
@@ -424,7 +440,6 @@ function pickRandom(arr: string[]): string {
     if (!arr || arr.length === 0) return "";
     return arr[Math.floor(Math.random() * arr.length)];
 }
-
 
 const translations: Record<Language, LocalizedStrings> = {
     en: {
@@ -696,10 +711,10 @@ const translations: Record<Language, LocalizedStrings> = {
     },
 };
 
-
 // --- Default ResponseFormatter Implementation ---
 export class DefaultResponseFormatter implements ResponseFormatter {
     private currentLang: Language = 'en';
+    private timezone: string = 'Europe/Moscow'; // ✅ CRITICAL FIX: Add timezone storage
     private strings: LocalizedStrings = translations.en;
 
     public setLanguage(language: Language): void {
@@ -709,19 +724,21 @@ export class DefaultResponseFormatter implements ResponseFormatter {
         console.log(`[ResponseFormatter] Language set to: ${this.currentLang}`);
     }
 
-    private getMoscowDateContext() {
-        const moscowTime = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
-        const year = moscowTime.getFullYear();
-        const month = (moscowTime.getMonth() + 1).toString().padStart(2, '0');
-        const day = moscowTime.getDate().toString().padStart(2, '0');
-        const todayString = `${year}-${month}-${day}`;
-        const tomorrowMoscow = new Date(moscowTime);
-        tomorrowMoscow.setDate(moscowTime.getDate() + 1);
-        const tomorrowYear = tomorrowMoscow.getFullYear();
-        const tomorrowMonth = (tomorrowMoscow.getMonth() + 1).toString().padStart(2, '0');
-        const tomorrowDay = tomorrowMoscow.getDate().toString().padStart(2, '0');
-        const tomorrowString = `${tomorrowYear}-${tomorrowMonth}-${tomorrowDay}`;
-        return { today: todayString, tomorrow: tomorrowString };
+    // ✅ CRITICAL FIX: Add method to set timezone
+    public setTimezone(timezone: string): void {
+        this.timezone = timezone;
+        console.log(`[ResponseFormatter] Timezone set to: ${this.timezone}`);
+    }
+
+    // ✅ CRITICAL FIX: Replace hardcoded Moscow time with restaurant timezone
+    private getRestaurantDateContext() {
+        // ✅ FIXED: Use restaurant timezone from timezone-utils
+        const timeContext = getRestaurantTimeContext(this.timezone);
+        
+        return {
+            today: timeContext.todayDate,
+            tomorrow: timeContext.tomorrowDate
+        };
     }
 
     public formatTimeForDisplay(time24?: string): string {
@@ -768,14 +785,21 @@ export class DefaultResponseFormatter implements ResponseFormatter {
 
     public formatDateForDisplay(dateInput?: string): string {
         if (!dateInput) return '';
-        const moscowDates = this.getMoscowDateContext();
-        if (dateInput === moscowDates.today) return this.strings.today;
-        if (dateInput === moscowDates.tomorrow) return this.strings.tomorrow;
+        
+        // ✅ CRITICAL FIX: Use restaurant timezone context instead of hardcoded Moscow
+        const restaurantDates = this.getRestaurantDateContext();
+        
+        if (dateInput === restaurantDates.today) return this.strings.today;
+        if (dateInput === restaurantDates.tomorrow) return this.strings.tomorrow;
+        
         try {
             const [year, month, day] = dateInput.split('-').map(Number);
             const dateObj = new Date(Date.UTC(year, month - 1, day));
             const options: Intl.DateTimeFormatOptions = {
-                weekday: 'long', month: 'long', day: 'numeric', timeZone: 'Europe/Moscow',
+                weekday: 'long', 
+                month: 'long', 
+                day: 'numeric', 
+                timeZone: this.timezone, // ✅ CRITICAL FIX: Use restaurant timezone
             };
             return dateObj.toLocaleDateString(this.currentLang === 'ru' ? 'ru-RU' : 'en-US', options);
         } catch (e) {
@@ -981,7 +1005,6 @@ export class DefaultResponseFormatter implements ResponseFormatter {
         const displayRequestedTime = this.formatTimeForDisplay(requestedTime);
         const guestCountText = this.strings.guestsCount(guests);
         const guestSuffixOnly = guestCountText.substring(guestCountText.indexOf(' ') + 1).trim();
-
 
         if (availableSlots.length === 0) {
             return this.strings.smartAlternative.notFound(friendlyGuestName, displayRequestedTime, guests, guestSuffixOnly);

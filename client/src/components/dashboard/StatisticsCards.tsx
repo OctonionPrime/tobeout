@@ -1,9 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { CalendarCheck, UserCheck, Clock, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { DateTime } from 'luxon';
+import { apiRequest } from "@/lib/queryClient";
 
 interface StatisticsCardsProps {
   restaurantId: number;
+  restaurantTimezone?: string;
 }
 
 interface Stats {
@@ -13,9 +16,21 @@ interface Stats {
   totalGuests: number;
 }
 
-export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
+export function StatisticsCards({ restaurantId, restaurantTimezone = 'Europe/Moscow' }: StatisticsCardsProps) {
+  // ✅ FIXED: Proper React Query with timezone-aware API call
   const { data: stats, isLoading } = useQuery<Stats>({
-    queryKey: [`/api/dashboard/stats?restaurantId=${restaurantId}`],
+    queryKey: ['dashboard_stats', restaurantId, restaurantTimezone],
+    queryFn: async () => {
+      const response = await apiRequest(
+        "GET", 
+        `/api/dashboard/stats?restaurantId=${restaurantId}&timezone=${encodeURIComponent(restaurantTimezone)}`
+      );
+      if (!response.ok) {
+        throw new Error('Failed to fetch statistics');
+      }
+      return response.json();
+    },
+    enabled: !!restaurantId && !!restaurantTimezone,
   });
 
   if (isLoading) {
@@ -38,15 +53,37 @@ export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
     );
   }
 
+  // ✅ FIXED: Proper Luxon usage instead of toLocaleString anti-pattern
+  const getRestaurantTime = () => {
+    try {
+      const restaurantTime = DateTime.now().setZone(restaurantTimezone);
+      return restaurantTime.toFormat('HH:mm');
+    } catch (error) {
+      console.warn(`Invalid timezone ${restaurantTimezone}, falling back to local time`);
+      return DateTime.now().toFormat('HH:mm');
+    }
+  };
+
+  const getRestaurantDate = () => {
+    try {
+      const restaurantTime = DateTime.now().setZone(restaurantTimezone);
+      return restaurantTime.toFormat('MMM d');
+    } catch (error) {
+      console.warn(`Invalid timezone ${restaurantTimezone}, falling back to local time`);
+      return DateTime.now().toFormat('MMM d');
+    }
+  };
+
   const cards = [
     {
-      title: "Today's Reservations",
+      title: `Today's Reservations (${getRestaurantDate()})`,
       value: stats?.todayReservations || 0,
       change: "+12%",
       isPositive: true,
       icon: <CalendarCheck className="text-xl" />,
       bgColor: "bg-blue-100",
-      textColor: "text-blue-500"
+      textColor: "text-blue-500",
+      subtitle: `Current time: ${getRestaurantTime()}`
     },
     {
       title: "Confirmed Reservations",
@@ -55,7 +92,8 @@ export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
       isPositive: true,
       icon: <UserCheck className="text-xl" />,
       bgColor: "bg-green-100",
-      textColor: "text-green-500"
+      textColor: "text-green-500",
+      subtitle: "Ready to serve"
     },
     {
       title: "Pending Confirmations",
@@ -64,7 +102,8 @@ export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
       isPositive: false,
       icon: <Clock className="text-xl" />,
       bgColor: "bg-yellow-100",
-      textColor: "text-yellow-500"
+      textColor: "text-yellow-500",
+      subtitle: stats?.pendingReservations > 0 ? "Need attention" : "All confirmed"
     },
     {
       title: "Total Guests",
@@ -73,7 +112,8 @@ export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
       isPositive: true,
       icon: <Users className="text-xl" />,
       bgColor: "bg-red-100",
-      textColor: "text-red-500"
+      textColor: "text-red-500",
+      subtitle: `Expected today`
     }
   ];
 
@@ -86,8 +126,11 @@ export function StatisticsCards({ restaurantId }: StatisticsCardsProps) {
               <div className={`p-3 rounded-full ${card.bgColor} ${card.textColor}`}>
                 {card.icon}
               </div>
-              <div className="ml-4">
-                <h3 className="text-sm font-medium text-gray-500">{card.title}</h3>
+              <div className="ml-4 flex-1">
+                <h3 className="text-sm font-medium text-gray-500 leading-tight">{card.title}</h3>
+                {card.subtitle && (
+                  <p className="text-xs text-gray-400 mb-1">{card.subtitle}</p>
+                )}
                 <div className="mt-1 flex items-baseline">
                   <p className="text-2xl font-semibold text-gray-900">{card.value}</p>
                   <p className={`ml-2 text-sm flex items-center ${card.isPositive ? 'text-green-500' : 'text-red-500'}`}>

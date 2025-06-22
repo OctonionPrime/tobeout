@@ -1,5 +1,6 @@
 // server/services/availability.service.ts
 import { storage } from '../storage';
+import { formatTimeForRestaurant } from '../utils/timezone-utils';
 import type {
     Restaurant,
     Table,
@@ -33,27 +34,6 @@ function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
 
 function addMinutesToTime(timeInMinutes: number, minutesToAdd: number): number {
     return timeInMinutes + minutesToAdd;
-}
-
-export function formatTimeForDisplay(time24: string, lang: Language = 'en'): string {
-    const parts = time24.split(':');
-    const hour24 = parseInt(parts[0], 10);
-    const minutes = parts[1]?.padStart(2, '0') || '00';
-
-    if (isNaN(hour24) || hour24 < 0 || hour24 > 23) {
-        console.warn(`[AvailabilityService] Invalid hour in time string for display: ${time24}`);
-        return time24;
-    }
-
-    if (lang === 'ru') {
-        return `${hour24.toString().padStart(2, '0')}:${minutes}`;
-    }
-
-    const ampm = hour24 >= 12 ? 'PM' : 'AM';
-    let hour12 = hour24 % 12;
-    hour12 = hour12 === 0 ? 12 : hour12;
-
-    return `${hour12}:${minutes} ${ampm}`;
 }
 
 // ✅ FIXED: Updated to handle nested reservation structure
@@ -107,6 +87,7 @@ async function findCombinableTwoTableSlots(
     allBookableTables: Table[],
     activeReservationsForDate: any[], // ✅ FIXED: Now properly handle nested structure
     slotDurationMinutes: number,
+    restaurantTimezone: string,
     currentLang: Language
 ): Promise<AvailabilitySlot[]> {
     const combinableSlots: AvailabilitySlot[] = [];
@@ -158,7 +139,7 @@ async function findCombinableTwoTableSlots(
                 combinableSlots.push({
                     date: activeReservationsForDate[0]?.reservation?.date || activeReservationsForDate[0]?.date || new Date().toISOString().split('T')[0],
                     time: timeSlot,
-                    timeDisplay: formatTimeForDisplay(timeSlot, currentLang),
+                    timeDisplay: formatTimeForRestaurant(timeSlot, restaurantTimezone, currentLang),
                     tableId: 0, // Special ID for combined tables
                     tableName: currentLang === 'ru' ? `Столики ${table1.name} и ${table2.name}` : `Tables ${table1.name} & ${table2.name}`,
                     tableCapacity: { min: combinedMinCapacity, max: combinedMaxCapacity },
@@ -182,6 +163,7 @@ async function findCombinableTwoTableSlots(
     return combinableSlots;
 }
 
+// ✅ CRITICAL FIX: Added timezone support to getAvailableTimeSlots
 export async function getAvailableTimeSlots(
     restaurantId: number,
     date: string, // YYYY-MM-DD
@@ -195,12 +177,14 @@ export async function getAvailableTimeSlots(
         lang?: Language;
         searchRadiusMinutes?: number; // How far before/after requestedTime to search
         allowCombinations?: boolean; // Explicit flag to allow table combinations
+        timezone?: string; // ✅ NEW: Restaurant timezone for proper filtering
     }
 ): Promise<AvailabilitySlot[]> {
     const currentLang = configOverrides?.lang || 'en';
     const allowCombinations = configOverrides?.allowCombinations !== undefined ? configOverrides.allowCombinations : true;
+    const restaurantTimezone = configOverrides?.timezone || 'Europe/Moscow'; // ✅ NEW: Timezone support
 
-    console.log(`[AvailabilityService] Initiating slot search: R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Combinations: ${allowCombinations}, Config:`, configOverrides);
+    console.log(`[AvailabilityService] Initiating slot search: R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Timezone ${restaurantTimezone}, Combinations: ${allowCombinations}, Config:`, configOverrides);
 
     try {
         const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
@@ -229,7 +213,7 @@ export async function getAvailableTimeSlots(
         const maxResults = configOverrides?.maxResults || 5;
         const requestedTimeStr = configOverrides?.requestedTime;
 
-        console.log(`[AvailabilityService] Effective settings: Interval=${slotIntervalMinutes}min, SlotDuration=${slotDurationMinutes}min, MaxResults=${maxResults}, OpHours=${operatingOpenTimeStr}-${operatingCloseTimeStr}`);
+        console.log(`[AvailabilityService] Effective settings: Interval=${slotIntervalMinutes}min, SlotDuration=${slotDurationMinutes}min, MaxResults=${maxResults}, OpHours=${operatingOpenTimeStr}-${operatingCloseTimeStr}, Timezone=${restaurantTimezone}`);
 
         const allRestaurantTables: Table[] = await storage.getTables(restaurantId);
         if (!allRestaurantTables || allRestaurantTables.length === 0) {
@@ -243,14 +227,15 @@ export async function getAvailableTimeSlots(
             return [];
         }
 
-        // ✅ FIXED: Get nested reservation data and log what we actually receive
+        // ✅ CRITICAL FIX: Pass restaurant timezone when getting reservations
         const nestedReservationsForDate = await storage.getReservations(restaurantId, {
             date: date,
-            status: ['created', 'confirmed']
+            status: ['created', 'confirmed'],
+            timezone: restaurantTimezone  // ← CRITICAL FIX
         });
         
         console.log(`[AvailabilityService] Raw reservations data structure:`, nestedReservationsForDate.length > 0 ? nestedReservationsForDate[0] : 'no reservations');
-        console.log(`[AvailabilityService] Found ${nestedReservationsForDate.length} active reservations on ${date} for R${restaurantId}.`);
+        console.log(`[AvailabilityService] Found ${nestedReservationsForDate.length} active reservations on ${date} for R${restaurantId} in timezone ${restaurantTimezone}.`);
 
         // Define the last possible booking start time
         const lastBookingTimeMinutes = closingTimeMinutes - slotDurationMinutes;
@@ -283,7 +268,7 @@ export async function getAvailableTimeSlots(
         for (const timeSlot of potentialTimeSlots) {
             if (foundAvailableSlots.length >= maxResults) break;
 
-            console.log(`[AvailabilityService] 🔍 Checking time slot: ${timeSlot}`);
+            console.log(`[AvailabilityService] 🔍 Checking time slot: ${timeSlot} (${restaurantTimezone})`);
 
             // ✅ FIXED: Properly extract flat reservations for each table
             const singleSuitableTables = bookableTables.filter(table => {
@@ -306,7 +291,7 @@ export async function getAvailableTimeSlots(
                         };
                     });
 
-                console.log(`[AvailabilityService] Table ${table.name} (ID: ${table.id}) has ${flatReservationsForTable.length} reservations`);
+                console.log(`[AvailabilityService] Table ${table.name} (ID: ${table.id}) has ${flatReservationsForTable.length} reservations for ${date}`);
 
                 const isAvailable = isTableAvailableAtTimeSlot(
                     table.id,
@@ -329,11 +314,11 @@ export async function getAvailableTimeSlots(
                 if (bestSingleTable) {
                     // Check if this exact slot is already added
                     if (!foundAvailableSlots.some(s => s.tableId === bestSingleTable.id && s.time === timeSlot && !s.isCombined)) {
-                        console.log(`[AvailabilityService] ✅ Adding available slot: ${bestSingleTable.name} at ${timeSlot}`);
+                        console.log(`[AvailabilityService] ✅ Adding available slot: ${bestSingleTable.name} at ${timeSlot} (${restaurantTimezone})`);
                         foundAvailableSlots.push({
                             date: date,
                             time: timeSlot,
-                            timeDisplay: formatTimeForDisplay(timeSlot, currentLang),
+                            timeDisplay: formatTimeForRestaurant(timeSlot, restaurantTimezone, currentLang),
                             tableId: bestSingleTable.id,
                             tableName: bestSingleTable.name,
                             tableCapacity: { min: bestSingleTable.minGuests, max: bestSingleTable.maxGuests },
@@ -354,6 +339,7 @@ export async function getAvailableTimeSlots(
                     bookableTables,
                     nestedReservationsForDate, // ✅ FIXED: Pass the nested structure correctly
                     slotDurationMinutes,
+                    restaurantTimezone,
                     currentLang
                 );
 
@@ -365,7 +351,7 @@ export async function getAvailableTimeSlots(
                         s.constituentTables?.length === combinedSlot.constituentTables?.length &&
                         s.constituentTables?.every(ct => combinedSlot.constituentTables?.some(cct => cct.id === ct.id))
                     )) {
-                        console.log(`[AvailabilityService] ✅ Adding combined slot: ${combinedSlot.tableName} at ${timeSlot}`);
+                        console.log(`[AvailabilityService] ✅ Adding combined slot: ${combinedSlot.tableName} at ${timeSlot} (${restaurantTimezone})`);
                         foundAvailableSlots.push({ ...combinedSlot, date: date });
                     }
                 }
@@ -383,7 +369,7 @@ export async function getAvailableTimeSlots(
             return (a.tableCapacity.max - guests) - (b.tableCapacity.max - guests);
         });
 
-        console.log(`[AvailabilityService] Search complete. Found ${foundAvailableSlots.length} slots for R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}.`);
+        console.log(`[AvailabilityService] Search complete. Found ${foundAvailableSlots.length} slots for R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Timezone ${restaurantTimezone}.`);
         return foundAvailableSlots.slice(0, maxResults);
 
     } catch (error) {

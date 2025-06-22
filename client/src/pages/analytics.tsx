@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { DashboardLayout, useRestaurantTimezone } from "@/components/layout/DashboardLayout";
 import { 
   Users, 
   TrendingUp, 
@@ -19,21 +19,64 @@ import {
   Target,
   BarChart3
 } from "lucide-react";
+import { DateTime } from "luxon";
 
 export default function Analytics() {
+  // ✅ FIXED: Use context hook to get restaurant timezone and data
+  const { restaurant, restaurantTimezone, isLoading: isRestaurantLoading } = useRestaurantTimezone();
+
+  // ✅ FIXED: Timezone-aware data fetching with dynamic query keys
   const { data: reservations, isLoading: reservationsLoading } = useQuery({
-    queryKey: ["/api/reservations"],
+    queryKey: ["/api/reservations", restaurant?.id, restaurantTimezone],
+    queryFn: async () => {
+      const response = await fetch(`/api/reservations?timezone=${encodeURIComponent(restaurantTimezone)}`, {
+        credentials: "include"
+      });
+      if (!response.ok) throw new Error("Failed to fetch reservations");
+      return response.json();
+    },
+    enabled: !!restaurant,
   });
 
   const { data: guests, isLoading: guestsLoading } = useQuery({
-    queryKey: ["/api/guests"],
+    queryKey: ["/api/guests", restaurant?.id, restaurantTimezone],
+    queryFn: async () => {
+      const response = await fetch(`/api/guests?timezone=${encodeURIComponent(restaurantTimezone)}`, {
+        credentials: "include"
+      });
+      if (!response.ok) throw new Error("Failed to fetch guests");
+      return response.json();
+    },
+    enabled: !!restaurant,
   });
 
   const { data: tables } = useQuery({
     queryKey: ["/api/tables"],
   });
 
-  if (reservationsLoading || guestsLoading) {
+  // ✅ FIXED: Get restaurant's "today" using correct timezone variable
+  const getRestaurantToday = () => {
+    try {
+      return DateTime.now().setZone(restaurantTimezone).toISODate();
+    } catch (error) {
+      console.warn(`[Analytics] Invalid timezone ${restaurantTimezone}, falling back to UTC`);
+      return DateTime.now().toISODate();
+    }
+  };
+
+  // ✅ FIXED: Check if reservation is today using restaurant timezone
+  const isToday = (reservationDate: string) => {
+    const restaurantToday = getRestaurantToday();
+    return reservationDate === restaurantToday;
+  };
+
+  // ✅ FIXED: Filter reservations by restaurant's date context
+  const todaysReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+    const reservation = r.reservation || r;
+    return isToday(reservation.date) && reservation.status !== 'canceled';
+  }) : [];
+
+  if (reservationsLoading || guestsLoading || isRestaurantLoading) {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center h-64">
@@ -47,18 +90,43 @@ export default function Analytics() {
   const totalGuests = Array.isArray(guests) ? guests.length : 0;
   const telegramGuests = Array.isArray(guests) ? guests.filter((g: any) => g.telegram_user_id).length : 0;
   const regularGuests = Array.isArray(guests) ? guests.filter((g: any) => {
-    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === g.id) : [];
+    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.guestId === g.id || r.guestId === g.id;
+    }) : [];
     return guestReservations.length > 1;
   }).length : 0;
 
+  // ✅ FIXED: Today's statistics using restaurant timezone
+  const todayStats = {
+    total: todaysReservations.length,
+    confirmed: todaysReservations.filter((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.status === 'confirmed';
+    }).length,
+    totalGuests: todaysReservations.reduce((sum: number, r: any) => {
+      const reservation = r.reservation || r;
+      return sum + (reservation.guests || 0);
+    }, 0)
+  };
+
   // Reservation Analytics
   const totalReservations = Array.isArray(reservations) ? reservations.length : 0;
-  const confirmedReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.status === 'confirmed').length : 0;
-  const telegramBookings = Array.isArray(reservations) ? reservations.filter((r: any) => r.source === 'telegram').length : 0;
+  const confirmedReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+    const reservation = r.reservation || r;
+    return reservation.status === 'confirmed';
+  }).length : 0;
+  const telegramBookings = Array.isArray(reservations) ? reservations.filter((r: any) => {
+    const reservation = r.reservation || r;
+    return reservation.source === 'telegram';
+  }).length : 0;
   
   // Guest Connections Analysis
   const connectedGuests = Array.isArray(guests) ? guests.reduce((acc: any, guest: any) => {
-    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === guest.id) : [];
+    const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.guestId === guest.id || r.guestId === guest.id;
+    }) : [];
     
     if (guest.telegram_user_id) {
       const telegramGroup = acc.find((g: any) => g.telegram_user_id === guest.telegram_user_id);
@@ -77,14 +145,21 @@ export default function Analytics() {
 
   // Table Preferences
   const tableUsage = Array.isArray(tables) ? tables.map((table: any) => {
-    const tableReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.tableId === table.id) : [];
-    const uniqueGuests = new Set(tableReservations.map((r: any) => r.guestId)).size;
+    const tableReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.tableId === table.id || r.tableId === table.id;
+    }) : [];
+    const uniqueGuests = new Set(tableReservations.map((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.guestId || r.guestId;
+    })).size;
     return {
       ...table,
       bookings: tableReservations.length,
       uniqueGuests,
       popularTimes: tableReservations.reduce((acc: any, r: any) => {
-        const hour = r.time.split(':')[0];
+        const reservation = r.reservation || r;
+        const hour = (reservation.time || r.time).split(':')[0];
         acc[hour] = (acc[hour] || 0) + 1;
         return acc;
       }, {})
@@ -93,19 +168,30 @@ export default function Analytics() {
 
   // Party Size Analysis
   const partySizeStats = Array.isArray(reservations) ? reservations.reduce((acc: any, r: any) => {
-    acc[r.guests] = (acc[r.guests] || 0) + 1;
+    const reservation = r.reservation || r;
+    const guests = reservation.guests || r.guests;
+    acc[guests] = (acc[guests] || 0) + 1;
     return acc;
   }, {}) : {};
 
   const avgPartySize = Array.isArray(reservations) && reservations.length ? 
-    (reservations.reduce((sum: number, r: any) => sum + r.guests, 0) / reservations.length).toFixed(1) : 0;
+    (reservations.reduce((sum: number, r: any) => {
+      const reservation = r.reservation || r;
+      return sum + (reservation.guests || r.guests || 0);
+    }, 0) / reservations.length).toFixed(1) : 0;
 
   return (
     <DashboardLayout>
       <div className="px-4 py-6 lg:px-8">
         <header className="mb-6">
           <h2 className="text-2xl font-bold text-gray-800">Analytics Dashboard</h2>
-          <p className="text-gray-500 mt-1">Deep insights into your guest behavior and restaurant performance</p>
+          <p className="text-gray-500 mt-1">
+            Deep insights into your guest behavior and restaurant performance
+            {/* ✅ FIXED: Show current restaurant timezone */}
+            <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+              {restaurantTimezone} • Today: {getRestaurantToday()}
+            </span>
+          </p>
         </header>
 
         <Tabs defaultValue="overview" className="space-y-6">
@@ -117,6 +203,42 @@ export default function Analytics() {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-6">
+            {/* ✅ TODAY'S METRICS: Restaurant timezone-aware */}
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold mb-4 text-gray-800">Today's Performance</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Card className="bg-blue-50 border-blue-200">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-blue-800">Today's Reservations</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-blue-900">{todayStats.total}</div>
+                    <p className="text-xs text-blue-600">{todayStats.confirmed} confirmed</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-green-50 border-green-200">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-green-800">Today's Guests</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-green-900">{todayStats.totalGuests}</div>
+                    <p className="text-xs text-green-600">expected to dine</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-purple-50 border-purple-200">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-purple-800">Avg Party Today</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-purple-900">
+                      {todayStats.total ? (todayStats.totalGuests / todayStats.total).toFixed(1) : '0'}
+                    </div>
+                    <p className="text-xs text-purple-600">guests per reservation</p>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+
             {/* Key Metrics */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <Card>
@@ -204,7 +326,10 @@ export default function Analytics() {
                 <CardContent>
                   <div className="space-y-3">
                     {Array.isArray(guests) ? guests.map((guest: any) => {
-                      const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => r.guestId === guest.id) : [];
+                      const guestReservations = Array.isArray(reservations) ? reservations.filter((r: any) => {
+                        const reservation = r.reservation || r;
+                        return reservation.guestId === guest.id || r.guestId === guest.id;
+                      }) : [];
                       if (guestReservations.length === 0) return null;
                       
                       return (
@@ -242,7 +367,10 @@ export default function Analytics() {
                 <CardContent>
                   <div className="space-y-4">
                     {['direct', 'telegram', 'web'].map((source) => {
-                      const sourceBookings = Array.isArray(reservations) ? reservations.filter((r: any) => r.source === source).length : 0;
+                      const sourceBookings = Array.isArray(reservations) ? reservations.filter((r: any) => {
+                        const reservation = r.reservation || r;
+                        return (reservation.source || r.source) === source;
+                      }).length : 0;
                       const percentage = totalReservations ? ((sourceBookings / totalReservations) * 100).toFixed(1) : 0;
                       
                       return (
@@ -356,7 +484,8 @@ export default function Analytics() {
                   <div className="space-y-3">
                     {(() => {
                       const timeSlots = Array.isArray(reservations) ? reservations.reduce((acc: any, r: any) => {
-                        const hour = r.time.split(':')[0];
+                        const reservation = r.reservation || r;
+                        const hour = (reservation.time || r.time).split(':')[0];
                         acc[hour] = (acc[hour] || 0) + 1;
                         return acc;
                       }, {}) : {};

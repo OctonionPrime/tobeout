@@ -101,7 +101,7 @@ pool.on('connect', (client) => {
         SET lock_timeout = '5000';
         SET idle_in_transaction_session_timeout = '60000';
         SET search_path = public;
-        SET timezone = 'Europe/Moscow';
+        SET timezone = 'UTC';
     `).catch(err => {
         console.error('[Database] Failed to set session parameters:', err.message);
     });

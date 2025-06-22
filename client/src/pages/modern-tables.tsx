@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { format, addDays } from "date-fns";
+import { DateTime } from "luxon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,10 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import {
+    getRestaurantDateTime,
+    getRestaurantDateString
+} from "@/lib/utils";
 
 interface TableData {
   id: number;
@@ -46,15 +50,29 @@ interface AddTableForm {
   comments: string;
 }
 
-export default function ModernTables() {
-  // Get current Moscow time
-  const getMoscowDate = () => {
-    const now = new Date();
-    const moscowTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Moscow"}));
-    return moscowTime;
+// ✅ FIXED: Add timezone prop with Moscow default for backward compatibility
+interface ModernTablesProps {
+  restaurantTimezone?: string;
+}
+
+export default function ModernTables({ 
+  restaurantTimezone = 'Europe/Moscow' 
+}: ModernTablesProps) {
+  // ✅ FIXED: Use restaurant timezone instead of hardcoded Moscow
+  const getRestaurantDate = () => {
+    return getRestaurantDateTime(restaurantTimezone).toJSDate();
   };
 
-  const [selectedDate, setSelectedDate] = useState(format(getMoscowDate(), 'yyyy-MM-dd'));
+  const getRestaurantDateStr = () => {
+    return getRestaurantDateString(restaurantTimezone);
+  };
+
+  const getTomorrowDateStr = () => {
+    return getRestaurantDateTime(restaurantTimezone).plus({ days: 1 }).toISODate() || '';
+  };
+
+  // ✅ FIXED: Initialize with restaurant timezone date
+  const [selectedDate, setSelectedDate] = useState(getRestaurantDateStr());
   const [selectedTime, setSelectedTime] = useState("19:00");
   const [activeView, setActiveView] = useState<"schedule" | "floorplan" | "grid" | "list">("schedule");
   
@@ -96,14 +114,15 @@ export default function ModernTables() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // Fetch restaurant operating hours
+  // ✅ FIXED: Add timezone to query key for proper cache invalidation
   const { data: restaurant, isLoading: restaurantLoading } = useQuery<{
     openingTime: string;
     closingTime: string;
     avgReservationDuration: number;
+    timezone: string;
     [key: string]: any;
   }>({
-    queryKey: ["/api/restaurants/profile"],
+    queryKey: ["/api/restaurants/profile", restaurantTimezone],
   });
 
   // Generate time slots based on restaurant hours
@@ -123,19 +142,22 @@ export default function ModernTables() {
     }
   }
 
-  // Fetch table data
+  // ✅ FIXED: Add timezone to query key
   const { data: tables, isLoading: tablesLoading } = useQuery({
-    queryKey: ["/api/tables"],
+    queryKey: ["/api/tables", restaurantTimezone],
   });
 
-  // ✅ FIXED: Fetch table availability for all time slots with proper authentication
+  // ✅ FIXED: Include timezone parameter in API calls and query key
   const { data: scheduleData, isLoading } = useQuery({
-    queryKey: ["/api/tables/availability/schedule", selectedDate],
+    queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone],
     queryFn: async () => {
       const promises = timeSlots.map(async (time) => {
-        const response = await fetch(`/api/tables/availability?date=${selectedDate}&time=${time}`, {
-          credentials: 'include'
-        });
+        const response = await fetch(
+          `/api/tables/availability?date=${selectedDate}&time=${time}&timezone=${encodeURIComponent(restaurantTimezone)}`, 
+          {
+            credentials: 'include'
+          }
+        );
         
         if (!response.ok) {
           console.error(`❌ Failed to fetch availability for ${time}:`, response.status, response.statusText);
@@ -156,7 +178,7 @@ export default function ModernTables() {
     refetchOnMount: true,
   });
 
-  // ✅ NEW: Add Table Mutation
+  // ✅ FIXED: Update query invalidation to include timezone
   const addTableMutation = useMutation({
     mutationFn: async (tableData: AddTableForm) => {
       const payload = {
@@ -188,10 +210,10 @@ export default function ModernTables() {
         description: `Table ${newTable.name} (${newTable.minGuests}-${newTable.maxGuests} guests) added successfully`,
       });
       
-      // Invalidate all related queries
-      queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile"] });
+      // ✅ FIXED: Invalidate queries with timezone context
+      queryClient.invalidateQueries({ queryKey: ["/api/tables", restaurantTimezone] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
+      queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile", restaurantTimezone] });
       
       // Reset form and close modal
       setAddTableForm({
@@ -212,7 +234,7 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ NEW: Delete Table Mutation
+  // ✅ FIXED: Update query invalidation to include timezone
   const deleteTableMutation = useMutation({
     mutationFn: async (tableId: number) => {
       const response = await fetch(`/api/tables/${tableId}`, {
@@ -233,9 +255,9 @@ export default function ModernTables() {
         description: "Table removed successfully",
       });
       
-      // Invalidate all related queries
-      queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      // ✅ FIXED: Invalidate queries with timezone context
+      queryClient.invalidateQueries({ queryKey: ["/api/tables", restaurantTimezone] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
     },
     onError: (error: any) => {
       toast({
@@ -246,7 +268,7 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ FIXED: Move reservation mutation with proper authentication and 2-hour duration handling
+  // ✅ FIXED: Include timezone parameter and update query invalidation
   const moveReservationMutation = useMutation({
     mutationFn: async ({ reservationId, newTableId, newTime }: {
       reservationId: number;
@@ -260,7 +282,8 @@ export default function ModernTables() {
         body: JSON.stringify({
           tableId: newTableId,
           time: newTime,
-          date: selectedDate
+          date: selectedDate,
+          timezone: restaurantTimezone // ✅ FIXED: Include timezone
         })
       });
       
@@ -268,16 +291,16 @@ export default function ModernTables() {
       return response.json();
     },
     
-    // ✅ FIXED: Smart optimistic updates with proper 2-hour duration handling
+    // ✅ FIXED: Update optimistic cache with timezone context
     onMutate: async ({ reservationId, newTableId, newTime }) => {
       await queryClient.cancelQueries({ 
-        queryKey: ["/api/tables/availability/schedule"] 
+        queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
       });
 
-      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
       const duration = 2; // hours
 
-      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old || !draggedReservation) return old;
         
         const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
@@ -340,15 +363,16 @@ export default function ModernTables() {
       setDraggedReservation(null);
       setDragOverSlot(null);
       
+      // ✅ FIXED: Invalidate with timezone context
       queryClient.invalidateQueries({ 
-        queryKey: ["/api/reservations"] 
+        queryKey: ["/api/reservations", restaurantTimezone] 
       });
     },
 
     onError: (error: any, variables, context) => {
       if (context?.previousData) {
         queryClient.setQueryData(
-          ["/api/tables/availability/schedule", selectedDate], 
+          ["/api/tables/availability/schedule", selectedDate, restaurantTimezone], 
           context.previousData
         );
       }
@@ -364,25 +388,28 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ FIXED: Cancel reservation mutation with proper authentication
+  // ✅ FIXED: Include timezone and update cache invalidation
   const cancelReservationMutation = useMutation({
     mutationFn: async (reservationId: number) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ status: 'canceled' })
+        body: JSON.stringify({ 
+          status: 'canceled',
+          timezone: restaurantTimezone // ✅ FIXED: Include timezone
+        })
       });
       if (!response.ok) throw new Error('Failed to cancel reservation');
       return response.json();
     },
     
     onMutate: async (reservationId: number) => {
-      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
       
-      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
       
-      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old) return old;
         
         return old.map((slot: any) => ({
@@ -413,7 +440,7 @@ export default function ModernTables() {
     
     onError: (error, variables, context) => {
       if (context?.previousData) {
-        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], context.previousData);
+        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], context.previousData);
       }
       toast({
         title: "Cancellation Failed", 
@@ -423,7 +450,7 @@ export default function ModernTables() {
     },
   });
 
-  // ✅ FIXED: Quick move mutation with proper authentication and 2-hour duration
+  // ✅ FIXED: Include timezone parameter and update cache operations
   const quickMoveMutation = useMutation({
     mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
       const currentSlot = scheduleData?.find(slot => 
@@ -462,7 +489,8 @@ export default function ModernTables() {
         body: JSON.stringify({
           tableId: currentTable.id,
           time: newTime,
-          date: selectedDate
+          date: selectedDate,
+          timezone: restaurantTimezone // ✅ FIXED: Include timezone
         }),
       });
       if (!response.ok) throw new Error('Failed to move reservation');
@@ -470,9 +498,9 @@ export default function ModernTables() {
     },
     
     onMutate: async ({ reservationId, direction }) => {
-      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      await queryClient.cancelQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
       
-      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate]);
+      const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
       
       const currentSlot = scheduleData?.find(slot => 
         slot.tables.some(t => t.reservation?.id === reservationId)
@@ -487,7 +515,7 @@ export default function ModernTables() {
       
       const duration = 2;
       
-      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], (old: any) => {
+      queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old) return old;
         
         const sourceSlots = [];
@@ -540,7 +568,7 @@ export default function ModernTables() {
     
     onError: (error, variables, context) => {
       if (context?.previousData) {
-        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate], context.previousData);
+        queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], context.previousData);
       }
       toast({
         title: "Move Failed",
@@ -550,7 +578,7 @@ export default function ModernTables() {
     },
   });
 
-  // Enhanced Drag & Drop Event Handlers
+  // Enhanced Drag & Drop Event Handlers (unchanged - already working)
   const handleDragStart = (
     e: React.DragEvent,
     reservation: {
@@ -659,7 +687,7 @@ export default function ModernTables() {
     });
   };
 
-  // Status colors for modern design
+  // Status colors for modern design (unchanged)
   const getStatusStyle = (status: string, hasReservation: boolean, isDragTarget = false) => {
     if (isDragTarget) {
       return isValidDropZone
@@ -701,6 +729,22 @@ export default function ModernTables() {
     addTableMutation.mutate(addTableForm);
   };
 
+  // ✅ FIXED: Format current date display using restaurant timezone
+  const formatCurrentDate = () => {
+    try {
+      const restaurantDateTime = getRestaurantDateTime(restaurantTimezone);
+      return restaurantDateTime.toFormat('EEEE, MMMM d, yyyy');
+    } catch (error) {
+      // Fallback to basic formatting if timezone parsing fails
+      return new Date(selectedDate).toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="container mx-auto px-4 py-8 space-y-8">
@@ -722,10 +766,11 @@ export default function ModernTables() {
                   <Plus className="h-4 w-4 mr-1" />
                   Add Table
                 </Button>
+                {/* ✅ FIXED: Use restaurant timezone for Today/Tomorrow buttons */}
                 <Button 
                   variant="outline" 
                   size="sm"
-                  onClick={() => setSelectedDate(format(getMoscowDate(), 'yyyy-MM-dd'))}
+                  onClick={() => setSelectedDate(getRestaurantDateStr())}
                   className="text-xs"
                 >
                   Today
@@ -733,7 +778,7 @@ export default function ModernTables() {
                 <Button 
                   variant="outline" 
                   size="sm"
-                  onClick={() => setSelectedDate(format(addDays(getMoscowDate(), 1), 'yyyy-MM-dd'))}
+                  onClick={() => setSelectedDate(getTomorrowDateStr())}
                   className="text-xs"
                 >
                   Tomorrow
@@ -787,10 +832,17 @@ export default function ModernTables() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                  Restaurant Management - {format(new Date(selectedDate), 'EEEE, MMMM d, yyyy')}
+                  {/* ✅ FIXED: Use restaurant timezone for date display */}
+                  Restaurant Management - {formatCurrentDate()}
                 </h3>
                 <p className="text-gray-500 dark:text-gray-400 mt-1">
                   Real-time availability across all tables • Auto-refreshes every 30 seconds
+                  {/* ✅ NEW: Show current timezone info */}
+                  {restaurantTimezone !== 'Europe/Moscow' && (
+                    <span className="ml-2 text-blue-600">
+                      • {restaurantTimezone}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex items-center gap-4">

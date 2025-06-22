@@ -1,13 +1,13 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { db, pool, getDatabaseHealth } from "./db"; // ✅ ADDED: getDatabaseHealth import
+import { db, pool, getDatabaseHealth } from "./db";
 import {
     insertUserSchema, insertRestaurantSchema,
     insertTableSchema, insertGuestSchema,
     insertReservationSchema, insertIntegrationSettingSchema,
     timeslots,
-    reservations, // <-- Added this import for the debug route
+    reservations,
     type Guest
 } from "@shared/schema";
 import { z } from "zod";
@@ -189,6 +189,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ UPDATED: Restaurant profile route with timezone cache invalidation
     app.patch("/api/restaurants/profile", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -196,8 +197,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
+
             const validatedData = insertRestaurantSchema.partial().parse(req.body);
+
+            // ✅ NEW: Check if timezone is being changed
+            const oldTimezone = restaurant.timezone;
+            const newTimezone = validatedData.timezone;
+            const isTimezoneChanging = newTimezone && oldTimezone !== newTimezone;
+
+            if (isTimezoneChanging) {
+                console.log(`🌍 [Profile] Restaurant ${restaurant.id} changing timezone: ${oldTimezone} → ${newTimezone}`);
+            }
+
             const updatedRestaurant = await storage.updateRestaurant(restaurant.id, validatedData);
+
+            // ✅ NEW: Invalidate all cache if timezone changed
+            if (isTimezoneChanging) {
+                CacheInvalidation.onTimezoneChange(restaurant.id, oldTimezone, newTimezone);
+
+                console.log(`✅ [Profile] Timezone change complete for restaurant ${restaurant.id}`);
+            }
+
             res.json(updatedRestaurant);
         } catch (error: any) {
             if (error instanceof z.ZodError) {
@@ -390,7 +410,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ FIXED: Table availability for specific date/time (with smart caching and proper duration handling)
+    // ✅ TIMEZONE FIX 1: Table Availability with Restaurant Timezone
     app.get("/api/tables/availability", isAuthenticated, async (req, res, next) => {
         try {
             const { date, time } = req.query;
@@ -402,63 +422,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!date || !time) {
                 return res.status(400).json({ message: "Date and time are required" });
             }
-            
-            console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time}`);
-            
+
+            console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time} in timezone ${restaurant.timezone}`);
+
             const cacheKey = CacheKeys.tableAvailability(restaurant.id, `${date}_${time}`);
             const tableAvailabilityData = await withCache(cacheKey, async () => {
                 const tablesData = await storage.getTables(restaurant.id);
-                const reservationsData = await storage.getReservations(restaurant.id, { date: date as string });
                 
-                console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date}`);
-                
-                // ✅ FIXED: Proper overlap detection for 2-hour reservations
+                // ✅ FIXED: Pass restaurant timezone for proper date filtering
+                const reservationsData = await storage.getReservations(restaurant.id, { 
+                    date: date as string,
+                    timezone: restaurant.timezone  // ← CRITICAL FIX
+                });
+
+                console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date} (${restaurant.timezone})`);
+
                 const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
-                    // Extract the actual reservation object from nested structure
                     const actualReservation = reservation.reservation || reservation;
                     const startTime = actualReservation.time;
-                    const duration = actualReservation.duration || 120; // ✅ FIX: Default to 120 minutes (2 hours), not 90!
-                    
+                    const duration = actualReservation.duration || 120;
+
                     const [checkHour, checkMin] = checkTime.split(':').map(Number);
                     const checkMinutes = checkHour * 60 + checkMin;
-                    
+
                     const [startHour, startMin] = startTime.split(':').map(Number);
                     const startMinutes = startHour * 60 + startMin;
                     const endMinutes = startMinutes + duration;
-                    
-                    // ✅ FIX: Check if the hourly slot overlaps with the reservation
-                    // For a 2-hour reservation starting at 15:30:
-                    // - It occupies 15:00 slot (because 15:00-16:00 overlaps with 15:30-17:30)
-                    // - It occupies 16:00 slot (because 16:00-17:00 overlaps with 15:30-17:30)
-                    // - It occupies 17:00 slot (because 17:00-18:00 overlaps with 15:30-17:30)
-                    
-                    // Each displayed slot represents a 1-hour block
+
                     const slotEndMinutes = checkMinutes + 60;
-                    
-                    // Overlap exists if: reservation_start < slot_end AND reservation_end > slot_start
+
                     return startMinutes < slotEndMinutes && endMinutes > checkMinutes;
                 };
-                
+
                 const availabilityResult = tablesData.map(table => {
-                    // Find reservations for this table
                     const tableReservations = reservationsData.filter(r => {
                         const actualReservation = r.reservation || r;
                         return actualReservation.tableId === table.id;
                     });
-                    
+
                     if (tableReservations.length > 0) {
                         console.log(`🔍 Table ${table.id} (${table.name}) has ${tableReservations.length} reservations`);
                     }
-                    
-                    // Find conflicting reservation for the requested time
+
                     const conflictingReservation = reservationsData.find(r => {
                         const actualReservation = r.reservation || r;
                         const guest = r.guest || {};
-                        
+
                         const matches = actualReservation.tableId === table.id &&
                             ['confirmed', 'created'].includes(actualReservation.status || '') &&
                             isTimeSlotOccupied(r, time as string);
-                        
+
                         if (matches) {
                             console.log(`⚠️ Table ${table.id} conflict found:`, {
                                 guestName: r.guestName || actualReservation.booking_guest_name || guest.name,
@@ -466,20 +479,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
                                 status: actualReservation.status
                             });
                         }
-                        
+
                         return matches;
                     });
-                    
+
                     if (conflictingReservation) {
                         const actualReservation = conflictingReservation.reservation || conflictingReservation;
                         const guest = conflictingReservation.guest || {};
-                        
+
                         const startTime = actualReservation.time;
-                        const duration = actualReservation.duration || 120; // ✅ Use 120 minutes default
+                        const duration = actualReservation.duration || 120;
                         const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
                         const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
                         const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
-                        
+
                         return {
                             ...table,
                             status: 'reserved',
@@ -493,14 +506,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                             }
                         };
                     }
-                    
+
                     return { ...table, status: 'available', reservation: null };
                 });
-                
-                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables`);
+
+                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${restaurant.timezone}`);
                 return availabilityResult;
             }, 30);
-            
+
             res.json(tableAvailabilityData);
         } catch (error) {
             console.error('❌ [Table Availability] Error:', error);
@@ -508,19 +521,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ TIMEZONE FIX 2: Available Times with Restaurant Timezone
     app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response, next) => {
         try {
             const { restaurantId, date, guests } = req.query;
+            const user = req.user as any;
+            
+            // ✅ FIXED: Get restaurant data to access timezone
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+            
+            // ✅ FIXED: Validate restaurantId matches user's restaurant for security
+            if (parseInt(restaurantId as string) !== restaurant.id) {
+                return res.status(403).json({ message: "Access denied to this restaurant" });
+            }
+            
             if (!restaurantId || !date || !guests) {
                 return res.status(400).json({ message: "Missing required parameters" });
             }
-            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests}`);
+            
+            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${restaurant.timezone}`);
+            
+            // ✅ FIXED: Pass restaurant timezone to getAvailableTimeSlots
             const availableSlots = await getAvailableTimeSlots(
                 parseInt(restaurantId as string),
                 date as string,
                 parseInt(guests as string),
-                { maxResults: 20 }
+                { 
+                    maxResults: 20,
+                    timezone: restaurant.timezone  // ← CRITICAL FIX
+                }
             );
+            
             const timeSlots = availableSlots.map(slot => ({
                 time: slot.time,
                 timeDisplay: slot.timeDisplay,
@@ -531,9 +565,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 tablesCount: 1,
                 message: `Table ${slot.tableName} available (seats up to ${slot.tableCapacity.max})`
             }));
-            console.log(`[Routes] Found ${timeSlots.length} available time slots`);
+            
+            console.log(`[Routes] Found ${timeSlots.length} available time slots for ${restaurant.timezone}`);
             res.json({ availableSlots: timeSlots });
         } catch (error) {
+            console.error('❌ [Available Times] Error:', error);
             next(error);
         }
     });
@@ -546,10 +582,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
+            // ✅ FIXED: Pass the restaurant's timezone when filtering for upcoming reservations
             const filters = {
                 date: req.query.date as string,
                 status: req.query.status ? (req.query.status as string).split(',') : undefined,
                 upcoming: req.query.upcoming === 'true',
+                timezone: restaurant.timezone, // Always include the timezone
             };
             const reservationsData = await storage.getReservations(restaurant.id, filters);
             res.json(reservationsData);
@@ -567,7 +605,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             const reservationId = parseInt(req.params.id);
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.restaurant.restaurantId !== restaurant.id) {
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) { // Corrected check
                 return res.status(404).json({ message: "Reservation not found" });
             }
             res.json(reservation);
@@ -576,7 +614,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ ENHANCED: Reservation creation with atomic transactions + granular cache invalidation + manual table selection
     app.post("/api/reservations", isAuthenticated, async (req, res, next) => {
         console.log('🔥 RESERVATION ENDPOINT HIT (POST /api/reservations)!');
         try {
@@ -602,7 +639,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Guest information processing failed." });
             }
 
-            // ✅ ENHANCED: Atomic booking with granular cache invalidation + manual table selection
             try {
                 const bookingResult = await createReservation({
                     restaurantId: restaurant.id,
@@ -612,28 +648,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     guests: parseInt(numGuests as string),
                     comments: req.body.comments || '',
                     source: req.body.source || 'manual',
-                    booking_guest_name: guestName, // Always use the name from the form for this specific booking
+                    booking_guest_name: guestName,
                     lang: req.body.lang || restaurant.languages?.[0] || 'en',
-                    tableId: req.body.tableId || undefined, // ✅ NEW: Pass tableId for manual table selection
+                    tableId: req.body.tableId || undefined,
                 });
 
                 if (!bookingResult.success || !bookingResult.reservation) {
-                    // ✅ ENHANCED: Sophisticated error handling with proper status codes
                     let statusCode = 400;
                     let errorType = 'VALIDATION_ERROR';
 
                     if (bookingResult.conflictType) {
                         switch (bookingResult.conflictType) {
                             case 'AVAILABILITY':
-                                statusCode = 409; // Conflict
+                                statusCode = 409;
                                 errorType = 'TABLE_UNAVAILABLE';
                                 break;
                             case 'DEADLOCK':
-                                statusCode = 503; // Service Temporarily Unavailable
+                                statusCode = 503;
                                 errorType = 'SYSTEM_BUSY';
                                 break;
                             case 'TRANSACTION':
-                                statusCode = 409; // Conflict
+                                statusCode = 409;
                                 errorType = 'BOOKING_CONFLICT';
                                 break;
                             default:
@@ -649,15 +684,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         details: 'Smart table assignment could not find available slot or booking failed',
                         errorType: errorType,
                         conflictType: bookingResult.conflictType,
-                        retryable: statusCode === 503 || statusCode === 409, // Client can retry deadlocks and conflicts
+                        retryable: statusCode === 503 || statusCode === 409,
                         timestamp: new Date().toISOString()
                     });
                 }
 
-                // ✅ SUCCESS: Granular cache invalidation instead of broad invalidation
                 CacheInvalidation.onReservationTimeRangeChange(
-                    restaurant.id, 
-                    date, 
+                    restaurant.id,
+                    date,
                     bookingResult.reservation.time,
                     bookingResult.reservation.duration || 120
                 );
@@ -674,12 +708,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 });
 
             } catch (bookingError: any) {
-                // ✅ ENHANCED: Handle unexpected booking service errors with atomic transaction support
                 console.error('❌ [Reservation Creation] Unexpected booking service error:', bookingError);
 
-                // Check for database-specific errors
                 if (bookingError.code === '40P01') {
-                    // PostgreSQL deadlock
                     return res.status(503).json({
                         message: "System busy - please try your booking again in a moment",
                         errorType: 'SYSTEM_BUSY',
@@ -688,7 +719,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         timestamp: new Date().toISOString()
                     });
                 } else if (bookingError.code?.startsWith('40')) {
-                    // Other PostgreSQL transaction conflicts
                     return res.status(409).json({
                         message: "Booking conflict detected - please try again",
                         errorType: 'BOOKING_CONFLICT',
@@ -697,7 +727,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         timestamp: new Date().toISOString()
                     });
                 } else if (bookingError.message?.includes('no longer available')) {
-                    // Atomic availability conflict
                     return res.status(409).json({
                         message: bookingError.message,
                         errorType: 'TABLE_UNAVAILABLE',
@@ -706,7 +735,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         timestamp: new Date().toISOString()
                     });
                 } else {
-                    // Unknown error - don't expose internal details
                     return res.status(500).json({
                         message: "An unexpected error occurred while processing your reservation",
                         errorType: 'INTERNAL_ERROR',
@@ -717,12 +745,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
         } catch (error: any) {
-            // ✅ ENHANCED: Handle top-level route errors
             console.error('❌ [Reservation Route] Top-level error:', error);
 
             if (error instanceof z.ZodError) {
-                return res.status(400).json({ 
-                    message: "Validation failed", 
+                return res.status(400).json({
+                    message: "Validation failed",
                     errors: error.errors,
                     errorType: 'VALIDATION_ERROR',
                     retryable: false,
@@ -730,7 +757,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 });
             }
 
-            // Log the full error for debugging but don't expose to client
             return res.status(500).json({
                 message: "An unexpected error occurred",
                 errorType: 'INTERNAL_ERROR',
@@ -740,7 +766,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ ENHANCED: Reservation update with granular cache invalidation
     app.patch("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -758,18 +783,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const existingReservation = existingResult.reservation;
             const validatedData = insertReservationSchema.partial().parse(req.body);
 
-            // ✅ ENHANCED: Granular cache invalidation for existing reservation
             CacheInvalidation.onReservationTimeRangeChange(
-                restaurant.id, 
+                restaurant.id,
                 existingReservation.date,
                 existingReservation.time,
                 existingReservation.duration || 120
             );
 
-            // ✅ ENHANCED: Granular cache invalidation for new date/time if changed
             if (validatedData.date && validatedData.date !== existingReservation.date) {
                 CacheInvalidation.onReservationTimeRangeChange(
-                    restaurant.id, 
+                    restaurant.id,
                     validatedData.date,
                     validatedData.time || existingReservation.time,
                     validatedData.duration || existingReservation.duration || 120
@@ -787,7 +810,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ ENHANCED: Reservation deletion with granular cache invalidation
     app.delete("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -798,26 +820,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const reservationId = parseInt(req.params.id);
             const existingResult = await storage.getReservation(reservationId);
 
-            // Verify the reservation exists and belongs to the user's restaurant
             if (!existingResult || existingResult.reservation.restaurantId !== restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
             const existingReservation = existingResult.reservation;
 
-            // Use the cancelReservation service which updates status to "canceled"
-            // This is a "soft delete" and is generally safer than hard deleting records.
             await cancelReservation(reservationId, restaurant.languages?.[0] || 'en');
 
-            // ✅ ENHANCED: Granular cache invalidation for deleted reservation
             CacheInvalidation.onReservationTimeRangeChange(
-                restaurant.id, 
+                restaurant.id,
                 existingReservation.date,
                 existingReservation.time,
                 existingReservation.duration || 120
             );
 
-            // Return a valid JSON object on success to prevent frontend parse errors
             res.json({ success: true, message: "Reservation canceled successfully." });
 
         } catch (error) {
@@ -833,7 +850,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
-            const stats = await storage.getReservationStatistics(restaurant.id);
+            // ✅ FIXED: Pass the restaurant's timezone to get correct daily stats
+            const stats = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
             res.json(stats);
         } catch (error) {
             next(error);
@@ -848,7 +866,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
             const hours = parseInt(req.query.hours as string) || 3;
-            const upcoming = await storage.getUpcomingReservations(restaurant.id, hours);
+            // ✅ FIXED: Pass the restaurant's timezone to get correct upcoming reservations
+            const upcoming = await storage.getUpcomingReservations(restaurant.id, restaurant.timezone, hours);
             res.json(upcoming);
         } catch (error) {
             next(error);
@@ -978,23 +997,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ===========================================
-    // MONITORING ENDPOINTS (No Authentication Required)
-    // ===========================================
-    
-    // Health check endpoint for monitoring tools (Uptime Robot, DataDog, etc.)
+    // Monitoring Endpoints
     app.get("/api/health", async (req, res) => {
         try {
             const startTime = Date.now();
-            
-            // Get database health from existing function
             const dbHealth = getDatabaseHealth();
-            
-            // Get basic application metrics
             const uptime = process.uptime();
             const memoryUsage = process.memoryUsage();
-            
-            // Test database connectivity with a simple query
             let dbTestResult;
             try {
                 const testQuery = await pool.query('SELECT NOW() as current_time, version() as version');
@@ -1010,12 +1019,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     responseTime: Date.now() - startTime
                 };
             }
-            
-            // Determine overall health status
             const isHealthy = dbHealth.healthy && dbTestResult.connected;
             const statusCode = isHealthy ? 200 : 503;
-            
-            // Create comprehensive health response
             const healthResponse = {
                 status: isHealthy ? "healthy" : "unhealthy",
                 timestamp: new Date().toISOString(),
@@ -1046,18 +1051,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 },
                 checks: {
                     database: dbTestResult.connected ? "pass" : "fail",
-                    memory: memoryUsage.heapUsed < (512 * 1024 * 1024) ? "pass" : "warn", // 512MB threshold
-                    uptime: uptime > 60 ? "pass" : "starting" // Consider healthy after 1 minute
+                    memory: memoryUsage.heapUsed < (512 * 1024 * 1024) ? "pass" : "warn",
+                    uptime: uptime > 60 ? "pass" : "starting"
                 }
             };
-            
-            // Log health check for monitoring
             if (!isHealthy) {
                 console.warn(`[Health] Health check failed: DB=${dbHealth.healthy}, Connected=${dbTestResult.connected}`);
             }
-            
             res.status(statusCode).json(healthResponse);
-            
         } catch (error: any) {
             console.error('[Health] Health check endpoint error:', error);
             res.status(503).json({
@@ -1068,8 +1069,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
         }
     });
-    
-    // Simple ping endpoint for basic uptime monitoring
+
     app.get("/api/ping", (req, res) => {
         res.json({
             status: "ok",
@@ -1077,17 +1077,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             uptime: process.uptime()
         });
     });
-    
-    // Database-specific health endpoint
+
     app.get("/api/health/database", async (req, res) => {
         try {
             const startTime = Date.now();
             const dbHealth = getDatabaseHealth();
-            
-            // Test actual database query
             const testResult = await pool.query('SELECT NOW() as time, current_database() as db_name');
             const responseTime = Date.now() - startTime;
-            
             const response = {
                 healthy: true,
                 timestamp: new Date().toISOString(),
@@ -1100,9 +1096,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     lastHealthCheck: dbHealth.lastHealthCheck
                 }
             };
-            
             res.status(200).json(response);
-            
         } catch (error: any) {
             console.error('[Health] Database health check failed:', error);
             res.status(503).json({
@@ -1114,11 +1108,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ===========================================
-    // END MONITORING ENDPOINTS
-    // ===========================================
-
-    // START: TEMPORARY DEBUG ROUTES
+    // Debug Routes
     app.get("/api/debug/data-consistency", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -1129,57 +1119,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             console.log(`🔍 [DEBUG] Starting data consistency check for restaurant ${restaurant.id}`);
 
-            // 1. Raw database query - exactly what storage returns
-            const todayDate = new Date().toISOString().split('T')[0];
+            // ✅ FIXED: Pass restaurant timezone to debug routes
+            const dashboardReservations = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
+            const allReservations = await storage.getReservations(restaurant.id, { timezone: restaurant.timezone });
+            const todayReservations = await storage.getReservations(restaurant.id, { date: new Date().toISOString().split('T')[0], timezone: restaurant.timezone });
+            const upcomingReservations = await storage.getUpcomingReservations(restaurant.id, restaurant.timezone, 3);
 
-            // Get reservations using the same method as dashboard
-            const dashboardReservations = await storage.getReservationStatistics(restaurant.id);
-            console.log(`📊 [DEBUG] Dashboard stats:`, dashboardReservations);
-
-            // Get reservations using the same method as reservations page  
-            const allReservations = await storage.getReservations(restaurant.id);
-            console.log(`📋 [DEBUG] All reservations count:`, allReservations.length);
-
-            const todayReservations = await storage.getReservations(restaurant.id, { date: todayDate });
-            console.log(`📅 [DEBUG] Today reservations count:`, todayReservations.length);
-
-            const upcomingReservations = await storage.getUpcomingReservations(restaurant.id, 3);
-            console.log(`⏰ [DEBUG] Upcoming reservations count:`, upcomingReservations.length);
-
-            // Direct SQL query for debugging
-            const directSqlResult = await db.select({
-                id: reservations.id,
-                restaurantId: reservations.restaurantId,
-                date: reservations.date,
-                time: reservations.time,
-                status: reservations.status,
-                guests: reservations.guests,
-                guestId: reservations.guestId,
-                tableId: reservations.tableId,
-                booking_guest_name: reservations.booking_guest_name,
-                comments: reservations.comments,
-                createdAt: reservations.createdAt
-            })
-                .from(reservations)
-                .where(eq(reservations.restaurantId, restaurant.id))
-                .orderBy(desc(reservations.createdAt));
-
-            console.log(`🔍 [DEBUG] Direct SQL reservations:`, directSqlResult);
-
-            // Check cache state
+            const directSqlResult = await db.select().from(reservations).where(eq(reservations.restaurantId, restaurant.id)).orderBy(desc(reservations.createdAt));
             const cacheStats = cache.getStats();
-            console.log(`💾 [DEBUG] Cache stats:`, cacheStats);
 
             return res.json({
                 restaurantId: restaurant.id,
-                todayDate,
+                todayDate: new Date().toISOString().split('T')[0],
                 dashboardStats: dashboardReservations,
                 allReservationsCount: allReservations.length,
                 todayReservationsCount: todayReservations.length,
                 upcomingReservationsCount: upcomingReservations.length,
                 directSqlCount: directSqlResult.length,
                 directSqlReservations: directSqlResult,
-                allReservationsSample: allReservations.slice(0, 3), // First 3 for inspection
+                allReservationsSample: allReservations.slice(0, 3),
                 todayReservationsSample: todayReservations.slice(0, 3),
                 upcomingReservationsSample: upcomingReservations.slice(0, 3),
                 cacheStats: cacheStats,
@@ -1192,7 +1150,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Also add this route to clear cache for testing
     app.post("/api/debug/clear-cache", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -1200,12 +1157,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
-
-            // Clear all cache
             cache.clear();
-
             console.log(`🧹 [DEBUG] Cache cleared for restaurant ${restaurant.id}`);
-
             return res.json({
                 success: true,
                 message: "Cache cleared",
@@ -1216,8 +1169,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             next(error);
         }
     });
-    // END: TEMPORARY DEBUG ROUTES
-
 
     const httpServer = createServer(app);
     return httpServer;

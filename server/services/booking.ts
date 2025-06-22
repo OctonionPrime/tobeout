@@ -4,7 +4,6 @@ import { storage } from '../storage';
 import {
     getAvailableTimeSlots,
     type AvailabilitySlot as ServiceAvailabilitySlot,
-    formatTimeForDisplay as formatTimeFromAvailabilityService,
 } from './availability.service';
 
 import type {
@@ -15,6 +14,7 @@ import type {
     Table
 } from '@shared/schema';
 import type { Language } from './conversation-manager';
+import { isValidTimezone, formatTimeForRestaurant } from '../utils/timezone-utils';
 
 // --- Localized strings for booking.ts ---
 interface BookingServiceStrings {
@@ -180,6 +180,10 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             return { success: false, message: locale.restaurantNotFound(restaurantId) };
         }
 
+        // ✅ CRITICAL FIX: Extract restaurant timezone for all subsequent operations
+        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
+        logger.info(`Using restaurant timezone: ${restaurantTimezone}`);
+
         // Fetch guest with error handling
         const guestInfo: Guest | undefined = await storage.getGuest(guestId);
         if (!guestInfo) {
@@ -217,15 +221,15 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 };
             }
             
-            // Create slot object for manual selection
+            // ✅ FIXED: Use formatTimeForRestaurant with restaurant timezone
             selectedSlot = {
+                date: date,
                 tableId: selectedTable.id,
                 tableName: selectedTable.name,
                 time: time,
-                timeDisplay: formatTimeFromAvailabilityService(time, bookingRequest.lang || 'en'),
+                timeDisplay: formatTimeForRestaurant(time, restaurantTimezone, bookingRequest.lang || 'en'),
                 isCombined: false,
-                tableCapacity: { min: selectedTable.minGuests, max: selectedTable.maxGuests },
-                available: true // Will be validated in atomic transaction
+                tableCapacity: { min: selectedTable.minGuests, max: selectedTable.maxGuests }
             };
             
             logger.info(`✅ Created slot object for manual selection: TableID ${selectedSlot.tableId}, Name ${selectedSlot.tableName}`);
@@ -233,7 +237,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
         // Find available slot if not pre-selected and no manual table selected
         if (!selectedSlot) {
-            logger.info(`No pre-selected slot. Calling getAvailableTimeSlots...`);
+            logger.info(`No pre-selected slot. Calling getAvailableTimeSlots with timezone ${restaurantTimezone}...`);
+            
+            // ✅ CRITICAL FIX: Pass restaurant timezone to availability service
             const availableSlots: ServiceAvailabilitySlot[] = await getAvailableTimeSlots(
                 restaurantId, date, guests,
                 {
@@ -241,13 +247,15 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     maxResults: 1,
                     slotDurationMinutes: slotDurationMinutes,
                     lang: bookingRequest.lang || 'en',
-                    allowCombinations: true
+                    allowCombinations: true,
+                    timezone: restaurantTimezone  // ← CRITICAL FIX
                 }
             );
 
             if (!availableSlots || availableSlots.length === 0) {
-                const displayTime = formatTimeFromAvailabilityService(time, bookingRequest.lang || 'en');
-                logger.info(`No slots found by getAvailableTimeSlots for R${restaurantId}, D:${date}, T:${time}, G:${guests}.`);
+                // ✅ FIXED: Use formatTimeForRestaurant with restaurant timezone
+                const displayTime = formatTimeForRestaurant(time, restaurantTimezone, bookingRequest.lang || 'en');
+                logger.info(`No slots found by getAvailableTimeSlots for R${restaurantId}, D:${date}, T:${time}, G:${guests}, TZ:${restaurantTimezone}.`);
                 return { success: false, message: locale.noTablesAvailable(guests, date, displayTime) };
             }
 
@@ -256,7 +264,8 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
         }
 
         if (!selectedSlot) {
-            const displayTime = formatTimeFromAvailabilityService(time, bookingRequest.lang || 'en');
+            // ✅ FIXED: Use formatTimeForRestaurant with restaurant timezone
+            const displayTime = formatTimeForRestaurant(time, restaurantTimezone, bookingRequest.lang || 'en');
             return { success: false, message: locale.noTablesAvailable(guests, date, displayTime) };
         }
 
@@ -290,7 +299,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 });
                 
                 allCreatedReservationIds.push(primaryReservation.id);
-                logger.info(`✅ Atomic Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName}.`);
+                logger.info(`✅ Atomic Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName} (timezone: ${restaurantTimezone}).`);
 
                 const tableDetails = await storage.getTable(selectedSlot.tableId) as Table;
 
@@ -522,6 +531,10 @@ export async function cancelReservation(reservationId: number, lang?: Language):
             return { success: false, message: locale.reservationAlreadyCancelled(reservationId) };
         }
 
+        // ✅ CRITICAL FIX: Get restaurant for timezone context
+        const restaurant = await storage.getRestaurant(reservation.restaurantId);
+        const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+
         const isCombinedPrimary = reservation.comments?.startsWith('Combined booking:');
         const isLinkedPart = reservation.comments?.startsWith('Part of combined booking');
 
@@ -534,9 +547,11 @@ export async function cancelReservation(reservationId: number, lang?: Language):
 
             // Find and cancel linked reservations
             try {
+                // ✅ CRITICAL FIX: Pass restaurant timezone when getting reservations
                 const allReservations = await storage.getReservations(reservation.restaurantId, {
                     date: reservation.date,
-                    status: ['confirmed']
+                    status: ['confirmed'],
+                    timezone: restaurantTimezone  // ← CRITICAL FIX
                 });
 
                 const linkedReservations = allReservations.filter(r =>
@@ -557,7 +572,7 @@ export async function cancelReservation(reservationId: number, lang?: Language):
             logger.info(`Cancelled a linked part of a combined booking (Res ID: ${reservationId}).`);
         }
 
-        logger.info(`✅ Reservation ID ${reservationId} cancelled successfully.`);
+        logger.info(`✅ Reservation ID ${reservationId} cancelled successfully (timezone: ${restaurantTimezone}).`);
         return { success: true, message: locale.reservationCancelledSuccessfully };
 
     } catch (error: unknown) {
@@ -615,6 +630,7 @@ export async function getDateAvailabilityFromTimeslots(
     };
 }
 
+// ✅ CRITICAL FIX: Updated wrapper functions with timezone support
 export async function findAvailableTables(
     restaurantId: number,
     date: string,
@@ -624,11 +640,17 @@ export async function findAvailableTables(
 ): Promise<ServiceAvailabilitySlot[]> {
     try {
         logger.info(`findAvailableTables (new wrapper) called: R${restaurantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
+        
+        // ✅ CRITICAL FIX: Get restaurant for timezone context
+        const restaurant = await storage.getRestaurant(restaurantId);
+        const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+        
         return await getAvailableTimeSlots(restaurantId, date, guests, {
             requestedTime: time,
             maxResults: 10,
             lang: lang,
-            allowCombinations: true
+            allowCombinations: true,
+            timezone: restaurantTimezone  // ← CRITICAL FIX
         });
     } catch (error) {
         logger.error('Error in findAvailableTables (new wrapper):', error);
@@ -645,11 +667,17 @@ export async function findAlternativeSlots(
 ): Promise<ServiceAvailabilitySlot[]> {
     try {
         logger.info(`findAlternativeSlots (new wrapper) called: R${restaurantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
+        
+        // ✅ CRITICAL FIX: Get restaurant for timezone context
+        const restaurant = await storage.getRestaurant(restaurantId);
+        const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+        
         return await getAvailableTimeSlots(restaurantId, date, guests, {
             requestedTime: time,
             maxResults: 5,
             lang: lang,
-            allowCombinations: true
+            allowCombinations: true,
+            timezone: restaurantTimezone  // ← CRITICAL FIX
         });
     } catch (error) {
         logger.error('Error in findAlternativeSlots (new wrapper):', error);

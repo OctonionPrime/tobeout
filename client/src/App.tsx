@@ -14,7 +14,7 @@ import AISettings from "@/pages/ai-settings";
 import Preferences from "@/pages/preferences";
 import Integrations from "@/pages/integrations";
 import Login from "@/pages/auth/login";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
 import { Loader2 } from "lucide-react";
 import { useEffect } from "react";
 
@@ -98,6 +98,8 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
     return this.props.children;
   }
 }
+
+// ✅ REMOVED: TimezoneAwareRoute wrapper - no longer needed since DashboardLayout provides context
 
 // Protected Route wrapper component
 interface ProtectedRouteProps {
@@ -210,7 +212,7 @@ function Router() {
         {!isAuthenticated ? <Login /> : null}
       </Route>
       
-      {/* Protected routes with role-based access */}
+      {/* ✅ SIMPLIFIED: Protected routes directly render components - DashboardLayout provides timezone context */}
       <Route path="/dashboard">
         <ProtectedRoute>
           <Dashboard />
@@ -284,10 +286,12 @@ function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
+        <AuthProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Router />
+          </TooltipProvider>
+        </AuthProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   );

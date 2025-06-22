@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { Button } from './button';
 import { cn } from '@/lib/utils';
-import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, isSameMonth } from 'date-fns';
+import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isSameMonth } from 'date-fns';
+import { DateTime } from 'luxon';
 
+// ✅ CRITICAL FIX: Add restaurantTimezone prop
 interface RollingCalendarProps {
   selectedDates?: Date[];
   onDateSelect?: (dates: Date[]) => void;
   capacityData?: Record<string, { reservations: number; capacity: number; peakTime?: string }>;
   className?: string;
+  restaurantTimezone?: string; // ✅ CRITICAL ADDITION
 }
 
 interface DateCellProps {
@@ -90,10 +93,33 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
   selectedDates = [],
   onDateSelect,
   capacityData = {},
-  className
+  className,
+  restaurantTimezone = 'Europe/Moscow' // ✅ CRITICAL ADDITION: Default to Moscow for backward compatibility
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDateDetails, setSelectedDateDetails] = useState<Date | null>(null);
+
+  // ✅ CRITICAL FIX: Get restaurant's "today" using timezone
+  const getRestaurantToday = () => {
+    try {
+      return DateTime.now().setZone(restaurantTimezone).toJSDate();
+    } catch (error) {
+      console.warn(`[RollingCalendar] Invalid timezone ${restaurantTimezone}, falling back to browser timezone`);
+      return new Date();
+    }
+  };
+
+  // ✅ CRITICAL FIX: Check if date is "today" in restaurant timezone
+  const isRestaurantToday = (date: Date) => {
+    try {
+      const restaurantTodayDate = DateTime.now().setZone(restaurantTimezone).toISODate();
+      const checkDate = DateTime.fromJSDate(date).toISODate();
+      return restaurantTodayDate === checkDate;
+    } catch (error) {
+      console.warn(`[RollingCalendar] Timezone comparison failed for ${restaurantTimezone}`);
+      return isSameDay(date, new Date());
+    }
+  };
 
   const currentMonth = startOfMonth(currentDate);
   const nextMonth = startOfMonth(addMonths(currentDate, 1));
@@ -142,36 +168,65 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
     onDateSelect?.([]);
   };
 
+  // ✅ CRITICAL FIX: Use restaurant timezone for "today" quick select
   const quickSelectToday = () => {
-    onDateSelect?.([new Date()]);
+    onDateSelect?.([getRestaurantToday()]);
   };
 
+  // ✅ CRITICAL FIX: Use restaurant timezone for week calculations
   const quickSelectThisWeek = () => {
-    const today = new Date();
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
-    
-    const weekDates = Array.from({ length: 7 }, (_, i) => {
-      const date = new Date(startOfWeek);
-      date.setDate(startOfWeek.getDate() + i);
-      return date;
-    });
-    
-    onDateSelect?.(weekDates);
+    try {
+      const restaurantToday = DateTime.now().setZone(restaurantTimezone);
+      const startOfWeek = restaurantToday.startOf('week');
+      
+      const weekDates = Array.from({ length: 7 }, (_, i) => {
+        return startOfWeek.plus({ days: i }).toJSDate();
+      });
+      
+      onDateSelect?.(weekDates);
+    } catch (error) {
+      console.warn(`[RollingCalendar] Week calculation failed for ${restaurantTimezone}, using browser timezone`);
+      // Fallback to original logic
+      const today = new Date();
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      
+      const weekDates = Array.from({ length: 7 }, (_, i) => {
+        const date = new Date(startOfWeek);
+        date.setDate(startOfWeek.getDate() + i);
+        return date;
+      });
+      
+      onDateSelect?.(weekDates);
+    }
   };
 
+  // ✅ CRITICAL FIX: Use restaurant timezone for next week calculations  
   const quickSelectNextWeek = () => {
-    const today = new Date();
-    const startOfNextWeek = new Date(today);
-    startOfNextWeek.setDate(today.getDate() - today.getDay() + 7);
-    
-    const weekDates = Array.from({ length: 7 }, (_, i) => {
-      const date = new Date(startOfNextWeek);
-      date.setDate(startOfNextWeek.getDate() + i);
-      return date;
-    });
-    
-    onDateSelect?.(weekDates);
+    try {
+      const restaurantToday = DateTime.now().setZone(restaurantTimezone);
+      const startOfNextWeek = restaurantToday.startOf('week').plus({ weeks: 1 });
+      
+      const weekDates = Array.from({ length: 7 }, (_, i) => {
+        return startOfNextWeek.plus({ days: i }).toJSDate();
+      });
+      
+      onDateSelect?.(weekDates);
+    } catch (error) {
+      console.warn(`[RollingCalendar] Next week calculation failed for ${restaurantTimezone}, using browser timezone`);
+      // Fallback to original logic
+      const today = new Date();
+      const startOfNextWeek = new Date(today);
+      startOfNextWeek.setDate(today.getDate() - today.getDay() + 7);
+      
+      const weekDates = Array.from({ length: 7 }, (_, i) => {
+        const date = new Date(startOfNextWeek);
+        date.setDate(startOfNextWeek.getDate() + i);
+        return date;
+      });
+      
+      onDateSelect?.(weekDates);
+    }
   };
 
   const renderMonth = (monthDays: Date[], isCurrentMonth: boolean) => {
@@ -205,7 +260,7 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
                 key={dateKey}
                 date={date}
                 isSelected={isSelected}
-                isToday={isToday(date)}
+                isToday={isRestaurantToday(date)} // ✅ CRITICAL FIX: Use restaurant timezone
                 isCurrentMonth={isSameMonth(date, monthStart)}
                 capacity={capacity}
                 onClick={() => handleDateClick(date)}
@@ -277,6 +332,22 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
         </Button>
       </div>
 
+      {/* ✅ TIMEZONE INDICATOR: Show restaurant timezone context */}
+      {restaurantTimezone !== 'Europe/Moscow' && (
+        <div className="flex items-center justify-center mb-4 p-2 bg-blue-50 rounded">
+          <span className="text-xs text-blue-800">
+            Restaurant Time: {restaurantTimezone} • 
+            Today: {(() => {
+              try {
+                return DateTime.now().setZone(restaurantTimezone).toFormat('MMM d, yyyy');
+              } catch {
+                return format(new Date(), 'MMM d, yyyy');
+              }
+            })()}
+          </span>
+        </div>
+      )}
+
       {/* Selection Display */}
       {selectedDates.length > 0 && (
         <div className="flex items-center justify-center gap-2 mb-4 p-2 bg-blue-50 rounded">
@@ -321,8 +392,6 @@ export const RollingCalendar: React.FC<RollingCalendarProps> = ({
           </div>
         </div>
       </div>
-
-
     </div>
   );
 };

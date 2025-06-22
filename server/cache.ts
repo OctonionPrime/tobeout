@@ -102,6 +102,9 @@ export const cache = new SmartCache();
 
 /**
  * Cache key generators for consistent naming
+ * 
+ * NOTE: All date/time values in cache keys should be in the restaurant's local timezone.
+ * The backend timezone utilities ensure this consistency.
  */
 export const CacheKeys = {
   // ✅ EXISTING: Broad date-based cache (keep for compatibility)
@@ -112,8 +115,16 @@ export const CacheKeys = {
   tableAvailabilityRange: (restaurantId: number, date: string, timeRange: string) => 
     `tables_availability_${restaurantId}_${date}_${timeRange}`,
   
+  // ✅ ENHANCED: Optional timezone-aware cache keys for extra safety
+  tableAvailabilityWithTz: (restaurantId: number, date: string, timezone: string) => 
+    `tables_availability_${restaurantId}_${date}_${timezone.replace('/', '_')}`,
+  
   reservations: (restaurantId: number, date?: string) => 
     date ? `reservations_${restaurantId}_${date}` : `reservations_${restaurantId}`,
+  
+  // ✅ ENHANCED: Timezone-aware reservations cache
+  reservationsWithTz: (restaurantId: number, timezone: string, date?: string) => 
+    date ? `reservations_${restaurantId}_${timezone.replace('/', '_')}_${date}` : `reservations_${restaurantId}_${timezone.replace('/', '_')}`,
   
   guests: (restaurantId: number) => 
     `guests_${restaurantId}`,
@@ -129,10 +140,18 @@ export const CacheKeys = {
     `available_times_${restaurantId}_${date}_${guests}_${timeRange}`,
   
   restaurant: (id: number) => 
-    `restaurant_${id}`
+    `restaurant_${id}`,
+
+  // ✅ NEW: Dashboard stats cache (timezone-aware)
+  dashboardStats: (restaurantId: number, timezone: string) =>
+    `dashboard_stats_${restaurantId}_${timezone.replace('/', '_')}`,
+
+  // ✅ NEW: Upcoming reservations cache (timezone-aware)  
+  upcomingReservations: (restaurantId: number, timezone: string, hours: number) =>
+    `upcoming_reservations_${restaurantId}_${timezone.replace('/', '_')}_${hours}h`
 };
 
-// ✅ NEW: Helper function to calculate overlapping time ranges
+// ✅ EXISTING: Helper function to calculate overlapping time ranges (unchanged)
 function calculateOverlappingTimeRanges(startTime: string, durationMinutes: number): string[] {
   const ranges: string[] = [];
   
@@ -195,7 +214,7 @@ export const CacheInvalidation = {
   },
   
   /**
-   * ✅ NEW: Granular time-range based invalidation  
+   * ✅ EXISTING: Granular time-range based invalidation (unchanged)
    */
   onReservationTimeRangeChange: (restaurantId: number, date: string, time: string, duration: number = 120) => {
     const affectedRanges = calculateOverlappingTimeRanges(time, duration);
@@ -221,7 +240,7 @@ export const CacheInvalidation = {
   },
   
   /**
-   * ✅ NEW: Smart invalidation that tries granular first, falls back to broad
+   * ✅ EXISTING: Smart invalidation (unchanged)
    */
   onReservationChangeWithTimeInfo: (
     restaurantId: number, 
@@ -254,6 +273,38 @@ export const CacheInvalidation = {
   onGuestChange: (restaurantId: number) => {
     console.log(`👤 [Cache] Guest data changed for restaurant ${restaurantId}`);
     cache.delete(CacheKeys.guests(restaurantId));
+  },
+
+  /**
+   * ✅ NEW: CRITICAL - Timezone change invalidation
+   * This is essential when a restaurant changes their timezone in profile settings
+   */
+  onTimezoneChange: (restaurantId: number, oldTimezone?: string, newTimezone?: string) => {
+    console.log(`🌍 [Cache] TIMEZONE CHANGE for restaurant ${restaurantId}: ${oldTimezone} → ${newTimezone}`);
+    console.log(`🗑️ [Cache] Clearing ALL cached data for restaurant ${restaurantId} due to timezone change`);
+    
+    // Clear ALL cache entries for this restaurant since timezone affects everything
+    cache.invalidatePattern(`_${restaurantId}_`); // Matches any cache key containing "_restaurantId_"
+    
+    // Specifically clear timezone-aware caches if we know the old timezone
+    if (oldTimezone) {
+      const oldTzKey = oldTimezone.replace('/', '_');
+      cache.invalidatePattern(oldTzKey);
+    }
+    
+    // Also clear restaurant profile cache since that contains the timezone
+    cache.delete(CacheKeys.restaurant(restaurantId));
+    
+    console.log(`✅ [Cache] Timezone change invalidation complete for restaurant ${restaurantId}`);
+  },
+
+  /**
+   * ✅ NEW: Dashboard cache invalidation (timezone-aware)
+   */
+  onDashboardDataChange: (restaurantId: number, timezone: string) => {
+    console.log(`📊 [Cache] Dashboard data changed for restaurant ${restaurantId} (${timezone})`);
+    cache.delete(CacheKeys.dashboardStats(restaurantId, timezone));
+    cache.invalidatePattern(`upcoming_reservations_${restaurantId}_${timezone.replace('/', '_')}`);
   }
 };
 
@@ -281,7 +332,7 @@ export async function withCache<T>(
 }
 
 /**
- * ✅ NEW: Enhanced wrapper with granular cache key support
+ * ✅ EXISTING: Enhanced wrapper with granular cache key support (unchanged)
  */
 export async function withGranularCache<T>(
   restaurantId: number,
@@ -294,5 +345,31 @@ export async function withGranularCache<T>(
   return withCache(key, fetcher, ttlSeconds);
 }
 
-// ✅ NEW: Export helper function for external use
+/**
+ * ✅ NEW: Timezone-aware cache wrapper for dashboard queries
+ */
+export async function withTimezoneCache<T>(
+  restaurantId: number,
+  timezone: string,
+  cacheType: 'stats' | 'upcoming',
+  fetcher: () => Promise<T>,
+  ttlSeconds: number = 60 // Longer TTL for dashboard data
+): Promise<T> {
+  let key: string;
+  
+  switch (cacheType) {
+    case 'stats':
+      key = CacheKeys.dashboardStats(restaurantId, timezone);
+      break;
+    case 'upcoming':
+      key = CacheKeys.upcomingReservations(restaurantId, timezone, 3); // 3 hours default
+      break;
+    default:
+      key = `${cacheType}_${restaurantId}_${timezone.replace('/', '_')}`;
+  }
+  
+  return withCache(key, fetcher, ttlSeconds);
+}
+
+// ✅ EXISTING: Export helper function for external use
 export { calculateOverlappingTimeRanges };

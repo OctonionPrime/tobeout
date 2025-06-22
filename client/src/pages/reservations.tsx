@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { DateTime } from 'luxon'; // ✅ CRITICAL: Luxon for proper timezone handling
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,12 @@ import { RollingCalendar } from "@/components/ui/rolling-calendar";
 
 const restaurantId = 1;
 
-export default function Reservations() {
+// ✅ ENHANCED: Timezone prop interface
+interface ReservationsProps {
+    restaurantTimezone?: string;
+}
+
+export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: ReservationsProps) {
     // ✅ ENHANCED STATE MANAGEMENT
     const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
     const [dateRangeFilter, setDateRangeFilter] = useState<{
@@ -39,7 +45,7 @@ export default function Reservations() {
     const [selectedReservationId, setSelectedReservationId] = useState<number | undefined>(undefined);
     const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
     
-    // ✅ NEW: Smart Restaurant Tabs State
+    // ✅ SMART RESTAURANT TABS STATE
     const [activeSmartTab, setActiveSmartTab] = useState("attention");
 
     const { toast } = useToast();
@@ -79,38 +85,37 @@ export default function Reservations() {
         }
     ];
 
-    // ✅ MOSCOW TIMEZONE UTILITIES
-    const getMoscowDate = () => {
-        const now = new Date();
-        const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
-        return moscowTime;
-    };
-
+    // ✅ FIXED: Use Luxon for reliable timezone handling
     const getCurrentWeekRange = () => {
-        const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
-        const today = new Date(moscowTime);
-        const startOfWeek = new Date(today);
-        startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
-        return { start: startOfWeek, end: endOfWeek };
+        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+        const startOfWeek = restaurantNow.startOf('week'); // Monday
+        const endOfWeek = restaurantNow.endOf('week'); // Sunday
+        return { 
+            start: startOfWeek.toJSDate(), 
+            end: endOfWeek.toJSDate() 
+        };
     };
 
     const getNextWeekRange = () => {
-        const currentWeek = getCurrentWeekRange();
-        const nextWeekStart = new Date(currentWeek.end);
-        nextWeekStart.setDate(nextWeekStart.getDate() + 1); // Next Monday
-        const nextWeekEnd = new Date(nextWeekStart);
-        nextWeekEnd.setDate(nextWeekStart.getDate() + 6); // Next Sunday
-        return { start: nextWeekStart, end: nextWeekEnd };
+        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+        const nextWeekStart = restaurantNow.plus({ weeks: 1 }).startOf('week');
+        const nextWeekEnd = restaurantNow.plus({ weeks: 1 }).endOf('week');
+        return { 
+            start: nextWeekStart.toJSDate(), 
+            end: nextWeekEnd.toJSDate() 
+        };
     };
 
-    // ✅ DATA FETCHING
+    // ✅ FIXED: Data fetching with timezone-aware query key
     const { data: reservations, isLoading, error } = useQuery({
-        queryKey: ["/api/reservations"],
+        // ✅ CRITICAL FIX: Include timezone in query key for proper cache invalidation
+        queryKey: ["/api/reservations", restaurantId, restaurantTimezone],
         queryFn: async () => {
             try {
-                const response = await fetch("/api/reservations", { credentials: "include" });
+                // ✅ FIXED: Pass timezone to backend for proper filtering
+                const response = await fetch(`/api/reservations?timezone=${encodeURIComponent(restaurantTimezone)}`, { 
+                    credentials: "include" 
+                });
                 if (!response.ok) {
                     const errorText = await response.text();
                     throw new Error(`Failed to fetch reservations: ${response.status} ${errorText}`);
@@ -137,61 +142,67 @@ export default function Reservations() {
         staleTime: 10 * 60 * 1000, // 10 minutes
     });
 
-    // ✅ SMART TAB FILTERING LOGIC
+    // ✅ COMPLETELY REWRITTEN: Smart Tab filtering logic with Luxon (CORRECT implementation)
     const getSmartTabReservations = (tabId: string, allReservations: any[]) => {
-        const moscowNow = getMoscowDate();
-        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
-        
+        // ✅ CORRECT: Get "now" in restaurant timezone using Luxon
+        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+        const todayDateString = restaurantNow.toISODate(); // e.g., '2025-06-22'
+
+        if (!allReservations) return [];
+
         return allReservations.filter(reservationData => {
             const reservation = reservationData.reservation || reservationData;
-            const reservationDate = reservation.date;
-            const reservationTime = reservation.time;
-            const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+
+            // ✅ CORRECT: Create reservation datetime in restaurant timezone
+            const reservationDateTime = DateTime.fromISO(
+                `${reservation.date}T${reservation.time}`, 
+                { zone: restaurantTimezone }
+            );
+
+            // Safety check for invalid dates
+            if (!reservationDateTime.isValid) {
+                console.warn("Invalid reservation date/time:", reservation.date, reservation.time);
+                return false;
+            }
+
             const duration = reservation.duration || 120;
-            const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
-            
+            const endDateTime = reservationDateTime.plus({ minutes: duration });
+
+            // ✅ CORRECT: All comparisons are now timezone-aware
             switch (tabId) {
                 case "attention":
-                    // AI bookings needing confirmation + Late arrivals
+                    const isLate = reservationDateTime < restaurantNow && 
+                                   restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
                     return (
-                        reservation.status === 'created' || // AI bookings
-                        (reservation.status === 'confirmed' && 
-                         reservationDate === todayDateString && 
-                         reservationDateTime <= moscowNow && // Should have arrived
-                         endDateTime > moscowNow && // Still dining period
-                         (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000) // 15min late
+                        reservation.status === 'created' ||
+                        (reservation.status === 'confirmed' && isLate && endDateTime > restaurantNow)
                     );
                 
                 case "active":
-                    // Currently dining (arrival time <= now <= end time)
                     return (
                         reservation.status === 'confirmed' &&
-                        reservationDate === todayDateString &&
-                        reservationDateTime <= moscowNow &&
-                        endDateTime > moscowNow
+                        reservationDateTime <= restaurantNow && 
+                        endDateTime > restaurantNow 
                     );
                 
                 case "arriving":
-                    // Next 2 hours today
                     return (
                         reservation.status === 'confirmed' &&
-                        reservationDate === todayDateString &&
-                        reservationDateTime > moscowNow &&
-                        reservationDateTime <= new Date(moscowNow.getTime() + 2 * 60 * 60 * 1000)
+                        reservationDateTime > restaurantNow && 
+                        reservationDateTime <= restaurantNow.plus({ hours: 2 })
                     );
                 
                 case "completed":
-                    // Finished today or marked completed
                     return (
-                        (reservation.status === 'completed') ||
-                        (reservationDate === todayDateString && endDateTime < moscowNow)
+                        reservation.status === 'completed' ||
+                        (reservation.status === 'confirmed' && endDateTime < restaurantNow)
                     );
                 
                 case "upcoming":
-                    // Future dates (tomorrow and beyond)
+                    // ✅ CORRECT: Use Luxon's date-only comparison for accuracy
                     return (
                         reservation.status === 'confirmed' &&
-                        reservationDate > todayDateString
+                        DateTime.fromISO(reservation.date).startOf('day') > restaurantNow.startOf('day')
                     );
                 
                 default:
@@ -200,27 +211,39 @@ export default function Reservations() {
         });
     };
 
-    // ✅ SMART ACTION BUTTONS LOGIC
+    // ✅ FIXED: Smart action buttons logic with Luxon
     const getSmartActions = (reservation: any, guest: any) => {
         const status = reservation.status;
         const reservationDate = reservation.date;
         const reservationTime = reservation.time;
-        const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+        
+        // ✅ CORRECT: Use Luxon for all timezone calculations
+        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+        const todayDateString = restaurantNow.toISODate();
+        
+        const reservationDateTime = DateTime.fromISO(
+            `${reservationDate}T${reservationTime}`, 
+            { zone: restaurantTimezone }
+        );
+        
+        if (!reservationDateTime.isValid) {
+            console.warn("Invalid reservation date/time for actions:", reservationDate, reservationTime);
+            return [];
+        }
+        
         const duration = reservation.duration || 120;
-        const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
-        const moscowNow = getMoscowDate();
-        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
+        const endDateTime = reservationDateTime.plus({ minutes: duration });
         
         const isToday = reservationDate === todayDateString;
-        const isPast = reservationDate < todayDateString;
-        const isFuture = reservationDate > todayDateString;
+        const isPast = DateTime.fromISO(reservationDate) < restaurantNow.startOf('day');
+        const isFuture = DateTime.fromISO(reservationDate) > restaurantNow.startOf('day');
         
         // Time-based status for today's reservations
-        const hasArrived = isToday && reservationDateTime <= moscowNow;
-        const isLate = isToday && hasArrived && (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000;
-        const isDining = isToday && hasArrived && endDateTime > moscowNow;
-        const hasFinished = isToday && endDateTime < moscowNow;
-        const isArriving = isToday && !hasArrived && reservationDateTime <= new Date(moscowNow.getTime() + 2 * 60 * 60 * 1000);
+        const hasArrived = isToday && reservationDateTime <= restaurantNow;
+        const isLate = isToday && hasArrived && restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
+        const isDining = isToday && hasArrived && endDateTime > restaurantNow;
+        const hasFinished = isToday && endDateTime < restaurantNow;
+        const isArriving = isToday && !hasArrived && reservationDateTime <= restaurantNow.plus({ hours: 2 });
 
         const actions = [];
 
@@ -405,21 +428,32 @@ export default function Reservations() {
         );
     };
 
-    // ✅ ENHANCED STATUS BADGE
+    // ✅ FIXED: Smart Status Badge with Luxon
     const SmartStatusBadge = ({ reservation }: { reservation: any }) => {
         const status = reservation.status;
         const reservationDate = reservation.date;
         const reservationTime = reservation.time;
-        const reservationDateTime = new Date(`${reservationDate}T${reservationTime}`);
+        
+        // ✅ CORRECT: Use Luxon for timezone calculations
+        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+        const todayDateString = restaurantNow.toISODate();
+        
+        const reservationDateTime = DateTime.fromISO(
+            `${reservationDate}T${reservationTime}`, 
+            { zone: restaurantTimezone }
+        );
+        
+        if (!reservationDateTime.isValid) {
+            return renderStatusBadge(status);
+        }
+        
         const duration = reservation.duration || 120;
-        const endDateTime = new Date(reservationDateTime.getTime() + duration * 60 * 1000);
-        const moscowNow = getMoscowDate();
-        const todayDateString = format(moscowNow, 'yyyy-MM-dd');
+        const endDateTime = reservationDateTime.plus({ minutes: duration });
         
         const isToday = reservationDate === todayDateString;
-        const hasArrived = isToday && reservationDateTime <= moscowNow;
-        const isLate = isToday && hasArrived && (moscowNow.getTime() - reservationDateTime.getTime()) > 15 * 60 * 1000;
-        const isDining = isToday && hasArrived && endDateTime > moscowNow;
+        const hasArrived = isToday && reservationDateTime <= restaurantNow;
+        const isLate = isToday && hasArrived && restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
+        const isDining = isToday && hasArrived && endDateTime > restaurantNow;
         
         // Enhanced status with context
         if (status === 'created') {
@@ -493,10 +527,9 @@ export default function Reservations() {
         </Button>
     );
 
-    // ✅ FILTERING LOGIC - Apply additional filters to smart tab results
-    const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
-    const moscowDate = new Date(moscowTime);
-    const todayDateString = format(moscowDate, 'yyyy-MM-dd');
+    // ✅ FIXED: Use Luxon for all date calculations
+    const restaurantNow = DateTime.now().setZone(restaurantTimezone);
+    const todayDateString = restaurantNow.toISODate();
 
     // Get smart tab filtered reservations
     const smartFilteredReservations = reservations 
@@ -654,12 +687,12 @@ export default function Reservations() {
     return (
         <DashboardLayout>
             <div className="px-4 py-6 lg:px-8">
-                {/* ✅ ENHANCED HEADER */}
+                {/* ✅ FIXED: Header with Luxon for reliable time display */}
                 <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
                     <div>
                         <h1 className="text-2xl font-bold text-gray-900">Reservations Management</h1>
                         <p className="mt-1 text-sm text-gray-500">
-                            {restaurant?.name || 'Restaurant'} Moscow Time: {format(moscowDate, 'PPp')}
+                            {restaurant?.name || 'Restaurant'} Local Time: {restaurantNow.toFormat('ccc, LLL dd, yyyy \'at\' HH:mm')} ({restaurantTimezone})
                         </p>
                         <p className="text-xs text-gray-400">
                             Showing {finalFilteredReservations.length} reservations 
@@ -737,13 +770,14 @@ export default function Reservations() {
                                                 variant={dateRangeFilter.type === 'today' ? 'default' : 'outline'}
                                                 size="sm"
                                                 onClick={() => {
+                                                    const todayJs = restaurantNow.toJSDate();
                                                     setDateRangeFilter({
                                                         type: 'today',
-                                                        startDate: moscowDate,
-                                                        endDate: moscowDate,
+                                                        startDate: todayJs,
+                                                        endDate: todayJs,
                                                         displayText: 'Today'
                                                     });
-                                                    setSelectedDate(moscowDate);
+                                                    setSelectedDate(todayJs);
                                                 }}
                                                 className="text-xs"
                                             >
@@ -1011,6 +1045,7 @@ export default function Reservations() {
                     }}
                     reservationId={selectedReservationId}
                     restaurantId={restaurantId}
+                    restaurantTimezone={restaurantTimezone}
                 />
             </div>
         </DashboardLayout>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,13 +8,81 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle2, Loader2, Upload, AlertCircle, RefreshCcw } from "lucide-react"; // ✅ FIXED: RefreshCcw instead of Refresh
+import { CheckCircle2, Loader2, Upload, AlertCircle, RefreshCcw, Globe, Clock } from "lucide-react";
 
+// ✅ NEW: Import timezone utilities functions (inline implementation for now)
+const getPopularRestaurantTimezones = () => {
+  const popularZones = [
+    'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Rome',
+    'Europe/Madrid', 'Europe/Amsterdam', 'Europe/Vienna', 'Europe/Prague',
+    'Europe/Warsaw', 'Europe/Stockholm', 'Europe/Belgrade', 'Europe/Athens',
+    'Europe/Budapest', 'Europe/Moscow', 'America/New_York', 'America/Chicago',
+    'America/Denver', 'America/Los_Angeles', 'America/Toronto', 'America/Vancouver',
+    'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Singapore',
+    'Asia/Seoul', 'Asia/Bangkok', 'Asia/Dubai', 'Australia/Sydney',
+    'Australia/Melbourne', 'Pacific/Auckland'
+  ];
+
+  return popularZones.map(tz => {
+    try {
+      const now = new Date();
+      const formatter = new Intl.DateTimeFormat('en', {
+        timeZone: tz,
+        timeZoneName: 'short'
+      });
+      const parts = formatter.formatToParts(now);
+      const timeZoneName = parts.find(part => part.type === 'timeZoneName')?.value || '';
+      
+      const offsetFormatter = new Intl.DateTimeFormat('en', {
+        timeZone: tz,
+        timeZoneName: 'longOffset'
+      });
+      const offsetParts = offsetFormatter.formatToParts(now);
+      const offset = offsetParts.find(part => part.type === 'timeZoneName')?.value || '';
+      
+      const city = tz.split('/').pop()?.replace(/_/g, ' ') || tz;
+      
+      return {
+        value: tz,
+        label: `(${offset}) ${city}`,
+        city: city,
+        offset: offset
+      };
+    } catch {
+      return {
+        value: tz,
+        label: tz,
+        city: tz,
+        offset: 'Unknown'
+      };
+    }
+  }).sort((a, b) => a.label.localeCompare(b.label));
+};
+
+const formatTimeInTimezone = (timezone: string) => {
+  try {
+    const now = new Date();
+    return now.toLocaleString("en-US", {
+      timeZone: timezone,
+      weekday: 'short',
+      month: 'short', 
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  } catch {
+    return 'Invalid timezone';
+  }
+};
+
+// ✅ ENHANCED: Form schema with timezone validation
 const profileFormSchema = z.object({
   name: z.string().min(1, "Restaurant name is required"),
   description: z.string().optional(),
@@ -29,18 +97,30 @@ const profileFormSchema = z.object({
   languages: z.string().optional(),
   openingTime: z.string().optional(),
   closingTime: z.string().optional(),
-  avgReservationDuration: z.coerce.number().min(30, "Minimum 30 minutes").max(240, "Maximum 4 hours").default(120), // ✅ FIX: Default to 120
+  avgReservationDuration: z.coerce.number().min(30, "Minimum 30 minutes").max(240, "Maximum 4 hours").default(120),
   minGuests: z.coerce.number().min(1, "Minimum 1 guest").default(1),
-  maxGuests: z.coerce.number().min(1, "Minimum 1 guest").max(100, "Maximum 100 guests").default(25), // ✅ FIX: Increase max to 100
+  maxGuests: z.coerce.number().min(1, "Minimum 1 guest").max(100, "Maximum 100 guests").default(25),
   googleMapsLink: z.string().optional(),
   tripAdvisorLink: z.string().optional(),
+  // ✅ NEW: Timezone field with validation
+  timezone: z.string().min(1, "Timezone is required").refine((tz) => {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Invalid timezone format")
 });
 
 type ProfileFormValues = z.infer<typeof profileFormSchema>;
 
 export default function Profile() {
   const [isSaving, setIsSaving] = useState(false);
-  const [lastSavedData, setLastSavedData] = useState<any>(null); // Track changes
+  const [lastSavedData, setLastSavedData] = useState<any>(null);
+  const [showTimezoneWarning, setShowTimezoneWarning] = useState(false);
+  const [selectedTimezone, setSelectedTimezone] = useState('Europe/Moscow');
+  const [timezoneSearchQuery, setTimezoneSearchQuery] = useState('');
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -54,10 +134,10 @@ export default function Profile() {
       }
       return response.json();
     },
-    staleTime: 0, // ✅ FIX: Always fetch fresh data
-    cacheTime: 0, // ✅ FIX: Don't cache stale data
-    refetchOnMount: true, // ✅ FIX: Always refetch when component mounts
-    refetchOnWindowFocus: true, // ✅ FIX: Refetch when window gains focus
+    staleTime: 0,
+    cacheTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   // ✅ FIX: Get table data to show actual capacity statistics
@@ -68,7 +148,7 @@ export default function Profile() {
       if (!response.ok) throw new Error("Failed to fetch tables");
       return response.json();
     },
-    enabled: !!restaurant, // Only fetch when restaurant data is available
+    enabled: !!restaurant,
   });
 
   const form = useForm<ProfileFormValues>({
@@ -87,15 +167,30 @@ export default function Profile() {
       languages: "",
       openingTime: "",
       closingTime: "",
-      avgReservationDuration: 120, // ✅ FIX: Default to 120 minutes
+      avgReservationDuration: 120,
       minGuests: 1,
       maxGuests: 25,
       googleMapsLink: "",
       tripAdvisorLink: "",
+      timezone: 'Europe/Moscow' // ✅ NEW: Default timezone
     },
   });
 
-  // ✅ FIX: Enhanced form population with real database values
+  // ✅ NEW: Get popular timezones for dropdown
+  const popularTimezones = useMemo(() => getPopularRestaurantTimezones(), []);
+
+  // ✅ NEW: Filter timezones based on search
+  const filteredTimezones = useMemo(() => {
+    if (!timezoneSearchQuery) return popularTimezones;
+    const query = timezoneSearchQuery.toLowerCase();
+    return popularTimezones.filter(tz => 
+      tz.label.toLowerCase().includes(query) ||
+      tz.city.toLowerCase().includes(query) ||
+      tz.value.toLowerCase().includes(query)
+    );
+  }, [popularTimezones, timezoneSearchQuery]);
+
+  // ✅ FIX: Enhanced form population with timezone
   useEffect(() => {
     if (restaurant && !isLoading) {
       console.log("📊 [Profile] Loading restaurant data:", restaurant);
@@ -114,18 +209,31 @@ export default function Profile() {
         languages: restaurant.languages ? restaurant.languages.join(", ") : "",
         openingTime: restaurant.openingTime ? restaurant.openingTime.slice(0, 5) : "",
         closingTime: restaurant.closingTime ? restaurant.closingTime.slice(0, 5) : "",
-        avgReservationDuration: restaurant.avgReservationDuration || 120, // ✅ FIX: Use actual DB value or 120 default
+        avgReservationDuration: restaurant.avgReservationDuration || 120,
         minGuests: restaurant.minGuests || 1,
         maxGuests: restaurant.maxGuests || 25,
         googleMapsLink: restaurant.googleMapsLink || "",
         tripAdvisorLink: restaurant.tripAdvisorLink || "",
+        timezone: restaurant.timezone || 'Europe/Moscow' // ✅ NEW: Include timezone
       };
       
       console.log("📊 [Profile] Form data being set:", formData);
       form.reset(formData);
-      setLastSavedData(formData); // Track for change detection
+      setSelectedTimezone(formData.timezone);
+      setLastSavedData(formData);
     }
   }, [restaurant, isLoading, form]);
+
+  // ✅ NEW: Watch timezone changes for warnings
+  const watchedTimezone = form.watch('timezone');
+  useEffect(() => {
+    if (lastSavedData && watchedTimezone !== lastSavedData.timezone) {
+      setShowTimezoneWarning(true);
+      setSelectedTimezone(watchedTimezone);
+    } else {
+      setShowTimezoneWarning(false);
+    }
+  }, [watchedTimezone, lastSavedData]);
 
   // ✅ NEW: Calculate actual table statistics
   const tableStats = tables ? {
@@ -156,14 +264,19 @@ export default function Profile() {
       console.log("✅ [Profile] Successfully saved:", data);
       toast({
         title: "Success",
-        description: "Restaurant profile updated successfully",
+        description: showTimezoneWarning 
+          ? "Restaurant profile and timezone updated successfully. All times will now use the new timezone."
+          : "Restaurant profile updated successfully",
       });
       
       // ✅ FIX: Invalidate queries to ensure fresh data
       queryClient.invalidateQueries({ queryKey: ['/api/restaurants/profile'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] }); // May affect reservation logic
+      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/upcoming'] });
       
-      setLastSavedData(form.getValues()); // Update tracking
+      setLastSavedData(form.getValues());
+      setShowTimezoneWarning(false);
     },
     onError: (error: any) => {
       console.error("❌ [Profile] Save failed:", error);
@@ -226,6 +339,26 @@ export default function Profile() {
             <p className="text-amber-600 text-sm mt-2">⚠️ You have unsaved changes</p>
           )}
         </header>
+
+        {/* ✅ NEW: Timezone Change Warning */}
+        {showTimezoneWarning && (
+          <Alert className="mb-6 border-amber-200 bg-amber-50">
+            <Globe className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="text-amber-800">
+              <strong>Timezone Change Detected:</strong> Changing your restaurant's timezone will affect:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>How reservation times are displayed and calculated</li>
+                <li>Dashboard statistics for "today"</li>
+                <li>Smart tabs timing logic</li>
+                <li>All future time-based features</li>
+              </ul>
+              <div className="mt-3 p-3 bg-white rounded border">
+                <p className="text-sm"><strong>Current time in new timezone:</strong></p>
+                <p className="font-mono text-lg text-amber-900">{formatTimeInTimezone(selectedTimezone)}</p>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
 
         {isLoading ? (
           <div className="h-96 flex items-center justify-center">
@@ -358,13 +491,82 @@ export default function Profile() {
                   </CardContent>
                 </Card>
 
+                {/* ✅ NEW: Timezone & Location Settings */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Globe className="h-5 w-5" />
+                      Timezone & Location Settings
+                    </CardTitle>
+                    <CardDescription>
+                      Set your restaurant's timezone for accurate time calculations and reservations
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <FormField
+                      control={form.control}
+                      name="timezone"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Restaurant Timezone</FormLabel>
+                          <FormControl>
+                            <div className="space-y-2">
+                              {/* Search box */}
+                              <Input
+                                placeholder="Search timezones (e.g., Belgrade, New York, Tokyo)..."
+                                value={timezoneSearchQuery}
+                                onChange={(e) => setTimezoneSearchQuery(e.target.value)}
+                                className="mb-2"
+                              />
+                              
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select your restaurant's timezone" />
+                                </SelectTrigger>
+                                <SelectContent className="max-h-[300px]">
+                                  {filteredTimezones.length > 0 ? (
+                                    filteredTimezones.map((tz) => (
+                                      <SelectItem key={tz.value} value={tz.value}>
+                                        {tz.label}
+                                      </SelectItem>
+                                    ))
+                                  ) : (
+                                    <SelectItem value="no-results" disabled>
+                                      No timezones found for "{timezoneSearchQuery}"
+                                    </SelectItem>
+                                  )}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </FormControl>
+                          <FormDescription>
+                            This affects all time calculations, reservations, and dashboard statistics.
+                          </FormDescription>
+                          {/* ✅ NEW: Current time preview */}
+                          {field.value && (
+                            <div className="mt-2 p-3 bg-gray-50 rounded-md">
+                              <div className="flex items-center gap-2 text-sm text-gray-700">
+                                <Clock className="h-4 w-4" />
+                                <span>Current time in {field.value.split('/').pop()?.replace(/_/g, ' ')}:</span>
+                              </div>
+                              <p className="font-mono text-lg font-medium text-gray-900 mt-1">
+                                {formatTimeInTimezone(field.value)}
+                              </p>
+                            </div>
+                          )}
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </CardContent>
+                </Card>
+
                 <Card>
                   <CardHeader>
                     <CardTitle>Operating Hours & Capacity</CardTitle>
                     <CardDescription>
                       Set your restaurant's operating hours and reservation settings
                     </CardDescription>
-                    {/* ✅ NEW: Show current table statistics */}
                     {tableStats && (
                       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-2">
                         <h4 className="font-medium text-blue-900 mb-2">Current Table Setup</h4>

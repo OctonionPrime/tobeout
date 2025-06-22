@@ -12,9 +12,10 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
-import { CalendarIcon, Clock, Users, Phone, Mail, User, Loader2, AlertCircle } from "lucide-react";
+import { CalendarIcon, Clock, Users, Phone, Mail, User, Loader2, AlertCircle, Globe } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { DateTime } from 'luxon';
 
 interface ReservationModalProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ interface ReservationModalProps {
   defaultTime?: string;
   defaultGuests?: number;
   defaultTableId?: number;
+  restaurantTimezone?: string;
 }
 
 interface TimeSlot {
@@ -54,6 +56,7 @@ export function ReservationModal({
   defaultTime,
   defaultGuests,
   defaultTableId,
+  restaurantTimezone = 'Europe/Moscow',
 }: ReservationModalProps) {
   const [formData, setFormData] = useState({
     guestName: "",
@@ -75,37 +78,33 @@ export function ReservationModal({
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // ✅ FIX: Get restaurant data for operating hours and timezone
+  // ✅ FIXED: Proper React Query for restaurant profile
   const { data: restaurant } = useQuery({
-    queryKey: ["/api/restaurants/profile"],
+    queryKey: ['restaurant_profile', restaurantId],
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/restaurants/profile");
       if (!response.ok) throw new Error("Failed to fetch restaurant");
       return response.json();
     },
-    enabled: isOpen,
+    enabled: isOpen && !!restaurantId,
   });
 
-  // Fetch tables for capacity information
+  const effectiveTimezone = restaurantTimezone || restaurant?.timezone || 'Europe/Moscow';
+
+  // ✅ FIXED: Proper React Query for tables with restaurantId
   const { data: tables, error: tablesError } = useQuery({
-    queryKey: ["/api/tables"],
+    queryKey: ['tables', restaurantId],
     queryFn: async () => {
-      try {
-        const response = await apiRequest("GET", "/api/tables");
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-      } catch (error) {
-        console.error("Error fetching tables:", error);
-        throw error;
+      const response = await apiRequest("GET", `/api/tables?restaurantId=${restaurantId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+      return response.json();
     },
     retry: 1,
-    enabled: isOpen, // Only fetch when modal is open
+    enabled: isOpen && !!restaurantId,
   });
 
-  // Handle tables API error
   useEffect(() => {
     if (tablesError) {
       console.error("Tables fetch error:", tablesError);
@@ -117,15 +116,12 @@ export function ReservationModal({
     }
   }, [tablesError, toast]);
 
-  // ✅ FIX: Dynamic capacity calculation based on actual tables
   const maxCapacity = tables?.length > 0 
     ? tables.reduce((max: number, table: Table) => Math.max(max, table.maxGuests), 0)
-    : 0; // Show 0 if no tables exist
+    : 0;
 
-  // ✅ FIX: Show warning if no tables exist
   const hasNoTables = !tables || tables.length === 0;
 
-  // Update selected table when tableId changes
   useEffect(() => {
     if (tables && formData.tableId) {
       const table = tables.find((t: Table) => t.id === formData.tableId);
@@ -133,26 +129,20 @@ export function ReservationModal({
     }
   }, [tables, formData.tableId]);
 
-  // Fetch existing reservation data if editing
+  // ✅ FIXED: Proper React Query for existing reservation
   const { data: existingReservation, error: reservationError } = useQuery({
-    queryKey: [`/api/reservations/${reservationId}`],
+    queryKey: ['reservation', reservationId],
     queryFn: async () => {
-      try {
-        const response = await apiRequest("GET", `/api/reservations/${reservationId}`);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-      } catch (error) {
-        console.error("Error fetching reservation:", error);
-        throw error;
+      const response = await apiRequest("GET", `/api/reservations/${reservationId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+      return response.json();
     },
     enabled: !!reservationId && isOpen,
     retry: 1,
   });
 
-  // Handle reservation fetch error
   useEffect(() => {
     if (reservationError) {
       console.error("Reservation fetch error:", reservationError);
@@ -164,7 +154,6 @@ export function ReservationModal({
     }
   }, [reservationError, toast]);
 
-  // Populate form with existing reservation data
   useEffect(() => {
     if (existingReservation) {
       try {
@@ -193,40 +182,48 @@ export function ReservationModal({
     }
   }, [existingReservation, toast]);
 
-  // ✅ FIX: Enhanced time filtering logic
-  const getCurrentMoscowTime = () => {
-    const moscowTime = new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" });
-    return new Date(moscowTime);
+  // ✅ FIXED: Proper Luxon usage for restaurant time
+  const getRestaurantTime = () => {
+    try {
+      return DateTime.now().setZone(effectiveTimezone);
+    } catch (error) {
+      console.warn(`Invalid timezone ${effectiveTimezone}, falling back to local time`);
+      return DateTime.now();
+    }
+  };
+
+  const getRestaurantDateString = (date: Date) => {
+    try {
+      return DateTime.fromJSDate(date).setZone(effectiveTimezone).toISODate();
+    } catch (error) {
+      console.warn(`Invalid timezone ${effectiveTimezone}, using local time`);
+      return format(date, "yyyy-MM-dd");
+    }
   };
 
   const isTimeSlotAvailable = (timeSlot: TimeSlot): boolean => {
     if (!timeSlot.available) return false;
 
-    const selectedDate = format(formData.date, "yyyy-MM-dd");
-    const today = format(getCurrentMoscowTime(), "yyyy-MM-dd");
+    const selectedDate = getRestaurantDateString(formData.date);
+    const today = getRestaurantTime().toISODate();
     
-    // If selected date is in the future, all available slots are valid
     if (selectedDate > today) return true;
     
-    // If selected date is today, filter out past times
     if (selectedDate === today) {
-      const moscowNow = getCurrentMoscowTime();
-      const currentHour = moscowNow.getHours();
-      const currentMinute = moscowNow.getMinutes();
+      const restaurantNow = getRestaurantTime();
+      const currentHour = restaurantNow.hour;
+      const currentMinute = restaurantNow.minute;
       
       const [slotHour, slotMinute] = timeSlot.time.split(':').map(Number);
       const slotTime = slotHour * 60 + slotMinute;
       const currentTime = currentHour * 60 + currentMinute;
       
-      // Add 30-minute buffer for preparation time
       return slotTime > (currentTime + 30);
     }
     
-    // Past dates should not show any available slots
     return false;
   };
 
-  // Fetch available time slots when date or guest count changes
   useEffect(() => {
     if (formData.date && formData.guests && isOpen && !hasNoTables) {
       fetchAvailableTimeSlots();
@@ -236,10 +233,10 @@ export function ReservationModal({
   const fetchAvailableTimeSlots = async () => {
     setIsLoadingAvailability(true);
     try {
-      const dateStr = format(formData.date, "yyyy-MM-dd");
+      const dateStr = getRestaurantDateString(formData.date);
       const response = await apiRequest(
         "GET",
-        `/api/booking/available-times?restaurantId=${restaurantId}&date=${dateStr}&guests=${formData.guests}`
+        `/api/booking/available-times?restaurantId=${restaurantId}&date=${dateStr}&guests=${formData.guests}&timezone=${encodeURIComponent(effectiveTimezone)}`
       );
       
       if (!response.ok) {
@@ -247,8 +244,6 @@ export function ReservationModal({
       }
       
       const data = await response.json();
-      
-      // ✅ FIX: Filter out past times for today
       const filteredSlots = (data.availableSlots || []).filter(isTimeSlotAvailable);
       
       setAvailableTimeSlots(filteredSlots);
@@ -259,13 +254,12 @@ export function ReservationModal({
         description: "Failed to fetch available time slots",
         variant: "destructive",
       });
-      setAvailableTimeSlots([]); // Reset to empty array on error
+      setAvailableTimeSlots([]);
     } finally {
       setIsLoadingAvailability(false);
     }
   };
 
-  // Create or update reservation
   const reservationMutation = useMutation({
     mutationFn: async (data: any) => {
       try {
@@ -291,9 +285,9 @@ export function ReservationModal({
         title: "Success",
         description: reservationId ? "Reservation updated successfully" : "Reservation created successfully",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/reservations"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/upcoming"] });
+      queryClient.invalidateQueries({ queryKey: ['reservations'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard_stats'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard_upcoming'] });
       onClose();
     },
     onError: (error: any) => {
@@ -310,7 +304,6 @@ export function ReservationModal({
     e.preventDefault();
     
     try {
-      // ✅ FIX: Dynamic validation based on actual table capacity
       if (hasNoTables) {
         toast({
           title: "No tables available",
@@ -331,7 +324,6 @@ export function ReservationModal({
         return;
       }
 
-      // Check if selected table can accommodate guests
       if (selectedTable) {
         if (formData.guests < selectedTable.minGuests || formData.guests > selectedTable.maxGuests) {
           toast({
@@ -346,7 +338,8 @@ export function ReservationModal({
       const submitData = {
         ...formData,
         restaurantId,
-        date: format(formData.date, "yyyy-MM-dd"),
+        date: getRestaurantDateString(formData.date),
+        timezone: effectiveTimezone, // ✅ NEW: Include timezone in submission
       };
 
       reservationMutation.mutate(submitData);
@@ -360,12 +353,20 @@ export function ReservationModal({
     }
   };
 
-  // Group time slots by availability
+  // ✅ FIXED: Proper Luxon usage for display
+  const getCurrentRestaurantTime = () => {
+    try {
+      const restaurantTime = getRestaurantTime();
+      return restaurantTime.toFormat('ccc, MMM d, HH:mm');
+    } catch (error) {
+      return new Date().toLocaleString();
+    }
+  };
+
   const availableSlots = availableTimeSlots.filter(slot => slot.available);
   const unavailableSlots = availableTimeSlots.filter(slot => !slot.available);
   const displayedAvailableSlots = showAllTimes ? availableSlots : availableSlots.slice(0, 6);
 
-  // Don't render if not open (prevents unnecessary API calls)
   if (!isOpen) {
     return null;
   }
@@ -380,9 +381,13 @@ export function ReservationModal({
           <DialogDescription>
             Fill in the details to {reservationId ? "update the" : "create a new"} reservation. Smart table assignment will find the best available table.
           </DialogDescription>
+          <div className="flex items-center gap-2 text-sm text-gray-500 mt-2">
+            <Globe className="h-4 w-4" />
+            <span>Restaurant time: {getCurrentRestaurantTime()}</span>
+            <span className="text-gray-400">({effectiveTimezone})</span>
+          </div>
         </DialogHeader>
 
-        {/* ✅ NEW: Show warning if no tables exist */}
         {hasNoTables && (
           <Alert>
             <AlertCircle className="h-4 w-4" />
@@ -463,7 +468,12 @@ export function ReservationModal({
                       selected={formData.date}
                       onSelect={(date) => date && setFormData({ ...formData, date })}
                       initialFocus
-                      disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                      disabled={(date) => {
+                        // ✅ FIXED: Use restaurant timezone for date validation
+                        const restaurantToday = getRestaurantTime().startOf('day');
+                        const checkDate = DateTime.fromJSDate(date).startOf('day');
+                        return checkDate < restaurantToday;
+                      }}
                     />
                   </PopoverContent>
                 </Popover>
@@ -480,7 +490,6 @@ export function ReservationModal({
                     value={formData.guests}
                     onChange={(e) => {
                       const value = parseInt(e.target.value);
-                      // Allow empty input during typing
                       if (isNaN(value)) {
                         setFormData({ ...formData, guests: 1 });
                       } else if (value >= 1 && value <= (maxCapacity || 50)) {
@@ -567,7 +576,7 @@ export function ReservationModal({
                       <AlertCircle className="h-4 w-4" />
                       <AlertDescription>
                         No available time slots for {formData.guests} guests on this date.
-                        {format(formData.date, "yyyy-MM-dd") === format(getCurrentMoscowTime(), "yyyy-MM-dd") 
+                        {getRestaurantDateString(formData.date) === getRestaurantTime().toISODate()
                           ? " Try selecting a future date or earlier time." 
                           : " Try selecting a different date or reducing the party size."
                         }
@@ -575,7 +584,6 @@ export function ReservationModal({
                     </Alert>
                   )}
 
-                  {/* Show unavailable slots for reference */}
                   {unavailableSlots.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-sm text-gray-500">Unavailable times:</p>
@@ -602,7 +610,7 @@ export function ReservationModal({
               )}
             </div>
 
-            {/* Optional: Manual Table Selection */}
+            {/* Manual Table Selection */}
             {tables && tables.length > 0 && (
               <div>
                 <Label htmlFor="tableId">Table (Optional - Auto-assigned if left empty)</Label>
