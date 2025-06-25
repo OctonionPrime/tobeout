@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { DashboardLayout, useRestaurantTimezone } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -16,11 +16,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { format, parse } from "date-fns";
-import { Search, Plus, Edit, Trash2, Download, CalendarDays, User, Phone, Tag } from "lucide-react";
-
-// In a real application, you would get the restaurant ID from context
-const restaurantId = 1;
+import { DateTime } from "luxon";
+import { Search, Plus, Edit, Trash2, Download, CalendarDays, User, Phone, Tag, Users } from "lucide-react";
 
 const guestFormSchema = z.object({
   name: z.string().min(1, "Guest name is required"),
@@ -43,6 +40,9 @@ export default function Guests() {
   
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { restaurant, restaurantTimezone } = useRestaurantTimezone();
+
+  console.log(`👥 [Guests] Context - restaurant: ${!!restaurant}, timezone: ${restaurantTimezone}`);
 
   const form = useForm<GuestFormValues>({
     resolver: zodResolver(guestFormSchema),
@@ -57,12 +57,58 @@ export default function Guests() {
     },
   });
 
-  const { data: guests, isLoading } = useQuery({
+  // ✅ FIXED: Simplified guests query without over-strict conditions
+  const { data: guests, isLoading: guestsLoading, error: guestsError } = useQuery({
     queryKey: ["/api/guests"],
+    queryFn: async () => {
+      console.log(`👥 [Guests] Fetching guests for restaurant`);
+      
+      // ✅ FIXED: Use standard API endpoint without parameters
+      const response = await fetch('/api/guests', {
+        credentials: "include"
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch guests: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log(`👥 [Guests] Received ${data?.length || 0} guests`);
+      return data || [];
+    },
+    // ✅ FIXED: Remove restaurant dependency - backend handles auth context
+    staleTime: 60000, // 1 minute - guest data doesn't change frequently
+    retry: 2
+  });
+
+  // ✅ FIXED: Simplified reservations query for guest statistics
+  const { data: reservations } = useQuery({
+    queryKey: ["/api/reservations"],
+    queryFn: async () => {
+      console.log(`👥 [Guests] Fetching reservations for guest statistics`);
+      
+      // ✅ FIXED: Use standard API endpoint without parameters
+      const response = await fetch('/api/reservations', {
+        credentials: "include"
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch reservations: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log(`👥 [Guests] Received ${data?.length || 0} reservations for statistics`);
+      return data || [];
+    },
+    // ✅ FIXED: Remove restaurant dependency - backend handles auth context
+    staleTime: 30000, // 30 seconds
+    retry: 2
   });
 
   const createGuestMutation = useMutation({
     mutationFn: async (values: GuestFormValues) => {
+      console.log(`👥 [Guests] Creating guest`);
+      
       // Convert tags from comma-separated string to array if provided
       const tagsArray = values.tags ? values.tags.split(',').map(t => t.trim()) : undefined;
       
@@ -77,16 +123,24 @@ export default function Guests() {
       });
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log(`✅ [Guests] Successfully created guest:`, data);
+      
       toast({
         title: "Success",
         description: "Guest created successfully",
       });
+      
+      // ✅ FIXED: Simplified cache invalidation
       queryClient.invalidateQueries({ queryKey: ['/api/guests'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+      
       setIsGuestModalOpen(false);
       form.reset();
     },
-    onError: (error) => {
+    onError: (error: any) => {
+      console.error(`❌ [Guests] Error creating guest:`, error);
+      
       toast({
         title: "Error",
         description: `Failed to create guest: ${error.message}`,
@@ -97,6 +151,8 @@ export default function Guests() {
 
   const updateGuestMutation = useMutation({
     mutationFn: async ({ id, values }: { id: number; values: GuestFormValues }) => {
+      console.log(`👥 [Guests] Updating guest ${id}`);
+      
       // Convert tags from comma-separated string to array if provided
       const tagsArray = values.tags ? values.tags.split(',').map(t => t.trim()) : undefined;
       
@@ -111,16 +167,24 @@ export default function Guests() {
       });
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log(`✅ [Guests] Successfully updated guest:`, data);
+      
       toast({
         title: "Success",
         description: "Guest updated successfully",
       });
+      
+      // ✅ FIXED: Simplified cache invalidation
       queryClient.invalidateQueries({ queryKey: ['/api/guests'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+      
       setIsGuestModalOpen(false);
       form.reset();
     },
-    onError: (error) => {
+    onError: (error: any) => {
+      console.error(`❌ [Guests] Error updating guest:`, error);
+      
       toast({
         title: "Error",
         description: `Failed to update guest: ${error.message}`,
@@ -131,18 +195,28 @@ export default function Guests() {
 
   const deleteGuestMutation = useMutation({
     mutationFn: async (id: number) => {
+      console.log(`👥 [Guests] Deleting guest ${id}`);
+      
       const response = await apiRequest("DELETE", `/api/guests/${id}`, undefined);
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log(`✅ [Guests] Successfully deleted guest:`, data);
+      
       toast({
         title: "Success",
         description: "Guest deleted successfully",
       });
+      
+      // ✅ FIXED: Simplified cache invalidation
       queryClient.invalidateQueries({ queryKey: ['/api/guests'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+      
       setDeleteConfirmOpen(false);
     },
-    onError: (error) => {
+    onError: (error: any) => {
+      console.error(`❌ [Guests] Error deleting guest:`, error);
+      
       toast({
         title: "Error",
         description: `Failed to delete guest: ${error.message}`,
@@ -208,8 +282,8 @@ export default function Guests() {
       return;
     }
 
-    // Create CSV content
-    const headers = ["Name", "Phone", "Email", "Language", "Birthday", "Tags", "Comments"];
+    // Create CSV content with timezone-aware export filename
+    const headers = ["Name", "Phone", "Email", "Language", "Birthday", "Tags", "Comments", "Booking Count"];
     const rows = guests.map((guest: any) => [
       guest.name,
       guest.phone,
@@ -217,7 +291,8 @@ export default function Guests() {
       guest.language || 'en',
       guest.birthday || '',
       guest.tags ? guest.tags.join(', ') : '',
-      guest.comments || ''
+      guest.comments || '',
+      guest.reservationCount || 0
     ]);
 
     const csvContent = [
@@ -225,16 +300,54 @@ export default function Guests() {
       ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
     ].join('\n');
 
-    // Create a blob and download it
+    // Create a blob and download it with timezone-aware filename
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
+    
+    const exportDate = DateTime.now().setZone(restaurantTimezone || 'UTC').toFormat('yyyy-MM-dd');
     link.setAttribute('href', url);
-    link.setAttribute('download', `guests_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.setAttribute('download', `guests_${exportDate}_${restaurantTimezone?.replace('/', '_') || 'UTC'}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    toast({
+      title: "Success",
+      description: `Exported ${guests.length} guests to CSV`,
+    });
+  };
+
+  // Enhanced guest statistics with reservation data
+  const getGuestStatistics = () => {
+    if (!guests || !reservations) {
+      return { total: 0, withBirthday: 0, withEmail: 0, withBookings: 0, avgBookings: 0 };
+    }
+
+    const safeGuests = Array.isArray(guests) ? guests : [];
+    const safeReservations = Array.isArray(reservations) ? reservations : [];
+
+    // Calculate booking counts per guest
+    const guestBookingCounts = safeGuests.map(guest => {
+      const guestReservations = safeReservations.filter((r: any) => {
+        const reservation = r.reservation || r;
+        return reservation.guestId === guest.id || r.guestId === guest.id;
+      });
+      return guestReservations.length;
+    });
+
+    const avgBookings = guestBookingCounts.length > 0 
+      ? (guestBookingCounts.reduce((sum, count) => sum + count, 0) / guestBookingCounts.length).toFixed(1)
+      : '0';
+
+    return {
+      total: safeGuests.length,
+      withBirthday: safeGuests.filter((g: any) => g.birthday).length,
+      withEmail: safeGuests.filter((g: any) => g.email).length,
+      withBookings: guestBookingCounts.filter(count => count > 0).length,
+      avgBookings
+    };
   };
 
   const filteredGuests = guests ? guests.filter((guest: any) => {
@@ -249,20 +362,80 @@ export default function Guests() {
     return true;
   }) : [];
 
+  // Enhanced guest data with booking counts
+  const enhancedGuests = filteredGuests.map((guest: any) => {
+    const guestReservations = reservations ? reservations.filter((r: any) => {
+      const reservation = r.reservation || r;
+      return reservation.guestId === guest.id || r.guestId === guest.id;
+    }) : [];
+    
+    return {
+      ...guest,
+      reservationCount: guestReservations.length
+    };
+  });
+
+  const stats = getGuestStatistics();
+
+  // Loading state
+  if (guestsLoading) {
+    return (
+      <DashboardLayout>
+        <div className="px-4 py-6 lg:px-8">
+          <header className="mb-6">
+            <h2 className="text-2xl font-bold text-gray-800">Guest Database</h2>
+            <p className="text-gray-500 mt-1">Loading guest data...</p>
+          </header>
+          <div className="flex items-center justify-center h-64">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // Error state
+  if (guestsError) {
+    console.error('❌ [Guests] Error loading guests:', guestsError);
+    
+    return (
+      <DashboardLayout>
+        <div className="px-4 py-6 lg:px-8">
+          <header className="mb-6">
+            <h2 className="text-2xl font-bold text-gray-800">Guest Database</h2>
+            <p className="text-red-500 mt-1">Error loading guest data. Please try refreshing the page.</p>
+          </header>
+          <div className="text-center py-12 text-gray-500">
+            <Users className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+            <p>Unable to load guest data</p>
+            <p className="text-sm mt-2">Check your connection and try again</p>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
   return (
     <DashboardLayout>
       <div className="px-4 py-6 lg:px-8">
         <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-2xl font-bold text-gray-800">Guest Database</h2>
-            <p className="text-gray-500 mt-1">Manage your restaurant guests and their preferences</p>
+            <p className="text-gray-500 mt-1">
+              Manage your restaurant guests and their preferences
+              {restaurantTimezone && (
+                <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                  {restaurantTimezone}
+                </span>
+              )}
+            </p>
           </div>
           <div className="mt-4 md:mt-0 flex flex-wrap gap-2">
             <Button onClick={handleAddGuest}>
               <Plus className="mr-2 h-4 w-4" />
               Add Guest
             </Button>
-            <Button variant="outline" onClick={exportGuests}>
+            <Button variant="outline" onClick={exportGuests} disabled={!guests || guests.length === 0}>
               <Download className="mr-2 h-4 w-4" />
               Export
             </Button>
@@ -272,7 +445,7 @@ export default function Guests() {
         <Card className="mb-6">
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between space-y-2 sm:space-y-0">
-              <CardTitle>All Guests</CardTitle>
+              <CardTitle>All Guests ({filteredGuests.length})</CardTitle>
               <div className="relative w-full sm:w-[300px]">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500" />
                 <Input
@@ -300,16 +473,8 @@ export default function Guests() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {isLoading ? (
-                    <TableRow>
-                      <TableCell colSpan={7} className="text-center">
-                        <div className="flex justify-center py-4">
-                          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-900 border-t-transparent"></div>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ) : filteredGuests.length > 0 ? (
-                    filteredGuests.map((guest: any) => (
+                  {enhancedGuests.length > 0 ? (
+                    enhancedGuests.map((guest: any) => (
                       <TableRow key={guest.id}>
                         <TableCell>
                           <div className="flex items-center">
@@ -343,7 +508,13 @@ export default function Guests() {
                           {guest.birthday ? (
                             <div className="flex items-center text-sm">
                               <CalendarDays className="h-4 w-4 mr-1" />
-                              {format(new Date(guest.birthday), 'MMM d')}
+                              {(() => {
+                                try {
+                                  return DateTime.fromISO(guest.birthday).toFormat('MMM d');
+                                } catch (error) {
+                                  return guest.birthday;
+                                }
+                              })()}
                             </div>
                           ) : (
                             <span className="text-gray-400 text-sm">Not set</span>
@@ -363,7 +534,9 @@ export default function Guests() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge>{guest.reservationCount || 0}</Badge>
+                          <Badge variant={guest.reservationCount > 0 ? "default" : "outline"}>
+                            {guest.reservationCount || 0}
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end space-x-2">
@@ -436,21 +609,27 @@ export default function Guests() {
               <div className="space-y-4">
                 <div>
                   <div className="text-sm font-medium text-gray-500 mb-1">Total Guests</div>
-                  <div className="text-2xl font-bold">{guests ? guests.length : 0}</div>
+                  <div className="text-2xl font-bold">{stats.total}</div>
+                </div>
+                
+                <div>
+                  <div className="text-sm font-medium text-gray-500 mb-1">With Bookings</div>
+                  <div className="text-2xl font-bold">{stats.withBookings}</div>
                 </div>
                 
                 <div>
                   <div className="text-sm font-medium text-gray-500 mb-1">With Birthday Info</div>
-                  <div className="text-2xl font-bold">
-                    {guests ? guests.filter((g: any) => g.birthday).length : 0}
-                  </div>
+                  <div className="text-2xl font-bold">{stats.withBirthday}</div>
                 </div>
                 
                 <div>
                   <div className="text-sm font-medium text-gray-500 mb-1">With Email</div>
-                  <div className="text-2xl font-bold">
-                    {guests ? guests.filter((g: any) => g.email).length : 0}
-                  </div>
+                  <div className="text-2xl font-bold">{stats.withEmail}</div>
+                </div>
+
+                <div>
+                  <div className="text-sm font-medium text-gray-500 mb-1">Avg Bookings</div>
+                  <div className="text-2xl font-bold">{stats.avgBookings}</div>
                 </div>
               </div>
             </CardContent>
@@ -565,6 +744,8 @@ export default function Guests() {
                           <SelectItem value="ru">Russian</SelectItem>
                           <SelectItem value="zh">Chinese</SelectItem>
                           <SelectItem value="ja">Japanese</SelectItem>
+                          <SelectItem value="sr">Serbian</SelectItem>
+                          <SelectItem value="hu">Hungarian</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />

@@ -29,16 +29,30 @@ export default function Dashboard() {
     // In a real application, you would get the restaurant ID from user context or auth state
     const restaurantId = 1;
 
-    const { data: restaurant } = useQuery({
+    // ✅ ENHANCED: Restaurant profile query with better error handling
+    const { data: restaurant, isLoading: isRestaurantLoading, error: restaurantError } = useQuery({
         queryKey: ['/api/restaurants/profile'],
-        queryFn: () => apiRequest("GET", "/api/restaurants/profile").then(res => res.json()),
+        queryFn: async () => {
+            console.log('🏪 [Dashboard] Fetching restaurant profile...');
+            const response = await apiRequest("GET", "/api/restaurants/profile");
+            const data = await response.json();
+            console.log('✅ [Dashboard] Restaurant profile loaded:', { id: data.id, timezone: data.timezone });
+            return data;
+        },
+        staleTime: 0, // ✅ CRITICAL: Ensure fresh timezone data
+        cacheTime: 5 * 60 * 1000, // 5 minutes
     });
+
+    // ✅ ENHANCED: Fallback timezone with better logic
+    const effectiveTimezone = restaurant?.timezone || 'Europe/Moscow';
 
     const deleteMutation = useMutation({
         mutationFn: async (id: number) => {
+            console.log(`🗑️ [Dashboard] Deleting reservation ${id}...`);
             const response = await apiRequest("DELETE", `/api/reservations/${id}`);
             // Ensure we always return JSON, even if the body is empty
             const text = await response.text();
+            console.log(`✅ [Dashboard] Reservation ${id} deleted successfully`);
             return text ? JSON.parse(text) : {};
         },
         onSuccess: () => {
@@ -50,9 +64,11 @@ export default function Dashboard() {
             queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
             queryClient.invalidateQueries({ queryKey: ['/api/dashboard/upcoming'] });
             queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
+            queryClient.invalidateQueries({ queryKey: ['tables_availability_status'] }); // ✅ ADDED: Invalidate table status
             setDeleteConfirmOpen(false);
         },
         onError: (error) => {
+            console.error('❌ [Dashboard] Delete reservation error:', error);
             toast({
                 title: "Error",
                 description: `Failed to delete reservation: ${error.message}`,
@@ -62,16 +78,19 @@ export default function Dashboard() {
     });
 
     const handleCreateReservation = () => {
+        console.log('➕ [Dashboard] Opening reservation modal for new reservation');
         setSelectedReservationId(undefined);
         setIsReservationModalOpen(true);
     };
 
     const handleEditReservation = (id: number) => {
+        console.log(`✏️ [Dashboard] Opening reservation modal for editing reservation ${id}`);
         setSelectedReservationId(id);
         setIsReservationModalOpen(true);
     };
 
     const handleDeleteReservation = (id: number) => {
+        console.log(`🗑️ [Dashboard] Confirming deletion of reservation ${id}`);
         setReservationToDelete(id);
         setDeleteConfirmOpen(true);
     };
@@ -82,6 +101,39 @@ export default function Dashboard() {
         }
     };
 
+    // ✅ ENHANCED: Better loading and error states
+    if (isRestaurantLoading) {
+        return (
+            <DashboardLayout>
+                <div className="px-4 py-6 lg:px-8">
+                    <div className="animate-pulse">
+                        <div className="h-8 bg-gray-200 rounded w-1/3 mb-4"></div>
+                        <div className="h-4 bg-gray-200 rounded w-1/2 mb-8"></div>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                            {[...Array(4)].map((_, i) => (
+                                <div key={i} className="h-24 bg-gray-200 rounded"></div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </DashboardLayout>
+        );
+    }
+
+    if (restaurantError) {
+        return (
+            <DashboardLayout>
+                <div className="px-4 py-6 lg:px-8">
+                    <div className="text-center py-12">
+                        <h2 className="text-xl font-semibold text-gray-900 mb-2">Unable to load restaurant data</h2>
+                        <p className="text-gray-600 mb-4">Please try refreshing the page or contact support if the issue persists.</p>
+                        <Button onClick={() => window.location.reload()}>Refresh Page</Button>
+                    </div>
+                </div>
+            </DashboardLayout>
+        );
+    }
+
     return (
         <DashboardLayout>
             <div className="px-4 py-6 lg:px-8">
@@ -89,7 +141,14 @@ export default function Dashboard() {
                 <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
                     <div>
                         <h2 className="text-2xl font-bold text-gray-800">Restaurant Dashboard</h2>
-                        <p className="text-gray-500 mt-1">Overview of your restaurant's performance and reservations</p>
+                        <p className="text-gray-500 mt-1">
+                            Overview of your restaurant's performance and reservations
+                            {effectiveTimezone !== 'Europe/Moscow' && (
+                                <span className="text-xs text-blue-600 ml-2">
+                                    📍 {effectiveTimezone}
+                                </span>
+                            )}
+                        </p>
                     </div>
                     <div className="mt-4 md:mt-0 flex flex-wrap gap-2">
                         <Button
@@ -124,28 +183,28 @@ export default function Dashboard() {
                     </div>
                 </header>
 
-                {/* ✅ ALREADY CORRECT: Statistics Cards */}
+                {/* ✅ ALREADY CORRECT: Statistics Cards with timezone */}
                 <StatisticsCards
                     restaurantId={restaurantId}
-                    restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                    restaurantTimezone={effectiveTimezone}
                 />
 
                 {/* Upcoming Reservations & Table Status */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
                     <div className="lg:col-span-2">
-                        {/* ✅ ALREADY CORRECT: UpcomingReservations */}
+                        {/* ✅ ALREADY CORRECT: UpcomingReservations with timezone */}
                         <UpcomingReservations
                             restaurantId={restaurantId}
-                            restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                            restaurantTimezone={effectiveTimezone}
                             onEdit={handleEditReservation}
                             onDelete={handleDeleteReservation}
                         />
                     </div>
                     <div className="lg:col-span-1">
-                        {/* ✅ FIXED: Add timezone to TableStatus */}
-                        <TableStatus 
+                        {/* ✅ FIXED: TableStatus with timezone (now includes date/time parameters) */}
+                        <TableStatus
                             restaurantId={restaurantId}
-                            restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                            restaurantTimezone={effectiveTimezone}
                         />
                     </div>
                 </div>
@@ -153,34 +212,38 @@ export default function Dashboard() {
                 {/* Timeslot Generator & AI Assistant */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
                     <div className="lg:col-span-1">
-                        {/* ✅ FIXED: Add timezone to TimeslotGenerator */}
-                        <TimeslotGenerator 
+                        {/* ✅ FIXED: TimeslotGenerator with timezone */}
+                        <TimeslotGenerator
                             restaurantId={restaurantId}
-                            restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                            restaurantTimezone={effectiveTimezone}
                         />
                     </div>
                     <div className="lg:col-span-2">
-                        <AIAssistant restaurantId={restaurantId} />
+                        {/* ✅ ENHANCED: AIAssistant with timezone context */}
+                        <AIAssistant 
+                            restaurantId={restaurantId}
+                            restaurantTimezone={effectiveTimezone}
+                        />
                     </div>
                 </div>
 
                 {/* Reservation Timeline */}
                 <div className="grid grid-cols-1 gap-8">
-                    {/* ✅ FIXED: Add timezone to ReservationTimeline */}
-                    <ReservationTimeline 
+                    {/* ✅ FIXED: ReservationTimeline with timezone */}
+                    <ReservationTimeline
                         restaurantId={restaurantId}
-                        restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                        restaurantTimezone={effectiveTimezone}
                     />
                 </div>
             </div>
 
-            {/* ✅ FIXED: Add timezone to ReservationModal */}
+            {/* ✅ FIXED: ReservationModal with timezone */}
             <ReservationModal
                 isOpen={isReservationModalOpen}
                 onClose={() => setIsReservationModalOpen(false)}
                 reservationId={selectedReservationId}
                 restaurantId={restaurantId}
-                restaurantTimezone={restaurant?.timezone || 'Europe/Moscow'}
+                restaurantTimezone={effectiveTimezone}
             />
 
             {/* Delete Confirmation Dialog */}

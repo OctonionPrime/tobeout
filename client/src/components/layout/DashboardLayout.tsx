@@ -1,4 +1,4 @@
-import { ReactNode, createContext, useContext } from "react";
+import { ReactNode, createContext, useContext, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
 import { DateTime } from "luxon";
@@ -7,7 +7,7 @@ interface DashboardLayoutProps {
   children: ReactNode;
 }
 
-// ✅ CRITICAL FIX: Create restaurant timezone context
+// ✅ Restaurant timezone context interface
 interface RestaurantTimezoneContextType {
   restaurant: any;
   restaurantTimezone: string;
@@ -19,74 +19,153 @@ interface RestaurantTimezoneContextType {
     displayName: string;
     offset: string;
   };
+  refreshRestaurant: () => void;
 }
+
+// ✅ FIXED: More robust default timezone handling
+const getDefaultTimezone = () => {
+  try {
+    const cached = localStorage.getItem('lastRestaurantTimezone');
+    if (cached && cached !== 'null' && cached !== 'undefined') {
+      // Validate the cached timezone
+      Intl.DateTimeFormat(undefined, { timeZone: cached });
+      return cached;
+    }
+  } catch (error) {
+    console.warn('[DashboardLayout] Invalid cached timezone, using fallback');
+  }
+  return 'Europe/Moscow';
+};
 
 const RestaurantTimezoneContext = createContext<RestaurantTimezoneContextType>({
   restaurant: null,
-  restaurantTimezone: 'Europe/Moscow',
+  restaurantTimezone: getDefaultTimezone(),
   isLoading: true,
   error: null,
   restaurantTimeInfo: {
     currentTime: '',
     currentDate: '',
-    displayName: 'Europe/Moscow',
+    displayName: getDefaultTimezone(),
     offset: '+03:00'
-  }
+  },
+  refreshRestaurant: () => {}
 });
 
-// ✅ CRITICAL FIX: Custom hook to use restaurant timezone context
 export const useRestaurantTimezone = () => {
   const context = useContext(RestaurantTimezoneContext);
   if (!context) {
-    console.warn('[useRestaurantTimezone] Used outside of DashboardLayout, falling back to Moscow timezone');
+    console.warn('[useRestaurantTimezone] Used outside of DashboardLayout, using default timezone');
+    const fallbackTimezone = getDefaultTimezone();
+    const now = DateTime.now().setZone(fallbackTimezone);
+    
     return {
       restaurant: null,
-      restaurantTimezone: 'Europe/Moscow',
+      restaurantTimezone: fallbackTimezone,
       isLoading: false,
       error: null,
       restaurantTimeInfo: {
-        currentTime: DateTime.now().toFormat('HH:mm'),
-        currentDate: DateTime.now().toISODate() || '',
-        displayName: 'Europe/Moscow',
-        offset: '+03:00'
-      }
+        currentTime: now.toFormat('HH:mm'),
+        currentDate: now.toISODate() || '',
+        displayName: fallbackTimezone,
+        offset: now.toFormat('ZZ')
+      },
+      refreshRestaurant: () => {}
     };
   }
   return context;
 };
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  // ✅ CRITICAL FIX: Fetch restaurant data with timezone information
-  const { data: restaurant, isLoading, error } = useQuery({
+  // ✅ NEW: Track timezone changes to force re-renders
+  const [lastKnownTimezone, setLastKnownTimezone] = useState<string>(getDefaultTimezone());
+  
+  // ✅ CRITICAL FIX: Remove stale time and add proper invalidation triggers
+  const { data: restaurant, isLoading, error, refetch } = useQuery({
     queryKey: ["/api/restaurants/profile"],
     queryFn: async () => {
+      console.log('[DashboardLayout] Fetching restaurant profile...');
       const response = await fetch("/api/restaurants/profile", {
-        credentials: "include"
+        credentials: "include",
+        // ✅ ADD: Cache busting headers
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
       });
+      
       if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Not authenticated');
+        }
         throw new Error(`Failed to fetch restaurant profile: ${response.status}`);
       }
-      return response.json();
+      
+      const data = await response.json();
+      console.log('[DashboardLayout] Restaurant profile loaded:', {
+        name: data.name, 
+        timezone: data.timezone,
+        id: data.id
+      });
+      
+      // ✅ CRITICAL: Cache the timezone and trigger updates
+      if (data.timezone && data.timezone !== lastKnownTimezone) {
+        console.log('🌍 [DashboardLayout] Timezone changed:', lastKnownTimezone, '->', data.timezone);
+        localStorage.setItem('lastRestaurantTimezone', data.timezone);
+        setLastKnownTimezone(data.timezone);
+      }
+      
+      return data;
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes - restaurant timezone doesn't change often
-    retry: 3,
+    // ✅ CRITICAL: Remove stale time to ensure fresh data
+    staleTime: 0,
+    cacheTime: 1000 * 30, // Keep for 30 seconds only
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    retry: (failureCount, error: any) => {
+      if (error?.message === 'Not authenticated') {
+        return false;
+      }
+      return failureCount < 3;
+    },
   });
 
-  // ✅ CRITICAL FIX: Get effective timezone with fallback
-  const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+  // ✅ CRITICAL FIX: Always use fresh timezone from restaurant data
+  const restaurantTimezone = restaurant?.timezone || lastKnownTimezone || getDefaultTimezone();
 
-  // ✅ CRITICAL FIX: Generate real-time restaurant time information
+  // ✅ NEW: Watch for timezone changes and log them
+  useEffect(() => {
+    if (restaurant?.timezone && restaurant.timezone !== lastKnownTimezone) {
+      console.log('🔄 [DashboardLayout] Detected timezone change in restaurant data:', {
+        old: lastKnownTimezone,
+        new: restaurant.timezone,
+        restaurant: restaurant.name
+      });
+      setLastKnownTimezone(restaurant.timezone);
+      localStorage.setItem('lastRestaurantTimezone', restaurant.timezone);
+    }
+  }, [restaurant?.timezone, lastKnownTimezone]);
+
+  // ✅ CRITICAL FIX: Ensure timezone info is always fresh
   const getRestaurantTimeInfo = () => {
     try {
       const now = DateTime.now().setZone(restaurantTimezone);
-      return {
+      const timeInfo = {
         currentTime: now.toFormat('HH:mm'),
         currentDate: now.toISODate() || '',
         displayName: restaurantTimezone,
         offset: now.toFormat('ZZ')
       };
+      
+      // ✅ DEBUG: Log timezone info generation
+      console.log('🕐 [DashboardLayout] Generated time info:', {
+        timezone: restaurantTimezone,
+        time: timeInfo.currentTime,
+        offset: timeInfo.offset
+      });
+      
+      return timeInfo;
     } catch (error) {
-      console.warn(`[DashboardLayout] Invalid timezone ${restaurantTimezone}, using UTC`);
+      console.error(`[DashboardLayout] Invalid timezone ${restaurantTimezone}, using UTC`, error);
       const now = DateTime.now();
       return {
         currentTime: now.toFormat('HH:mm'),
@@ -99,18 +178,65 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   const restaurantTimeInfo = getRestaurantTimeInfo();
 
-  // ✅ CRITICAL FIX: Create timezone context value
+  // ✅ ENHANCED: Manual refresh function with better invalidation
+  const refreshRestaurant = () => {
+    console.log('[DashboardLayout] Manual restaurant refresh triggered');
+    // Clear the timezone cache to force fresh fetch
+    localStorage.removeItem('lastRestaurantTimezone');
+    setLastKnownTimezone(getDefaultTimezone());
+    refetch();
+  };
+
+  // ✅ Create timezone context value with fresh data
   const timezoneContextValue: RestaurantTimezoneContextType = {
     restaurant,
     restaurantTimezone,
     isLoading,
     error: error as Error | null,
-    restaurantTimeInfo
+    restaurantTimeInfo,
+    refreshRestaurant
   };
 
-  // ✅ ENHANCEMENT: Log timezone context for debugging
-  if (restaurant && restaurant.timezone !== 'Europe/Moscow') {
-    console.log(`[DashboardLayout] Restaurant timezone: ${restaurantTimezone} | Current time: ${restaurantTimeInfo.currentTime}`);
+  // ✅ DEBUG: Log context value changes
+  console.log('🏗️ [DashboardLayout] Context value:', {
+    restaurantName: restaurant?.name,
+    restaurantTimezone,
+    isLoading,
+    hasError: !!error
+  });
+
+  // Show loading state while fetching restaurant
+  if (isLoading && !restaurant) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-gray-900 mx-auto"></div>
+          <p className="mt-4 text-sm text-gray-600">Loading restaurant settings...</p>
+          <p className="mt-2 text-xs text-gray-500">Last known timezone: {lastKnownTimezone}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if critical error
+  if (error && !restaurant) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <p className="text-red-600 mb-4">Failed to load restaurant settings</p>
+          <p className="text-sm text-gray-600 mb-4">Error: {error.message}</p>
+          <button 
+            onClick={() => {
+              console.log('🔄 Retry button clicked');
+              refreshRestaurant();
+            }}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -119,16 +245,31 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         <Sidebar />
         
         <main className="flex-1 overflow-y-auto pt-16 lg:pt-0">
-          {/* ✅ ENHANCEMENT: Timezone status indicator for non-Moscow restaurants */}
-          {restaurant && restaurantTimezone !== 'Europe/Moscow' && (
-            <div className="bg-blue-50 border-b border-blue-200 px-4 py-2">
+          {/* ✅ ENHANCED: Show timezone indicator with change detection */}
+          {restaurant && (
+            <div className={`border-b px-4 py-2 ${
+              restaurantTimezone === 'Europe/Moscow' 
+                ? 'bg-gray-50 border-gray-200' 
+                : 'bg-blue-50 border-blue-200'
+            }`}>
               <div className="flex items-center justify-between text-sm">
-                <span className="text-blue-800">
-                  Restaurant Time: <strong>{restaurantTimeInfo.currentTime}</strong> ({restaurantTimezone})
+                <span className={restaurantTimezone === 'Europe/Moscow' ? 'text-gray-700' : 'text-blue-800'}>
+                  <strong>{restaurant.name}</strong> • Restaurant Time: <strong>{restaurantTimeInfo.currentTime}</strong> ({restaurantTimezone})
+                  {restaurantTimezone !== 'Europe/Moscow' && (
+                    <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                      Custom Timezone
+                    </span>
+                  )}
                 </span>
-                <span className="text-blue-600 text-xs">
+                <span className={`text-xs ${
+                  restaurantTimezone === 'Europe/Moscow' ? 'text-gray-600' : 'text-blue-600'
+                }`}>
                   {restaurantTimeInfo.offset} • {restaurantTimeInfo.currentDate}
                 </span>
+              </div>
+              {/* ✅ DEBUG: Show timezone debug info */}
+              <div className="text-xs text-gray-500 mt-1">
+                Debug: TZ={restaurantTimezone}, LastKnown={lastKnownTimezone}, RestaurantID={restaurant.id}
               </div>
             </div>
           )}

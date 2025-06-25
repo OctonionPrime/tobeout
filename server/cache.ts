@@ -1,3 +1,5 @@
+import { DateTime } from 'luxon'; // ✅ CRITICAL: Import Luxon for timezone handling
+
 interface CacheEntry<T> {
   data: T;
   timestamp: number;
@@ -214,29 +216,106 @@ export const CacheInvalidation = {
   },
   
   /**
-   * ✅ EXISTING: Granular time-range based invalidation (unchanged)
+   * ✅ UPDATED: Granular time-range based invalidation with error handling
    */
   onReservationTimeRangeChange: (restaurantId: number, date: string, time: string, duration: number = 120) => {
-    const affectedRanges = calculateOverlappingTimeRanges(time, duration);
-    
-    console.log(`🎯 [Cache] Granular invalidation: ${affectedRanges.length} time ranges for ${time} (${duration}min) on ${date}`);
-    console.log(`🎯 [Cache] Affected ranges: ${affectedRanges.join(', ')}`);
-    
-    // Invalidate table availability cache for affected time ranges
-    for (const range of affectedRanges) {
-      cache.delete(CacheKeys.tableAvailabilityRange(restaurantId, date, range));
-      cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 1, range)); // 1 guest
-      cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 2, range)); // 2 guests
-      cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 4, range)); // 4 guests
-      cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 6, range)); // 6 guests
-      cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 8, range)); // 8 guests
+    try {
+      // ✅ FIXED: Add validation for time parameter
+      if (!time || typeof time !== 'string') {
+        console.warn(`[Cache] Invalid time parameter: ${time}, falling back to broad invalidation`);
+        CacheInvalidation.onReservationChange(restaurantId, date);
+        return;
+      }
+
+      const affectedRanges = calculateOverlappingTimeRanges(time, duration);
+      
+      console.log(`🎯 [Cache] Granular invalidation: ${affectedRanges.length} time ranges for ${time} (${duration}min) on ${date}`);
+      console.log(`🎯 [Cache] Affected ranges: ${affectedRanges.join(', ')}`);
+      
+      // Invalidate table availability cache for affected time ranges
+      for (const range of affectedRanges) {
+        cache.delete(CacheKeys.tableAvailabilityRange(restaurantId, date, range));
+        cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 1, range)); // 1 guest
+        cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 2, range)); // 2 guests
+        cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 4, range)); // 4 guests
+        cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 6, range)); // 6 guests
+        cache.delete(CacheKeys.availableTimesRange(restaurantId, date, 8, range)); // 8 guests
+      }
+      
+      // Also invalidate some broad caches that might be affected
+      cache.invalidatePattern(`reservations_${restaurantId}_${date}`);
+      
+      // Keep the old broad cache keys as fallback for any code still using them
+      cache.delete(CacheKeys.tableAvailability(restaurantId, date));
+      
+    } catch (error) {
+      console.error(`❌ [Cache] Error in granular invalidation:`, error);
+      // Fallback to broad invalidation
+      console.log(`⚠️ [Cache] Falling back to broad invalidation for ${date}`);
+      CacheInvalidation.onReservationChange(restaurantId, date);
     }
-    
-    // Also invalidate some broad caches that might be affected
-    cache.invalidatePattern(`reservations_${restaurantId}_${date}`);
-    
-    // Keep the old broad cache keys as fallback for any code still using them
-    cache.delete(CacheKeys.tableAvailability(restaurantId, date));
+  },
+
+  /**
+   * ✅ NEW: CRITICAL - UTC timestamp based cache invalidation
+   * This is the method that routes.ts is calling
+   */
+  onReservationUtcChange: (restaurantId: number, reservation_utc: string, timezone: string, duration: number = 120) => {
+    try {
+      // ✅ CRITICAL: Convert UTC timestamp to local time for cache key calculation
+      if (!reservation_utc || !timezone) {
+        console.warn(`[Cache] Missing UTC timestamp or timezone, falling back to broad invalidation`);
+        cache.invalidatePattern(`reservations_${restaurantId}`);
+        cache.invalidatePattern(`tables_availability_${restaurantId}`);
+        return;
+      }
+
+      // ✅ CRITICAL FIX: Handle both ISO and PostgreSQL timestamp formats
+      let localDateTime;
+      try {
+        // Try ISO format first
+        localDateTime = DateTime.fromISO(reservation_utc, { zone: 'utc' });
+        if (!localDateTime.isValid) {
+          // Try PostgreSQL timestamp format: 2025-06-23 10:00:00+00
+          const pgTimestamp = reservation_utc.replace(' ', 'T').replace('+00', 'Z');
+          localDateTime = DateTime.fromISO(pgTimestamp, { zone: 'utc' });
+        }
+      } catch (parseError) {
+        console.error(`[Cache] Error parsing UTC timestamp ${reservation_utc}:`, parseError);
+        cache.invalidatePattern(`reservations_${restaurantId}`);
+        cache.invalidatePattern(`tables_availability_${restaurantId}`);
+        return;
+      }
+      
+      if (!localDateTime.isValid) {
+        console.warn(`[Cache] Invalid UTC timestamp ${reservation_utc}, falling back to broad invalidation`);
+        cache.invalidatePattern(`reservations_${restaurantId}`);
+        cache.invalidatePattern(`tables_availability_${restaurantId}`);
+        return;
+      }
+
+      const restaurantLocal = localDateTime.setZone(timezone);
+      const date = restaurantLocal.toISODate();
+      const time = restaurantLocal.toFormat('HH:mm:ss');
+      
+      console.log(`🗑️ [Cache] UTC timestamp ${reservation_utc} -> ${date} ${time} (${timezone})`);
+      
+      if (!date || !time) {
+        console.warn(`[Cache] Failed to convert UTC timestamp to local time, falling back to broad invalidation`);
+        cache.invalidatePattern(`reservations_${restaurantId}`);
+        cache.invalidatePattern(`tables_availability_${restaurantId}`);
+        return;
+      }
+
+      // Use the existing granular invalidation logic
+      CacheInvalidation.onReservationTimeRangeChange(restaurantId, date, time, duration);
+      
+    } catch (error) {
+      console.error(`❌ [Cache] Error in UTC-based invalidation:`, error);
+      // Fallback to broad invalidation
+      cache.invalidatePattern(`reservations_${restaurantId}`);
+      cache.invalidatePattern(`tables_availability_${restaurantId}`);
+    }
   },
   
   /**

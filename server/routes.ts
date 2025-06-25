@@ -23,8 +23,70 @@ import {
 } from "./services/booking";
 import { getAvailableTimeSlots } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
+import { getPopularRestaurantTimezones } from "./utils/timezone-utils";
 import { eq, and, desc, sql } from "drizzle-orm";
+import { DateTime } from 'luxon';
 
+// ✅ DYNAMIC: PostgreSQL timestamp parser that handles both formats
+function parsePostgresTimestamp(timestamp: string): DateTime {
+    if (!timestamp) {
+        console.warn('[Routes] Empty timestamp provided');
+        return DateTime.invalid('empty timestamp');
+    }
+
+    try {
+        // Try ISO format first: "2025-06-23T10:00:00.000Z"
+        let dt = DateTime.fromISO(timestamp, { zone: 'utc' });
+        if (dt.isValid) {
+            return dt;
+        }
+
+        // Try PostgreSQL format: "2025-06-23 10:00:00+00"
+        const pgTimestamp = timestamp.replace(' ', 'T').replace('+00', 'Z');
+        dt = DateTime.fromISO(pgTimestamp, { zone: 'utc' });
+        if (dt.isValid) {
+            return dt;
+        }
+
+        // Try without timezone indicator: "2025-06-23 10:00:00"
+        if (timestamp.includes(' ') && !timestamp.includes('T')) {
+            const isoFormat = timestamp.replace(' ', 'T') + 'Z';
+            dt = DateTime.fromISO(isoFormat, { zone: 'utc' });
+            if (dt.isValid) {
+                return dt;
+            }
+        }
+
+        console.error(`[Routes] Failed to parse timestamp: ${timestamp}`);
+        return DateTime.invalid(`unparseable timestamp: ${timestamp}`);
+    } catch (error) {
+        console.error(`[Routes] Error parsing timestamp ${timestamp}:`, error);
+        return DateTime.invalid(`parse error: ${error}`);
+    }
+}
+
+// ✅ DYNAMIC: Overnight operation detection (works for ANY times)
+function isOvernightOperation(openingTime: string, closingTime: string): boolean {
+    const parseTime = (timeStr: string): number | null => {
+        if (!timeStr) return null;
+        const parts = timeStr.split(':');
+        const hours = parseInt(parts[0], 10);
+        const minutes = parseInt(parts[1], 10) || 0;
+        if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            return null;
+        }
+        return hours * 60 + minutes;
+    };
+    
+    const openingMinutes = parseTime(openingTime);
+    const closingMinutes = parseTime(closingTime);
+    
+    if (openingMinutes === null || closingMinutes === null) {
+        return false;
+    }
+    
+    return closingMinutes < openingMinutes;
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
 
@@ -189,7 +251,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ UPDATED: Restaurant profile route with timezone cache invalidation
     app.patch("/api/restaurants/profile", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -200,7 +261,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const validatedData = insertRestaurantSchema.partial().parse(req.body);
 
-            // ✅ NEW: Check if timezone is being changed
             const oldTimezone = restaurant.timezone;
             const newTimezone = validatedData.timezone;
             const isTimezoneChanging = newTimezone && oldTimezone !== newTimezone;
@@ -211,10 +271,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const updatedRestaurant = await storage.updateRestaurant(restaurant.id, validatedData);
 
-            // ✅ NEW: Invalidate all cache if timezone changed
             if (isTimezoneChanging) {
                 CacheInvalidation.onTimezoneChange(restaurant.id, oldTimezone, newTimezone);
-
                 console.log(`✅ [Profile] Timezone change complete for restaurant ${restaurant.id}`);
             }
 
@@ -223,6 +281,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: "Validation failed", errors: error.errors });
             }
+            next(error);
+        }
+    });
+
+    app.get("/api/timezones", isAuthenticated, async (req, res, next) => {
+        try {
+            const timezones = getPopularRestaurantTimezones();
+            res.json(timezones);
+        } catch (error) {
+            console.error('[Timezones] Error fetching timezone list:', error);
             next(error);
         }
     });
@@ -236,8 +304,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
             const tables = await storage.getTables(restaurant.id);
+            console.log(`🔍 [Tables] Found ${tables.length} tables for restaurant ${restaurant.id}`);
             res.json(tables);
         } catch (error) {
+            console.error('❌ [Tables] Error fetching tables:', error);
             next(error);
         }
     });
@@ -254,8 +324,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 restaurantId: restaurant.id,
             });
             const newTable = await storage.createTable(validatedData);
+            
+            CacheInvalidation.onTableChange(restaurant.id);
+            
+            console.log(`✅ [Tables] Created new table: ${newTable.name} (ID: ${newTable.id})`);
             res.status(201).json(newTable);
         } catch (error: any) {
+            console.error('❌ [Tables] Error creating table:', error);
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: "Validation failed", errors: error.errors });
             }
@@ -277,6 +352,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             const validatedData = insertTableSchema.partial().parse(req.body);
             const updatedTable = await storage.updateTable(tableId, validatedData);
+            
+            CacheInvalidation.onTableChange(restaurant.id);
+            
             res.json(updatedTable);
         } catch (error: any) {
             if (error instanceof z.ZodError) {
@@ -299,6 +377,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(404).json({ message: "Table not found" });
             }
             await storage.deleteTable(tableId);
+            
+            CacheInvalidation.onTableChange(restaurant.id);
+            
             res.json({ success: true });
         } catch (error) {
             next(error);
@@ -410,7 +491,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ TIMEZONE FIX 1: Table Availability with Restaurant Timezone
+    // ✅ DYNAMIC: Table Availability with Complete Overnight Support (works for ANY times)
     app.get("/api/tables/availability", isAuthenticated, async (req, res, next) => {
         try {
             const { date, time } = req.query;
@@ -425,22 +506,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time} in timezone ${restaurant.timezone}`);
 
+            // ✅ DYNAMIC: Check if restaurant operates overnight (works for ANY times)
+            const isOvernight = restaurant.openingTime && restaurant.closingTime && 
+                               isOvernightOperation(restaurant.openingTime, restaurant.closingTime);
+
+            if (isOvernight) {
+                console.log(`🌙 [Table Availability] Detected overnight operation: ${restaurant.openingTime} to ${restaurant.closingTime}`);
+            }
+
             const cacheKey = CacheKeys.tableAvailability(restaurant.id, `${date}_${time}`);
             const tableAvailabilityData = await withCache(cacheKey, async () => {
                 const tablesData = await storage.getTables(restaurant.id);
                 
-                // ✅ FIXED: Pass restaurant timezone for proper date filtering
-                const reservationsData = await storage.getReservations(restaurant.id, { 
-                    date: date as string,
-                    timezone: restaurant.timezone  // ← CRITICAL FIX
-                });
+                if (tablesData.length === 0) {
+                    console.log(`⚠️ [Table Availability] No tables found for restaurant ${restaurant.id} - this might be why frontend shows empty arrays`);
+                    return [];
+                }
+                
+                console.log(`📋 [Table Availability] Found ${tablesData.length} tables for restaurant ${restaurant.id}`);
+                
+                // ✅ DYNAMIC: Enhanced reservation fetching for overnight operations
+                let reservationsData;
+                if (isOvernight) {
+                    // Get reservations from current date
+                    const currentDateReservations = await storage.getReservations(restaurant.id, { 
+                        date: date as string,
+                        timezone: restaurant.timezone
+                    });
+                    
+                    // For overnight operations, also check previous day if checking early morning hours
+                    const checkHour = parseInt((time as string).split(':')[0]);
+                    const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
+                    
+                    if (checkHour < closingHour) { // Early morning hours (before closing time)
+                        const previousDate = DateTime.fromISO(date as string, { zone: restaurant.timezone })
+                            .minus({ days: 1 }).toISODate();
+                        const previousDateReservations = await storage.getReservations(restaurant.id, { 
+                            date: previousDate,
+                            timezone: restaurant.timezone
+                        });
+                        
+                        reservationsData = [...currentDateReservations, ...previousDateReservations];
+                        console.log(`🌙 [Table Availability] Overnight operation: ${currentDateReservations.length} current + ${previousDateReservations.length} previous day reservations`);
+                    } else {
+                        reservationsData = currentDateReservations;
+                    }
+                } else {
+                    // Standard operation - just get current date reservations
+                    reservationsData = await storage.getReservations(restaurant.id, { 
+                        date: date as string,
+                        timezone: restaurant.timezone
+                    });
+                }
 
                 console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date} (${restaurant.timezone})`);
 
+                // ✅ DYNAMIC: Enhanced time slot checking for overnight operations
                 const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
                     const actualReservation = reservation.reservation || reservation;
-                    const startTime = actualReservation.time;
+                    
+                    if (!actualReservation.reservation_utc) {
+                        console.warn(`[Table Availability] Reservation ${actualReservation.id} missing UTC timestamp, skipping`);
+                        return false;
+                    }
+                    
+                    const restaurantDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
+                    
+                    if (!restaurantDateTime.isValid) {
+                        console.warn(`[Table Availability] Invalid timestamp for reservation ${actualReservation.id}: ${actualReservation.reservation_utc}, skipping`);
+                        return false;
+                    }
+                    
+                    const localDateTime = restaurantDateTime.setZone(restaurant.timezone);
+                    const startTime = localDateTime.toFormat('HH:mm:ss');
                     const duration = actualReservation.duration || 120;
+
+                    console.log(`🔍 [Time Check] Reservation UTC: ${actualReservation.reservation_utc} -> Local: ${startTime} (${restaurant.timezone})`);
 
                     const [checkHour, checkMin] = checkTime.split(':').map(Number);
                     const checkMinutes = checkHour * 60 + checkMin;
@@ -449,9 +590,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     const startMinutes = startHour * 60 + startMin;
                     const endMinutes = startMinutes + duration;
 
-                    const slotEndMinutes = checkMinutes + 60;
-
-                    return startMinutes < slotEndMinutes && endMinutes > checkMinutes;
+                    // ✅ DYNAMIC: Enhanced overnight conflict detection
+                    const slotEndMinutes = checkMinutes + 120; // Assume 2-hour reservation
+                    
+                    // Standard overlap check
+                    let hasOverlap = startMinutes < slotEndMinutes && endMinutes > checkMinutes;
+                    
+                    // ✅ DYNAMIC: Additional overnight conflict detection
+                    if (isOvernight && !hasOverlap) {
+                        const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
+                        const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
+                        
+                        // Handle conflicts across midnight boundary
+                        if (checkHour < closingHour && startHour > openingHour) {
+                            // Early morning check vs late night reservation from previous day
+                            const adjustedCheckMinutes = checkMinutes + 24 * 60;
+                            const adjustedSlotEnd = slotEndMinutes + 24 * 60;
+                            hasOverlap = startMinutes < adjustedSlotEnd && endMinutes > adjustedCheckMinutes;
+                            console.log(`🌙 [Overnight Conflict] Early morning ${checkTime} vs late night ${startTime}: ${hasOverlap}`);
+                        } else if (checkHour > openingHour && startHour < closingHour) {
+                            // Late night check vs early morning reservation
+                            const adjustedStartMinutes = startMinutes + 24 * 60;
+                            const adjustedEndMinutes = endMinutes + 24 * 60;
+                            hasOverlap = adjustedStartMinutes < slotEndMinutes && adjustedEndMinutes > checkMinutes;
+                            console.log(`🌙 [Overnight Conflict] Late night ${checkTime} vs early morning ${startTime}: ${hasOverlap}`);
+                        }
+                    }
+                    
+                    if (hasOverlap) {
+                        console.log(`⚠️ [Table Availability] ${isOvernight ? 'Overnight' : 'Standard'} conflict detected: Reservation ${startTime}-${Math.floor(endMinutes/60).toString().padStart(2,'0')}:${(endMinutes%60).toString().padStart(2,'0')} overlaps with ${checkTime}`);
+                    }
+                    
+                    return hasOverlap;
                 };
 
                 const availabilityResult = tablesData.map(table => {
@@ -473,9 +643,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                             isTimeSlotOccupied(r, time as string);
 
                         if (matches) {
+                            const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
+                            const reservationLocal = reservationDateTime.isValid 
+                                ? reservationDateTime.setZone(restaurant.timezone).toFormat('HH:mm:ss')
+                                : 'Invalid Time';
+                            
                             console.log(`⚠️ Table ${table.id} conflict found:`, {
                                 guestName: r.guestName || actualReservation.booking_guest_name || guest.name,
-                                time: actualReservation.time,
+                                timeLocal: reservationLocal,
+                                timeUtc: actualReservation.reservation_utc,
                                 status: actualReservation.status
                             });
                         }
@@ -487,11 +663,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         const actualReservation = conflictingReservation.reservation || conflictingReservation;
                         const guest = conflictingReservation.guest || {};
 
-                        const startTime = actualReservation.time;
+                        const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
+                        
+                        if (!reservationDateTime.isValid) {
+                            console.warn(`[Table Availability] Invalid timestamp for display, skipping conflict for reservation ${actualReservation.id}`);
+                            return { ...table, status: 'available', reservation: null };
+                        }
+                        
+                        const reservationLocal = reservationDateTime.setZone(restaurant.timezone);
+                        const startTime = reservationLocal.toFormat('HH:mm:ss');
                         const duration = actualReservation.duration || 120;
-                        const endHour = Math.floor((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) / 60);
-                        const endMin = ((parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]) + duration) % 60);
-                        const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+                        const endTime = reservationLocal.plus({ minutes: duration }).toFormat('HH:mm:ss');
 
                         return {
                             ...table,
@@ -510,7 +692,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     return { ...table, status: 'available', reservation: null };
                 });
 
-                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${restaurant.timezone}`);
+                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${restaurant.timezone} (overnight: ${isOvernight})`);
+                
+                if (availabilityResult.length === 0) {
+                    console.log(`❌ [Table Availability] RETURNING EMPTY ARRAY - Check table creation and restaurant association`);
+                } else {
+                    console.log(`✅ [Table Availability] Returning ${availabilityResult.length} tables:`, 
+                        availabilityResult.map(t => ({ id: t.id, name: t.name, status: t.status })));
+                }
+                
                 return availabilityResult;
             }, 30);
 
@@ -521,19 +711,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ TIMEZONE FIX 2: Available Times with Restaurant Timezone
+    // ✅ DYNAMIC: Available Times with Complete Overnight Support (works for ANY times)
     app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response, next) => {
         try {
             const { restaurantId, date, guests } = req.query;
             const user = req.user as any;
             
-            // ✅ FIXED: Get restaurant data to access timezone
             const restaurant = await storage.getRestaurantByUserId(user.id);
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
             
-            // ✅ FIXED: Validate restaurantId matches user's restaurant for security
             if (parseInt(restaurantId as string) !== restaurant.id) {
                 return res.status(403).json({ message: "Access denied to this restaurant" });
             }
@@ -544,17 +732,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${restaurant.timezone}`);
             
-            // ✅ FIXED: Pass restaurant timezone to getAvailableTimeSlots
+            // ✅ DYNAMIC: Check for overnight operation (works for ANY times)
+            const isOvernight = restaurant.openingTime && restaurant.closingTime && 
+                               isOvernightOperation(restaurant.openingTime, restaurant.closingTime);
+            
+            // ✅ DYNAMIC: Enhanced maxResults calculation for overnight operations
+            let maxResults: number;
+            let operatingHours: number;
+            
+            if (isOvernight) {
+                // Calculate total operating hours for overnight operations
+                const parseTime = (timeStr: string): number => {
+                    const parts = timeStr.split(':');
+                    return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+                };
+                
+                const openingMinutes = parseTime(restaurant.openingTime || '10:00');
+                const closingMinutes = parseTime(restaurant.closingTime || '22:00');
+                
+                // ✅ DYNAMIC: For overnight operations, calculate correctly (works for ANY times)
+                operatingHours = (24 * 60 - openingMinutes + closingMinutes) / 60;
+                
+                // ✅ DYNAMIC: More generous slot calculation for overnight operations
+                maxResults = Math.max(80, Math.floor(operatingHours * 2.5)); // Extra buffer for overnight
+                
+                console.log(`[Routes] 🌙 Overnight operation detected: ${restaurant.openingTime}-${restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
+            } else {
+                // Standard operation
+                const parseTime = (timeStr: string): number => {
+                    const parts = timeStr.split(':');
+                    return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+                };
+                
+                const openingMinutes = parseTime(restaurant.openingTime || '10:00');
+                const closingMinutes = parseTime(restaurant.closingTime || '22:00');
+                operatingHours = (closingMinutes - openingMinutes) / 60;
+                
+                maxResults = Math.max(30, Math.floor(operatingHours * 2));
+                
+                console.log(`[Routes] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
+            }
+            
+            // ✅ DYNAMIC: Pass enhanced configuration to getAvailableTimeSlots
             const availableSlots = await getAvailableTimeSlots(
                 parseInt(restaurantId as string),
                 date as string,
                 parseInt(guests as string),
                 { 
-                    maxResults: 20,
-                    timezone: restaurant.timezone  // ← CRITICAL FIX
+                    maxResults: maxResults,
+                    timezone: restaurant.timezone,
+                    lang: 'en',
+                    allowCombinations: true,
+                    slotIntervalMinutes: 30,
+                    slotDurationMinutes: restaurant.avgReservationDuration || 120,
+                    operatingHours: {
+                        open: restaurant.openingTime || '10:00:00',
+                        close: restaurant.closingTime || '22:00:00'
+                    }
                 }
             );
             
+            // ✅ DYNAMIC: Better slot information with overnight support
             const timeSlots = availableSlots.map(slot => ({
                 time: slot.time,
                 timeDisplay: slot.timeDisplay,
@@ -562,12 +800,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 tableName: slot.tableName,
                 tableCapacity: slot.tableCapacity.max,
                 canAccommodate: true,
-                tablesCount: 1,
-                message: `Table ${slot.tableName} available (seats up to ${slot.tableCapacity.max})`
+                tablesCount: slot.isCombined ? (slot.constituentTables?.length || 1) : 1,
+                isCombined: slot.isCombined || false,
+                message: slot.isCombined 
+                    ? `${slot.tableName} available (seats up to ${slot.tableCapacity.max})`
+                    : `Table ${slot.tableName} available (seats up to ${slot.tableCapacity.max})`,
+                slotType: (() => {
+                    const hour = parseInt(slot.time.split(':')[0]);
+                    if (isOvernight) {
+                        const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
+                        const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
+                        if (hour >= 0 && hour < closingHour) return 'early_morning';
+                        if (hour >= openingHour) return 'late_night';
+                        return 'day';
+                    }
+                    return 'standard';
+                })()
             }));
             
-            console.log(`[Routes] Found ${timeSlots.length} available time slots for ${restaurant.timezone}`);
-            res.json({ availableSlots: timeSlots });
+            console.log(`[Routes] 📊 Found ${timeSlots.length} available time slots for ${restaurant.timezone} ${isOvernight ? '(overnight operation)' : '(standard operation)'}`);
+            
+            // ✅ DYNAMIC: Enhanced debug information for overnight operations
+            if (isOvernight && timeSlots.length > 0) {
+                const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
+                const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
+                
+                const earlyMorning = timeSlots.filter(s => s.slotType === 'early_morning').length;
+                const day = timeSlots.filter(s => s.slotType === 'day').length;
+                const lateNight = timeSlots.filter(s => s.slotType === 'late_night').length;
+                
+                console.log(`[Routes] 🌙 Overnight slot distribution: Early Morning (00:00-${closingHour.toString().padStart(2,'0')}:00): ${earlyMorning}, Day (${closingHour.toString().padStart(2,'0')}:00-${openingHour.toString().padStart(2,'0')}:00): ${day}, Late Night (${openingHour.toString().padStart(2,'0')}:00-24:00): ${lateNight}`);
+            }
+            
+            // ✅ DYNAMIC: Comprehensive response with debug info
+            res.json({ 
+                availableSlots: timeSlots,
+                isOvernightOperation: isOvernight,
+                operatingHours: {
+                    opening: restaurant.openingTime,
+                    closing: restaurant.closingTime,
+                    totalHours: operatingHours
+                },
+                timezone: restaurant.timezone,
+                totalSlotsGenerated: timeSlots.length,
+                maxSlotsRequested: maxResults,
+                slotInterval: 30,
+                reservationDuration: restaurant.avgReservationDuration || 120,
+                debugInfo: {
+                    openingTime: restaurant.openingTime,
+                    closingTime: restaurant.closingTime,
+                    isOvernight: isOvernight,
+                    avgDuration: restaurant.avgReservationDuration || 120,
+                    requestedDate: date,
+                    requestedGuests: guests,
+                    operatingHours: operatingHours,
+                    calculatedMaxResults: maxResults,
+                    actualSlotsReturned: timeSlots.length
+                }
+            });
         } catch (error) {
             console.error('❌ [Available Times] Error:', error);
             next(error);
@@ -582,12 +872,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
-            // ✅ FIXED: Pass the restaurant's timezone when filtering for upcoming reservations
             const filters = {
                 date: req.query.date as string,
                 status: req.query.status ? (req.query.status as string).split(',') : undefined,
                 upcoming: req.query.upcoming === 'true',
-                timezone: restaurant.timezone, // Always include the timezone
+                timezone: restaurant.timezone,
             };
             const reservationsData = await storage.getReservations(restaurant.id, filters);
             res.json(reservationsData);
@@ -605,7 +894,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             const reservationId = parseInt(req.params.id);
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) { // Corrected check
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
             res.json(reservation);
@@ -614,10 +903,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ DYNAMIC: Reservation creation with UTC timestamp support
     app.post("/api/reservations", isAuthenticated, async (req, res, next) => {
-        console.log('🔥 RESERVATION ENDPOINT HIT (POST /api/reservations)!');
         try {
-            console.log('Received reservation request body:', req.body);
             const user = req.user as any;
             const restaurant = await storage.getRestaurantByUserId(user.id);
             if (!restaurant) {
@@ -627,6 +915,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!guestName || !guestPhone || !date || !time || !numGuests) {
                 return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
             }
+            
             let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone);
             if (!guest) {
                 guest = await storage.createGuest({
@@ -639,13 +928,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Guest information processing failed." });
             }
 
+            // ✅ DYNAMIC: Convert date/time to UTC timestamp before booking
+            const restaurantTimezone = req.body.timezone || restaurant.timezone;
+            
+            let localDateTime: DateTime;
+            let reservation_utc: string;
+            
+            try {
+                localDateTime = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone });
+                if (!localDateTime.isValid) {
+                    throw new Error(`Invalid date/time combination: ${date}T${time} in timezone ${restaurantTimezone}`);
+                }
+                
+                reservation_utc = localDateTime.toUTC().toISO();
+                if (!reservation_utc) {
+                    throw new Error('Failed to convert to UTC timestamp');
+                }
+                
+                console.log(`📅 [Reservation] Converting ${date}T${time} (${restaurantTimezone}) -> ${reservation_utc} (UTC)`);
+            } catch (conversionError) {
+                console.error('❌ [Reservation] DateTime conversion failed:', conversionError);
+                return res.status(400).json({ 
+                    message: "Invalid date/time format or timezone", 
+                    details: conversionError instanceof Error ? conversionError.message : 'Unknown conversion error' 
+                });
+            }
+
             try {
                 const bookingResult = await createReservation({
                     restaurantId: restaurant.id,
                     guestId: guest.id,
-                    date: date,
-                    time: time,
+                    reservation_utc: reservation_utc,
                     guests: parseInt(numGuests as string),
+                    timezone: restaurantTimezone,
                     comments: req.body.comments || '',
                     source: req.body.source || 'manual',
                     booking_guest_name: guestName,
@@ -689,14 +1004,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     });
                 }
 
-                CacheInvalidation.onReservationTimeRangeChange(
+                CacheInvalidation.onReservationUtcChange(
                     restaurant.id,
-                    date,
-                    bookingResult.reservation.time,
+                    bookingResult.reservation.reservation_utc,
+                    restaurantTimezone,
                     bookingResult.reservation.duration || 120
                 );
 
-                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with granular cache invalidation`);
+                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with UTC-based cache invalidation`);
 
                 return res.status(201).json({
                     ...bookingResult.reservation,
@@ -783,18 +1098,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const existingReservation = existingResult.reservation;
             const validatedData = insertReservationSchema.partial().parse(req.body);
 
-            CacheInvalidation.onReservationTimeRangeChange(
+            CacheInvalidation.onReservationUtcChange(
                 restaurant.id,
-                existingReservation.date,
-                existingReservation.time,
+                existingReservation.reservation_utc,
+                restaurant.timezone,
                 existingReservation.duration || 120
             );
 
-            if (validatedData.date && validatedData.date !== existingReservation.date) {
-                CacheInvalidation.onReservationTimeRangeChange(
+            if (validatedData.date && validatedData.time) {
+                const newLocalDateTime = DateTime.fromISO(`${validatedData.date}T${validatedData.time}`, { zone: restaurant.timezone });
+                validatedData.reservation_utc = newLocalDateTime.toUTC().toISO();
+                
+                CacheInvalidation.onReservationUtcChange(
                     restaurant.id,
-                    validatedData.date,
-                    validatedData.time || existingReservation.time,
+                    validatedData.reservation_utc,
+                    restaurant.timezone,
                     validatedData.duration || existingReservation.duration || 120
                 );
             }
@@ -828,10 +1146,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             await cancelReservation(reservationId, restaurant.languages?.[0] || 'en');
 
-            CacheInvalidation.onReservationTimeRangeChange(
+            CacheInvalidation.onReservationUtcChange(
                 restaurant.id,
-                existingReservation.date,
-                existingReservation.time,
+                existingReservation.reservation_utc,
+                restaurant.timezone,
                 existingReservation.duration || 120
             );
 
@@ -850,7 +1168,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!restaurant) {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
-            // ✅ FIXED: Pass the restaurant's timezone to get correct daily stats
             const stats = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
             res.json(stats);
         } catch (error) {
@@ -866,7 +1183,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
             const hours = parseInt(req.query.hours as string) || 3;
-            // ✅ FIXED: Pass the restaurant's timezone to get correct upcoming reservations
             const upcoming = await storage.getUpcomingReservations(restaurant.id, restaurant.timezone, hours);
             res.json(upcoming);
         } catch (error) {
@@ -1119,7 +1435,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             console.log(`🔍 [DEBUG] Starting data consistency check for restaurant ${restaurant.id}`);
 
-            // ✅ FIXED: Pass restaurant timezone to debug routes
             const dashboardReservations = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
             const allReservations = await storage.getReservations(restaurant.id, { timezone: restaurant.timezone });
             const todayReservations = await storage.getReservations(restaurant.id, { date: new Date().toISOString().split('T')[0], timezone: restaurant.timezone });
@@ -1128,14 +1443,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const directSqlResult = await db.select().from(reservations).where(eq(reservations.restaurantId, restaurant.id)).orderBy(desc(reservations.createdAt));
             const cacheStats = cache.getStats();
 
+            const tables = await storage.getTables(restaurant.id);
+
             return res.json({
                 restaurantId: restaurant.id,
+                restaurantTimezone: restaurant.timezone,
                 todayDate: new Date().toISOString().split('T')[0],
                 dashboardStats: dashboardReservations,
                 allReservationsCount: allReservations.length,
                 todayReservationsCount: todayReservations.length,
                 upcomingReservationsCount: upcomingReservations.length,
                 directSqlCount: directSqlResult.length,
+                tablesCount: tables.length,
+                tables: tables.map(t => ({ id: t.id, name: t.name, status: t.status })),
                 directSqlReservations: directSqlResult,
                 allReservationsSample: allReservations.slice(0, 3),
                 todayReservationsSample: todayReservations.slice(0, 3),

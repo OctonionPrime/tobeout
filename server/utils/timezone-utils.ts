@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ✅ Enhanced Timezone Utilities using Luxon
  * 
  * FEATURES:
@@ -8,6 +8,7 @@
  * ✅ BACKWARD COMPATIBLE: Drop-in replacements for Moscow functions
  * ✅ PERFORMANCE: Cached timezone data for speed
  * ✅ UI-FRIENDLY: Searchable labels with offsets and city names
+ * ✅ OVERNIGHT OPERATIONS: Support for restaurants that close after midnight
  */
 
 import { DateTime } from 'luxon';
@@ -29,6 +30,143 @@ export interface TimezoneOption {
 export interface TimezoneGroup {
     region: string;
     timezones: TimezoneOption[];
+}
+
+// ================================
+// OVERNIGHT OPERATIONS UTILITIES
+// ================================
+
+/**
+ * Helper function to parse time string to minutes
+ */
+function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
+    if (!timeStr) return null;
+    const parts = timeStr.split(':');
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10) || 0;
+
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return null;
+    }
+    return hours * 60 + minutes;
+}
+
+/**
+ * ✅ NEW: Check if restaurant operates overnight (closing time < opening time)
+ * This detects when a restaurant closes after midnight (e.g., 10:00 AM to 3:00 AM)
+ */
+export function isOvernightOperation(openingTime: string, closingTime: string): boolean {
+    const openingMinutes = parseTimeToMinutes(openingTime);
+    const closingMinutes = parseTimeToMinutes(closingTime);
+    
+    if (openingMinutes === null || closingMinutes === null) {
+        return false;
+    }
+    
+    return closingMinutes < openingMinutes;
+}
+
+/**
+ * ✅ NEW: Check if current time is within overnight operating hours
+ * Handles restaurants that stay open past midnight
+ */
+export function isRestaurantOpenOvernight(
+    restaurantTimezone: string,
+    openingTime: string, // "22:00"
+    closingTime: string  // "03:00" (next day)
+): boolean {
+    const now = getRestaurantDateTime(restaurantTimezone);
+    const currentMinutes = now.hour * 60 + now.minute;
+    const openingMinutes = parseTimeToMinutes(openingTime);
+    const closingMinutes = parseTimeToMinutes(closingTime);
+    
+    if (openingMinutes === null || closingMinutes === null) {
+        return false;
+    }
+    
+    if (closingMinutes < openingMinutes) {
+        // Overnight operation: open if after opening time OR before closing time
+        return currentMinutes >= openingMinutes || currentMinutes < closingMinutes;
+    } else {
+        // Standard operation: open if between opening and closing
+        return currentMinutes >= openingMinutes && currentMinutes < closingMinutes;
+    }
+}
+
+/**
+ * ✅ NEW: Get operating status with overnight support
+ */
+export function getRestaurantOperatingStatus(
+    restaurantTimezone: string,
+    openingTime: string,
+    closingTime: string
+): {
+    isOpen: boolean;
+    isOvernightOperation: boolean;
+    nextOpeningTime?: Date;
+    minutesUntilClose?: number;
+    minutesUntilOpen?: number;
+} {
+    const isOvernight = isOvernightOperation(openingTime, closingTime);
+    const isOpen = isRestaurantOpenOvernight(restaurantTimezone, openingTime, closingTime);
+    
+    const now = getRestaurantDateTime(restaurantTimezone);
+    const currentMinutes = now.hour * 60 + now.minute;
+    const openingMinutes = parseTimeToMinutes(openingTime);
+    const closingMinutes = parseTimeToMinutes(closingTime);
+    
+    let minutesUntilClose: number | undefined;
+    let minutesUntilOpen: number | undefined;
+    let nextOpeningTime: Date | undefined;
+    
+    if (openingMinutes !== null && closingMinutes !== null) {
+        if (isOpen) {
+            if (isOvernight) {
+                // Calculate minutes until closing (may be next day)
+                if (currentMinutes >= openingMinutes) {
+                    // Currently in evening hours, closes next day
+                    minutesUntilClose = (24 * 60) + closingMinutes - currentMinutes;
+                } else {
+                    // Currently in early morning hours
+                    minutesUntilClose = closingMinutes - currentMinutes;
+                }
+            } else {
+                // Standard operation
+                minutesUntilClose = closingMinutes - currentMinutes;
+            }
+        } else {
+            // Restaurant is closed, calculate when it opens next
+            if (isOvernight) {
+                if (currentMinutes >= closingMinutes && currentMinutes < openingMinutes) {
+                    // Closed period during the day
+                    minutesUntilOpen = openingMinutes - currentMinutes;
+                } else {
+                    // Should not happen if logic is correct
+                    minutesUntilOpen = openingMinutes - currentMinutes;
+                }
+            } else {
+                // Standard operation
+                if (currentMinutes < openingMinutes) {
+                    minutesUntilOpen = openingMinutes - currentMinutes;
+                } else {
+                    // Opens tomorrow
+                    minutesUntilOpen = (24 * 60) + openingMinutes - currentMinutes;
+                }
+            }
+            
+            if (minutesUntilOpen !== undefined) {
+                nextOpeningTime = now.plus({ minutes: minutesUntilOpen }).toJSDate();
+            }
+        }
+    }
+    
+    return {
+        isOpen,
+        isOvernightOperation: isOvernight,
+        nextOpeningTime,
+        minutesUntilClose,
+        minutesUntilOpen
+    };
 }
 
 // ================================
@@ -321,52 +459,31 @@ export function getTimezoneDisplayName(timezone: string, locale: string = 'en'):
 }
 
 /**
- * Check if a restaurant is currently open (SIMPLE and RELIABLE)
+ * ✅ ENHANCED: Check if a restaurant is currently open with overnight support
  */
 export function isRestaurantOpen(
     restaurantTimezone: string,
     openingTime: string, // "10:00"
-    closingTime: string  // "23:00"
+    closingTime: string  // "23:00" or "03:00" for overnight
 ): boolean {
-    const now = getRestaurantDateTime(restaurantTimezone);
-    const openingHour = parseInt(openingTime.split(':')[0]);
-    const closingHour = parseInt(closingTime.split(':')[0]);
-
-    // Handle cases where closing time is next day (e.g., opens 22:00, closes 02:00)
-    if (closingHour < openingHour) {
-        // Restaurant closes after midnight
-        return now.hour >= openingHour || now.hour < closingHour;
-    } else {
-        // Normal operating hours within same day
-        return now.hour >= openingHour && now.hour < closingHour;
-    }
+    return isRestaurantOpenOvernight(restaurantTimezone, openingTime, closingTime);
 }
 
 /**
- * Get the next opening time for a restaurant
+ * ✅ ENHANCED: Get the next opening time for a restaurant with overnight support
  */
 export function getNextOpeningTime(
     restaurantTimezone: string,
     openingTime: string,
     closingTime: string
 ): Date {
-    const now = getRestaurantDateTime(restaurantTimezone);
-
-    if (isRestaurantOpen(restaurantTimezone, openingTime, closingTime)) {
-        return now.toJSDate(); // Already open
+    const operatingStatus = getRestaurantOperatingStatus(restaurantTimezone, openingTime, closingTime);
+    
+    if (operatingStatus.isOpen) {
+        return getRestaurantDateTime(restaurantTimezone).toJSDate(); // Already open
     }
 
-    const [openingHour, openingMinute = 0] = openingTime.split(':').map(Number);
-
-    // Try today's opening time
-    const todayOpening = now.set({ hour: openingHour, minute: openingMinute, second: 0 });
-    if (todayOpening > now) {
-        return todayOpening.toJSDate();
-    }
-
-    // Try tomorrow's opening time
-    const tomorrowOpening = todayOpening.plus({ days: 1 });
-    return tomorrowOpening.toJSDate();
+    return operatingStatus.nextOpeningTime || getRestaurantDateTime(restaurantTimezone).plus({ days: 1 }).toJSDate();
 }
 
 /**

@@ -130,16 +130,16 @@ export const guestsRelations = relations(guests, ({ many }) => ({
   reservations: many(reservations),
 }));
 
-// Reservations table
+// ✅ FIXED: Reservations table with UTC timestamp
 export const reservations = pgTable("reservations", {
   id: serial("id").primaryKey(),
   restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
   guestId: integer("guest_id").references(() => guests.id).notNull(),
   tableId: integer("table_id").references(() => tables.id),
   timeslotId: integer("timeslot_id").references(() => timeslots.id),
-  date: date("date").notNull(),
-  time: time("time").notNull(),
-  duration: integer("duration").default(120), // ✅ FIXED: Changed from 90 to 120 minutes
+  // ✅ THE FIX: A single, unambiguous, timezone-aware timestamp stored in UTC
+  reservation_utc: timestamp("reservation_utc", { withTimezone: true, mode: 'string' }).notNull(),
+  duration: integer("duration").default(120),
   guests: integer("guests").notNull(),
   status: reservationStatusEnum("status").default('created'),
   // New field to store the name specifically used for this booking, if different from guest's profile
@@ -228,10 +228,14 @@ export const insertRestaurantSchema = createInsertSchema(restaurants, {
 export const insertTableSchema = createInsertSchema(tables).omit({ id: true, createdAt: true });
 export const insertTimeslotSchema = createInsertSchema(timeslots).omit({ id: true, createdAt: true });
 export const insertGuestSchema = createInsertSchema(guests).omit({ id: true, createdAt: true });
-// Ensure new field is optional in insert schema
+
+// ✅ FIXED: Updated insert schema for reservations
 export const insertReservationSchema = createInsertSchema(reservations, {
-  booking_guest_name: z.string().optional().nullable(), // Make it optional and nullable
+  booking_guest_name: z.string().optional().nullable(),
+  // ✅ Add validation for our new, required field
+  reservation_utc: z.string().datetime({ message: "Invalid ISO 8601 UTC timestamp format" }),
 }).omit({ id: true, createdAt: true });
+
 export const insertIntegrationSettingSchema = createInsertSchema(integrationSettings).omit({ id: true, createdAt: true });
 export const insertAiActivitySchema = createInsertSchema(aiActivities).omit({ id: true, createdAt: true });
 

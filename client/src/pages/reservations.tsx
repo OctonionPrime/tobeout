@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { DateTime } from 'luxon'; // ✅ CRITICAL: Luxon for proper timezone handling
+import { DateTime } from 'luxon';
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
@@ -16,22 +16,73 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { 
-    Search, Plus, Calendar as CalendarIcon, Edit, Phone, Mail, 
+import {
+    Search, Plus, Calendar as CalendarIcon, Edit, Phone, Mail,
     UserCheck, XCircle, Users, MoreHorizontal, AlertCircle,
     Clock, RefreshCw
 } from "lucide-react";
 import { RollingCalendar } from "@/components/ui/rolling-calendar";
+import { useRestaurantTimezone } from "@/components/layout/DashboardLayout";
 
-const restaurantId = 1;
+// ✅ Helper function to safely parse PostgreSQL timestamps
+const parsePostgresTimestamp = (timestamp: string): DateTime | null => {
+    if (!timestamp) return null;
+    
+    try {
+        // Handle PostgreSQL format: "2025-06-23 10:00:00+00"
+        if (timestamp.includes(' ') && !timestamp.includes('T')) {
+            const isoFormat = timestamp.replace(' ', 'T').replace('+00', 'Z');
+            const parsed = DateTime.fromISO(isoFormat, { zone: 'utc' });
+            if (parsed.isValid) return parsed;
+        }
+        
+        // Handle standard ISO format: "2025-06-23T10:00:00.000Z"
+        const parsed = DateTime.fromISO(timestamp, { zone: 'utc' });
+        if (parsed.isValid) return parsed;
+        
+        console.warn('[Timestamp Parser] Could not parse timestamp:', timestamp);
+        return null;
+    } catch (error) {
+        console.warn('[Timestamp Parser] Error parsing timestamp:', timestamp, error);
+        return null;
+    }
+};
 
-// ✅ ENHANCED: Timezone prop interface
-interface ReservationsProps {
-    restaurantTimezone?: string;
-}
+// ✅ Safe data extraction helper
+const extractReservationData = (reservationData: any) => {
+    // Handle both nested {reservation: {...}, guest: {...}} and flat structures
+    const reservation = reservationData.reservation || reservationData;
+    const guest = reservationData.guest || reservation.guest || {};
+    const table = reservationData.table || reservation.table || {};
+    
+    return {
+        reservation: {
+            ...reservation,
+            // Normalize status field
+            status: reservation.status || 'unknown',
+            // Ensure we have a reservation_utc field
+            reservation_utc: reservation.reservation_utc || reservation.dateTime || reservation.timestamp
+        },
+        guest: {
+            ...guest,
+            // Normalize guest name from multiple possible sources
+            name: guest.name || reservation.booking_guest_name || reservationData.guestName || 'Guest'
+        },
+        table
+    };
+};
 
-export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: ReservationsProps) {
-    // ✅ ENHANCED STATE MANAGEMENT
+export default function Reservations() {
+    // ✅ Get timezone and restaurant from context
+    const { restaurantTimezone, restaurant, refreshRestaurant } = useRestaurantTimezone();
+    const restaurantId = restaurant?.id || 1;
+    
+    // ✅ CRITICAL FIX: Make restaurantNow reactive to timezone changes
+    const restaurantNow = useMemo(() => {
+        return DateTime.now().setZone(restaurantTimezone);
+    }, [restaurantTimezone]); // ✅ Re-calculate when timezone changes
+    
+    // ✅ Start with "all" tab by default to see everything
     const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
     const [dateRangeFilter, setDateRangeFilter] = useState<{
         type: 'default' | 'today' | 'thisWeek' | 'nextWeek' | 'custom';
@@ -44,37 +95,41 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
     const [selectedReservationId, setSelectedReservationId] = useState<number | undefined>(undefined);
     const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
-    
-    // ✅ SMART RESTAURANT TABS STATE
-    const [activeSmartTab, setActiveSmartTab] = useState("attention");
+    const [activeSmartTab, setActiveSmartTab] = useState("all");
 
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
-    // ✅ SMART RESTAURANT TABS CONFIGURATION
+    // ✅ Smart tabs configuration
     const smartTabs = [
         {
+            id: "all",
+            label: "📋 All Reservations",
+            description: "Complete list",
+            priority: "low" as const
+        },
+        {
             id: "attention",
-            label: "⚠️ Needs Attention", 
+            label: "⚠️ Needs Attention",
             description: "AI bookings + Late arrivals",
             priority: "critical" as const
         },
         {
-            id: "active", 
-            label: "🔥 Dining Now",
+            id: "active",
+            label: "🔥 Dining Now", 
             description: "Currently at tables",
             priority: "high" as const
         },
         {
             id: "arriving",
-            label: "⏰ Arriving Soon", 
+            label: "⏰ Arriving Soon",
             description: "Next 2 hours",
             priority: "medium" as const
         },
         {
             id: "completed",
             label: "✅ Done Today",
-            description: "Finished dining", 
+            description: "Finished dining",
             priority: "low" as const
         },
         {
@@ -85,169 +140,182 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         }
     ];
 
-    // ✅ FIXED: Use Luxon for reliable timezone handling
     const getCurrentWeekRange = () => {
-        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
-        const startOfWeek = restaurantNow.startOf('week'); // Monday
-        const endOfWeek = restaurantNow.endOf('week'); // Sunday
-        return { 
-            start: startOfWeek.toJSDate(), 
-            end: endOfWeek.toJSDate() 
+        const startOfWeek = restaurantNow.startOf('week');
+        const endOfWeek = restaurantNow.endOf('week');
+        return {
+            start: startOfWeek.toJSDate(),
+            end: endOfWeek.toJSDate()
         };
     };
 
     const getNextWeekRange = () => {
-        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
         const nextWeekStart = restaurantNow.plus({ weeks: 1 }).startOf('week');
         const nextWeekEnd = restaurantNow.plus({ weeks: 1 }).endOf('week');
-        return { 
-            start: nextWeekStart.toJSDate(), 
-            end: nextWeekEnd.toJSDate() 
+        return {
+            start: nextWeekStart.toJSDate(),
+            end: nextWeekEnd.toJSDate()
         };
     };
 
-    // ✅ FIXED: Data fetching with timezone-aware query key
+    // ✅ Restaurant reservations query with timezone dependency
     const { data: reservations, isLoading, error } = useQuery({
-        // ✅ CRITICAL FIX: Include timezone in query key for proper cache invalidation
-        queryKey: ["/api/reservations", restaurantId, restaurantTimezone],
+        queryKey: ["/api/reservations", restaurantId, restaurantTimezone, dateRangeFilter, statusFilter],
         queryFn: async () => {
             try {
-                // ✅ FIXED: Pass timezone to backend for proper filtering
-                const response = await fetch(`/api/reservations?timezone=${encodeURIComponent(restaurantTimezone)}`, { 
-                    credentials: "include" 
+                const params = new URLSearchParams({
+                    timezone: restaurantTimezone,
+                    restaurantId: restaurantId.toString()
                 });
+                
+                if (dateRangeFilter.type === 'today') {
+                    params.append('date', restaurantNow.toISODate()!);
+                }
+                
+                const url = `/api/reservations?${params.toString()}`;
+                
+                const response = await fetch(url, {
+                    credentials: "include"
+                });
+                
                 if (!response.ok) {
                     const errorText = await response.text();
                     throw new Error(`Failed to fetch reservations: ${response.status} ${errorText}`);
                 }
+                
                 const data = await response.json();
-                console.log("📋 Fetched reservations:", data);
                 return data;
             } catch (error) {
-                console.error("❌ Error fetching reservations:", error);
+                console.error("❌ [API Query] Error fetching reservations:", error);
                 throw error;
             }
         },
         refetchInterval: 30000,
         refetchOnWindowFocus: true,
+        enabled: !!restaurantId && !!restaurantTimezone,
+        staleTime: 0,
+        cacheTime: 1000 * 60 * 5,
     });
 
-    const { data: restaurant } = useQuery({
-        queryKey: ["/api/restaurants/profile"],
-        queryFn: async () => {
-            const response = await fetch("/api/restaurants/profile", { credentials: "include" });
-            if (!response.ok) throw new Error("Failed to fetch restaurant");
-            return response.json();
-        },
-        staleTime: 10 * 60 * 1000, // 10 minutes
-    });
+    // ✅ Refresh reservations when restaurant timezone changes
+    useEffect(() => {
+        queryClient.invalidateQueries({ queryKey: ["/api/reservations"] });
+    }, [restaurant?.timezone, queryClient]);
 
-    // ✅ COMPLETELY REWRITTEN: Smart Tab filtering logic with Luxon (CORRECT implementation)
+    // ✅ Enhanced smart tab filtering with reactive timezone
     const getSmartTabReservations = (tabId: string, allReservations: any[]) => {
-        // ✅ CORRECT: Get "now" in restaurant timezone using Luxon
-        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
-        const todayDateString = restaurantNow.toISODate(); // e.g., '2025-06-22'
+        if (!allReservations || allReservations.length === 0) {
+            return [];
+        }
 
-        if (!allReservations) return [];
+        // ✅ For "all" tab, show EVERYTHING except canceled
+        if (tabId === "all") {
+            const filtered = allReservations.filter((reservationData) => {
+                const { reservation } = extractReservationData(reservationData);
+                return reservation.status !== 'canceled';
+            });
+            
+            return filtered;
+        }
 
-        return allReservations.filter(reservationData => {
-            const reservation = reservationData.reservation || reservationData;
+        // ✅ For other tabs, apply smart filtering with reactive timezone
+        return allReservations.filter((reservationData) => {
+            const { reservation } = extractReservationData(reservationData);
 
-            // ✅ CORRECT: Create reservation datetime in restaurant timezone
-            const reservationDateTime = DateTime.fromISO(
-                `${reservation.date}T${reservation.time}`, 
-                { zone: restaurantTimezone }
-            );
-
-            // Safety check for invalid dates
-            if (!reservationDateTime.isValid) {
-                console.warn("Invalid reservation date/time:", reservation.date, reservation.time);
-                return false;
+            // ✅ SAFE timestamp parsing with fallback
+            const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+            if (!reservationDateTime) {
+                return true; // ✅ INCLUDE instead of EXCLUDE invalid timestamps
             }
 
+            const localDateTime = reservationDateTime.setZone(restaurantTimezone);
             const duration = reservation.duration || 120;
-            const endDateTime = reservationDateTime.plus({ minutes: duration });
+            const endDateTime = localDateTime.plus({ minutes: duration });
 
-            // ✅ CORRECT: All comparisons are now timezone-aware
             switch (tabId) {
                 case "attention":
-                    const isLate = reservationDateTime < restaurantNow && 
-                                   restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
-                    return (
+                    const isLate = localDateTime < restaurantNow &&
+                        restaurantNow.diff(localDateTime, 'minutes').minutes > 15;
+                    const needsAttention = (
                         reservation.status === 'created' ||
                         (reservation.status === 'confirmed' && isLate && endDateTime > restaurantNow)
                     );
-                
+                    return needsAttention;
+
                 case "active":
-                    return (
+                    const isActive = (
                         reservation.status === 'confirmed' &&
-                        reservationDateTime <= restaurantNow && 
-                        endDateTime > restaurantNow 
+                        localDateTime <= restaurantNow &&
+                        endDateTime > restaurantNow
                     );
-                
+                    return isActive;
+
                 case "arriving":
-                    return (
+                    const isArriving = (
                         reservation.status === 'confirmed' &&
-                        reservationDateTime > restaurantNow && 
-                        reservationDateTime <= restaurantNow.plus({ hours: 2 })
+                        localDateTime > restaurantNow &&
+                        localDateTime <= restaurantNow.plus({ hours: 2 })
                     );
-                
+                    return isArriving;
+
                 case "completed":
-                    return (
+                    const isCompleted = (
                         reservation.status === 'completed' ||
                         (reservation.status === 'confirmed' && endDateTime < restaurantNow)
                     );
-                
+                    return isCompleted;
+
                 case "upcoming":
-                    // ✅ CORRECT: Use Luxon's date-only comparison for accuracy
-                    return (
+                    const isUpcoming = (
                         reservation.status === 'confirmed' &&
-                        DateTime.fromISO(reservation.date).startOf('day') > restaurantNow.startOf('day')
+                        localDateTime.startOf('day') > restaurantNow.startOf('day')
                     );
-                
+                    return isUpcoming;
+
                 default:
                     return true;
             }
         });
     };
 
-    // ✅ FIXED: Smart action buttons logic with Luxon
     const getSmartActions = (reservation: any, guest: any) => {
         const status = reservation.status;
-        const reservationDate = reservation.date;
-        const reservationTime = reservation.time;
         
-        // ✅ CORRECT: Use Luxon for all timezone calculations
-        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
-        const todayDateString = restaurantNow.toISODate();
-        
-        const reservationDateTime = DateTime.fromISO(
-            `${reservationDate}T${reservationTime}`, 
-            { zone: restaurantTimezone }
-        );
-        
-        if (!reservationDateTime.isValid) {
-            console.warn("Invalid reservation date/time for actions:", reservationDate, reservationTime);
-            return [];
+        // ✅ Safe timestamp parsing
+        const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+        if (!reservationDateTime) {
+            // Return basic actions even if timestamp is invalid
+            return [
+                {
+                    type: "edit",
+                    label: "Edit",
+                    icon: Edit,
+                    action: () => {
+                        setSelectedReservationId(reservation.id);
+                        setIsReservationModalOpen(true);
+                    },
+                    variant: "outline" as const,
+                    priority: "medium" as const
+                }
+            ];
         }
-        
+
+        const localDateTime = reservationDateTime.setZone(restaurantTimezone);
         const duration = reservation.duration || 120;
-        const endDateTime = reservationDateTime.plus({ minutes: duration });
-        
-        const isToday = reservationDate === todayDateString;
-        const isPast = DateTime.fromISO(reservationDate) < restaurantNow.startOf('day');
-        const isFuture = DateTime.fromISO(reservationDate) > restaurantNow.startOf('day');
-        
-        // Time-based status for today's reservations
-        const hasArrived = isToday && reservationDateTime <= restaurantNow;
-        const isLate = isToday && hasArrived && restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
+        const endDateTime = localDateTime.plus({ minutes: duration });
+
+        const isToday = localDateTime.hasSame(restaurantNow, 'day');
+        const isPast = localDateTime.startOf('day') < restaurantNow.startOf('day');
+        const isFuture = localDateTime.startOf('day') > restaurantNow.startOf('day');
+
+        const hasArrived = isToday && localDateTime <= restaurantNow;
+        const isLate = isToday && hasArrived && restaurantNow.diff(localDateTime, 'minutes').minutes > 15;
         const isDining = isToday && hasArrived && endDateTime > restaurantNow;
         const hasFinished = isToday && endDateTime < restaurantNow;
-        const isArriving = isToday && !hasArrived && reservationDateTime <= restaurantNow.plus({ hours: 2 });
+        const isArriving = isToday && !hasArrived && localDateTime <= restaurantNow.plus({ hours: 2 });
 
         const actions = [];
 
-        // ✅ CORE ACTIONS - Always available
         if (guest.phone) {
             actions.push({
                 type: "phone",
@@ -261,7 +329,7 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
 
         if (guest.email) {
             actions.push({
-                type: "email", 
+                type: "email",
                 label: "Email",
                 icon: Mail,
                 action: () => window.open(`mailto:${guest.email}`, '_self'),
@@ -282,9 +350,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
             priority: "medium" as const
         });
 
-        // ✅ WORKFLOW-SPECIFIC ACTIONS - Based on status and timing
-        
-        // AI Booking Confirmation (status = created)
         if (status === 'created') {
             actions.unshift({
                 type: "confirm",
@@ -297,10 +362,8 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
             });
         }
 
-        // Arrival Management (today's confirmed reservations)
         if (status === 'confirmed' && isToday) {
             if (!hasArrived && isArriving) {
-                // Arriving soon - prepare
                 actions.unshift({
                     type: "prepare",
                     label: "🍽️ Prepare Table",
@@ -311,7 +374,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                     className: "bg-blue-600 hover:bg-blue-700 text-white"
                 });
             } else if (hasArrived && !isDining) {
-                // Should have arrived - mark as arrived
                 actions.unshift({
                     type: "arrived",
                     label: isLate ? "⚠️ Mark Arrived (Late)" : "👋 Mark Arrived",
@@ -321,7 +383,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                     priority: "critical" as const
                 });
             } else if (isDining) {
-                // Currently dining - mark as completed
                 actions.unshift({
                     type: "complete",
                     label: "✅ Mark Completed",
@@ -334,8 +395,7 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                     className: "bg-green-600 hover:bg-green-700 text-white"
                 });
             }
-            
-            // Late arrival - option to mark as no-show
+
             if (isLate && !isDining) {
                 actions.push({
                     type: "noshow",
@@ -352,7 +412,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
             }
         }
 
-        // Future reservations (tomorrow+)
         if (status === 'confirmed' && isFuture) {
             actions.push({
                 type: "cancel",
@@ -365,7 +424,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
             });
         }
 
-        // Past reservations - limited actions
         if (isPast || hasFinished) {
             return actions.filter(action => ['phone', 'email', 'edit'].includes(action.type));
         }
@@ -373,21 +431,15 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         return actions;
     };
 
-    // ✅ SMART ACTION BUTTONS COMPONENT
     const SmartActionButtons = ({ reservation, guest }: { reservation: any, guest: any }) => {
         const actions = getSmartActions(reservation, guest);
-        
-        // Sort by priority: critical > high > medium > low
         const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
         const sortedActions = actions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
-        
-        // Show max 4 actions, prioritize by importance
         const visibleActions = sortedActions.slice(0, 4);
         const hiddenActions = sortedActions.slice(4);
-        
+
         return (
             <div className="flex items-center space-x-2">
-                {/* Primary actions */}
                 {visibleActions.map((action) => (
                     <Button
                         key={action.type}
@@ -401,8 +453,7 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                         <span className="sr-only">{action.label}</span>
                     </Button>
                 ))}
-                
-                {/* Overflow menu for additional actions */}
+
                 {hiddenActions.length > 0 && (
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -428,38 +479,27 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         );
     };
 
-    // ✅ FIXED: Smart Status Badge with Luxon
     const SmartStatusBadge = ({ reservation }: { reservation: any }) => {
         const status = reservation.status;
-        const reservationDate = reservation.date;
-        const reservationTime = reservation.time;
         
-        // ✅ CORRECT: Use Luxon for timezone calculations
-        const restaurantNow = DateTime.now().setZone(restaurantTimezone);
-        const todayDateString = restaurantNow.toISODate();
-        
-        const reservationDateTime = DateTime.fromISO(
-            `${reservationDate}T${reservationTime}`, 
-            { zone: restaurantTimezone }
-        );
-        
-        if (!reservationDateTime.isValid) {
+        // ✅ Safe timestamp parsing
+        const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+        if (!reservationDateTime) {
             return renderStatusBadge(status);
         }
-        
+
+        const localDateTime = reservationDateTime.setZone(restaurantTimezone);
         const duration = reservation.duration || 120;
-        const endDateTime = reservationDateTime.plus({ minutes: duration });
-        
-        const isToday = reservationDate === todayDateString;
-        const hasArrived = isToday && reservationDateTime <= restaurantNow;
-        const isLate = isToday && hasArrived && restaurantNow.diff(reservationDateTime, 'minutes').minutes > 15;
+        const endDateTime = localDateTime.plus({ minutes: duration });
+        const isToday = localDateTime.hasSame(restaurantNow, 'day');
+        const hasArrived = isToday && localDateTime <= restaurantNow;
+        const isLate = isToday && hasArrived && restaurantNow.diff(localDateTime, 'minutes').minutes > 15;
         const isDining = isToday && hasArrived && endDateTime > restaurantNow;
-        
-        // Enhanced status with context
+
         if (status === 'created') {
             return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">🤖 AI Booking</Badge>;
         }
-        
+
         if (status === 'confirmed' && isToday) {
             if (isDining) {
                 return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">🍽️ Dining Now</Badge>;
@@ -469,12 +509,10 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                 return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">👋 Arrived</Badge>;
             }
         }
-        
-        // Fall back to standard status badges
+
         return renderStatusBadge(status);
     };
 
-    // ✅ STANDARD STATUS BADGE FUNCTION
     const renderStatusBadge = (status: string) => {
         switch (status) {
             case 'confirmed':
@@ -490,7 +528,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         }
     };
 
-    // ✅ SMART TAB COMPONENT
     const SmartTabButton = ({ tab, isActive, count, onClick }: {
         tab: typeof smartTabs[0],
         isActive: boolean,
@@ -512,7 +549,7 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                 <div className="flex items-center justify-center gap-1 mb-1">
                     <span className="truncate text-sm font-medium">{tab.label}</span>
                     {count > 0 && (
-                        <Badge 
+                        <Badge
                             variant={isActive ? "secondary" : "outline"}
                             className="ml-1 text-xs px-1.5 min-w-[1.5rem] h-5"
                         >
@@ -527,50 +564,58 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         </Button>
     );
 
-    // ✅ FIXED: Use Luxon for all date calculations
-    const restaurantNow = DateTime.now().setZone(restaurantTimezone);
-    const todayDateString = restaurantNow.toISODate();
-
-    // Get smart tab filtered reservations
-    const smartFilteredReservations = reservations 
+    // ✅ Apply smart filtering with reactive timezone
+    const smartFilteredReservations = reservations
         ? getSmartTabReservations(activeSmartTab, reservations)
         : [];
 
-    // Apply additional filters (search, status, date) to smart filtered results
+    // ✅ Enhanced final filtering with reactive timezone
     const finalFilteredReservations = smartFilteredReservations.filter((reservationData: any) => {
-        const reservation = reservationData.reservation || reservationData;
-        const guest = reservationData.guest || reservation.guest || {};
-        
-        // Status filtering
+        const { reservation, guest } = extractReservationData(reservationData);
+
         let statusMatch = true;
         if (statusFilter !== "all") {
             statusMatch = reservation.status === statusFilter;
         }
 
-        // Date filtering
         let dateMatch = true;
         if (dateRangeFilter.type !== 'default') {
-            if (dateRangeFilter.type === 'today') {
-                dateMatch = reservation.date === todayDateString;
-            } else if (dateRangeFilter.type === 'thisWeek' || dateRangeFilter.type === 'nextWeek') {
-                if (dateRangeFilter.startDate && dateRangeFilter.endDate) {
-                    const startDateString = format(dateRangeFilter.startDate, 'yyyy-MM-dd');
-                    const endDateString = format(dateRangeFilter.endDate, 'yyyy-MM-dd');
-                    dateMatch = reservation.date >= startDateString && reservation.date <= endDateString;
+            const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+            
+            if (reservationDateTime) {
+                const localDateTime = reservationDateTime.setZone(restaurantTimezone);
+                
+                if (dateRangeFilter.type === 'today') {
+                    dateMatch = localDateTime.hasSame(restaurantNow, 'day');
+                } else if (dateRangeFilter.type === 'thisWeek' || dateRangeFilter.type === 'nextWeek') {
+                    if (dateRangeFilter.startDate && dateRangeFilter.endDate) {
+                        const startDate = DateTime.fromJSDate(dateRangeFilter.startDate);
+                        const endDate = DateTime.fromJSDate(dateRangeFilter.endDate);
+                        dateMatch = localDateTime >= startDate && localDateTime <= endDate;
+                    }
+                } else if (dateRangeFilter.type === 'custom' && selectedDate) {
+                    const selectedDateTime = DateTime.fromJSDate(selectedDate);
+                    dateMatch = localDateTime.hasSame(selectedDateTime, 'day');
                 }
-            } else if (dateRangeFilter.type === 'custom' && selectedDate) {
-                dateMatch = reservation.date === format(selectedDate, 'yyyy-MM-dd');
+            } else {
+                dateMatch = true;
             }
         } else if (selectedDate) {
-            dateMatch = reservation.date === format(selectedDate, 'yyyy-MM-dd');
+            const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+            if (reservationDateTime) {
+                const localDateTime = reservationDateTime.setZone(restaurantTimezone);
+                const selectedDateTime = DateTime.fromJSDate(selectedDate);
+                dateMatch = localDateTime.hasSame(selectedDateTime, 'day');
+            } else {
+                dateMatch = true;
+            }
         }
 
-        // Search filtering
         let searchMatch = true;
         if (searchQuery) {
             const searchLower = searchQuery.toLowerCase();
-            searchMatch = 
-                (reservationData.guestName || reservation.booking_guest_name || guest.name || '').toLowerCase().includes(searchLower) ||
+            searchMatch =
+                (guest.name || '').toLowerCase().includes(searchLower) ||
                 (guest.phone || reservation.phone || '').toLowerCase().includes(searchLower) ||
                 (reservation.comments || '').toLowerCase().includes(searchLower);
         }
@@ -578,19 +623,24 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         return statusMatch && dateMatch && searchMatch;
     });
 
-    // Calculate tab counts
+    // ✅ Tab counts calculation with reactive timezone
     const tabCounts = smartTabs.reduce((acc, tab) => {
-        acc[tab.id] = getSmartTabReservations(tab.id, reservations || []).length;
+        const count = getSmartTabReservations(tab.id, reservations || []).length;
+        acc[tab.id] = count;
         return acc;
     }, {} as Record<string, number>);
 
-    // Get today's statistics
+    // ✅ Today reservations calculation with reactive timezone
     const todayReservations = reservations ? reservations.filter((reservationData: any) => {
-        const reservation = reservationData.reservation || reservationData;
-        return reservation.date === todayDateString && reservation.status !== 'canceled';
+        const { reservation } = extractReservationData(reservationData);
+        const reservationDateTime = parsePostgresTimestamp(reservation.reservation_utc);
+        
+        if (!reservationDateTime) return false;
+        
+        const localDateTime = reservationDateTime.setZone(restaurantTimezone);
+        return localDateTime.hasSame(restaurantNow, 'day') && reservation.status !== 'canceled';
     }) : [];
 
-    // ✅ MUTATION HANDLERS
     const confirmReservationMutation = useMutation({
         mutationFn: async (id: number) => {
             const response = await apiRequest("PATCH", `/api/reservations/${id}`, {
@@ -650,14 +700,14 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
             const response = await apiRequest("PATCH", `/api/reservations/${reservationId}`, {
                 status: newStatus
             });
-            
+
             if (!response.ok) throw new Error('Failed to update status');
-            
+
             toast({
                 title: "Status Updated",
                 description: `Reservation marked as ${newStatus}`,
             });
-            
+
             queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
         } catch (error: any) {
             toast({
@@ -668,7 +718,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
         }
     };
 
-    // Handle loading and error states
     if (error) {
         return (
             <DashboardLayout>
@@ -687,15 +736,13 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
     return (
         <DashboardLayout>
             <div className="px-4 py-6 lg:px-8">
-                {/* ✅ FIXED: Header with Luxon for reliable time display */}
                 <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
                     <div>
                         <h1 className="text-2xl font-bold text-gray-900">Reservations Management</h1>
-                        <p className="mt-1 text-sm text-gray-500">
-                            {restaurant?.name || 'Restaurant'} Local Time: {restaurantNow.toFormat('ccc, LLL dd, yyyy \'at\' HH:mm')} ({restaurantTimezone})
-                        </p>
+                        {/* ✅ CRITICAL FIX: Remove duplicate timezone display - let DashboardLayout handle it */}
                         <p className="text-xs text-gray-400">
-                            Showing {finalFilteredReservations.length} reservations 
+                            Showing {finalFilteredReservations.length} reservations
+                            {reservations && ` (${reservations.length} total in system)`}
                             {statusFilter !== 'all' && ` • Status: ${statusFilter}`}
                             {dateRangeFilter.type !== 'default' && ` • ${dateRangeFilter.displayText}`}
                             {selectedDate && dateRangeFilter.type === 'default' && ` • ${format(selectedDate, 'MMM d, yyyy')}`}
@@ -706,18 +753,25 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                             <Plus className="mr-2 h-4 w-4" />
                             New Reservation
                         </Button>
+                        <Button 
+                            variant="outline" 
+                            onClick={() => {
+                                refreshRestaurant();
+                                queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
+                            }}
+                        >
+                            <RefreshCw className="h-4 w-4" />
+                        </Button>
                     </div>
                 </header>
 
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-                    {/* ✅ ENHANCED SIDEBAR FILTERS */}
                     <div className="lg:col-span-1">
                         <Card>
                             <CardHeader>
                                 <CardTitle>Filters</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-6">
-                                {/* ✅ SMART RESTAURANT TABS */}
                                 <div>
                                     <label className="text-sm font-medium text-gray-700 mb-3 block">Restaurant Workflow</label>
                                     <div className="grid grid-cols-1 gap-2">
@@ -731,8 +785,7 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                             />
                                         ))}
                                     </div>
-                                    
-                                    {/* Priority notifications */}
+
                                     {tabCounts.attention > 0 && activeSmartTab !== "attention" && (
                                         <Alert className="border-orange-200 bg-orange-50 mt-3">
                                             <AlertCircle className="h-4 w-4 text-orange-600" />
@@ -743,7 +796,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                     )}
                                 </div>
 
-                                {/* Status Filter */}
                                 <div>
                                     <label className="text-sm font-medium text-gray-700">Status</label>
                                     <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -760,11 +812,9 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                     </Select>
                                 </div>
 
-                                {/* Date Selection */}
                                 <div>
                                     <label className="text-sm font-medium text-gray-700">Date Selection</label>
                                     <div className="mt-2 space-y-3">
-                                        {/* Quick Selection Buttons */}
                                         <div className="flex flex-wrap gap-2">
                                             <Button
                                                 variant={dateRangeFilter.type === 'today' ? 'default' : 'outline'}
@@ -827,7 +877,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                             </Button>
                                         </div>
 
-                                        {/* Selected Date Display */}
                                         {(dateRangeFilter.type !== 'default' || selectedDate) && (
                                             <div className="flex items-center justify-between p-2 bg-blue-50 rounded-md">
                                                 <span className="text-sm text-blue-900">
@@ -849,7 +898,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                     </div>
                                 </div>
 
-                                {/* Search Filter */}
                                 <div>
                                     <label className="text-sm font-medium text-gray-700">Search</label>
                                     <div className="relative mt-2">
@@ -865,7 +913,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                             </CardContent>
                         </Card>
 
-                        {/* Today's Statistics */}
                         <Card className="mt-4">
                             <CardHeader>
                                 <CardTitle>Today's Overview</CardTitle>
@@ -879,13 +926,19 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                     <div className="flex justify-between text-sm">
                                         <span>Confirmed:</span>
                                         <span className="font-medium text-green-600">
-                                            {todayReservations.filter((r: any) => (r.reservation || r).status === 'confirmed').length}
+                                            {todayReservations.filter((r: any) => {
+                                                const { reservation } = extractReservationData(r);
+                                                return reservation.status === 'confirmed';
+                                            }).length}
                                         </span>
                                     </div>
                                     <div className="flex justify-between text-sm">
                                         <span>Pending:</span>
                                         <span className="font-medium text-yellow-600">
-                                            {todayReservations.filter((r: any) => (r.reservation || r).status === 'created').length}
+                                            {todayReservations.filter((r: any) => {
+                                                const { reservation } = extractReservationData(r);
+                                                return reservation.status === 'created';
+                                            }).length}
                                         </span>
                                     </div>
                                     <div className="flex justify-between text-sm">
@@ -899,13 +952,12 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                         </Card>
                     </div>
 
-                    {/* ✅ MAIN RESERVATION LIST */}
                     <div className="lg:col-span-3">
                         <Card>
                             <CardHeader>
                                 <div className="flex items-center justify-between">
                                     <CardTitle>
-                                        {smartTabs.find(t => t.id === activeSmartTab)?.label || 'Reservations'} 
+                                        {smartTabs.find(t => t.id === activeSmartTab)?.label || 'Reservations'}
                                         {finalFilteredReservations.length > 0 && (
                                             <Badge variant="outline" className="ml-2">
                                                 {finalFilteredReservations.length}
@@ -925,21 +977,34 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                 ) : finalFilteredReservations.length > 0 ? (
                                     <div className="space-y-4">
                                         {finalFilteredReservations.map((reservationData: any) => {
-                                            const reservation = reservationData.reservation || reservationData;
-                                            const guest = reservationData.guest || reservation.guest || {};
-                                            const table = reservationData.table || reservation.table || {};
-                                            
+                                            const { reservation, guest, table } = extractReservationData(reservationData);
+
+                                            // ✅ Safe time display with reactive restaurant timezone
+                                            const displayTime = (() => {
+                                                const dateTime = parsePostgresTimestamp(reservation.reservation_utc);
+                                                if (dateTime) {
+                                                    const local = dateTime.setZone(restaurantTimezone);
+                                                    return {
+                                                        time: local.toFormat('HH:mm'),
+                                                        date: local.toFormat('MMM d, yyyy')
+                                                    };
+                                                }
+                                                return {
+                                                    time: 'Invalid time',
+                                                    date: 'Invalid date'
+                                                };
+                                            })();
+
                                             return (
                                                 <div key={reservation.id} className="rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow">
                                                     <div className="flex items-center justify-between">
-                                                        {/* Guest Info */}
                                                         <div className="flex items-center space-x-4">
                                                             <div className="h-10 w-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-700">
                                                                 <UserCheck className="h-5 w-5" />
                                                             </div>
                                                             <div>
                                                                 <h3 className="font-medium text-gray-900">
-                                                                    {reservationData.guestName || reservation.booking_guest_name || guest.name || 'Guest'}
+                                                                    {guest.name}
                                                                 </h3>
                                                                 <p className="text-sm text-gray-500">
                                                                     {guest.phone || 'No phone provided'}
@@ -947,15 +1012,14 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                                             </div>
                                                         </div>
 
-                                                        {/* Reservation Details */}
                                                         <div className="flex items-center space-x-6">
                                                             <div className="text-center">
                                                                 <p className="text-sm font-medium text-gray-900 flex items-center gap-1">
                                                                     <Clock className="h-4 w-4" />
-                                                                    {format(new Date(`${reservation.date}T${reservation.time}`), 'HH:mm')}
+                                                                    {displayTime.time}
                                                                 </p>
                                                                 <p className="text-xs text-gray-500">
-                                                                    {format(new Date(reservation.date), 'MMM d, yyyy')}
+                                                                    {displayTime.date}
                                                                 </p>
                                                             </div>
 
@@ -973,12 +1037,10 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                                                 <SmartStatusBadge reservation={reservation} />
                                                             </div>
 
-                                                            {/* ✅ SMART ACTION BUTTONS */}
                                                             <SmartActionButtons reservation={reservation} guest={guest} />
                                                         </div>
                                                     </div>
 
-                                                    {/* Comments */}
                                                     {reservation.comments && (
                                                         <div className="mt-3 pt-3 border-t border-gray-100">
                                                             <p className="text-sm text-gray-600">
@@ -995,10 +1057,31 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                                         <CalendarIcon className="mx-auto h-12 w-12 text-gray-400" />
                                         <h3 className="mt-2 text-sm font-medium text-gray-900">No reservations found</h3>
                                         <p className="mt-1 text-sm text-gray-500">
-                                            {searchQuery || statusFilter !== 'all' || activeSmartTab !== 'upcoming'
+                                            {searchQuery || statusFilter !== 'all' || activeSmartTab !== 'all'
                                                 ? 'Try adjusting your filters or tab selection'
                                                 : 'Get started by creating a new reservation.'}
                                         </p>
+                                        {!isLoading && reservations && reservations.length > 0 && (
+                                            <div className="mt-2 text-xs text-gray-400 space-y-1">
+                                                <p>({reservations.length} total reservation{reservations.length !== 1 ? 's' : ''} in system)</p>
+                                                <p>Smart tab: {activeSmartTab} ({smartFilteredReservations.length} after smart filter)</p>
+                                                <p>Current filters: Status={statusFilter}, Date={dateRangeFilter.type}, Search="{searchQuery}"</p>
+                                                <Button 
+                                                    variant="outline" 
+                                                    size="sm" 
+                                                    onClick={() => {
+                                                        setActiveSmartTab("all");
+                                                        setStatusFilter("all");
+                                                        setDateRangeFilter({ type: 'default', displayText: 'Default View' });
+                                                        setSearchQuery("");
+                                                        setSelectedDate(undefined);
+                                                    }}
+                                                    className="mt-2"
+                                                >
+                                                    Clear All Filters
+                                                </Button>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </CardContent>
@@ -1006,7 +1089,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                     </div>
                 </div>
 
-                {/* ✅ CALENDAR SELECTION MODAL */}
                 <Dialog open={isCalendarModalOpen} onOpenChange={setIsCalendarModalOpen}>
                     <DialogContent className="max-w-4xl">
                         <DialogHeader>
@@ -1036,7 +1118,6 @@ export default function Reservations({ restaurantTimezone = 'Europe/Moscow' }: R
                     </DialogContent>
                 </Dialog>
 
-                {/* ✅ RESERVATION MODAL */}
                 <ReservationModal
                     isOpen={isReservationModalOpen}
                     onClose={() => {

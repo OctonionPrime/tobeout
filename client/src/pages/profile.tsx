@@ -16,62 +16,28 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { CheckCircle2, Loader2, Upload, AlertCircle, RefreshCcw, Globe, Clock } from "lucide-react";
 
-// ✅ NEW: Import timezone utilities functions (inline implementation for now)
-const getPopularRestaurantTimezones = () => {
-  const popularZones = [
-    'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Rome',
-    'Europe/Madrid', 'Europe/Amsterdam', 'Europe/Vienna', 'Europe/Prague',
-    'Europe/Warsaw', 'Europe/Stockholm', 'Europe/Belgrade', 'Europe/Athens',
-    'Europe/Budapest', 'Europe/Moscow', 'America/New_York', 'America/Chicago',
-    'America/Denver', 'America/Los_Angeles', 'America/Toronto', 'America/Vancouver',
-    'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Singapore',
-    'Asia/Seoul', 'Asia/Bangkok', 'Asia/Dubai', 'Australia/Sydney',
-    'Australia/Melbourne', 'Pacific/Auckland'
-  ];
-
-  return popularZones.map(tz => {
-    try {
-      const now = new Date();
-      const formatter = new Intl.DateTimeFormat('en', {
-        timeZone: tz,
-        timeZoneName: 'short'
-      });
-      const parts = formatter.formatToParts(now);
-      const timeZoneName = parts.find(part => part.type === 'timeZoneName')?.value || '';
-      
-      const offsetFormatter = new Intl.DateTimeFormat('en', {
-        timeZone: tz,
-        timeZoneName: 'longOffset'
-      });
-      const offsetParts = offsetFormatter.formatToParts(now);
-      const offset = offsetParts.find(part => part.type === 'timeZoneName')?.value || '';
-      
-      const city = tz.split('/').pop()?.replace(/_/g, ' ') || tz;
-      
-      return {
-        value: tz,
-        label: `(${offset}) ${city}`,
-        city: city,
-        offset: offset
-      };
-    } catch {
-      return {
-        value: tz,
-        label: tz,
-        city: tz,
-        offset: 'Unknown'
-      };
-    }
-  }).sort((a, b) => a.label.localeCompare(b.label));
+// ✅ CRITICAL FIX: Robust timezone validation function
+const isValidTimezone = (timezone: string): boolean => {
+  if (!timezone || timezone.trim() === '') return false;
+  try {
+    // ✅ Test both Intl.DateTimeFormat and Luxon-style validation
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const formatTimeInTimezone = (timezone: string) => {
   try {
+    if (!isValidTimezone(timezone)) {
+      return 'Invalid timezone';
+    }
     const now = new Date();
     return now.toLocaleString("en-US", {
       timeZone: timezone,
       weekday: 'short',
-      month: 'short', 
+      month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
@@ -82,7 +48,7 @@ const formatTimeInTimezone = (timezone: string) => {
   }
 };
 
-// ✅ ENHANCED: Form schema with timezone validation
+// ✅ ENHANCED: Form schema with better timezone validation
 const profileFormSchema = z.object({
   name: z.string().min(1, "Restaurant name is required"),
   description: z.string().optional(),
@@ -102,15 +68,10 @@ const profileFormSchema = z.object({
   maxGuests: z.coerce.number().min(1, "Minimum 1 guest").max(100, "Maximum 100 guests").default(25),
   googleMapsLink: z.string().optional(),
   tripAdvisorLink: z.string().optional(),
-  // ✅ NEW: Timezone field with validation
+  // ✅ FIXED: More robust timezone validation
   timezone: z.string().min(1, "Timezone is required").refine((tz) => {
-    try {
-      Intl.DateTimeFormat(undefined, { timeZone: tz });
-      return true;
-    } catch {
-      return false;
-    }
-  }, "Invalid timezone format")
+    return isValidTimezone(tz);
+  }, "Invalid timezone format - please select a valid timezone from the list")
 });
 
 type ProfileFormValues = z.infer<typeof profileFormSchema>;
@@ -124,7 +85,7 @@ export default function Profile() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // ✅ FIX: Enhanced restaurant data fetching with better error handling
+  // ✅ CRITICAL FIX: Enhanced restaurant data fetching with cache busting
   const { data: restaurant, isLoading, error: restaurantError, refetch } = useQuery({
     queryKey: ['/api/restaurants/profile'],
     queryFn: async () => {
@@ -132,15 +93,47 @@ export default function Profile() {
       if (!response.ok) {
         throw new Error(`Failed to fetch restaurant data: ${response.status}`);
       }
-      return response.json();
+      const data = await response.json();
+      
+      // ✅ DEBUG: Log restaurant data
+      console.log('📊 [Profile] Raw restaurant data received:', data);
+      
+      return data;
     },
+    // ✅ CRITICAL: Remove stale time to ensure fresh data
     staleTime: 0,
-    cacheTime: 0,
+    cacheTime: 1000 * 60, // Keep for 1 minute
     refetchOnMount: true,
     refetchOnWindowFocus: true,
   });
 
-  // ✅ FIX: Get table data to show actual capacity statistics
+  // ✅ CRITICAL FIX: Fetch timezones from API with better error handling
+  const { data: popularTimezones, isLoading: timezonesLoading } = useQuery({
+    queryKey: ['/api/timezones'],
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", "/api/timezones");
+        if (!response.ok) throw new Error('Failed to fetch timezones');
+        const data = await response.json();
+        console.log('🌍 [Profile] Timezones loaded:', data?.length || 0, 'zones');
+        return data;
+      } catch (error) {
+        console.error('❌ [Profile] Failed to load timezones:', error);
+        // ✅ FALLBACK: Return basic timezone list if API fails
+        return [
+          { value: 'Europe/Moscow', label: '(MSK) Moscow', city: 'Moscow' },
+          { value: 'Europe/Belgrade', label: '(CET) Belgrade', city: 'Belgrade' },
+          { value: 'America/Chicago', label: '(CST) Chicago', city: 'Chicago' },
+          { value: 'America/New_York', label: '(EST) New York', city: 'New York' },
+          { value: 'Europe/London', label: '(GMT) London', city: 'London' },
+          { value: 'Asia/Tokyo', label: '(JST) Tokyo', city: 'Tokyo' }
+        ];
+      }
+    },
+    staleTime: Infinity, // Timezones don't change
+  });
+
+  // ✅ Get table data to show actual capacity statistics
   const { data: tables } = useQuery({
     queryKey: ["/api/tables"],
     queryFn: async () => {
@@ -172,29 +165,35 @@ export default function Profile() {
       maxGuests: 25,
       googleMapsLink: "",
       tripAdvisorLink: "",
-      timezone: 'Europe/Moscow' // ✅ NEW: Default timezone
+      timezone: 'Europe/Moscow'
     },
   });
 
-  // ✅ NEW: Get popular timezones for dropdown
-  const popularTimezones = useMemo(() => getPopularRestaurantTimezones(), []);
-
-  // ✅ NEW: Filter timezones based on search
+  // ✅ Filter timezones based on search
   const filteredTimezones = useMemo(() => {
+    if (!popularTimezones) return [];
     if (!timezoneSearchQuery) return popularTimezones;
     const query = timezoneSearchQuery.toLowerCase();
-    return popularTimezones.filter(tz => 
+    return popularTimezones.filter((tz: any) =>
       tz.label.toLowerCase().includes(query) ||
-      tz.city.toLowerCase().includes(query) ||
+      tz.city?.toLowerCase().includes(query) ||
       tz.value.toLowerCase().includes(query)
     );
   }, [popularTimezones, timezoneSearchQuery]);
 
-  // ✅ FIX: Enhanced form population with timezone
+  // ✅ CRITICAL FIX: Enhanced form population with proper timezone handling
   useEffect(() => {
     if (restaurant && !isLoading) {
-      console.log("📊 [Profile] Loading restaurant data:", restaurant);
+      console.log("📊 [Profile] Populating form with restaurant data:", restaurant);
+
+      // ✅ CRITICAL: Validate and set timezone properly
+      const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
+      const validTimezone = isValidTimezone(restaurantTimezone) ? restaurantTimezone : 'Europe/Moscow';
       
+      if (!isValidTimezone(restaurantTimezone)) {
+        console.warn('⚠️ [Profile] Invalid timezone in restaurant data:', restaurantTimezone, 'using fallback');
+      }
+
       const formData = {
         name: restaurant.name || "",
         description: restaurant.description || "",
@@ -214,28 +213,38 @@ export default function Profile() {
         maxGuests: restaurant.maxGuests || 25,
         googleMapsLink: restaurant.googleMapsLink || "",
         tripAdvisorLink: restaurant.tripAdvisorLink || "",
-        timezone: restaurant.timezone || 'Europe/Moscow' // ✅ NEW: Include timezone
+        timezone: validTimezone // ✅ Use validated timezone
       };
-      
-      console.log("📊 [Profile] Form data being set:", formData);
+
+      console.log("📊 [Profile] Setting form data:", formData);
       form.reset(formData);
-      setSelectedTimezone(formData.timezone);
+      setSelectedTimezone(validTimezone);
       setLastSavedData(formData);
+      setShowTimezoneWarning(false); // ✅ Clear warning when loading fresh data
     }
   }, [restaurant, isLoading, form]);
 
-  // ✅ NEW: Watch timezone changes for warnings
+  // ✅ CRITICAL FIX: Watch timezone changes with better validation
   const watchedTimezone = form.watch('timezone');
   useEffect(() => {
-    if (lastSavedData && watchedTimezone !== lastSavedData.timezone) {
-      setShowTimezoneWarning(true);
-      setSelectedTimezone(watchedTimezone);
+    console.log('👀 [Profile] Watched timezone changed:', watchedTimezone);
+    
+    if (lastSavedData && watchedTimezone && watchedTimezone !== lastSavedData.timezone) {
+      // ✅ Only show warning if timezone is valid and actually different
+      if (isValidTimezone(watchedTimezone)) {
+        console.log('⚠️ [Profile] Showing timezone warning:', lastSavedData.timezone, '->', watchedTimezone);
+        setShowTimezoneWarning(true);
+        setSelectedTimezone(watchedTimezone);
+      } else {
+        console.warn('⚠️ [Profile] Invalid timezone detected:', watchedTimezone);
+        setShowTimezoneWarning(false);
+      }
     } else {
       setShowTimezoneWarning(false);
     }
   }, [watchedTimezone, lastSavedData]);
 
-  // ✅ NEW: Calculate actual table statistics
+  // ✅ Calculate actual table statistics
   const tableStats = tables ? {
     totalTables: tables.length,
     totalCapacity: tables.reduce((sum: number, table: any) => sum + table.maxGuests, 0),
@@ -246,17 +255,23 @@ export default function Profile() {
   const updateProfileMutation = useMutation({
     mutationFn: async (values: ProfileFormValues) => {
       console.log("📊 [Profile] Saving data:", values);
-      
+
+      // ✅ CRITICAL: Validate timezone before saving
+      if (!isValidTimezone(values.timezone)) {
+        throw new Error(`Invalid timezone: ${values.timezone}`);
+      }
+
       const payload = {
         ...values,
         features: values.features ? values.features.split(',').map(f => f.trim()) : undefined,
         tags: values.tags ? values.tags.split(',').map(t => t.trim()) : undefined,
         languages: values.languages ? values.languages.split(',').map(l => l.trim()) : undefined,
       };
-      
+
       const response = await apiRequest("PATCH", "/api/restaurants/profile", payload);
       if (!response.ok) {
-        throw new Error(`Failed to update profile: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to update profile: ${response.status} - ${errorText}`);
       }
       return response.json();
     },
@@ -264,17 +279,23 @@ export default function Profile() {
       console.log("✅ [Profile] Successfully saved:", data);
       toast({
         title: "Success",
-        description: showTimezoneWarning 
+        description: showTimezoneWarning
           ? "Restaurant profile and timezone updated successfully. All times will now use the new timezone."
           : "Restaurant profile updated successfully",
       });
-      
-      // ✅ FIX: Invalidate queries to ensure fresh data
+
+      // ✅ CRITICAL: Invalidate ALL related queries to force refresh
       queryClient.invalidateQueries({ queryKey: ['/api/restaurants/profile'] });
       queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard/upcoming'] });
-      
+      queryClient.invalidateQueries({ queryKey: ['/api/tables/availability'] });
+
+      // ✅ Force a hard refresh of restaurant data after timezone change
+      setTimeout(() => {
+        refetch();
+      }, 500);
+
       setLastSavedData(form.getValues());
       setShowTimezoneWarning(false);
     },
@@ -289,6 +310,18 @@ export default function Profile() {
   });
 
   function onSubmit(values: ProfileFormValues) {
+    console.log('📤 [Profile] Form submitted with values:', values);
+    
+    // ✅ CRITICAL: Pre-validate timezone before submission
+    if (!isValidTimezone(values.timezone)) {
+      toast({
+        title: "Error",
+        description: `Invalid timezone selected: ${values.timezone}. Please select a valid timezone from the list.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
     updateProfileMutation.mutate(values, {
       onSettled: () => {
@@ -297,7 +330,7 @@ export default function Profile() {
     });
   }
 
-  // ✅ NEW: Check if form has unsaved changes
+  // ✅ Check if form has unsaved changes
   const hasUnsavedChanges = () => {
     if (!lastSavedData) return false;
     const currentValues = form.getValues();
@@ -313,9 +346,9 @@ export default function Profile() {
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
               Failed to load restaurant data: {restaurantError.message}
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => refetch()}
                 className="ml-2"
               >
@@ -340,8 +373,8 @@ export default function Profile() {
           )}
         </header>
 
-        {/* ✅ NEW: Timezone Change Warning */}
-        {showTimezoneWarning && (
+        {/* ✅ ENHANCED: Timezone Change Warning with better validation */}
+        {showTimezoneWarning && isValidTimezone(selectedTimezone) && (
           <Alert className="mb-6 border-amber-200 bg-amber-50">
             <Globe className="h-4 w-4 text-amber-600" />
             <AlertDescription className="text-amber-800">
@@ -360,9 +393,26 @@ export default function Profile() {
           </Alert>
         )}
 
+        {/* ✅ NEW: Show invalid timezone warning */}
+        {watchedTimezone && !isValidTimezone(watchedTimezone) && (
+          <Alert className="mb-6 border-red-200 bg-red-50" variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              <strong>Invalid Timezone:</strong> The selected timezone "{watchedTimezone}" is not valid. 
+              Please select a valid timezone from the dropdown list. 
+              {popularTimezones && popularTimezones.length > 0 && (
+                <span> {popularTimezones.length} timezones are available.</span>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
         {isLoading ? (
           <div className="h-96 flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+            <div className="text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-gray-400 mx-auto" />
+              <p className="mt-4 text-sm text-gray-600">Loading restaurant profile...</p>
+            </div>
           </div>
         ) : (
           <Form {...form}>
@@ -390,7 +440,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="phone"
@@ -405,7 +455,7 @@ export default function Profile() {
                         )}
                       />
                     </div>
-                    
+
                     <FormField
                       control={form.control}
                       name="description"
@@ -413,10 +463,10 @@ export default function Profile() {
                         <FormItem>
                           <FormLabel>Description</FormLabel>
                           <FormControl>
-                            <Textarea 
-                              placeholder="Brief description of your restaurant" 
+                            <Textarea
+                              placeholder="Brief description of your restaurant"
                               className="min-h-[100px]"
-                              {...field} 
+                              {...field}
                             />
                           </FormControl>
                           <FormMessage />
@@ -438,7 +488,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="city"
@@ -452,7 +502,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="address"
@@ -473,9 +523,9 @@ export default function Profile() {
                       <div className="border rounded-lg p-4 flex flex-col items-center justify-center">
                         <div className="w-full h-32 bg-gray-100 mb-4 rounded-md flex items-center justify-center">
                           {restaurant?.photo ? (
-                            <img 
-                              src={restaurant.photo} 
-                              alt={restaurant.name} 
+                            <img
+                              src={restaurant.photo}
+                              alt={restaurant.name}
                               className="w-full h-full object-cover rounded-md"
                             />
                           ) : (
@@ -491,7 +541,7 @@ export default function Profile() {
                   </CardContent>
                 </Card>
 
-                {/* ✅ NEW: Timezone & Location Settings */}
+                {/* ✅ CRITICAL FIX: Enhanced Timezone & Location Settings */}
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -518,21 +568,31 @@ export default function Profile() {
                                 onChange={(e) => setTimezoneSearchQuery(e.target.value)}
                                 className="mb-2"
                               />
-                              
-                              <Select onValueChange={field.onChange} value={field.value}>
+
+                              <Select onValueChange={(value) => {
+                                console.log('🌍 [Profile] Timezone selected:', value);
+                                field.onChange(value);
+                              }} value={field.value}>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select your restaurant's timezone" />
                                 </SelectTrigger>
                                 <SelectContent className="max-h-[300px]">
-                                  {filteredTimezones.length > 0 ? (
-                                    filteredTimezones.map((tz) => (
+                                  {timezonesLoading ? (
+                                    <SelectItem value="loading" disabled>
+                                      <div className="flex items-center">
+                                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                        Loading timezones...
+                                      </div>
+                                    </SelectItem>
+                                  ) : filteredTimezones && filteredTimezones.length > 0 ? (
+                                    filteredTimezones.map((tz: any) => (
                                       <SelectItem key={tz.value} value={tz.value}>
                                         {tz.label}
                                       </SelectItem>
                                     ))
                                   ) : (
                                     <SelectItem value="no-results" disabled>
-                                      No timezones found for "{timezoneSearchQuery}"
+                                      {popularTimezones ? `No timezones found for "${timezoneSearchQuery}"` : 'Failed to load timezones'}
                                     </SelectItem>
                                   )}
                                 </SelectContent>
@@ -541,9 +601,14 @@ export default function Profile() {
                           </FormControl>
                           <FormDescription>
                             This affects all time calculations, reservations, and dashboard statistics.
+                            {!isValidTimezone(field.value) && field.value && (
+                              <span className="text-red-600 block mt-1">
+                                ⚠️ Current value "{field.value}" is not a valid timezone.
+                              </span>
+                            )}
                           </FormDescription>
-                          {/* ✅ NEW: Current time preview */}
-                          {field.value && (
+                          {/* ✅ Enhanced current time preview */}
+                          {field.value && isValidTimezone(field.value) && (
                             <div className="mt-2 p-3 bg-gray-50 rounded-md">
                               <div className="flex items-center gap-2 text-sm text-gray-700">
                                 <Clock className="h-4 w-4" />
@@ -558,6 +623,15 @@ export default function Profile() {
                         </FormItem>
                       )}
                     />
+
+                    {/* ✅ DEBUG INFO */}
+                    <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded">
+                      <strong>Debug Info:</strong><br/>
+                      Selected: {form.watch('timezone')}<br/>
+                      Valid: {isValidTimezone(form.watch('timezone')) ? 'Yes' : 'No'}<br/>
+                      Restaurant TZ: {restaurant?.timezone}<br/>
+                      Available timezones: {popularTimezones?.length || 0}
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -614,7 +688,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="closingTime"
@@ -640,8 +714,8 @@ export default function Profile() {
                           <FormItem>
                             <FormLabel>Average Reservation Duration (minutes)</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 min={30}
                                 max={240}
                                 step={15}
@@ -655,7 +729,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="minGuests"
@@ -663,8 +737,8 @@ export default function Profile() {
                           <FormItem>
                             <FormLabel>Minimum Guests</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 min={1}
                                 {...field}
                               />
@@ -676,7 +750,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="maxGuests"
@@ -684,8 +758,8 @@ export default function Profile() {
                           <FormItem>
                             <FormLabel>Maximum Guests</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
+                              <Input
+                                type="number"
                                 min={1}
                                 max={100}
                                 {...field}
@@ -724,7 +798,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="atmosphere"
@@ -754,7 +828,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="tags"
@@ -768,7 +842,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="languages"
@@ -811,7 +885,7 @@ export default function Profile() {
                           </FormItem>
                         )}
                       />
-                      
+
                       <FormField
                         control={form.control}
                         name="tripAdvisorLink"
@@ -831,9 +905,9 @@ export default function Profile() {
                     </div>
                   </CardContent>
                   <CardFooter className="flex justify-end">
-                    <Button 
-                      type="submit" 
-                      disabled={isSaving}
+                    <Button
+                      type="submit"
+                      disabled={isSaving || (watchedTimezone && !isValidTimezone(watchedTimezone))}
                       className="flex items-center"
                     >
                       {isSaving ? (

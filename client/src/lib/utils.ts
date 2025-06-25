@@ -38,7 +38,15 @@ export function getRestaurantDateTime(timezone: string): DateTime {
 export function getRestaurantDateString(timezone: string): string {
     // Use the core function and format the output
     const dt = getRestaurantDateTime(timezone);
-    return dt.toISODate();
+    
+    // ✅ CRITICAL FIX: Handle potential null return from toISODate()
+    const isoDate = dt.toISODate();
+    if (!isoDate) {
+        console.warn(`[Utils] Failed to get ISO date for timezone "${timezone}". Using fallback.`);
+        return DateTime.now().toISODate() || new Date().toISOString().split('T')[0];
+    }
+    
+    return isoDate;
 }
 
 /**
@@ -56,15 +64,20 @@ export function formatDisplayDate(
 ): string {
     if (!dateStr || !timezone) return 'Invalid Date';
 
-    // Create a DateTime object from the date string, specifying it's in the restaurant's timezone
-    const dt = DateTime.fromISO(dateStr, { zone: timezone });
+    try {
+        // Create a DateTime object from the date string, specifying it's in the restaurant's timezone
+        const dt = DateTime.fromISO(dateStr, { zone: timezone });
 
-    if (!dt.isValid) {
-        console.warn(`[Utils] Invalid date string for formatting: ${dateStr}`);
+        if (!dt.isValid) {
+            console.warn(`[Utils] Invalid date string for formatting: ${dateStr}`);
+            return 'Invalid Date';
+        }
+
+        return dt.toFormat(format);
+    } catch (error) {
+        console.error(`[Utils] Error formatting date "${dateStr}" with timezone "${timezone}":`, error);
         return 'Invalid Date';
     }
-
-    return dt.toFormat(format);
 }
 
 /**
@@ -79,14 +92,75 @@ export function formatDisplayTime(
 ): string {
     if (!timeStr) return 'Invalid Time';
 
-    // Create a DateTime object from a time string. Luxon handles this gracefully.
-    // We specify UTC here to prevent the local machine's timezone from affecting the parsing.
-    const dt = DateTime.fromISO(timeStr, { zone: 'utc' });
+    try {
+        // Create a DateTime object from a time string. Luxon handles this gracefully.
+        // We specify UTC here to prevent the local machine's timezone from affecting the parsing.
+        const dt = DateTime.fromISO(`2000-01-01T${timeStr}`, { zone: 'utc' });
 
-    if (!dt.isValid) {
-        console.warn(`[Utils] Invalid time string for formatting: ${timeStr}`);
+        if (!dt.isValid) {
+            console.warn(`[Utils] Invalid time string for formatting: ${timeStr}`);
+            return 'Invalid Time';
+        }
+
+        return dt.toFormat(format);
+    } catch (error) {
+        console.error(`[Utils] Error formatting time "${timeStr}":`, error);
         return 'Invalid Time';
     }
+}
 
-    return dt.toFormat(format);
+// ✅ NEW: Additional timezone helper for converting UTC timestamps to restaurant local time
+/**
+ * Converts a UTC timestamp to restaurant local time for display
+ * @param utcTimestamp - UTC timestamp string (ISO format)
+ * @param timezone - Restaurant timezone
+ * @param format - Display format (default: 'MMM d, yyyy h:mm a')
+ * @returns Formatted local time string
+ */
+export function formatUtcToRestaurantTime(
+    utcTimestamp: string,
+    timezone: string,
+    format: string = 'MMM d, yyyy h:mm a'
+): string {
+    if (!utcTimestamp || !timezone) return 'Invalid Time';
+
+    try {
+        const utcDateTime = DateTime.fromISO(utcTimestamp, { zone: 'utc' });
+        
+        if (!utcDateTime.isValid) {
+            console.warn(`[Utils] Invalid UTC timestamp: ${utcTimestamp}`);
+            return 'Invalid Time';
+        }
+
+        const localDateTime = utcDateTime.setZone(timezone);
+        return localDateTime.toFormat(format);
+        
+    } catch (error) {
+        console.error(`[Utils] Error converting UTC timestamp "${utcTimestamp}" to timezone "${timezone}":`, error);
+        return 'Invalid Time';
+    }
+}
+
+// ✅ NEW: Helper to get tomorrow's date in restaurant timezone
+/**
+ * Gets tomorrow's date string in restaurant timezone
+ * @param timezone - Restaurant timezone
+ * @returns Date string in YYYY-MM-DD format
+ */
+export function getTomorrowDateString(timezone: string): string {
+    try {
+        const tomorrow = getRestaurantDateTime(timezone).plus({ days: 1 });
+        const isoDate = tomorrow.toISODate();
+        
+        if (!isoDate) {
+            console.warn(`[Utils] Failed to get tomorrow's date for timezone "${timezone}". Using fallback.`);
+            return DateTime.now().plus({ days: 1 }).toISODate() || 
+                   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        }
+        
+        return isoDate;
+    } catch (error) {
+        console.error(`[Utils] Error getting tomorrow's date for timezone "${timezone}":`, error);
+        return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
 }

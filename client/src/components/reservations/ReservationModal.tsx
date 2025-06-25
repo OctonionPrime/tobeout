@@ -16,6 +16,8 @@ import { CalendarIcon, Clock, Users, Phone, Mail, User, Loader2, AlertCircle, Gl
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { DateTime } from 'luxon';
+// ✅ FIX: Import timezone context from DashboardLayout
+import { useRestaurantTimezone } from "@/components/layout/DashboardLayout";
 
 interface ReservationModalProps {
   isOpen: boolean;
@@ -26,9 +28,9 @@ interface ReservationModalProps {
   defaultTime?: string;
   defaultGuests?: number;
   defaultTableId?: number;
-  restaurantTimezone?: string;
 }
 
+// ✅ UPDATED: TimeSlot interface with new fields for overnight operations
 interface TimeSlot {
   time: string;
   timeDisplay: string;
@@ -36,7 +38,10 @@ interface TimeSlot {
   tableName: string;
   tableCapacity: number;
   canAccommodate: boolean;
+  tablesCount?: number; // ✅ NEW: Number of tables if combined
+  isCombined?: boolean; // ✅ NEW: Whether this is a table combination
   message?: string;
+  slotType?: 'early_morning' | 'day' | 'late_night' | 'standard'; // ✅ NEW: Overnight slot type
 }
 
 interface Table {
@@ -56,8 +61,10 @@ export function ReservationModal({
   defaultTime,
   defaultGuests,
   defaultTableId,
-  restaurantTimezone = 'Europe/Moscow',
 }: ReservationModalProps) {
+  // ✅ FIX: Get timezone from context instead of props
+  const { restaurantTimezone, restaurant } = useRestaurantTimezone();
+  
   const [formData, setFormData] = useState({
     guestName: "",
     guestPhone: "",
@@ -74,22 +81,38 @@ export function ReservationModal({
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
   const [availableTimeSlots, setAvailableTimeSlots] = useState<TimeSlot[]>([]);
   const [showAllTimes, setShowAllTimes] = useState(false);
+  const [isOvernightOperation, setIsOvernightOperation] = useState(false); // ✅ NEW: Track overnight operations
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // ✅ FIXED: Proper React Query for restaurant profile
-  const { data: restaurant } = useQuery({
-    queryKey: ['restaurant_profile', restaurantId],
-    queryFn: async () => {
-      const response = await apiRequest("GET", "/api/restaurants/profile");
-      if (!response.ok) throw new Error("Failed to fetch restaurant");
-      return response.json();
-    },
-    enabled: isOpen && !!restaurantId,
-  });
+  // ✅ FIX: Use timezone from context with fallback
+  const effectiveTimezone = restaurantTimezone || 'Europe/Moscow';
 
-  const effectiveTimezone = restaurantTimezone || restaurant?.timezone || 'Europe/Moscow';
+  // ✅ ENHANCED: Helper function to parse time to minutes (handles overnight)
+  const parseTimeToMinutes = (timeStr: string): number | null => {
+    const parts = timeStr.split(':');
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10) || 0;
+    if (isNaN(hours) || isNaN(minutes)) return null;
+    return hours * 60 + minutes;
+  };
+
+  // ✅ NEW: Detect overnight operation when restaurant data loads
+  useEffect(() => {
+    if (restaurant?.openingTime && restaurant?.closingTime) {
+      const opening = parseTimeToMinutes(restaurant.openingTime);
+      const closing = parseTimeToMinutes(restaurant.closingTime);
+      const isOvernight = closing !== null && opening !== null && closing < opening;
+      setIsOvernightOperation(isOvernight);
+      
+      if (isOvernight) {
+        console.log(`[ReservationModal] 🌙 Detected overnight operation: ${restaurant.openingTime}-${restaurant.closingTime}`);
+      } else {
+        console.log(`[ReservationModal] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime}`);
+      }
+    }
+  }, [restaurant]);
 
   // ✅ FIXED: Proper React Query for tables with restaurantId
   const { data: tables, error: tablesError } = useQuery({
@@ -201,24 +224,52 @@ export function ReservationModal({
     }
   };
 
+  // ✅ CRITICAL FIX: Enhanced time slot availability check for overnight operations
   const isTimeSlotAvailable = (timeSlot: TimeSlot): boolean => {
     if (!timeSlot.available) return false;
 
     const selectedDate = getRestaurantDateString(formData.date);
     const today = getRestaurantTime().toISODate();
     
+    // ✅ ENHANCED: Allow future dates
     if (selectedDate > today) return true;
     
+    // ✅ ENHANCED: For today, check time availability with overnight support
     if (selectedDate === today) {
       const restaurantNow = getRestaurantTime();
       const currentHour = restaurantNow.hour;
       const currentMinute = restaurantNow.minute;
       
       const [slotHour, slotMinute] = timeSlot.time.split(':').map(Number);
-      const slotTime = slotHour * 60 + slotMinute;
-      const currentTime = currentHour * 60 + currentMinute;
+      const slotTimeMinutes = slotHour * 60 + slotMinute;
+      const currentTimeMinutes = currentHour * 60 + currentMinute;
       
-      return slotTime > (currentTime + 30);
+      // ✅ CRITICAL FIX: For overnight operations, handle time comparisons correctly
+      if (isOvernightOperation) {
+        const opening = parseTimeToMinutes(restaurant?.openingTime || '22:00');
+        const closing = parseTimeToMinutes(restaurant?.closingTime || '03:00');
+        
+        if (opening && closing) {
+          // If current time is in late night portion (after opening time)
+          if (currentTimeMinutes >= opening) {
+            // Allow late night slots and early morning slots
+            return slotTimeMinutes >= opening || slotTimeMinutes < closing;
+          } 
+          // If current time is in early morning portion (before closing time)
+          else if (currentTimeMinutes < closing) {
+            // Only allow future early morning slots (with 30min buffer)
+            return slotTimeMinutes < closing && slotTimeMinutes > (currentTimeMinutes + 30);
+          }
+          // During closed hours (between closing and opening)
+          else {
+            // No slots available during closed hours
+            return false;
+          }
+        }
+      } else {
+        // Standard operation: slot must be at least 30 minutes in the future
+        return slotTimeMinutes > (currentTimeMinutes + 30);
+      }
     }
     
     return false;
@@ -244,9 +295,43 @@ export function ReservationModal({
       }
       
       const data = await response.json();
-      const filteredSlots = (data.availableSlots || []).filter(isTimeSlotAvailable);
+      
+      // ✅ CRITICAL FIX: Don't filter out valid overnight slots
+      let filteredSlots;
+      if (isOvernightOperation) {
+        // For overnight operations, be more permissive with time filtering
+        filteredSlots = (data.availableSlots || []).filter((slot: TimeSlot) => {
+          // Basic availability check from API
+          if (!slot.available) return false;
+          
+          // For future dates, all slots are valid
+          const selectedDate = getRestaurantDateString(formData.date);
+          const today = getRestaurantTime().toISODate();
+          if (selectedDate > today) return true;
+          
+          // For today with overnight operation, use enhanced logic
+          if (selectedDate === today) {
+            return isTimeSlotAvailable(slot);
+          }
+          
+          return true;
+        });
+      } else {
+        // Standard operation filtering
+        filteredSlots = (data.availableSlots || []).filter(isTimeSlotAvailable);
+      }
       
       setAvailableTimeSlots(filteredSlots);
+      
+      // ✅ ENHANCED: Better overnight operation logging
+      if (data.isOvernightOperation) {
+        console.log(`[ReservationModal] 🌙 Overnight operation: ${data.totalSlotsGenerated} total slots, ${filteredSlots.length} available`);
+        if (data.debugInfo) {
+          console.log(`[ReservationModal] 🌙 Operating ${data.debugInfo.openingTime}-${data.debugInfo.closingTime} (${data.debugInfo.operatingHours?.toFixed(1)}h total)`);
+        }
+      } else {
+        console.log(`[ReservationModal] 📅 Standard operation: ${data.totalSlotsGenerated} total slots, ${filteredSlots.length} available`);
+      }
     } catch (error) {
       console.error("Error fetching available times:", error);
       toast({
@@ -363,9 +448,38 @@ export function ReservationModal({
     }
   };
 
-  const availableSlots = availableTimeSlots.filter(slot => slot.available);
-  const unavailableSlots = availableTimeSlots.filter(slot => !slot.available);
-  const displayedAvailableSlots = showAllTimes ? availableSlots : availableSlots.slice(0, 6);
+  // ✅ ENHANCED: Better slot organization for overnight operations
+  const organizeTimeSlots = (slots: TimeSlot[]) => {
+    if (!isOvernightOperation) {
+      return { availableSlots: slots.filter(slot => slot.available), unavailableSlots: slots.filter(slot => !slot.available) };
+    }
+
+    // ✅ For overnight operations, organize by time periods
+    const available = slots.filter(slot => slot.available);
+    const unavailable = slots.filter(slot => !slot.available);
+
+    // Sort overnight slots: late night first, then early morning
+    const sortedAvailable = available.sort((a, b) => {
+      const aHour = parseInt(a.time.split(':')[0]);
+      const bHour = parseInt(b.time.split(':')[0]);
+      const closing = parseTimeToMinutes(restaurant?.closingTime || '03:00') || 180; // 03:00 = 180 minutes
+      const closingHour = Math.floor(closing / 60);
+
+      // Determine if slots are in early morning (before closing) or late night (after opening)
+      const aIsEarlyMorning = aHour < closingHour;
+      const bIsEarlyMorning = bHour < closingHour;
+
+      if (aIsEarlyMorning && !bIsEarlyMorning) return 1;  // Early morning slots go after late night
+      if (!aIsEarlyMorning && bIsEarlyMorning) return -1; // Late night slots go first
+      
+      return aHour - bHour; // Within same period, sort by hour
+    });
+
+    return { availableSlots: sortedAvailable, unavailableSlots: unavailable };
+  };
+
+  const { availableSlots, unavailableSlots } = organizeTimeSlots(availableTimeSlots);
+  const displayedAvailableSlots = showAllTimes ? availableSlots : availableSlots.slice(0, 8); // ✅ Show more slots initially for overnight
 
   if (!isOpen) {
     return null;
@@ -385,6 +499,12 @@ export function ReservationModal({
             <Globe className="h-4 w-4" />
             <span>Restaurant time: {getCurrentRestaurantTime()}</span>
             <span className="text-gray-400">({effectiveTimezone})</span>
+            {isOvernightOperation && (
+              <Badge variant="outline" className="ml-2 bg-blue-50">
+                <Clock className="h-3 w-3 mr-1" />
+                24-Hour Operation
+              </Badge>
+            )}
           </div>
         </DialogHeader>
 
@@ -517,7 +637,7 @@ export function ReservationModal({
               </div>
             </div>
 
-            {/* Time Selection */}
+            {/* ✅ ENHANCED: Time Selection with Complete Overnight Support */}
             <div>
               <Label>Time</Label>
               {hasNoTables ? (
@@ -530,45 +650,112 @@ export function ReservationModal({
               ) : isLoadingAvailability ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-6 w-6 animate-spin" />
+                  <span className="ml-2 text-gray-600">
+                    {isOvernightOperation ? 'Loading 24-hour availability...' : 'Loading availability...'}
+                  </span>
                 </div>
               ) : (
                 <div className="space-y-4">
                   {availableSlots.length > 0 ? (
                     <>
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                        {displayedAvailableSlots.map((slot) => (
-                          <div key={slot.time} className="space-y-1">
-                            <Button
-                              type="button"
-                              variant={formData.time === slot.time ? "default" : "outline"}
-                              size="sm"
-                              onClick={() => setFormData({ ...formData, time: slot.time })}
-                              className="w-full justify-between"
-                            >
-                              <span>{slot.timeDisplay}</span>
-                              <Badge variant="secondary" className="ml-2 text-xs">
-                                Available
-                              </Badge>
-                            </Button>
-                            {slot.tableName && (
-                              <div className="text-xs text-gray-500 px-1">
-                                {slot.tableName} (seats up to {slot.tableCapacity})
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                      {/* ✅ ENHANCED: Show operation type info */}
+                      {isOvernightOperation && (
+                        <div className="text-sm text-blue-600 bg-blue-50 p-3 rounded-lg border border-blue-200">
+                          <Clock className="h-4 w-4 inline mr-2" />
+                          <strong>24-Hour Operation:</strong> {restaurant?.openingTime} to {restaurant?.closingTime} next day
+                          {availableSlots.length > 20 && (
+                            <span className="block mt-1 text-blue-500">
+                              Showing {availableSlots.length} overnight time slots available
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* ✅ ENHANCED: Optimized grid layout for overnight operations */}
+                      <div className={cn(
+                        "grid gap-2",
+                        isOvernightOperation && availableSlots.length > 16 
+                          ? "grid-cols-2 md:grid-cols-4 lg:grid-cols-6" // More columns for many overnight slots
+                          : availableSlots.length <= 12 
+                          ? "grid-cols-2 md:grid-cols-3" 
+                          : "grid-cols-2 md:grid-cols-4"
+                      )}>
+                        {displayedAvailableSlots.map((slot) => {
+                          const hour = parseInt(slot.time.split(':')[0]);
+                          const isEarlyMorning = isOvernightOperation && hour < 6;
+                          const isLateNight = isOvernightOperation && hour >= 22;
+                          
+                          return (
+                            <div key={slot.time} className="space-y-1">
+                              <Button
+                                type="button"
+                                variant={formData.time === slot.time ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => setFormData({ ...formData, time: slot.time })}
+                                className={cn(
+                                  "w-full justify-between text-xs",
+                                  formData.time === slot.time && "ring-2 ring-blue-500",
+                                  isEarlyMorning && "bg-blue-50 border-blue-200",
+                                  isLateNight && "bg-purple-50 border-purple-200"
+                                )}
+                              >
+                                <span>{slot.timeDisplay}</span>
+                                {slot.isCombined ? (
+                                  <Badge variant="secondary" className="ml-1 text-xs bg-green-100">
+                                    Multi
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="secondary" className={cn(
+                                    "ml-1 text-xs",
+                                    isEarlyMorning && "bg-blue-100",
+                                    isLateNight && "bg-purple-100"
+                                  )}>
+                                    {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Available"}
+                                  </Badge>
+                                )}
+                              </Button>
+                              {slot.tableName && (
+                                <div className="text-xs text-gray-500 px-1 leading-tight">
+                                  {slot.isCombined ? `${slot.tablesCount || 1} tables` : slot.tableName} 
+                                  {" "}(up to {slot.tableCapacity})
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                       
-                      {!showAllTimes && availableSlots.length > 6 && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setShowAllTimes(true)}
-                          className="w-full"
-                        >
-                          Show {availableSlots.length - 6} more available times
-                        </Button>
+                      {/* ✅ ENHANCED: Better show more/less controls for overnight */}
+                      {!showAllTimes && availableSlots.length > (isOvernightOperation ? 8 : 6) && (
+                        <div className="flex justify-center">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowAllTimes(true)}
+                            className="text-blue-600 hover:text-blue-800"
+                          >
+                            <Clock className="h-4 w-4 mr-1" />
+                            Show all {availableSlots.length} available times
+                            {isOvernightOperation && (
+                              <span className="ml-1 text-xs text-blue-500">(24-hour operation)</span>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                      
+                      {showAllTimes && availableSlots.length > (isOvernightOperation ? 8 : 6) && (
+                        <div className="flex justify-center">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowAllTimes(false)}
+                            className="text-gray-600 hover:text-gray-800"
+                          >
+                            Show fewer options
+                          </Button>
+                        </div>
                       )}
                     </>
                   ) : (
@@ -577,33 +764,42 @@ export function ReservationModal({
                       <AlertDescription>
                         No available time slots for {formData.guests} guests on this date.
                         {getRestaurantDateString(formData.date) === getRestaurantTime().toISODate()
-                          ? " Try selecting a future date or earlier time." 
+                          ? ` Try selecting a future date${isOvernightOperation ? ' or check early morning/late night hours' : ' or earlier time'}.` 
                           : " Try selecting a different date or reducing the party size."
                         }
                       </AlertDescription>
                     </Alert>
                   )}
 
+                  {/* ✅ ENHANCED: Show unavailable slots with overnight context */}
                   {unavailableSlots.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-sm text-gray-500">Unavailable times:</p>
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 opacity-50">
-                        {unavailableSlots.slice(0, 6).map((slot) => (
+                      <div className={cn(
+                        "grid gap-2 opacity-50",
+                        unavailableSlots.length <= 6 ? "grid-cols-2 md:grid-cols-3" : "grid-cols-2 md:grid-cols-4"
+                      )}>
+                        {unavailableSlots.slice(0, 8).map((slot) => (
                           <Button
                             key={slot.time}
                             type="button"
                             variant="outline"
                             size="sm"
                             disabled
-                            className="justify-between"
+                            className="justify-between text-xs"
                           >
                             <span>{slot.timeDisplay}</span>
-                            <Badge variant="secondary" className="ml-2 text-xs">
+                            <Badge variant="secondary" className="ml-1 text-xs">
                               Full
                             </Badge>
                           </Button>
                         ))}
                       </div>
+                      {unavailableSlots.length > 8 && (
+                        <p className="text-xs text-gray-400 text-center">
+                          ... and {unavailableSlots.length - 8} more unavailable times
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

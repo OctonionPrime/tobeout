@@ -15,10 +15,8 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import {
-    getRestaurantDateTime,
-    getRestaurantDateString
-} from "@/lib/utils";
+// ✅ CRITICAL FIX: Import timezone utilities from the correct path
+import { getRestaurantDateTime, getRestaurantDateString, getTomorrowDateString } from "@/lib/utils";
 
 interface TableData {
   id: number;
@@ -41,7 +39,6 @@ interface ScheduleSlot {
   tables: TableData[];
 }
 
-// ✅ NEW: Add Table Form Interface
 interface AddTableForm {
   name: string;
   minGuests: number;
@@ -50,33 +47,21 @@ interface AddTableForm {
   comments: string;
 }
 
-// ✅ FIXED: Add timezone prop with Moscow default for backward compatibility
-interface ModernTablesProps {
-  restaurantTimezone?: string;
+interface Restaurant {
+  id: number;
+  openingTime: string;
+  closingTime: string;
+  avgReservationDuration: number;
+  timezone: string;
+  [key: string]: any;
 }
 
-export default function ModernTables({ 
-  restaurantTimezone = 'Europe/Moscow' 
-}: ModernTablesProps) {
-  // ✅ FIXED: Use restaurant timezone instead of hardcoded Moscow
-  const getRestaurantDate = () => {
-    return getRestaurantDateTime(restaurantTimezone).toJSDate();
-  };
-
-  const getRestaurantDateStr = () => {
-    return getRestaurantDateString(restaurantTimezone);
-  };
-
-  const getTomorrowDateStr = () => {
-    return getRestaurantDateTime(restaurantTimezone).plus({ days: 1 }).toISODate() || '';
-  };
-
-  // ✅ FIXED: Initialize with restaurant timezone date
-  const [selectedDate, setSelectedDate] = useState(getRestaurantDateStr());
+export default function ModernTables() {
+  const [selectedDate, setSelectedDate] = useState(''); // ✅ FIXED: Initialize empty, set after restaurant loads
   const [selectedTime, setSelectedTime] = useState("19:00");
   const [activeView, setActiveView] = useState<"schedule" | "floorplan" | "grid" | "list">("schedule");
   
-  // ✅ NEW: Add Table Modal State
+  // Add Table Modal State
   const [showAddTableModal, setShowAddTableModal] = useState(false);
   const [editingTable, setEditingTable] = useState<TableData | null>(null);
   const [addTableForm, setAddTableForm] = useState<AddTableForm>({
@@ -114,71 +99,190 @@ export default function ModernTables({
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // ✅ FIXED: Add timezone to query key for proper cache invalidation
-  const { data: restaurant, isLoading: restaurantLoading } = useQuery<{
-    openingTime: string;
-    closingTime: string;
-    avgReservationDuration: number;
-    timezone: string;
-    [key: string]: any;
-  }>({
-    queryKey: ["/api/restaurants/profile", restaurantTimezone],
+  // ✅ CRITICAL FIX: Get restaurant profile first without timezone in query key
+  const { data: restaurant, isLoading: restaurantLoading, error: restaurantError } = useQuery<Restaurant>({
+    queryKey: ["/api/restaurants/profile"],
+    retry: 3,
+    staleTime: 30000,
   });
 
-  // Generate time slots based on restaurant hours
-  const timeSlots: string[] = [];
-  if (restaurant && restaurant.openingTime && restaurant.closingTime) {
-    const openingTime = restaurant.openingTime;
-    const closingTime = restaurant.closingTime;
-    const avgDuration = restaurant.avgReservationDuration || 120; // ✅ FIX: Default to 120 minutes
-    
-    const [openHour] = openingTime.split(':').map(Number);
-    const [closeHour] = closingTime.split(':').map(Number);
-    
-    const lastBookingHour = closeHour - 1;
-    
-    for (let hour = openHour; hour <= lastBookingHour; hour++) {
-      timeSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+  // ✅ CRITICAL FIX: Get actual restaurant timezone or fallback
+  const restaurantTimezone = restaurant?.timezone || 'Europe/Belgrade';
+
+  // ✅ CRITICAL FIX: Set selectedDate after restaurant loads
+  React.useEffect(() => {
+    if (restaurant && !selectedDate) {
+      setSelectedDate(getRestaurantDateString(restaurantTimezone));
     }
-  }
+  }, [restaurant, restaurantTimezone, selectedDate]);
 
-  // ✅ FIXED: Add timezone to query key
-  const { data: tables, isLoading: tablesLoading } = useQuery({
-    queryKey: ["/api/tables", restaurantTimezone],
-  });
+  // ✅ CRITICAL FIX: Enhanced overnight-aware time slot generation
+  const timeSlots: string[] = React.useMemo(() => {
+    if (!restaurant?.openingTime || !restaurant?.closingTime) {
+      return [];
+    }
 
-  // ✅ FIXED: Include timezone parameter in API calls and query key
-  const { data: scheduleData, isLoading } = useQuery({
-    queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone],
-    queryFn: async () => {
-      const promises = timeSlots.map(async (time) => {
-        const response = await fetch(
-          `/api/tables/availability?date=${selectedDate}&time=${time}&timezone=${encodeURIComponent(restaurantTimezone)}`, 
-          {
-            credentials: 'include'
-          }
-        );
+    const slots: string[] = [];
+    try {
+      const [openHour, openMin] = restaurant.openingTime.split(':').map(Number);
+      const [closeHour, closeMin] = restaurant.closingTime.split(':').map(Number);
+      
+      const openingMinutes = openHour * 60 + (openMin || 0);
+      const closingMinutes = closeHour * 60 + (closeMin || 0);
+      
+      // ✅ CRITICAL FIX: Detect overnight operation
+      const isOvernightOperation = closingMinutes < openingMinutes;
+      
+      if (isOvernightOperation) {
+        console.log(`[ModernTables] 🌙 Overnight operation detected: ${restaurant.openingTime}-${restaurant.closingTime}`);
         
-        if (!response.ok) {
-          console.error(`❌ Failed to fetch availability for ${time}:`, response.status, response.statusText);
-          throw new Error(`Failed to fetch availability: ${response.status}`);
+        // ✅ Generate overnight time slots
+        // Part 1: From opening time until midnight (e.g., 22:00 → 24:00)
+        for (let minutes = openingMinutes; minutes < 24 * 60; minutes += 60) {
+          const hour = Math.floor(minutes / 60);
+          const minute = minutes % 60;
+          slots.push(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
         }
         
-        const data = await response.json();
-        const sortedTables = data.sort((a: any, b: any) => a.id - b.id);
-        return { time, tables: sortedTables };
+        // Part 2: From midnight until closing time (e.g., 00:00 → 03:00)
+        for (let minutes = 0; minutes < closingMinutes; minutes += 60) {
+          const hour = Math.floor(minutes / 60);
+          const minute = minutes % 60;
+          slots.push(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+        }
+        
+        console.log(`[ModernTables] 🌙 Generated ${slots.length} overnight slots:`, slots.slice(0, 5), '...', slots.slice(-3));
+      } else {
+        console.log(`[ModernTables] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime}`);
+        
+        // ✅ Standard operation: simple range
+        const avgDuration = restaurant.avgReservationDuration || 120; // minutes
+        const lastBookingTime = closingMinutes - avgDuration; // Don't allow bookings too close to closing
+        
+        for (let minutes = openingMinutes; minutes <= lastBookingTime; minutes += 60) {
+          const hour = Math.floor(minutes / 60);
+          const minute = minutes % 60;
+          slots.push(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+        }
+        
+        console.log(`[ModernTables] 📅 Generated ${slots.length} standard slots`);
+      }
+    } catch (error) {
+      console.error('Error generating time slots:', error);
+    }
+    
+    return slots;
+  }, [restaurant]);
+
+  // ✅ CRITICAL FIX: Get tables with proper timezone context
+  const { data: tables, isLoading: tablesLoading, error: tablesError } = useQuery({
+    queryKey: ["/api/tables", restaurantTimezone],
+    enabled: !!restaurant,
+    retry: 3,
+  });
+
+  // ✅ CRITICAL FIX: Enhanced schedule data fetching with comprehensive overnight support
+  const { data: scheduleData, isLoading, error: scheduleError } = useQuery({
+    queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone],
+    queryFn: async () => {
+      if (!selectedDate || timeSlots.length === 0) {
+        throw new Error('Missing date or time slots');
+      }
+
+      console.log(`🔍 [ModernTables] Fetching schedule for ${selectedDate} with timezone ${restaurantTimezone}`);
+      console.log(`🔍 [ModernTables] Time slots to check: ${timeSlots.length} slots`);
+
+      // ✅ ENHANCED: Check if this is an overnight operation
+      const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+        (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+
+      const promises = timeSlots.map(async (time) => {
+        const url = `/api/tables/availability?date=${selectedDate}&time=${time}&timezone=${encodeURIComponent(restaurantTimezone)}`;
+        
+        try {
+          const response = await fetch(url, {
+            credentials: 'include',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            }
+          });
+          
+          if (!response.ok) {
+            console.error(`❌ Failed to fetch availability for ${time}:`, response.status, response.statusText);
+            
+            // ✅ ENHANCED: For overnight operations, provide more context in errors
+            if (isOvernight) {
+              console.error(`❌ [ModernTables] Overnight operation error at ${time} - this might be due to timezone handling`);
+            }
+            
+            throw new Error(`Failed to fetch availability for ${time}: ${response.status}`);
+          }
+          
+          const data = await response.json();
+          const sortedTables = Array.isArray(data) ? data.sort((a: any, b: any) => a.id - b.id) : [];
+          
+          // ✅ ENHANCED: Better logging for overnight operations
+          if (isOvernight && (time === timeSlots[0] || time === timeSlots[Math.floor(timeSlots.length/2)] || time === timeSlots[timeSlots.length-1])) {
+            console.log(`✅ [ModernTables] 🌙 Overnight slot ${time}: ${sortedTables.length} tables`);
+          } else if (!isOvernight && sortedTables.length > 0) {
+            console.log(`✅ [ModernTables] 📅 Standard slot ${time}: ${sortedTables.length} tables`);
+          }
+          
+          return { time, tables: sortedTables };
+          
+        } catch (error) {
+          console.error(`❌ Error fetching ${time}:`, error);
+          
+          // ✅ ENHANCED: For overnight operations, provide empty data instead of failing completely
+          if (isOvernight) {
+            console.warn(`⚠️ [ModernTables] 🌙 Overnight slot ${time} failed, providing empty data`);
+            return { time, tables: [] };
+          }
+          
+          throw error; // Re-throw for standard operations
+        }
       });
       
-      const results = await Promise.all(promises);
-      return results;
+      const results = await Promise.allSettled(promises);
+      
+      // ✅ ENHANCED: Handle mixed success/failure results better for overnight operations
+      const successfulResults = results
+        .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
+        .map(result => result.value);
+      
+      const failedResults = results.filter(result => result.status === 'rejected');
+      
+      if (failedResults.length > 0) {
+        console.warn(`⚠️ [ModernTables] ${failedResults.length}/${timeSlots.length} time slots failed to load`);
+        
+        if (isOvernight && successfulResults.length > 0) {
+          console.log(`✅ [ModernTables] 🌙 Overnight operation: Using ${successfulResults.length} successful slots out of ${timeSlots.length} total`);
+        } else if (failedResults.length === timeSlots.length) {
+          throw new Error('All time slots failed to load');
+        }
+      }
+      
+      console.log(`✅ [ModernTables] Schedule loaded: ${successfulResults.length} time slots${isOvernight ? ' (overnight operation)' : ''}`);
+      return successfulResults;
     },
-    enabled: !!restaurant && timeSlots.length > 0,
+    enabled: !!restaurant && !!selectedDate && timeSlots.length > 0,
     refetchInterval: 180000,
     refetchOnWindowFocus: true,
     refetchOnMount: true,
+    retry: (failureCount, error) => {
+      // ✅ ENHANCED: More lenient retry logic for overnight operations
+      const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+        (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+      
+      if (isOvernight) {
+        return failureCount < 1; // Only retry once for overnight operations
+      }
+      return failureCount < 2; // Standard retry logic
+    },
   });
 
-  // ✅ FIXED: Update query invalidation to include timezone
+  // ✅ CRITICAL FIX: Enhanced table creation with timezone context
   const addTableMutation = useMutation({
     mutationFn: async (tableData: AddTableForm) => {
       const payload = {
@@ -187,8 +291,12 @@ export default function ModernTables({
         maxGuests: tableData.maxGuests,
         features: tableData.features ? tableData.features.split(',').map(f => f.trim()) : [],
         comments: tableData.comments,
-        status: 'free'
+        status: 'free',
+        // ✅ CRITICAL FIX: Include restaurant context
+        restaurantTimezone: restaurantTimezone
       };
+      
+      console.log(`🏗️ [ModernTables] Creating table:`, payload);
       
       const response = await fetch('/api/tables', {
         method: 'POST',
@@ -206,14 +314,21 @@ export default function ModernTables({
     },
     onSuccess: (newTable) => {
       toast({
-        title: "Table Added",
-        description: `Table ${newTable.name} (${newTable.minGuests}-${newTable.maxGuests} guests) added successfully`,
+        title: "Table Added Successfully! 🎉",
+        description: `Table ${newTable.name} (${newTable.minGuests}-${newTable.maxGuests} guests) is now available for reservations`,
       });
       
-      // ✅ FIXED: Invalidate queries with timezone context
-      queryClient.invalidateQueries({ queryKey: ["/api/tables", restaurantTimezone] });
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
-      queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile", restaurantTimezone] });
+      console.log(`✅ [ModernTables] Table created:`, newTable);
+      
+      // ✅ CRITICAL FIX: Comprehensive cache invalidation
+      queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile"] });
+      
+      // Force refetch of schedule data
+      queryClient.refetchQueries({ 
+        queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
+      });
       
       // Reset form and close modal
       setAddTableForm({
@@ -226,17 +341,20 @@ export default function ModernTables({
       setShowAddTableModal(false);
     },
     onError: (error: any) => {
+      console.error('❌ [ModernTables] Table creation failed:', error);
       toast({
         title: "Failed to Add Table",
-        description: error.message || "Please try again",
+        description: error.message || "Please check your inputs and try again",
         variant: "destructive",
       });
     }
   });
 
-  // ✅ FIXED: Update query invalidation to include timezone
+  // ✅ CRITICAL FIX: Enhanced table deletion with timezone context
   const deleteTableMutation = useMutation({
     mutationFn: async (tableId: number) => {
+      console.log(`🗑️ [ModernTables] Deleting table ${tableId}`);
+      
       const response = await fetch(`/api/tables/${tableId}`, {
         method: 'DELETE',
         credentials: 'include'
@@ -255,11 +373,19 @@ export default function ModernTables({
         description: "Table removed successfully",
       });
       
-      // ✅ FIXED: Invalidate queries with timezone context
-      queryClient.invalidateQueries({ queryKey: ["/api/tables", restaurantTimezone] });
-      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] });
+      console.log(`✅ [ModernTables] Table deleted successfully`);
+      
+      // ✅ CRITICAL FIX: Comprehensive cache invalidation
+      queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+      
+      // Force refetch
+      queryClient.refetchQueries({ 
+        queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
+      });
     },
     onError: (error: any) => {
+      console.error('❌ [ModernTables] Table deletion failed:', error);
       toast({
         title: "Failed to Delete Table",
         description: error.message || "Please try again",
@@ -268,13 +394,15 @@ export default function ModernTables({
     }
   });
 
-  // ✅ FIXED: Include timezone parameter and update query invalidation
+  // ✅ CRITICAL FIX: Enhanced reservation movement with timezone
   const moveReservationMutation = useMutation({
     mutationFn: async ({ reservationId, newTableId, newTime }: {
       reservationId: number;
       newTableId: number;
       newTime: string;
     }) => {
+      console.log(`🔄 [ModernTables] Moving reservation ${reservationId} to table ${newTableId} at ${newTime}`);
+      
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -283,7 +411,7 @@ export default function ModernTables({
           tableId: newTableId,
           time: newTime,
           date: selectedDate,
-          timezone: restaurantTimezone // ✅ FIXED: Include timezone
+          timezone: restaurantTimezone
         })
       });
       
@@ -291,14 +419,13 @@ export default function ModernTables({
       return response.json();
     },
     
-    // ✅ FIXED: Update optimistic cache with timezone context
     onMutate: async ({ reservationId, newTableId, newTime }) => {
       await queryClient.cancelQueries({ 
         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
       });
 
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
-      const duration = 2; // hours
+      const duration = 2;
 
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old || !draggedReservation) return old;
@@ -335,7 +462,7 @@ export default function ModernTables({
                   id: reservationId,
                   guestName: draggedReservation.guestName,
                   guestCount: draggedReservation.guestCount,
-                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1].replace(':00', ':00')}`,
+                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1]}`,
                   phone: draggedReservation.phone || '',
                   status: 'confirmed'
                 }
@@ -363,7 +490,6 @@ export default function ModernTables({
       setDraggedReservation(null);
       setDragOverSlot(null);
       
-      // ✅ FIXED: Invalidate with timezone context
       queryClient.invalidateQueries({ 
         queryKey: ["/api/reservations", restaurantTimezone] 
       });
@@ -388,7 +514,7 @@ export default function ModernTables({
     }
   });
 
-  // ✅ FIXED: Include timezone and update cache invalidation
+  // ✅ CRITICAL FIX: Enhanced reservation cancellation
   const cancelReservationMutation = useMutation({
     mutationFn: async (reservationId: number) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
@@ -397,7 +523,7 @@ export default function ModernTables({
         credentials: 'include',
         body: JSON.stringify({ 
           status: 'canceled',
-          timezone: restaurantTimezone // ✅ FIXED: Include timezone
+          timezone: restaurantTimezone
         })
       });
       if (!response.ok) throw new Error('Failed to cancel reservation');
@@ -450,7 +576,7 @@ export default function ModernTables({
     },
   });
 
-  // ✅ FIXED: Include timezone parameter and update cache operations
+  // ✅ CRITICAL FIX: Enhanced quick move with timezone and overnight support
   const quickMoveMutation = useMutation({
     mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
       const currentSlot = scheduleData?.find(slot => 
@@ -462,6 +588,38 @@ export default function ModernTables({
       
       const currentHour = parseInt(currentSlot.time.split(':')[0]);
       const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
+      
+      // ✅ ENHANCED: Handle overnight operation boundaries
+      const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+        (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+      
+      if (isOvernight) {
+        const openingHour = parseInt(restaurant.openingTime.split(':')[0]);
+        const closingHour = parseInt(restaurant.closingTime.split(':')[0]);
+        
+        // For overnight operations, check boundaries differently
+        if (direction === 'up' && newHour < 0) {
+          throw new Error('Cannot move before midnight');
+        }
+        if (direction === 'down' && newHour >= 24) {
+          throw new Error('Cannot move past 24:00');
+        }
+        
+        // Check if the new hour is within operating hours
+        const isValidHour = (newHour >= openingHour || newHour < closingHour);
+        if (!isValidHour) {
+          throw new Error(`Cannot move outside operating hours (${restaurant.openingTime} - ${restaurant.closingTime})`);
+        }
+      } else {
+        // Standard operation checks
+        const openingHour = parseInt(restaurant?.openingTime?.split(':')[0] || '10');
+        const closingHour = parseInt(restaurant?.closingTime?.split(':')[0] || '22');
+        
+        if (newHour < openingHour || newHour > closingHour - 2) {
+          throw new Error(`Cannot move outside business hours (${openingHour}:00 - ${closingHour - 2}:00)`);
+        }
+      }
+      
       const newTime = `${newHour.toString().padStart(2, '0')}:00`;
       
       const targetSlots = [
@@ -478,10 +636,6 @@ export default function ModernTables({
         }
       }
       
-      if (newHour < 10 || newHour > 22) {
-        throw new Error('Cannot move outside business hours (10:00 - 22:00)');
-      }
-      
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -490,7 +644,7 @@ export default function ModernTables({
           tableId: currentTable.id,
           time: newTime,
           date: selectedDate,
-          timezone: restaurantTimezone // ✅ FIXED: Include timezone
+          timezone: restaurantTimezone
         }),
       });
       if (!response.ok) throw new Error('Failed to move reservation');
@@ -545,7 +699,7 @@ export default function ModernTables({
                 status: 'reserved',
                 reservation: {
                   ...currentTable.reservation,
-                  timeSlot: `${targetSlots[0]}-${targetSlots[targetSlots.length - 1].replace(':00', ':00')}`
+                  timeSlot: `${targetSlots[0]}-${targetSlots[targetSlots.length - 1]}`
                 }
               };
             }
@@ -572,13 +726,13 @@ export default function ModernTables({
       }
       toast({
         title: "Move Failed",
-        description: "Could not move reservation. Check for conflicts.",
+        description: error.message || "Could not move reservation. Check for conflicts.",
         variant: "destructive",
       });
     },
   });
 
-  // Enhanced Drag & Drop Event Handlers (unchanged - already working)
+  // Drag & Drop Event Handlers (unchanged)
   const handleDragStart = (
     e: React.DragEvent,
     reservation: {
@@ -713,29 +867,57 @@ export default function ModernTables({
     }
   };
 
-  // ✅ NEW: Handle Add Table Form Submission
+  // ✅ CRITICAL FIX: Enhanced form submission with validation
   const handleAddTable = (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!addTableForm.name || addTableForm.minGuests < 1 || addTableForm.maxGuests < addTableForm.minGuests) {
+    if (!addTableForm.name.trim()) {
       toast({
-        title: "Invalid Table Data",
-        description: "Please check all fields and ensure max guests >= min guests",
+        title: "Table Name Required",
+        description: "Please enter a name for the table",
         variant: "destructive",
       });
       return;
     }
     
+    if (addTableForm.minGuests < 1 || addTableForm.maxGuests < addTableForm.minGuests) {
+      toast({
+        title: "Invalid Capacity",
+        description: "Please ensure max guests is greater than or equal to min guests",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    if (addTableForm.maxGuests > 50) {
+      toast({
+        title: "Capacity Too Large",
+        description: "Maximum table capacity is 50 guests",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    console.log(`🏗️ [ModernTables] Submitting table creation form:`, addTableForm);
     addTableMutation.mutate(addTableForm);
   };
 
-  // ✅ FIXED: Format current date display using restaurant timezone
+  // ✅ CRITICAL FIX: Enhanced date formatting with timezone
   const formatCurrentDate = () => {
     try {
-      const restaurantDateTime = getRestaurantDateTime(restaurantTimezone);
+      if (!restaurantTimezone || !selectedDate) {
+        return new Date().toLocaleDateString('en-US', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+      }
+      
+      const restaurantDateTime = DateTime.fromISO(selectedDate, { zone: restaurantTimezone });
       return restaurantDateTime.toFormat('EEEE, MMMM d, yyyy');
     } catch (error) {
-      // Fallback to basic formatting if timezone parsing fails
+      console.error('Error formatting date:', error);
       return new Date(selectedDate).toLocaleDateString('en-US', { 
         weekday: 'long', 
         year: 'numeric', 
@@ -744,6 +926,55 @@ export default function ModernTables({
       });
     }
   };
+
+  // ✅ CRITICAL FIX: Enhanced date navigation with timezone
+  const getTodayDateStr = () => {
+    return getRestaurantDateString(restaurantTimezone);
+  };
+
+  const getTomorrowDateStr = () => {
+    return getTomorrowDateString(restaurantTimezone);
+  };
+
+  // ✅ CRITICAL FIX: Show loading state while restaurant loads
+  if (restaurantLoading) {
+    return (
+      <DashboardLayout>
+        <div className="container mx-auto px-4 py-8">
+          <div className="flex items-center justify-center h-64">
+            <div className="flex items-center gap-3">
+              <RefreshCw className="h-6 w-6 animate-spin text-blue-600" />
+              <span className="text-lg text-gray-600">Loading restaurant profile...</span>
+            </div>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // ✅ CRITICAL FIX: Show error state if restaurant fails to load
+  if (restaurantError || !restaurant) {
+    return (
+      <DashboardLayout>
+        <div className="container mx-auto px-4 py-8">
+          <div className="text-center py-12">
+            <h2 className="text-xl font-semibold text-red-600 mb-4">Unable to Load Restaurant</h2>
+            <p className="text-gray-600 mb-4">
+              {restaurantError ? (restaurantError as any).message : 'Restaurant profile not found'}
+            </p>
+            <Button onClick={() => window.location.reload()}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Reload Page
+            </Button>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  // ✅ ENHANCED: Check if this is an overnight operation
+  const isOvernightOperation = restaurant?.openingTime && restaurant?.closingTime && 
+    (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
 
   return (
     <DashboardLayout>
@@ -755,9 +986,18 @@ export default function ModernTables({
               <div className="flex items-center gap-2">
                 <Calendar className="h-5 w-5 text-blue-600" />
                 <CardTitle className="text-lg">Table Management</CardTitle>
+                {/* ✅ CRITICAL FIX: Show timezone and operation type info */}
+                <Badge variant="outline" className="text-xs">
+                  {restaurantTimezone}
+                </Badge>
+                {isOvernightOperation && (
+                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">
+                    <Clock className="h-3 w-3 mr-1" />
+                    24-Hour Operation
+                  </Badge>
+                )}
               </div>
               <div className="flex items-center gap-2">
-                {/* ✅ NEW: Add Table Button */}
                 <Button 
                   onClick={() => setShowAddTableModal(true)}
                   className="bg-green-600 hover:bg-green-700 text-white"
@@ -766,12 +1006,12 @@ export default function ModernTables({
                   <Plus className="h-4 w-4 mr-1" />
                   Add Table
                 </Button>
-                {/* ✅ FIXED: Use restaurant timezone for Today/Tomorrow buttons */}
                 <Button 
                   variant="outline" 
                   size="sm"
-                  onClick={() => setSelectedDate(getRestaurantDateStr())}
+                  onClick={() => setSelectedDate(getTodayDateStr())}
                   className="text-xs"
+                  disabled={!restaurantTimezone}
                 >
                   Today
                 </Button>
@@ -780,6 +1020,7 @@ export default function ModernTables({
                   size="sm"
                   onClick={() => setSelectedDate(getTomorrowDateStr())}
                   className="text-xs"
+                  disabled={!restaurantTimezone}
                 >
                   Tomorrow
                 </Button>
@@ -794,8 +1035,17 @@ export default function ModernTables({
           </CardHeader>
         </Card>
 
-        {/* ✅ NEW: Table Statistics */}
-        {tables && tables.length > 0 && (
+        {/* ✅ CRITICAL FIX: Enhanced Table Statistics with loading states */}
+        {tablesLoading ? (
+          <Card className="bg-blue-50 border-blue-200">
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-center h-16">
+                <RefreshCw className="h-5 w-5 animate-spin text-blue-600 mr-2" />
+                <span className="text-blue-700">Loading tables...</span>
+              </div>
+            </CardContent>
+          </Card>
+        ) : tables && tables.length > 0 ? (
           <Card className="bg-blue-50 border-blue-200">
             <CardContent className="pt-4">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -824,6 +1074,25 @@ export default function ModernTables({
               </div>
             </CardContent>
           </Card>
+        ) : (
+          <Card className="bg-yellow-50 border-yellow-200">
+            <CardContent className="pt-4">
+              <div className="text-center py-8">
+                <Users className="h-12 w-12 text-yellow-600 mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-yellow-800 mb-2">No Tables Found</h3>
+                <p className="text-yellow-700 mb-4">
+                  Add tables to start managing reservations and table availability.
+                </p>
+                <Button 
+                  onClick={() => setShowAddTableModal(true)}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Your First Table
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Beautiful Schedule Grid */}
@@ -832,15 +1101,16 @@ export default function ModernTables({
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                  {/* ✅ FIXED: Use restaurant timezone for date display */}
                   Restaurant Management - {formatCurrentDate()}
                 </h3>
                 <p className="text-gray-500 dark:text-gray-400 mt-1">
-                  Real-time availability across all tables • Auto-refreshes every 30 seconds
-                  {/* ✅ NEW: Show current timezone info */}
-                  {restaurantTimezone !== 'Europe/Moscow' && (
-                    <span className="ml-2 text-blue-600">
-                      • {restaurantTimezone}
+                  Real-time availability across all tables • Auto-refreshes every 3 minutes
+                  <span className="ml-2 text-blue-600">
+                    • {restaurantTimezone}
+                  </span>
+                  {isOvernightOperation && (
+                    <span className="ml-2 text-purple-600">
+                      • 24-Hour Operation ({restaurant.openingTime}-{restaurant.closingTime})
                     </span>
                   )}
                 </p>
@@ -880,7 +1150,7 @@ export default function ModernTables({
 
                 {activeView === 'schedule' && (
                   <Badge variant="outline" className="text-xs">
-                    Hourly slots
+                    {isOvernightOperation ? `${timeSlots.length} overnight slots` : 'Hourly slots'}
                   </Badge>
                 )}
               </div>
@@ -891,13 +1161,48 @@ export default function ModernTables({
         <div className="p-6">
           {activeView === 'schedule' && (
             <>
-              {scheduleData && scheduleData.length > 0 ? (
+              {/* ✅ CRITICAL FIX: Enhanced error handling and loading states for overnight */}
+              {scheduleError ? (
+                <div className="text-center py-12">
+                  <p className="text-red-600 mb-4">
+                    Failed to load schedule: {(scheduleError as any).message}
+                  </p>
+                  {isOvernightOperation && (
+                    <p className="text-orange-600 mb-4 text-sm">
+                      Note: 24-hour operations may require additional setup time
+                    </p>
+                  )}
+                  <Button onClick={() => queryClient.refetchQueries({ 
+                    queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
+                  })}>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Retry
+                  </Button>
+                </div>
+              ) : isLoading ? (
+                <div className="text-center py-12">
+                  <RefreshCw className="h-6 w-6 animate-spin text-blue-600 mx-auto mb-4" />
+                  <p className="text-gray-600">
+                    Loading {isOvernightOperation ? '24-hour' : 'schedule'} data...
+                  </p>
+                  {isOvernightOperation && (
+                    <p className="text-sm text-blue-600 mt-2">
+                      Processing {timeSlots.length} overnight time slots
+                    </p>
+                  )}
+                </div>
+              ) : scheduleData && scheduleData.length > 0 && scheduleData[0]?.tables?.length > 0 ? (
                 <div className="overflow-x-auto">
                   <div className="min-w-[800px]">
                     {/* Sticky Header */}
                     <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10 rounded-lg mb-4">
                       <div className="flex">
-                        <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">TIME</div>
+                        <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">
+                          TIME
+                          {isOvernightOperation && (
+                            <div className="text-xs text-blue-600 mt-1">24h</div>
+                          )}
+                        </div>
                         <div className="flex overflow-x-auto gap-1 flex-1">
                           {scheduleData[0]?.tables?.map((table: TableData) => (
                             <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50 relative group">
@@ -906,7 +1211,6 @@ export default function ModernTables({
                                 <Users className="h-3 w-3" />
                                 {table.minGuests}-{table.maxGuests}
                               </div>
-                              {/* ✅ NEW: Delete button on hover */}
                               <Button
                                 variant="destructive"
                                 size="sm"
@@ -925,78 +1229,108 @@ export default function ModernTables({
                       </div>
                     </div>
 
-                    {/* Time Slots */}
+                    {/* ✅ ENHANCED: Time Slots with overnight operation visual cues */}
                     <div className="space-y-1">
-                      {scheduleData?.map((slot: ScheduleSlot) => (
-                        <div key={slot.time} className="flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200">
-                          <div className="w-20 flex-shrink-0 px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 border-r border-gray-200/50 dark:border-gray-700/50">
-                            {slot.time}
-                          </div>
-                          <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
-                            {slot.tables?.map((table: TableData) => {
-                              const hasReservation = table.reservation && table.reservation.status === 'confirmed';
-                              const isDragTarget = dragOverSlot?.tableId === table.id && dragOverSlot?.time === slot.time;
-                              
-                              return (
-                                <div
-                                  key={table.id}
-                                  className={cn(
-                                    "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
-                                    getStatusStyle(table.status, hasReservation, isDragTarget),
-                                    !hasReservation && "hover:scale-105"
-                                  )}
-                                  draggable={hasReservation}
-                                  onDragStart={(e) => hasReservation && table.reservation && handleDragStart(
-                                    e,
-                                    {
-                                      id: table.reservation.id || 0,
-                                      guestName: table.reservation.guestName,
-                                      guestCount: table.reservation.guestCount
-                                    },
-                                    table,
-                                    slot.time
-                                  )}
-                                  onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
-                                  onDragLeave={handleDragLeave}
-                                  onDrop={(e) => handleDrop(e, table.id, slot.time)}
-                                  onContextMenu={(e) => {
-                                    e.preventDefault();
-                                    setContextMenu({
-                                      x: e.clientX,
-                                      y: e.clientY,
-                                      reservationId: hasReservation ? table.reservation?.id : undefined,
-                                      tableId: table.id,
-                                      timeSlot: slot.time,
-                                      guestName: hasReservation ? table.reservation?.guestName : undefined,
-                                    });
-                                  }}
-                                >
-                                  <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
-                                    {hasReservation && <Move className="h-3 w-3" />}
-                                    {table.name}
-                                  </div>
-                                  {hasReservation && table.reservation && (
-                                    <div className="text-xs opacity-75 mt-1 truncate">
-                                      {table.reservation.guestName}
-                                    </div>
-                                  )}
-                                  <div className="text-xs opacity-60 mt-1">
-                                    {hasReservation ? `${table.reservation?.guestCount} guests` : table.status}
-                                  </div>
+                      {scheduleData?.map((slot: ScheduleSlot) => {
+                        const hour = parseInt(slot.time.split(':')[0]);
+                        const isEarlyMorning = isOvernightOperation && hour < 6;
+                        const isLateNight = isOvernightOperation && hour >= 22;
+                        
+                        return (
+                          <div 
+                            key={slot.time} 
+                            className={cn(
+                              "flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200",
+                              isEarlyMorning && "bg-blue-50/30",
+                              isLateNight && "bg-purple-50/30"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-20 flex-shrink-0 px-4 py-3 text-sm font-medium border-r border-gray-200/50 dark:border-gray-700/50",
+                              isEarlyMorning && "text-blue-700 dark:text-blue-300",
+                              isLateNight && "text-purple-700 dark:text-purple-300",
+                              !isEarlyMorning && !isLateNight && "text-gray-700 dark:text-gray-300"
+                            )}>
+                              {slot.time}
+                              {isOvernightOperation && (
+                                <div className="text-xs opacity-60">
+                                  {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Day"}
                                 </div>
-                              );
-                            })}
+                              )}
+                            </div>
+                            <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
+                              {slot.tables?.map((table: TableData) => {
+                                const hasReservation = table.reservation && table.reservation.status === 'confirmed';
+                                const isDragTarget = dragOverSlot?.tableId === table.id && dragOverSlot?.time === slot.time;
+                                
+                                return (
+                                  <div
+                                    key={table.id}
+                                    className={cn(
+                                      "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
+                                      getStatusStyle(table.status, hasReservation, isDragTarget),
+                                      !hasReservation && "hover:scale-105"
+                                    )}
+                                    draggable={hasReservation}
+                                    onDragStart={(e) => hasReservation && table.reservation && handleDragStart(
+                                      e,
+                                      {
+                                        id: table.reservation.id || 0,
+                                        guestName: table.reservation.guestName,
+                                        guestCount: table.reservation.guestCount
+                                      },
+                                      table,
+                                      slot.time
+                                    )}
+                                    onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
+                                    onDragLeave={handleDragLeave}
+                                    onDrop={(e) => handleDrop(e, table.id, slot.time)}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      setContextMenu({
+                                        x: e.clientX,
+                                        y: e.clientY,
+                                        reservationId: hasReservation ? table.reservation?.id : undefined,
+                                        tableId: table.id,
+                                        timeSlot: slot.time,
+                                        guestName: hasReservation ? table.reservation?.guestName : undefined,
+                                      });
+                                    }}
+                                  >
+                                    <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
+                                      {hasReservation && <Move className="h-3 w-3" />}
+                                      {table.name}
+                                    </div>
+                                    {hasReservation && table.reservation && (
+                                      <div className="text-xs opacity-75 mt-1 truncate">
+                                        {table.reservation.guestName}
+                                      </div>
+                                    )}
+                                    <div className="text-xs opacity-60 mt-1">
+                                      {hasReservation ? `${table.reservation?.guestCount} guests` : table.status}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
               ) : (
                 <div className="text-center py-12">
-                  <p className="text-gray-500 dark:text-gray-400 mb-4">
-                    No tables found. Add tables to start managing reservations.
+                  <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-600 mb-2">No Tables Available</h3>
+                  <p className="text-gray-500 mb-4">
+                    Add tables to start managing reservations and viewing table availability.
                   </p>
+                  {isOvernightOperation && (
+                    <p className="text-sm text-blue-600 mb-4">
+                      24-hour operation detected ({restaurant.openingTime}-{restaurant.closingTime})
+                    </p>
+                  )}
                   <Button 
                     onClick={() => setShowAddTableModal(true)}
                     className="bg-green-600 hover:bg-green-700 text-white"
@@ -1021,31 +1355,37 @@ export default function ModernTables({
       </div>
       </div>
 
-      {/* ✅ NEW: Add Table Modal */}
+      {/* ✅ CRITICAL FIX: Enhanced Add Table Modal */}
       <Dialog open={showAddTableModal} onOpenChange={setShowAddTableModal}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Add New Table</DialogTitle>
             <DialogDescription>
               Create a new table for your restaurant. You can edit these details later.
+              {isOvernightOperation && (
+                <span className="block mt-2 text-blue-600 text-sm">
+                  🌙 24-hour operation detected - table will be available around the clock
+                </span>
+              )}
             </DialogDescription>
           </DialogHeader>
           
           <form onSubmit={handleAddTable} className="space-y-4">
             <div>
-              <Label htmlFor="tableName">Table Name</Label>
+              <Label htmlFor="tableName">Table Name *</Label>
               <Input
                 id="tableName"
                 value={addTableForm.name}
                 onChange={(e) => setAddTableForm(prev => ({ ...prev, name: e.target.value }))}
                 placeholder="e.g. Table 1, Corner Table, Patio A"
                 required
+                maxLength={50}
               />
             </div>
             
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="minGuests">Min Guests</Label>
+                <Label htmlFor="minGuests">Min Guests *</Label>
                 <Input
                   id="minGuests"
                   type="number"
@@ -1058,7 +1398,7 @@ export default function ModernTables({
               </div>
               
               <div>
-                <Label htmlFor="maxGuests">Max Guests</Label>
+                <Label htmlFor="maxGuests">Max Guests *</Label>
                 <Input
                   id="maxGuests"
                   type="number"
@@ -1078,6 +1418,7 @@ export default function ModernTables({
                 value={addTableForm.features}
                 onChange={(e) => setAddTableForm(prev => ({ ...prev, features: e.target.value }))}
                 placeholder="e.g. Window view, Outdoor, Private"
+                maxLength={200}
               />
             </div>
             
@@ -1089,11 +1430,17 @@ export default function ModernTables({
                 onChange={(e) => setAddTableForm(prev => ({ ...prev, comments: e.target.value }))}
                 placeholder="Any additional notes about this table"
                 rows={2}
+                maxLength={500}
               />
             </div>
             
             <div className="flex justify-end space-x-2 pt-4">
-              <Button type="button" variant="outline" onClick={() => setShowAddTableModal(false)}>
+              <Button 
+                type="button" 
+                variant="outline" 
+                onClick={() => setShowAddTableModal(false)}
+                disabled={addTableMutation.isPending}
+              >
                 Cancel
               </Button>
               <Button 
@@ -1118,7 +1465,7 @@ export default function ModernTables({
         </DialogContent>
       </Dialog>
 
-      {/* Context Menu */}
+      {/* Context Menu (unchanged) */}
       {contextMenu && (
         <>
           <div 
@@ -1130,7 +1477,6 @@ export default function ModernTables({
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
             {contextMenu.reservationId ? (
-              // Reservation context menu
               <>
                 <div className="px-3 py-2 text-sm font-medium text-gray-900 border-b">
                   {contextMenu.guestName || 'Reservation'}
@@ -1169,7 +1515,6 @@ export default function ModernTables({
                 </button>
               </>
             ) : (
-              // Empty slot context menu
               <>
                 <div className="px-3 py-2 text-sm font-medium text-gray-900 border-b">
                   Available Slot
