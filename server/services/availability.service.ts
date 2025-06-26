@@ -112,7 +112,7 @@ function validateReservationDate(
     }
 }
 
-// ✅ DYNAMIC: Completely rewritten overnight conflict detection (works for ANY times)
+// 🔧 FIXED: Enhanced overnight conflict detection with proper date handling
 function isTableAvailableAtTimeSlot(
     tableId: number,
     targetTimeSlot: string, // HH:MM:SS in restaurant timezone
@@ -125,8 +125,8 @@ function isTableAvailableAtTimeSlot(
     restaurantTimezone: string,
     requestedDate: string,
     isOvernightOp: boolean = false,
-    openingMinutes: number = 0, // ✅ DYNAMIC: Pass actual opening time
-    closingMinutes: number = 1440 // ✅ DYNAMIC: Pass actual closing time
+    openingMinutes: number = 0,
+    closingMinutes: number = 1440
 ): boolean {
     const targetSlotStartMinutes = parseTimeToMinutes(targetTimeSlot);
     if (targetSlotStartMinutes === null) {
@@ -170,6 +170,11 @@ function isTableAvailableAtTimeSlot(
             const restaurantLocal = localDateTime.setZone(restaurantTimezone);
             const localTime = restaurantLocal.toFormat('HH:mm:ss');
             
+            // 🔧 CRITICAL FIX: Get the actual date of the reservation
+            const reservationDate = restaurantLocal.toISODate();
+            
+            console.log(`[AvailabilityService] 🔍 [Time Check] Reservation UTC: ${reservation.reservation_utc} -> Local: ${localTime} on ${reservationDate} (${restaurantTimezone})`);
+            
             const resStartMinutes = parseTimeToMinutes(localTime);
             if (resStartMinutes === null) {
                 console.warn(`[AvailabilityService] Converted time ${localTime} invalid for reservation ${reservation.id || 'unknown'} (UTC: ${reservation.reservation_utc})`);
@@ -179,11 +184,54 @@ function isTableAvailableAtTimeSlot(
             const resDuration = reservation.duration ?? 120;
             const resEndMinutes = addMinutesToTime(resStartMinutes, resDuration);
 
-            // ✅ DYNAMIC: Enhanced overnight conflict detection (works for ANY times)
+            // 🔧 CRITICAL FIX: Check if reservation and slot are from different dates
+            if (reservationDate !== requestedDate) {
+                console.log(`[AvailabilityService] 📅 Date mismatch: Reservation on ${reservationDate} vs Slot on ${requestedDate}`);
+                
+                if (isOvernightOp) {
+                    // For overnight operations, check if reservation from previous day extends to current day
+                    const previousDate = DateTime.fromISO(requestedDate, { zone: restaurantTimezone })
+                        .minus({ days: 1 }).toISODate();
+                    
+                    if (reservationDate === previousDate) {
+                        // Reservation is from previous day - check if it extends past midnight to current day
+                        console.log(`[AvailabilityService] 🌙 Checking if previous day reservation extends to current day: ${resStartMinutes}-${resEndMinutes} (${resDuration}min)`);
+                        
+                        // Check if reservation extends past midnight (24*60 = 1440 minutes)
+                        if (resEndMinutes > 24 * 60) {
+                            // Reservation extends to next day, calculate overlap with current day slot
+                            const resEndOnCurrentDay = resEndMinutes - 24 * 60;
+                            console.log(`[AvailabilityService] 🌙 Reservation extends to current day: ends at ${resEndOnCurrentDay} minutes`);
+                            
+                            // Check overlap with current day slot
+                            const overlaps = targetSlotStartMinutes < resEndOnCurrentDay;
+                            if (overlaps) {
+                                console.log(`[AvailabilityService] ❌ Table ${tableId} conflicts: Slot ${targetSlotStartMinutes}-${targetSlotEndMinutes} overlaps with previous day reservation ending at ${resEndOnCurrentDay} on ${requestedDate}`);
+                                return false;
+                            } else {
+                                console.log(`[AvailabilityService] ✅ No overlap: Previous day reservation ends at ${resEndOnCurrentDay}, slot starts at ${targetSlotStartMinutes}`);
+                            }
+                        } else {
+                            console.log(`[AvailabilityService] ✅ Previous day reservation (${resStartMinutes}-${resEndMinutes}) doesn't extend to current day`);
+                        }
+                        continue;
+                    } else {
+                        // Reservation is from a completely different date - no conflict possible
+                        console.log(`[AvailabilityService] ✅ Different date, no conflict: ${reservationDate} vs ${requestedDate}`);
+                        continue;
+                    }
+                } else {
+                    // Non-overnight operation - different dates = no conflict
+                    console.log(`[AvailabilityService] ✅ Standard operation, different dates = no conflict: ${reservationDate} vs ${requestedDate}`);
+                    continue;
+                }
+            }
+
+            // 🔧 ENHANCED: Same-date conflict detection with proper overnight handling
             let overlaps = false;
 
             if (isOvernightOp) {
-                console.log(`[AvailabilityService] 🌙 Overnight conflict check: Slot ${targetSlotStartMinutes}-${targetSlotEndMinutes} vs Reservation ${resStartMinutes}-${resEndMinutes}`);
+                console.log(`[AvailabilityService] 🌙 Same-date overnight conflict check: Slot ${targetSlotStartMinutes}-${targetSlotEndMinutes} vs Reservation ${resStartMinutes}-${resEndMinutes}`);
                 
                 // ✅ DYNAMIC: Determine if times are in "early" or "late" portions of operation
                 const isTargetInEarlyPortion = targetSlotStartMinutes < closingMinutes;
@@ -224,7 +272,7 @@ function isTableAvailableAtTimeSlot(
             }
 
             if (overlaps) {
-                console.log(`[AvailabilityService] ❌ Table ${tableId} conflicts at ${targetTimeSlot} with reservation from ${localTime} (UTC: ${reservation.reservation_utc}) for ${resDuration}min on ${requestedDate} [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]`);
+                console.log(`[AvailabilityService] ❌ Table ${tableId} conflicts at ${targetTimeSlot} with reservation from ${localTime} (UTC: ${reservation.reservation_utc}) for ${resDuration}min on ${reservationDate} [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]`);
                 return false;
             }
         } catch (error) {
