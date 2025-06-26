@@ -219,8 +219,9 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
-      staleTime: (query) => getStaleTime(query.queryKey),
-      refetchInterval: (query) => getRefetchInterval(query.queryKey),
+      // ✅ FIXED: Use function-based options for React Query v5
+      staleTime: ({ queryKey }) => getStaleTime(queryKey),
+      refetchInterval: ({ queryKey }) => getRefetchInterval(queryKey),
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
       retry: smartRetry,
@@ -296,8 +297,6 @@ if (process.env.NODE_ENV === 'development') {
         key: JSON.stringify(query.queryKey),
         status: query.state.status,
         dataUpdatedAt: new Date(query.state.dataUpdatedAt).toLocaleTimeString(),
-        staleTime: query.options.staleTime,
-        refetchInterval: query.options.refetchInterval,
         hasTimezone: query.queryKey.some(k => typeof k === 'string' && k.includes('timezone'))
       }))
     );

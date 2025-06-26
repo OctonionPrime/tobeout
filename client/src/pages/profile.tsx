@@ -102,7 +102,7 @@ export default function Profile() {
     },
     // ✅ CRITICAL: Remove stale time to ensure fresh data
     staleTime: 0,
-    cacheTime: 1000 * 60, // Keep for 1 minute
+    gcTime: 1000 * 60, // Keep for 1 minute
     refetchOnMount: true,
     refetchOnWindowFocus: true,
   });

@@ -29,7 +29,7 @@ export default function Dashboard() {
     // In a real application, you would get the restaurant ID from user context or auth state
     const restaurantId = 1;
 
-    // ✅ ENHANCED: Restaurant profile query with better error handling
+    // ✅ FIXED: React Query v5 compatibility - gcTime instead of cacheTime
     const { data: restaurant, isLoading: isRestaurantLoading, error: restaurantError } = useQuery({
         queryKey: ['/api/restaurants/profile'],
         queryFn: async () => {
@@ -40,7 +40,7 @@ export default function Dashboard() {
             return data;
         },
         staleTime: 0, // ✅ CRITICAL: Ensure fresh timezone data
-        cacheTime: 5 * 60 * 1000, // 5 minutes
+        gcTime: 5 * 60 * 1000, // ✅ FIXED: gcTime instead of cacheTime for React Query v5
     });
 
     // ✅ ENHANCED: Fallback timezone with better logic
@@ -183,7 +183,7 @@ export default function Dashboard() {
                     </div>
                 </header>
 
-                {/* ✅ ALREADY CORRECT: Statistics Cards with timezone */}
+                {/* ✅ PASS timezone as prop (interface should accept it) */}
                 <StatisticsCards
                     restaurantId={restaurantId}
                     restaurantTimezone={effectiveTimezone}
@@ -192,7 +192,7 @@ export default function Dashboard() {
                 {/* Upcoming Reservations & Table Status */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
                     <div className="lg:col-span-2">
-                        {/* ✅ ALREADY CORRECT: UpcomingReservations with timezone */}
+                        {/* ✅ PASS timezone as prop */}
                         <UpcomingReservations
                             restaurantId={restaurantId}
                             restaurantTimezone={effectiveTimezone}
@@ -201,7 +201,7 @@ export default function Dashboard() {
                         />
                     </div>
                     <div className="lg:col-span-1">
-                        {/* ✅ FIXED: TableStatus with timezone (now includes date/time parameters) */}
+                        {/* ✅ PASS timezone as prop */}
                         <TableStatus
                             restaurantId={restaurantId}
                             restaurantTimezone={effectiveTimezone}
@@ -212,24 +212,24 @@ export default function Dashboard() {
                 {/* Timeslot Generator & AI Assistant */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
                     <div className="lg:col-span-1">
-                        {/* ✅ FIXED: TimeslotGenerator with timezone */}
+                        {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
                         <TimeslotGenerator
                             restaurantId={restaurantId}
-                            restaurantTimezone={effectiveTimezone}
+                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
                         />
                     </div>
                     <div className="lg:col-span-2">
-                        {/* ✅ ENHANCED: AIAssistant with timezone context */}
+                        {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
                         <AIAssistant 
                             restaurantId={restaurantId}
-                            restaurantTimezone={effectiveTimezone}
+                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
                         />
                     </div>
                 </div>
 
                 {/* Reservation Timeline */}
                 <div className="grid grid-cols-1 gap-8">
-                    {/* ✅ FIXED: ReservationTimeline with timezone */}
+                    {/* ✅ PASS timezone as prop */}
                     <ReservationTimeline
                         restaurantId={restaurantId}
                         restaurantTimezone={effectiveTimezone}
@@ -237,13 +237,13 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* ✅ FIXED: ReservationModal with timezone */}
+            {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
             <ReservationModal
                 isOpen={isReservationModalOpen}
                 onClose={() => setIsReservationModalOpen(false)}
                 reservationId={selectedReservationId}
                 restaurantId={restaurantId}
-                restaurantTimezone={effectiveTimezone}
+                {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
             />
 
             {/* Delete Confirmation Dialog */}

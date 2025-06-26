@@ -1,6 +1,6 @@
 //
-// storage.ts (Complete Timezone-Aware Version with UTC Timestamps)
-// This version fixes ALL timezone issues in the storage layer
+// storage.ts (Complete Timezone-Aware Version with UTC Timestamps + Type Safety Fixes)
+// This version fixes ALL timezone issues in the storage layer + TypeScript errors
 //
 
 import {
@@ -22,6 +22,9 @@ import { DateTime } from 'luxon';
 // ✅ PROPER FIX: Use centralized timezone utilities for consistency across the application
 // This ensures all timezone handling follows the same logic and supports all 600+ timezones
 import { getRestaurantDateTime, getRestaurantDateString } from './utils/timezone-utils';
+
+// ✅ TYPE SAFETY FIX: Define valid reservation statuses
+type ReservationStatus = 'confirmed' | 'created' | 'canceled' | 'completed' | 'archived';
 
 export interface IStorage {
     // User methods
@@ -350,7 +353,7 @@ export class DatabaseStorage implements IStorage {
         return updatedGuest;
     }
 
-    // ✅ COMPLETELY REWRITTEN: Reservation methods with UTC timestamp support
+    // ✅ COMPLETELY REWRITTEN: Reservation methods with UTC timestamp support + TYPE FIXES
     async getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
@@ -359,34 +362,47 @@ export class DatabaseStorage implements IStorage {
     }): Promise<any[]> {
         const whereConditions = [eq(reservations.restaurantId, restaurantId)];
 
-        // ✅ FIXED: Date filtering now works with UTC timestamps
+        // ✅ FIXED: Date filtering now works with UTC timestamps + TYPE SAFETY
         if (filters?.date && filters?.timezone) {
             // Convert the restaurant date to UTC range
             const startOfDay = DateTime.fromISO(filters.date, { zone: filters.timezone }).startOf('day').toUTC().toISO();
             const endOfDay = DateTime.fromISO(filters.date, { zone: filters.timezone }).endOf('day').toUTC().toISO();
             
-            whereConditions.push(
-                and(
-                    gte(reservations.reservation_utc, startOfDay),
-                    lte(reservations.reservation_utc, endOfDay)
-                )
-            );
-            console.log(`📋 [Storage] Filtering by UTC range: ${startOfDay} to ${endOfDay} for restaurant date: ${filters.date}`);
+            // ✅ TYPE SAFETY FIX: Add null checks
+            if (startOfDay && endOfDay) {
+                whereConditions.push(
+                    and(
+                        gte(reservations.reservation_utc, startOfDay),
+                        lte(reservations.reservation_utc, endOfDay)
+                    )!  // ✅ Non-null assertion since we validated above
+                );
+                console.log(`📋 [Storage] Filtering by UTC range: ${startOfDay} to ${endOfDay} for restaurant date: ${filters.date}`);
+            }
         }
 
+        // ✅ TYPE SAFETY FIX: Proper status filtering with type casting
         if (filters?.status && filters.status.length > 0) {
-            whereConditions.push(inArray(reservations.status, filters.status));
-            console.log(`📋 [Storage] Filtering by status: ${filters.status.join(', ')}`);
+            // Validate and cast status values to proper type
+            const validStatuses = filters.status.filter(status => 
+                ['confirmed', 'created', 'canceled', 'completed', 'archived'].includes(status)
+            ) as ReservationStatus[];
+            
+            if (validStatuses.length > 0) {
+                whereConditions.push(inArray(reservations.status, validStatuses));
+            }
+            console.log(`📋 [Storage] Filtering by status: ${validStatuses.join(', ')}`);
         } else {
             whereConditions.push(ne(reservations.status, 'canceled'));
             console.log(`📋 [Storage] No status filter provided, excluding canceled reservations`);
         }
 
-        // ✅ FIXED: Upcoming filtering with UTC timestamps
+        // ✅ FIXED: Upcoming filtering with UTC timestamps + NULL CHECK
         if (filters?.upcoming && filters.timezone) {
             const nowUtc = DateTime.now().toUTC().toISO();
-            whereConditions.push(gte(reservations.reservation_utc, nowUtc));
-            console.log(`📋 [Storage] Filtering for upcoming reservations from UTC: ${nowUtc}`);
+            if (nowUtc) {
+                whereConditions.push(gte(reservations.reservation_utc, nowUtc));
+                console.log(`📋 [Storage] Filtering for upcoming reservations from UTC: ${nowUtc}`);
+            }
         }
 
         const results = await db
@@ -488,7 +504,7 @@ export class DatabaseStorage implements IStorage {
                     .where(and(
                         eq(reservations.restaurantId, reservation.restaurantId),
                         eq(reservations.tableId, expectedSlot.tableId),
-                        inArray(reservations.status, ['confirmed', 'created'])
+                        inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
                     ));
 
                 console.log(`🔒 [AtomicBooking] Found ${existingReservations.length} existing reservations for table ${expectedSlot.tableId}`);
@@ -585,7 +601,7 @@ export class DatabaseStorage implements IStorage {
         return updatedReservation;
     }
 
-    // ✅ FIXED: Upcoming reservations with UTC timestamps
+    // ✅ FIXED: Upcoming reservations with UTC timestamps + TYPE SAFETY
     async getUpcomingReservations(restaurantId: number, restaurantTimezone: string, hours: number = 3): Promise<any[]> {
         const nowUtc = DateTime.now().toUTC();
         const endTimeUtc = nowUtc.plus({ hours });
@@ -604,9 +620,9 @@ export class DatabaseStorage implements IStorage {
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
-                    gte(reservations.reservation_utc, nowUtc.toISO()),
-                    lte(reservations.reservation_utc, endTimeUtc.toISO()),
-                    inArray(reservations.status, ['confirmed', 'created'])
+                    gte(reservations.reservation_utc, nowUtc.toISO()!),  // ✅ TYPE SAFETY FIX
+                    lte(reservations.reservation_utc, endTimeUtc.toISO()!),  // ✅ TYPE SAFETY FIX
+                    inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
                 )
             )
             .orderBy(reservations.reservation_utc)
@@ -620,7 +636,7 @@ export class DatabaseStorage implements IStorage {
         }));
     }
 
-    // ✅ FIXED: Statistics with UTC timestamps
+    // ✅ FIXED: Statistics with UTC timestamps + TYPE SAFETY
     async getReservationStatistics(restaurantId: number, restaurantTimezone: string): Promise<{
         todayReservations: number;
         confirmedReservations: number;
@@ -631,6 +647,11 @@ export class DatabaseStorage implements IStorage {
         const restaurantToday = DateTime.now().setZone(restaurantTimezone);
         const startOfDayUtc = restaurantToday.startOf('day').toUTC().toISO();
         const endOfDayUtc = restaurantToday.endOf('day').toUTC().toISO();
+
+        // ✅ TYPE SAFETY FIX: Add null checks
+        if (!startOfDayUtc || !endOfDayUtc) {
+            throw new Error('Invalid timezone for statistics calculation');
+        }
 
         console.log(`📊 [Storage] Getting stats for restaurant ${restaurantId} for UTC range: ${startOfDayUtc} to ${endOfDayUtc}`);
 
@@ -765,7 +786,7 @@ export class DatabaseStorage implements IStorage {
             .where(
                 and(
                     eq(reservations.tableId, tableId),
-                    inArray(reservations.status, ['confirmed', 'created'])
+                    inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
                 )
             );
 
@@ -818,7 +839,7 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // ✅ FIXED: Table availability with UTC timestamp support
+    // ✅ FIXED: Table availability with UTC timestamp support + TYPE SAFETY
     async getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]> {
         // Get restaurant timezone for conversion
         const restaurant = await this.getRestaurant(restaurantId);
@@ -827,6 +848,12 @@ export class DatabaseStorage implements IStorage {
         // Convert date/time to UTC range
         const startOfSlotUtc = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone }).toUTC().toISO();
         const endOfSlotUtc = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone }).plus({ hours: 2 }).toUTC().toISO();
+
+        // ✅ TYPE SAFETY: Null checks
+        if (!startOfSlotUtc || !endOfSlotUtc) {
+            console.error(`❌ [Storage] Failed to convert date/time to UTC for availability check`);
+            return [];
+        }
 
         console.log(`🏢 [Storage] Checking table availability for UTC range: ${startOfSlotUtc} to ${endOfSlotUtc}`);
 
@@ -846,7 +873,7 @@ export class DatabaseStorage implements IStorage {
                                     // Check for overlap using UTC timestamps
                                     sql`${reservations.reservation_utc} < ${endOfSlotUtc}`,
                                     sql`${reservations.reservation_utc} + INTERVAL '2 hours' > ${startOfSlotUtc}`,
-                                    inArray(reservations.status, ['confirmed', 'created'])
+                                    inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
                                 )
                             )
                     )

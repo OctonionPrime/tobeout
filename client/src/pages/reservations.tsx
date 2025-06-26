@@ -194,7 +194,7 @@ export default function Reservations() {
         refetchOnWindowFocus: true,
         enabled: !!restaurantId && !!restaurantTimezone,
         staleTime: 0,
-        cacheTime: 1000 * 60 * 5,
+        gcTime: 1000 * 60 * 5,
     });
 
     // ✅ Refresh reservations when restaurant timezone changes

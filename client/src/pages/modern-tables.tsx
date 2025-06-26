@@ -56,6 +56,11 @@ interface Restaurant {
   [key: string]: any;
 }
 
+// ✅ TYPE SAFETY FIX: Define mutation context type
+interface MutationContext {
+  previousData?: any;
+}
+
 export default function ModernTables() {
   const [selectedDate, setSelectedDate] = useState(''); // ✅ FIXED: Initialize empty, set after restaurant loads
   const [selectedTime, setSelectedTime] = useState("19:00");
@@ -394,13 +399,14 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ CRITICAL FIX: Enhanced reservation movement with timezone
-  const moveReservationMutation = useMutation({
-    mutationFn: async ({ reservationId, newTableId, newTime }: {
-      reservationId: number;
-      newTableId: number;
-      newTime: string;
-    }) => {
+  // ✅ TYPE SAFETY FIX: Enhanced reservation movement with proper mutation types
+  const moveReservationMutation = useMutation<any, Error, { 
+    reservationId: number; 
+    newTableId: number; 
+    newTime: string; 
+  }, MutationContext>({
+    mutationFn: async (variables) => {
+      const { reservationId, newTableId, newTime } = variables;
       console.log(`🔄 [ModernTables] Moving reservation ${reservationId} to table ${newTableId} at ${newTime}`);
       
       const response = await fetch(`/api/reservations/${reservationId}`, {
@@ -419,7 +425,8 @@ export default function ModernTables() {
       return response.json();
     },
     
-    onMutate: async ({ reservationId, newTableId, newTime }) => {
+    onMutate: async (variables) => {
+      const { reservationId, newTableId, newTime } = variables;
       await queryClient.cancelQueries({ 
         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
       });
@@ -433,8 +440,9 @@ export default function ModernTables() {
         const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
         const targetHour = parseInt(newTime.split(':')[0]);
         
-        const sourceSlots = [];
-        const targetSlots = [];
+        // ✅ TYPE SAFETY FIX: Proper array typing
+        const sourceSlots: string[] = [];
+        const targetSlots: string[] = [];
         
         for (let i = 0; i < duration; i++) {
           sourceSlots.push(`${(sourceHour + i).toString().padStart(2, '0')}:00`);
@@ -477,10 +485,11 @@ export default function ModernTables() {
       return { previousData };
     },
 
-    onSuccess: (data: any, { newTableId, newTime }: { newTableId: number; newTime: string }) => {
+    onSuccess: (data: any, variables) => {
+      const { newTableId, newTime } = variables;
       const oldTableName = draggedReservation?.currentTableName || `Table ${draggedReservation?.currentTableId}`;
       const newTableName = scheduleData?.find(slot => slot.time === newTime)
-        ?.tables?.find(t => t.id === newTableId)?.name || `Table ${newTableId}`;
+        ?.tables?.find((t: any) => t.id === newTableId)?.name || `Table ${newTableId}`;
 
       toast({
         title: "Reservation Updated",
@@ -514,8 +523,8 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ CRITICAL FIX: Enhanced reservation cancellation
-  const cancelReservationMutation = useMutation({
+  // ✅ TYPE SAFETY FIX: Enhanced reservation cancellation with proper typing
+  const cancelReservationMutation = useMutation<any, Error, number, MutationContext>({
     mutationFn: async (reservationId: number) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
         method: 'PATCH',
@@ -576,13 +585,13 @@ export default function ModernTables() {
     },
   });
 
-  // ✅ CRITICAL FIX: Enhanced quick move with timezone and overnight support
-  const quickMoveMutation = useMutation({
-    mutationFn: async ({ reservationId, direction }: { reservationId: number; direction: 'up' | 'down' }) => {
+  // ✅ TYPE SAFETY FIX: Enhanced quick move with proper typing
+  const quickMoveMutation = useMutation<any, Error, { reservationId: number; direction: 'up' | 'down' }, MutationContext>({
+    mutationFn: async ({ reservationId, direction }) => {
       const currentSlot = scheduleData?.find(slot => 
-        slot.tables.some(t => t.reservation?.id === reservationId)
+        slot.tables.some((t: any) => t.reservation?.id === reservationId)
       );
-      const currentTable = currentSlot?.tables.find(t => t.reservation?.id === reservationId);
+      const currentTable = currentSlot?.tables.find((t: any) => t.reservation?.id === reservationId);
       
       if (!currentSlot || !currentTable) throw new Error('Reservation not found');
       
@@ -629,7 +638,7 @@ export default function ModernTables() {
       
       for (const targetTime of targetSlots) {
         const targetSlot = scheduleData?.find(s => s.time === targetTime);
-        const targetTable = targetSlot?.tables?.find(t => t.id === currentTable.id);
+        const targetTable = targetSlot?.tables?.find((t: any) => t.id === currentTable.id);
         
         if (targetTable?.reservation && targetTable.reservation.id !== reservationId) {
           throw new Error(`Cannot move: ${targetTable.reservation.guestName} already has ${targetTime} reserved`);
@@ -657,9 +666,9 @@ export default function ModernTables() {
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
       
       const currentSlot = scheduleData?.find(slot => 
-        slot.tables.some(t => t.reservation?.id === reservationId)
+        slot.tables.some((t: any) => t.reservation?.id === reservationId)
       );
-      const currentTable = currentSlot?.tables.find(t => t.reservation?.id === reservationId);
+      const currentTable = currentSlot?.tables.find((t: any) => t.reservation?.id === reservationId);
       
       if (!currentSlot || !currentTable || !currentTable.reservation) return { previousData };
       
@@ -672,8 +681,9 @@ export default function ModernTables() {
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old) return old;
         
-        const sourceSlots = [];
-        const targetSlots = [];
+        // ✅ TYPE SAFETY FIX: Proper array typing
+        const sourceSlots: string[] = [];
+        const targetSlots: string[] = [];
         
         for (let i = 0; i < duration; i++) {
           sourceSlots.push(`${(currentHour + i).toString().padStart(2, '0')}:00`);
@@ -765,7 +775,7 @@ export default function ModernTables() {
       const timeSlot = `${hour}:00`;
       
       const slot = scheduleData.find(s => s.time === timeSlot);
-      const table = slot?.tables?.find(t => t.id === targetTableId);
+      const table = slot?.tables?.find((t: any) => t.id === targetTableId);
       
       if (table?.reservation && table.reservation.id !== draggedReservation.reservationId) {
         return true;
@@ -794,7 +804,7 @@ export default function ModernTables() {
     }
     
     const hasConflict = checkReservationConflict(tableId, time, 2);
-    const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find(t => t.id === tableId);
+    const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find((t: any) => t.id === tableId);
     const hasExistingReservation = targetSlot?.reservation && 
       targetSlot.reservation.id !== draggedReservation?.reservationId;
     
@@ -841,8 +851,8 @@ export default function ModernTables() {
     });
   };
 
-  // Status colors for modern design (unchanged)
-  const getStatusStyle = (status: string, hasReservation: boolean, isDragTarget = false) => {
+  // ✅ TYPE SAFETY FIX: Status colors for modern design with proper typing
+  const getStatusStyle = (status: string, hasReservation: boolean | undefined, isDragTarget = false) => {
     if (isDragTarget) {
       return isValidDropZone
         ? "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105"
@@ -1035,7 +1045,7 @@ export default function ModernTables() {
           </CardHeader>
         </Card>
 
-        {/* ✅ CRITICAL FIX: Enhanced Table Statistics with loading states */}
+        {/* ✅ TYPE SAFETY FIX: Enhanced Table Statistics with proper array checking */}
         {tablesLoading ? (
           <Card className="bg-blue-50 border-blue-200">
             <CardContent className="pt-4">
@@ -1045,7 +1055,7 @@ export default function ModernTables() {
               </div>
             </CardContent>
           </Card>
-        ) : tables && tables.length > 0 ? (
+        ) : tables && Array.isArray(tables) && tables.length > 0 ? (
           <Card className="bg-blue-50 border-blue-200">
             <CardContent className="pt-4">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
