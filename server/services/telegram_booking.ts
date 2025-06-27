@@ -12,7 +12,7 @@ import type {
     InsertGuest, 
     Restaurant // Added Restaurant import
 } from '@shared/schema';
-import type { Language } from './conversation-manager';
+import type { Language } from './enhanced-conversation-manager';
 import type { AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service'; // Import AvailabilitySlot
 
 // Updated result type

@@ -4,8 +4,10 @@ import { createBookingAgent, type BookingSession, createBookingSession, updateSe
 import { agentFunctions } from './agents/agent-tools';
 import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
-import type { Language } from './conversation-manager';
 import type { Restaurant } from '@shared/schema';
+
+// ✅ MOVED FROM conversation-manager.ts
+export type Language = 'en' | 'ru' | 'sr';
 
 /**
  * Enhanced conversation manager with guardrails and proper booking flow
@@ -275,6 +277,8 @@ export class EnhancedConversationManager {
                 
                 const confirmationMessage = session.language === 'ru'
                   ? `Подтверждаете создание бронирования?\n\n${confirmationCheck.summary}\n\nОтветьте "да" для подтверждения или "нет" для отмены.`
+                  : session.language === 'sr'
+                  ? `Potvrđujete kreiranje rezervacije?\n\n${confirmationCheck.summary}\n\nOdgovorite "da" za potvrdu ili "ne" za otkazivanje.`
                   : `Please confirm this reservation:\n\n${confirmationCheck.summary}\n\nReply "yes" to confirm or "no" to cancel.`;
                 
                 // Add confirmation request to history
@@ -386,6 +390,8 @@ export class EnhancedConversationManager {
       const response = completion.choices[0]?.message?.content || 
         (session.language === 'ru' 
           ? "Извините, я не смогла понять. Попробуйте еще раз."
+          : session.language === 'sr'
+          ? "Izvините, nisam razumela. Molim pokušajte ponovo."
           : "I apologize, I didn't understand that. Could you please try again?");
 
       // Add response to conversation history
@@ -412,8 +418,12 @@ export class EnhancedConversationManager {
       console.error(`[EnhancedConversationManager] Error handling message:`, error);
       
       const fallbackResponse = session.context === 'hostess'
-        ? (session.language === 'ru' ? "Произошла ошибка. Попробуйте еще раз." : "Error occurred. Please try again.")
-        : (session.language === 'ru' ? 'Извините, возникла техническая проблема. Попробуйте еще раз.' : 'I apologize, I encountered a technical issue. Please try again.');
+        ? (session.language === 'ru' ? "Произошла ошибка. Попробуйте еще раз." : 
+           session.language === 'sr' ? "Dogodila se greška. Molim pokušajte ponovo." :
+           "Error occurred. Please try again.")
+        : (session.language === 'ru' ? 'Извините, возникла техническая проблема. Попробуйте еще раз.' : 
+           session.language === 'sr' ? 'Izvините, nastao je tehnički problem. Molim pokušajte ponovo.' :
+           'I apologize, I encountered a technical issue. Please try again.');
 
       session.conversationHistory.push({
         role: 'assistant',
@@ -469,6 +479,8 @@ export class EnhancedConversationManager {
           
           const successMessage = session.language === 'ru'
             ? `🎉 Отлично! Ваше бронирование подтверждено. Номер брони: ${result.data.reservationId}`
+            : session.language === 'sr'
+            ? `🎉 Odlično! Vaša rezervacija je potvrđena. Broj rezervacije: ${result.data.reservationId}`
             : `🎉 Perfect! Your reservation is confirmed. Reservation number: ${result.data.reservationId}`;
           
           session.conversationHistory.push({
@@ -488,6 +500,8 @@ export class EnhancedConversationManager {
         } else {
           const errorMessage = session.language === 'ru'
             ? `Извините, не удалось создать бронирование: ${result.error?.message || 'неизвестная ошибка'}`
+            : session.language === 'sr'
+            ? `Izvините, nije moguće kreirati rezervaciju: ${result.error?.message || 'nepoznata greška'}`
             : `Sorry, I couldn't create the reservation: ${result.error?.message || 'unknown error'}`;
           
           session.conversationHistory.push({
@@ -510,6 +524,8 @@ export class EnhancedConversationManager {
         
         const cancelMessage = session.language === 'ru'
           ? "Хорошо, бронирование отменено. Чем еще могу помочь?"
+          : session.language === 'sr'
+          ? "U redu, rezervacija je otkazana. Čime još mogu da pomognem?"
           : "Okay, reservation cancelled. How else can I help you?";
         
         session.conversationHistory.push({
@@ -532,6 +548,8 @@ export class EnhancedConversationManager {
       delete session.pendingConfirmation;
       const errorMessage = session.language === 'ru'
         ? "Произошла ошибка при обработке подтверждения."
+        : session.language === 'sr'
+        ? "Dogodila se greška prilikom obrade potvrde."
         : "An error occurred while processing the confirmation.";
 
       return {
@@ -577,11 +595,11 @@ export class EnhancedConversationManager {
   private detectLanguage(message: string): Language {
     // Cyrillic = Russian or Serbian
     if (/[\u0400-\u04FF]/.test(message)) {
-      // Check for Serbian-specific words
-      const serbianWords = ['zdravo', 'hvala', 'molim', 'dobro', 'kako'];
+      // Check for Serbian-specific words in Cyrillic
+      const serbianCyrillicWords = ['здраво', 'хвала', 'молим', 'добро', 'како'];
       const lowerText = message.toLowerCase();
-      if (serbianWords.some(word => lowerText.includes(word))) {
-        return 'sr' as Language;
+      if (serbianCyrillicWords.some(word => lowerText.includes(word))) {
+        return 'sr';
       }
       return 'ru'; // Default to Russian for Cyrillic
     }
@@ -589,7 +607,7 @@ export class EnhancedConversationManager {
     // Latin script - check for Serbian
     const serbianLatin = ['zdravo', 'hvala', 'molim', 'rezervacija'];
     if (serbianLatin.some(word => message.toLowerCase().includes(word))) {
-      return 'sr' as Language;
+      return 'sr';
     }
     
     return 'en'; // Default to English

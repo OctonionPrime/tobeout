@@ -12,7 +12,7 @@
  */
 
 import { DateTime } from 'luxon';
-import type { Language } from '../services/conversation-manager';
+import type { Language } from '../services/enhanced-conversation-manager';
 
 // ================================
 // CORE TIMEZONE INTERFACES

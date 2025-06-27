@@ -13,7 +13,7 @@ import type {
     Guest,
     Table
 } from '@shared/schema';
-import type { Language } from './conversation-manager';
+import type { Language } from './enhanced-conversation-manager';
 import { isValidTimezone, formatTimeForRestaurant } from '../utils/timezone-utils';
 import { DateTime } from 'luxon';
 

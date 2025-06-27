@@ -7,7 +7,7 @@ import type {
     Table,
     Reservation as SchemaReservation,
 } from '@shared/schema';
-import type { Language } from './conversation-manager';
+import type { Language } from './enhanced-conversation-manager';
 
 export interface AvailabilitySlot {
     date: string;

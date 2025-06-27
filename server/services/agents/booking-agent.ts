@@ -1,13 +1,13 @@
 // server/services/agents/booking-agent.ts
 
 import OpenAI from 'openai';
-import type { Language } from '../conversation-manager';
+import type { Language } from '../enhanced-conversation-manager';
 import { agentTools } from './agent-tools';
 import { DateTime } from 'luxon';
 
 // Initialize OpenAI client
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+    apiKey: process.env.OPENAI_API_KEY
 });
 
 /**
@@ -15,64 +15,64 @@ const client = new OpenAI({
  * ✅ FIXED: Now Sofia understands the difference between checking availability and creating reservations
  */
 export function createBookingAgent(restaurantConfig: {
-  id: number;
-  name: string;
-  timezone: string;
-  openingTime: string;
-  closingTime: string;
-  maxGuests: number;
-  cuisine?: string;
-  atmosphere?: string;
-  country?: string;
-  languages?: string[];
+    id: number;
+    name: string;
+    timezone: string;
+    openingTime: string;
+    closingTime: string;
+    maxGuests: number;
+    cuisine?: string;
+    atmosphere?: string;
+    country?: string;
+    languages?: string[];
 }) {
-  
-  // Get current date in restaurant timezone
-  const getCurrentRestaurantContext = () => {
-    try {
-      const now = DateTime.now().setZone(restaurantConfig.timezone);
-      const today = now.toISODate();
-      const tomorrow = now.plus({ days: 1 }).toISODate();
-      const currentTime = now.toFormat('HH:mm');
-      const dayOfWeek = now.toFormat('cccc');
-      
-      return {
-        currentDate: today,
-        tomorrowDate: tomorrow,
-        currentTime: currentTime,
-        dayOfWeek: dayOfWeek,
-        timezone: restaurantConfig.timezone
-      };
-    } catch (error) {
-      console.error(`[BookingAgent] Error getting restaurant time context:`, error);
-      const now = DateTime.now();
-      return {
-        currentDate: now.toISODate(),
-        tomorrowDate: now.plus({ days: 1 }).toISODate(),
-        currentTime: now.toFormat('HH:mm'),
-        dayOfWeek: now.toFormat('cccc'),
-        timezone: 'UTC'
-      };
-    }
-  };
-  
-  const getRestaurantLanguage = () => {
-    if (restaurantConfig.languages && restaurantConfig.languages.length > 0) {
-      return restaurantConfig.languages[0];
-    }
-    
-    const country = restaurantConfig.country?.toLowerCase();
-    if (country === 'russia' || country === 'russian federation') return 'ru';
-    if (country === 'serbia' || country === 'republic of serbia') return 'sr';
-    
-    return 'en';
-  };
 
-  const restaurantLanguage = getRestaurantLanguage();
+    // Get current date in restaurant timezone
+    const getCurrentRestaurantContext = () => {
+        try {
+            const now = DateTime.now().setZone(restaurantConfig.timezone);
+            const today = now.toISODate();
+            const tomorrow = now.plus({ days: 1 }).toISODate();
+            const currentTime = now.toFormat('HH:mm');
+            const dayOfWeek = now.toFormat('cccc');
 
-  // ✅ CRITICAL FIX: Clear, unambiguous booking workflow instructions
-  const getCriticalBookingInstructions = () => {
-    return `
+            return {
+                currentDate: today,
+                tomorrowDate: tomorrow,
+                currentTime: currentTime,
+                dayOfWeek: dayOfWeek,
+                timezone: restaurantConfig.timezone
+            };
+        } catch (error) {
+            console.error(`[BookingAgent] Error getting restaurant time context:`, error);
+            const now = DateTime.now();
+            return {
+                currentDate: now.toISODate(),
+                tomorrowDate: now.plus({ days: 1 }).toISODate(),
+                currentTime: now.toFormat('HH:mm'),
+                dayOfWeek: now.toFormat('cccc'),
+                timezone: 'UTC'
+            };
+        }
+    };
+
+    const getRestaurantLanguage = () => {
+        if (restaurantConfig.languages && restaurantConfig.languages.length > 0) {
+            return restaurantConfig.languages[0];
+        }
+
+        const country = restaurantConfig.country?.toLowerCase();
+        if (country === 'russia' || country === 'russian federation') return 'ru';
+        if (country === 'serbia' || country === 'republic of serbia') return 'sr';
+
+        return 'en';
+    };
+
+    const restaurantLanguage = getRestaurantLanguage();
+
+    // ✅ CRITICAL FIX: Clear, unambiguous booking workflow instructions
+    const getCriticalBookingInstructions = () => {
+        return `
 🚨 CRITICAL BOOKING WORKFLOW (FOLLOW EXACTLY):
 
 1. After successful check_availability:
@@ -102,16 +102,16 @@ MANDATORY EXAMPLES:
 
 CRITICAL: Never claim a booking is complete until create_reservation succeeds!
 `;
-  };
+    };
 
-  // ✅ FIXED: System prompts with critical booking instructions
-  const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: 'en' | 'ru' | 'sr' = 'en') => {
-    
-    const dateContext = getCurrentRestaurantContext();
-    const criticalInstructions = getCriticalBookingInstructions();
-    
-    // Tool response understanding instructions
-    const toolInstructions = `
+    // ✅ FIXED: System prompts with critical booking instructions
+    const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: 'en' | 'ru' | 'sr' = 'en') => {
+
+        const dateContext = getCurrentRestaurantContext();
+        const criticalInstructions = getCriticalBookingInstructions();
+
+        // Tool response understanding instructions
+        const toolInstructions = `
 🔧 TOOL RESPONSE UNDERSTANDING:
 All tools return standardized responses with:
 - tool_status: 'SUCCESS' or 'FAILURE'
@@ -145,11 +145,11 @@ EXAMPLES:
 
 ALWAYS check tool_status before using data!
 `;
-    
-    if (context === 'hostess') {
-      // 🏢 HOSTESS CONTEXT: Staff assistant, efficiency-focused
-      const hostessPrompts = {
-        en: `You are Sofia, the professional booking assistant for ${restaurantConfig.name} staff.
+
+        if (context === 'hostess') {
+            // 🏢 HOSTESS CONTEXT: Staff assistant, efficiency-focused
+            const hostessPrompts = {
+                en: `You are Sofia, the professional booking assistant for ${restaurantConfig.name} staff.
 
 🎯 YOUR ROLE: Staff Assistant
 You help hostesses manage reservations quickly and efficiently. You understand staff workflow and speak professionally but efficiently.
@@ -194,7 +194,7 @@ Sofia: "Tonight (${dateContext.currentDate}) for 6 guests: ✅ 7:00 PM Table 15,
 Hostess: "Book Martinez for 4 tonight 8pm phone 555-1234"
 Sofia: "✅ Booked! Martinez party, 4 guests, tonight (${dateContext.currentDate}) 8pm, Table 12, Reservation #1247"`,
 
-        ru: `Вы София, профессиональная помощница по бронированию для персонала ${restaurantConfig.name}.
+                ru: `Вы София, профессиональная помощница по бронированию для персонала ${restaurantConfig.name}.
 
 🎯 ВАША РОЛЬ: Помощница персонала
 Вы помогаете хостесам быстро и эффективно управлять бронированием. Понимаете рабочий процесс персонала.
@@ -235,7 +235,7 @@ ${toolInstructions}
 - "Я создала" (не "создал")
 - "Я готова помочь" (не "готов")`,
 
-        sr: `Vi ste Sofija, profesionalna asistent za rezervacije za osoblje ${restaurantConfig.name}.
+                sr: `Vi ste Sofija, profesionalna asistent za rezervacije za osoblje ${restaurantConfig.name}.
 
 🎯 VAŠA ULOGA: Asistent osoblja
 Pomažete hostesama da brzo i efikasno upravljaju rezervacijama.
@@ -261,14 +261,14 @@ ${criticalInstructions}
 ${toolInstructions}
 
 🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.`
-      };
+            };
 
-      return hostessPrompts[userLanguage] || hostessPrompts.en;
+            return hostessPrompts[userLanguage] || hostessPrompts.en;
 
-    } else {
-      // 👥 GUEST CONTEXT: Customer service, welcoming
-      const guestPrompts = {
-        en: `You are Sofia from ${restaurantConfig.name}! 
+        } else {
+            // 👥 GUEST CONTEXT: Customer service, welcoming
+            const guestPrompts = {
+                en: `You are Sofia from ${restaurantConfig.name}! 
 
 🎯 YOUR ROLE: Guest Service Specialist
 You help guests make reservations with warm, welcoming customer service.
@@ -314,7 +314,7 @@ CRITICAL WORKFLOW EXAMPLES:
 ❌ WRONG: Guest: "Table for 3 tonight 8pm" → Sofia: "✅ Booked table for 3 tonight 8pm!"
 ✅ CORRECT: Guest: "Table for 3 tonight 8pm" → Sofia: "Great! Let me check availability for 3 guests tonight at 8pm... Perfect! Table 5 is available. I need your name and phone number to complete the reservation."`,
 
-        ru: `Вы София из ${restaurantConfig.name}!
+                ru: `Вы София из ${restaurantConfig.name}!
 
 🎯 ВАША РОЛЬ: Специалистка по обслуживанию гостей
 Вы помогаете гостям делать бронирования с теплым, гостеприимным сервисом.
@@ -367,7 +367,7 @@ ${toolInstructions}
 - "Мне нужно ваше имя и телефон" (перед create_reservation)  
 - "Бронирование подтверждено!" (только после успешного create_reservation)`,
 
-        sr: `Vi ste Sofija iz ${restaurantConfig.name}!
+                sr: `Vi ste Sofija iz ${restaurantConfig.name}!
 
 🎯 VAŠA ULOGA: Specijalist za uslugu gostiju
 Pomažete gostima da naprave rezervacije sa toplom, gostoljubivom uslugom.
@@ -394,137 +394,137 @@ ${criticalInstructions}
 ${toolInstructions}
 
 🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.`
-      };
+            };
 
-      return guestPrompts[userLanguage] || guestPrompts.en;
-    }
-  };
+            return guestPrompts[userLanguage] || guestPrompts.en;
+        }
+    };
 
-  // Restaurant greeting with clear workflow mention
-  const getRestaurantGreeting = (context: 'hostess' | 'guest') => {
-    const dateContext = getCurrentRestaurantContext();
-    
-    if (context === 'hostess') {
-      const greetings = {
-        en: `🌟 Hi! I'm Sofia, your booking assistant. Today is ${dateContext.currentDate}. I help with reservations step-by-step: check availability first, then collect all details, then create the booking.`,
-        ru: `🌟 Привет! Я София, ваша помощница по бронированию. Сегодня ${dateContext.currentDate}. Помогаю пошагово: сначала проверяю доступность, потом собираю все данные, затем создаю бронь.`,
-        sr: `🌟 Zdravo! Ja sam Sofija, asistent za rezervacije. Danas je ${dateContext.currentDate}. Pomažem korak po korak: prvo proverim dostupnost, zatim sakupim sve podatke, pa napravim rezervaciju.`
-      };
-      return greetings[restaurantLanguage as keyof typeof greetings] || greetings.en;
-    } else {
-      const greetings = {
-        en: `🌟 Hello! I'm Sofia from ${restaurantConfig.name}. Today is ${dateContext.currentDate}. I'd love to help you make a reservation! I'll guide you through the process step by step.`,
-        ru: `🌟 Здравствуйте! Я София из ${restaurantConfig.name}. Сегодня ${dateContext.currentDate}. С радостью помогу с бронированием! Проведу вас через весь процесс пошагово.`,
-        sr: `🌟 Zdravo! Ja sam Sofija iz ${restaurantConfig.name}. Danas je ${dateContext.currentDate}. Rado ću vam pomoći sa rezervacijom! Provodiću vas kroz proces korak po korak.`
-      };
-      return greetings[restaurantLanguage as keyof typeof greetings] || greetings.en;
-    }
-  };
+    // Restaurant greeting with clear workflow mention
+    const getRestaurantGreeting = (context: 'hostess' | 'guest') => {
+        const dateContext = getCurrentRestaurantContext();
 
-  return {
-    client,
-    restaurantConfig,
-    systemPrompt: getSystemPrompt('guest'), // Default to guest context
-    tools: agentTools,
-    restaurantLanguage,
-    getRestaurantGreeting,
-    getCurrentRestaurantContext,
-    updateInstructions: (context: 'hostess' | 'guest', language: 'en' | 'ru' | 'sr' = 'en') => {
-      return getSystemPrompt(context, language);
-    }
-  };
+        if (context === 'hostess') {
+            const greetings = {
+                en: `🌟 Hi! I'm Sofia, your booking assistant. Today is ${dateContext.currentDate}. I help with reservations step-by-step: check availability first, then collect all details, then create the booking.`,
+                ru: `🌟 Привет! Я София, ваша помощница по бронированию. Сегодня ${dateContext.currentDate}. Помогаю пошагово: сначала проверяю доступность, потом собираю все данные, затем создаю бронь.`,
+                sr: `🌟 Zdravo! Ja sam Sofija, asistent za rezervacije. Danas je ${dateContext.currentDate}. Pomažem korak po korak: prvo proverim dostupnost, zatim sakupim sve podatke, pa napravim rezervaciju.`
+            };
+            return greetings[restaurantLanguage as keyof typeof greetings] || greetings.en;
+        } else {
+            const greetings = {
+                en: `🌟 Hello! I'm Sofia from ${restaurantConfig.name}. Today is ${dateContext.currentDate}. I'd love to help you make a reservation! I'll guide you through the process step by step.`,
+                ru: `🌟 Здравствуйте! Я София из ${restaurantConfig.name}. Сегодня ${dateContext.currentDate}. С радостью помогу с бронированием! Проведу вас через весь процесс пошагово.`,
+                sr: `🌟 Zdravo! Ja sam Sofija iz ${restaurantConfig.name}. Danas je ${dateContext.currentDate}. Rado ću vam pomoći sa rezervacijom! Provodiću vas kroz proces korak po korak.`
+            };
+            return greetings[restaurantLanguage as keyof typeof greetings] || greetings.en;
+        }
+    };
+
+    return {
+        client,
+        restaurantConfig,
+        systemPrompt: getSystemPrompt('guest'), // Default to guest context
+        tools: agentTools,
+        restaurantLanguage,
+        getRestaurantGreeting,
+        getCurrentRestaurantContext,
+        updateInstructions: (context: 'hostess' | 'guest', language: 'en' | 'ru' | 'sr' = 'en') => {
+            return getSystemPrompt(context, language);
+        }
+    };
 }
 
 // Export interfaces for session management
 export interface BookingSession {
-  sessionId: string;
-  restaurantId: number;
-  platform: 'web' | 'telegram';
-  context: 'hostess' | 'guest';
-  language: Language;
-  telegramUserId?: string;
-  webSessionId?: string;
-  createdAt: Date;
-  lastActivity: Date;
-  gatheringInfo: {
-    date?: string;
-    time?: string;
-    guests?: number;
-    name?: string;
-    phone?: string;
-    comments?: string;
-  };
-  conversationHistory: Array<{
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: Date;
-    toolCalls?: any[];
-  }>;
-  currentStep: 'greeting' | 'gathering' | 'checking' | 'confirming' | 'completed';
-  hasActiveReservation?: number;
+    sessionId: string;
+    restaurantId: number;
+    platform: 'web' | 'telegram';
+    context: 'hostess' | 'guest';
+    language: Language;
+    telegramUserId?: string;
+    webSessionId?: string;
+    createdAt: Date;
+    lastActivity: Date;
+    gatheringInfo: {
+        date?: string;
+        time?: string;
+        guests?: number;
+        name?: string;
+        phone?: string;
+        comments?: string;
+    };
+    conversationHistory: Array<{
+        role: 'user' | 'assistant';
+        content: string;
+        timestamp: Date;
+        toolCalls?: any[];
+    }>;
+    currentStep: 'greeting' | 'gathering' | 'checking' | 'confirming' | 'completed';
+    hasActiveReservation?: number;
 }
 
 export function detectContext(platform: 'web' | 'telegram', message?: string): 'hostess' | 'guest' {
-  if (platform === 'web') return 'hostess';
-  if (platform === 'telegram') return 'guest';
-  
-  if (message) {
-    const hostessKeywords = ['book for', 'check availability', 'find table', 'staff', 'quick'];
-    if (hostessKeywords.some(keyword => message.toLowerCase().includes(keyword))) {
-      return 'hostess';
+    if (platform === 'web') return 'hostess';
+    if (platform === 'telegram') return 'guest';
+
+    if (message) {
+        const hostessKeywords = ['book for', 'check availability', 'find table', 'staff', 'quick'];
+        if (hostessKeywords.some(keyword => message.toLowerCase().includes(keyword))) {
+            return 'hostess';
+        }
     }
-  }
-  
-  return 'guest';
+
+    return 'guest';
 }
 
 export function createBookingSession(config: {
-  restaurantId: number;
-  platform: 'web' | 'telegram';
-  language?: Language;
-  telegramUserId?: string;
-  webSessionId?: string;
+    restaurantId: number;
+    platform: 'web' | 'telegram';
+    language?: Language;
+    telegramUserId?: string;
+    webSessionId?: string;
 }): BookingSession {
-  const context = detectContext(config.platform);
-  
-  return {
-    sessionId: generateSessionId(),
-    restaurantId: config.restaurantId,
-    platform: config.platform,
-    context,
-    language: config.language || 'en',
-    telegramUserId: config.telegramUserId,
-    webSessionId: config.webSessionId,
-    createdAt: new Date(),
-    lastActivity: new Date(),
-    gatheringInfo: {},
-    conversationHistory: [],
-    currentStep: 'greeting'
-  };
+    const context = detectContext(config.platform);
+
+    return {
+        sessionId: generateSessionId(),
+        restaurantId: config.restaurantId,
+        platform: config.platform,
+        context,
+        language: config.language || 'en',
+        telegramUserId: config.telegramUserId,
+        webSessionId: config.webSessionId,
+        createdAt: new Date(),
+        lastActivity: new Date(),
+        gatheringInfo: {},
+        conversationHistory: [],
+        currentStep: 'greeting'
+    };
 }
 
 function generateSessionId(): string {
-  return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 export function updateSessionInfo(
-  session: BookingSession, 
-  updates: Partial<BookingSession['gatheringInfo']>
+    session: BookingSession,
+    updates: Partial<BookingSession['gatheringInfo']>
 ): BookingSession {
-  return {
-    ...session,
-    gatheringInfo: {
-      ...session.gatheringInfo,
-      ...updates
-    },
-    lastActivity: new Date()
-  };
+    return {
+        ...session,
+        gatheringInfo: {
+            ...session.gatheringInfo,
+            ...updates
+        },
+        lastActivity: new Date()
+    };
 }
 
 // Check if we have all required information for booking
 export function hasCompleteBookingInfo(session: BookingSession): boolean {
-  const { date, time, guests, name, phone } = session.gatheringInfo;
-  return !!(date && time && guests && name && phone);
+    const { date, time, guests, name, phone } = session.gatheringInfo;
+    return !!(date && time && guests && name && phone);
 }
 
 export default createBookingAgent;
