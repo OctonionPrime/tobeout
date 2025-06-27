@@ -192,12 +192,23 @@ export class EnhancedConversationManager {
         };
       }
 
-      // STEP 3: Continue with normal processing
-      const detectedLanguage = this.detectLanguage(message);
-      if (detectedLanguage !== session.language) {
-        session.language = detectedLanguage;
-        console.log(`[EnhancedConversationManager] Language detected: ${detectedLanguage}`);
+      // STEP 3: Continue with normal processing, with improved language detection
+      // ✅ FIX: Prevent language switching on simple/numeric input
+      const isNumericOrShortMessage = /^\d+[\d\s-()+]*$/.test(message) || message.trim().length < 5;
+
+      if (isNumericOrShortMessage && session.conversationHistory.length > 0) {
+        // If the message is just a number (like a phone) or very short (like "yes"), 
+        // DO NOT change the already established language.
+        console.log(`[EnhancedConversationManager] Sticking with current language '${session.language}' due to simple input.`);
+      } else {
+        // Otherwise, run the language detection as normal.
+        const detectedLanguage = this.detectLanguage(message);
+        if (detectedLanguage !== session.language) {
+          session.language = detectedLanguage;
+          console.log(`[EnhancedConversationManager] Language changed from '${session.language}' to '${detectedLanguage}'`);
+        }
       }
+
 
       session.lastActivity = new Date();
       session.conversationHistory.push({
