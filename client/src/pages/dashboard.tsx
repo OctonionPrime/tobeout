@@ -15,6 +15,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { apiRequest } from "@/lib/queryClient";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+// ✅ CORRECT: Import Sofia AI component
+import { EnhancedAIAssistant } from '@/components/dashboard/EnhancedAIAssistant';
 
 export default function Dashboard() {
     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
@@ -209,7 +211,22 @@ export default function Dashboard() {
                     </div>
                 </div>
 
-                {/* Timeslot Generator & AI Assistant */}
+                {/* ✅ NEW: Sofia AI Assistant & Timeslot Generator */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                    <div className="lg:col-span-1">
+                        {/* ✅ ADDED: Sofia AI Chat Interface */}
+                        <EnhancedAIAssistant />
+                    </div>
+                    <div className="lg:col-span-1">
+                        {/* ✅ OLD: AI Assistant Timeline (both components coexist) */}
+                        <AIAssistant 
+                            restaurantId={restaurantId}
+                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
+                        />
+                    </div>
+                </div>
+
+                {/* Timeslot Generator */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
                     <div className="lg:col-span-1">
                         {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
@@ -219,11 +236,7 @@ export default function Dashboard() {
                         />
                     </div>
                     <div className="lg:col-span-2">
-                        {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
-                        <AIAssistant 
-                            restaurantId={restaurantId}
-                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
-                        />
+                        {/* This space could be used for additional components */}
                     </div>
                 </div>
 

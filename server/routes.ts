@@ -24,8 +24,13 @@ import {
 import { getAvailableTimeSlots } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
 import { getPopularRestaurantTimezones } from "./utils/timezone-utils";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { DateTime } from 'luxon';
+
+// ✅ NEW IMPORT: Sofia AI Enhanced Conversation Manager
+import { enhancedConversationManager } from "./services/enhanced-conversation-manager";
+// ✅ NEW IMPORT: Booking Agent for Restaurant Greeting
+import { createBookingAgent } from "./services/agents/booking-agent";
 
 // ✅ DYNAMIC: PostgreSQL timestamp parser that handles both formats
 function parsePostgresTimestamp(timestamp: string): DateTime {
@@ -1309,6 +1314,234 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: "Validation failed", errors: error.errors });
             }
+            next(error);
+        }
+    });
+
+    // ===========================================
+    // ✅ NEW: SOFIA AI CHAT ENDPOINTS (Enhanced)
+    // ===========================================
+
+    // ✅ NEW: Helper function to get agent for restaurant greeting
+    const getAgentForRestaurant = async (restaurantId: number) => {
+        const restaurant = await storage.getRestaurant(restaurantId);
+        if (!restaurant) {
+            throw new Error(`Restaurant ${restaurantId} not found`);
+        }
+
+        return createBookingAgent({
+            id: restaurant.id,
+            name: restaurant.name,
+            timezone: restaurant.timezone || 'Europe/Moscow',
+            openingTime: restaurant.openingTime || '09:00:00',
+            closingTime: restaurant.closingTime || '23:00:00',
+            maxGuests: restaurant.maxGuests || 12,
+            cuisine: restaurant.cuisine,
+            atmosphere: restaurant.atmosphere,
+            country: restaurant.country,
+            languages: restaurant.languages
+        });
+    };
+
+    // Create new chat session
+    app.post("/api/chat/session", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const { platform = 'web', language = 'en' } = req.body;
+
+            const sessionId = enhancedConversationManager.createSession({
+                restaurantId: restaurant.id,
+                platform,
+                language,
+                webSessionId: req.sessionID
+            });
+
+            // ✅ NEW: Get restaurant greeting based on restaurant language/country
+            let restaurantGreeting: string;
+            try {
+                const agent = await getAgentForRestaurant(restaurant.id);
+                const context = platform === 'web' ? 'hostess' : 'guest';
+                restaurantGreeting = agent.getRestaurantGreeting(context);
+            } catch (error) {
+                console.error('[API] Error generating restaurant greeting:', error);
+                // Fallback greeting
+                restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
+            }
+
+            console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${restaurant.id} with greeting in ${restaurant.languages?.[0] || 'en'}`);
+
+            res.json({
+                sessionId,
+                restaurantId: restaurant.id,
+                restaurantName: restaurant.name,
+                restaurantGreeting, // ✅ NEW: Send restaurant-specific greeting
+                language,
+                platform
+            });
+
+        } catch (error) {
+            console.error('[API] Error creating chat session:', error);
+            next(error);
+        }
+    });
+
+    // Send message to Sofia AI
+    app.post("/api/chat/message", isAuthenticated, async (req, res, next) => {
+        try {
+            const { sessionId, message } = req.body;
+
+            if (!sessionId || !message) {
+                return res.status(400).json({ 
+                    message: "Session ID and message are required" 
+                });
+            }
+
+            // Validate session exists
+            const session = enhancedConversationManager.getSession(sessionId);
+            if (!session) {
+                return res.status(404).json({ 
+                    message: "Session not found. Please create a new session." 
+                });
+            }
+
+            console.log(`[API] Processing Sofia message for session ${sessionId}: "${message.substring(0, 50)}..."`);
+
+            // Handle message with Sofia AI
+            const result = await enhancedConversationManager.handleMessage(sessionId, message);
+
+            // Log AI activity if booking was created
+            if (result.hasBooking && result.reservationId) {
+                await storage.logAiActivity({
+                    restaurantId: session.restaurantId,
+                    type: 'booking_completed',
+                    description: `Sofia AI created reservation #${result.reservationId} for ${session.gatheringInfo.name}`,
+                    data: {
+                        reservationId: result.reservationId,
+                        sessionId,
+                        platform: session.platform,
+                        guestName: session.gatheringInfo.name,
+                        guests: session.gatheringInfo.guests,
+                        date: session.gatheringInfo.date,
+                        time: session.gatheringInfo.time
+                    }
+                });
+            }
+
+            res.json({
+                response: result.response,
+                hasBooking: result.hasBooking,
+                reservationId: result.reservationId,
+                sessionInfo: {
+                    gatheringInfo: result.session.gatheringInfo,
+                    currentStep: result.session.currentStep,
+                    conversationLength: result.session.conversationHistory.length
+                }
+            });
+
+        } catch (error) {
+            console.error('[API] Error handling Sofia message:', error);
+            
+            // Provide helpful error response
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+            
+            if (errorMessage.includes('Session') && errorMessage.includes('not found')) {
+                return res.status(404).json({ 
+                    message: "Your session has expired. Please refresh the page to start a new conversation." 
+                });
+            }
+
+            res.status(500).json({ 
+                message: "I encountered an error. Please try again or refresh the page." 
+            });
+        }
+    });
+
+    // Get chat session information
+    app.get("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
+        try {
+            const { sessionId } = req.params;
+            const session = enhancedConversationManager.getSession(sessionId);
+
+            if (!session) {
+                return res.status(404).json({ message: "Session not found" });
+            }
+
+            // Verify user has access to this restaurant
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant || restaurant.id !== session.restaurantId) {
+                return res.status(403).json({ message: "Access denied" });
+            }
+
+            res.json({
+                sessionId: session.sessionId,
+                restaurantId: session.restaurantId,
+                platform: session.platform,
+                language: session.language,
+                currentStep: session.currentStep,
+                gatheringInfo: session.gatheringInfo,
+                conversationLength: session.conversationHistory.length,
+                hasActiveReservation: session.hasActiveReservation,
+                createdAt: session.createdAt,
+                lastActivity: session.lastActivity
+            });
+
+        } catch (error) {
+            console.error('[API] Error getting session info:', error);
+            next(error);
+        }
+    });
+
+    // Get Sofia AI statistics
+    app.get("/api/chat/stats", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const stats = enhancedConversationManager.getStats();
+
+            res.json({
+                restaurantId: restaurant.id,
+                ...stats,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[API] Error getting Sofia stats:', error);
+            next(error);
+        }
+    });
+
+    // End chat session
+    app.delete("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
+        try {
+            const { sessionId } = req.params;
+            const success = enhancedConversationManager.endSession(sessionId);
+
+            if (!success) {
+                return res.status(404).json({ message: "Session not found" });
+            }
+
+            console.log(`[API] Ended Sofia chat session ${sessionId}`);
+
+            res.json({ 
+                message: "Session ended successfully",
+                sessionId 
+            });
+
+        } catch (error) {
+            console.error('[API] Error ending chat session:', error);
             next(error);
         }
     });
