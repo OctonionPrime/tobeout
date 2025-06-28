@@ -6,12 +6,11 @@ import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
 import type { Restaurant } from '@shared/schema';
 
-// ✅ MOVED FROM conversation-manager.ts
 export type Language = 'en' | 'ru' | 'sr';
 
 /**
  * Enhanced conversation manager with guardrails and proper booking flow
- * ✅ FIXED: Works with the improved booking agent to ensure proper workflow
+ * ✅ FIXED: Proper name confirmation handling
  */
 export class EnhancedConversationManager {
   private sessions = new Map<string, BookingSessionWithConfirmation>();
@@ -120,6 +119,42 @@ export class EnhancedConversationManager {
   }
 
   /**
+   * ✅ NEW: Check if message is name clarification (specific pattern for name confirmation)
+   */
+  private isNameClarification(message: string): { isNameClarification: boolean; confirmedName?: string } {
+    const normalized = message.toLowerCase().trim();
+    
+    // Russian patterns for name confirmation
+    const russianPatterns = [
+      /на\s+имя\s+([а-яё\w\s]+)/i,        // "на имя [Name]"
+      /под\s+именем\s+([а-яё\w\s]+)/i,    // "под именем [Name]"
+      /бронировать\s+на\s+([а-яё\w\s]+)/i, // "бронировать на [Name]"
+      /использ\w*\s+имя\s+([а-яё\w\s]+)/i  // "использовать имя [Name]"
+    ];
+    
+    // English patterns
+    const englishPatterns = [
+      /under\s+the\s+name\s+([a-z\w\s]+)/i,    // "under the name [Name]"
+      /book\s+under\s+([a-z\w\s]+)/i,          // "book under [Name]"
+      /use\s+the\s+name\s+([a-z\w\s]+)/i,      // "use the name [Name]"
+      /name\s+should\s+be\s+([a-z\w\s]+)/i     // "name should be [Name]"
+    ];
+
+    const allPatterns = [...russianPatterns, ...englishPatterns];
+    
+    for (const pattern of allPatterns) {
+      const match = message.match(pattern);
+      if (match && match[1]) {
+        const confirmedName = match[1].trim();
+        console.log(`[EnhancedConversationManager] Detected name clarification: "${confirmedName}"`);
+        return { isNameClarification: true, confirmedName };
+      }
+    }
+
+    return { isNameClarification: false };
+  }
+
+  /**
    * Main message handling with enhanced logic
    */
   async handleMessage(sessionId: string, message: string): Promise<{
@@ -140,6 +175,44 @@ export class EnhancedConversationManager {
       if (session.pendingConfirmation) {
         console.log(`[EnhancedConversationManager] Checking for confirmation response: "${message}"`);
         
+        // ✅ FIXED: Check for name clarification first
+        const nameCheck = this.isNameClarification(message);
+        if (nameCheck.isNameClarification && nameCheck.confirmedName) {
+          console.log(`[EnhancedConversationManager] Name clarification received: "${nameCheck.confirmedName}"`);
+          
+          // Store the confirmed name in session
+          session.confirmedName = nameCheck.confirmedName;
+          
+          // Add user message to history
+          session.conversationHistory.push({
+            role: 'user',
+            content: message,
+            timestamp: new Date()
+          });
+
+          // Ask for final confirmation
+          const finalConfirmationMessage = session.language === 'ru'
+            ? `Понял, бронируем на имя "${nameCheck.confirmedName}". Подтверждаете?`
+            : session.language === 'sr'
+            ? `Razumem, rezervacija na ime "${nameCheck.confirmedName}". Potvrđujete?`
+            : `Got it, booking under the name "${nameCheck.confirmedName}". Confirm?`;
+
+          session.conversationHistory.push({
+            role: 'assistant',
+            content: finalConfirmationMessage,
+            timestamp: new Date()
+          });
+
+          this.sessions.set(sessionId, session);
+
+          return {
+            response: finalConfirmationMessage,
+            hasBooking: false,
+            session
+          };
+        }
+
+        // Check for yes/no confirmation
         const confirmationCheck = this.isConfirmationResponse(message);
         if (confirmationCheck.isConfirmation) {
           console.log(`[EnhancedConversationManager] Detected confirmation response: ${confirmationCheck.confirmed}`);
@@ -157,6 +230,7 @@ export class EnhancedConversationManager {
           console.log(`[EnhancedConversationManager] Message not recognized as confirmation, treating as new input`);
           // Clear pending confirmation if user says something else
           delete session.pendingConfirmation;
+          delete session.confirmedName; // Also clear any stored confirmed name
         }
       }
 
@@ -208,7 +282,6 @@ export class EnhancedConversationManager {
           console.log(`[EnhancedConversationManager] Language changed from '${session.language}' to '${detectedLanguage}'`);
         }
       }
-
 
       session.lastActivity = new Date();
       session.conversationHistory.push({
@@ -265,7 +338,8 @@ export class EnhancedConversationManager {
           telegramUserId: session.telegramUserId,
           source: session.platform,
           sessionId: sessionId,
-          language: session.language
+          language: session.language,
+          confirmedName: session.confirmedName // ✅ CRITICAL: Pass confirmed name
         };
 
         // Process each function call
@@ -273,6 +347,15 @@ export class EnhancedConversationManager {
           if (toolCall.function.name in agentFunctions) {
             try {
               const args = JSON.parse(toolCall.function.arguments);
+              
+              // ✅ ENHANCED: Handle name mismatch during booking
+              if (toolCall.function.name === 'create_reservation') {
+                // Check if we have a confirmed name to use instead
+                if (session.confirmedName) {
+                  console.log(`[EnhancedConversationManager] Using confirmed name: ${session.confirmedName}`);
+                  args.guestName = session.confirmedName;
+                }
+              }
               
               // Check if high-risk action requires confirmation
               const confirmationCheck = requiresConfirmation(toolCall.function.name, args);
@@ -339,6 +422,41 @@ export class EnhancedConversationManager {
               
               console.log(`[EnhancedConversationManager] Function result:`, result);
 
+              // ✅ ENHANCED: Handle name clarification errors specifically
+              if (toolCall.function.name === 'create_reservation' && 
+                  result.tool_status === 'FAILURE' && 
+                  result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
+                
+                const { dbName, requestName } = result.error.details;
+                
+                // Store pending confirmation with name conflict info
+                session.pendingConfirmation = {
+                  toolCall,
+                  functionContext,
+                  summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"`
+                };
+
+                const clarificationMessage = session.language === 'ru'
+                  ? `Я вижу, что вы ранее бронировали под именем "${dbName}". Для этого бронирования хотите использовать новое имя "${requestName}" или оставить "${dbName}"?\n\nОтветьте "на имя ${requestName}" или "оставить ${dbName}"`
+                  : session.language === 'sr'
+                  ? `Vidim da ste ranije rezervisali pod imenom "${dbName}". Za ovu rezervaciju želite da koristite novo ime "${requestName}" ili da ostavite "${dbName}"?\n\nOdgovorite "na ime ${requestName}" ili "ostaviti ${dbName}"`
+                  : `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use the new name "${requestName}" or keep "${dbName}"?\n\nReply "use ${requestName}" or "keep ${dbName}"`;
+
+                session.conversationHistory.push({
+                  role: 'assistant',
+                  content: clarificationMessage,
+                  timestamp: new Date()
+                });
+
+                this.sessions.set(sessionId, session);
+
+                return {
+                  response: clarificationMessage,
+                  hasBooking: false,
+                  session
+                };
+              }
+
               // Add function result to messages
               messages.push({
                 role: 'tool' as const,
@@ -354,6 +472,10 @@ export class EnhancedConversationManager {
                   reservationId = result.data.reservationId;
                   session.hasActiveReservation = reservationId;
                   session.currentStep = 'completed';
+                  
+                  // ✅ CLEANUP: Clear confirmation state after successful booking
+                  delete session.pendingConfirmation;
+                  delete session.confirmedName;
                   
                   console.log(`[EnhancedConversationManager] Booking completed successfully! Reservation ID: ${reservationId}`);
                 } else {
@@ -455,6 +577,7 @@ export class EnhancedConversationManager {
 
   /**
    * Handle confirmation responses for pending high-risk actions
+   * ✅ ENHANCED: Better handling of name confirmations
    */
   async handleConfirmation(sessionId: string, confirmed: boolean): Promise<{
     response: string;
@@ -473,6 +596,13 @@ export class EnhancedConversationManager {
         const { toolCall, functionContext } = session.pendingConfirmation;
         const args = JSON.parse(toolCall.function.arguments);
         
+        // ✅ CRITICAL: Use confirmed name if available
+        if (session.confirmedName) {
+          console.log(`[EnhancedConversationManager] Using confirmed name for booking: ${session.confirmedName}`);
+          args.guestName = session.confirmedName;
+          functionContext.confirmedName = session.confirmedName;
+        }
+        
         console.log(`[EnhancedConversationManager] Executing confirmed action: ${toolCall.function.name}`);
         
         const result = await agentFunctions.create_reservation(
@@ -480,8 +610,9 @@ export class EnhancedConversationManager {
           args.guests, args.specialRequests || '', functionContext
         );
 
-        // Clear pending confirmation
+        // Clear pending confirmation and confirmed name
         delete session.pendingConfirmation;
+        delete session.confirmedName;
         
         // Check success with new format
         if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
@@ -532,6 +663,7 @@ export class EnhancedConversationManager {
       } else {
         // User declined - clear pending confirmation
         delete session.pendingConfirmation;
+        delete session.confirmedName;
         
         const cancelMessage = session.language === 'ru'
           ? "Хорошо, бронирование отменено. Чем еще могу помочь?"
@@ -557,6 +689,7 @@ export class EnhancedConversationManager {
       console.error(`[EnhancedConversationManager] Confirmation error:`, error);
       
       delete session.pendingConfirmation;
+      delete session.confirmedName;
       const errorMessage = session.language === 'ru'
         ? "Произошла ошибка при обработке подтверждения."
         : session.language === 'sr'
@@ -733,6 +866,7 @@ interface BookingSessionWithConfirmation extends BookingSession {
     functionContext: any;
     summary: string;
   };
+  confirmedName?: string; // ✅ NEW: Store confirmed name
 }
 
 // Global instance

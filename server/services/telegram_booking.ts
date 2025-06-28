@@ -42,7 +42,7 @@ export type CreateTelegramReservationResult = {
   };
 };
 
-// ✅ CRITICAL FIX: Add restaurantTimezone parameter
+// ✅ CRITICAL FIX: Add restaurantTimezone parameter and proper confirmed name handling
 export async function createTelegramReservation(
  restaurantId: number,
  date: string,
@@ -53,7 +53,7 @@ export async function createTelegramReservation(
  telegramUserId: string,
  comments?: string,
  lang?: Language,
- confirmedName?: string,
+ confirmedName?: string, // ✅ CRITICAL: Now properly handle confirmed name
  selected_slot_info?: ServiceAvailabilitySlot, // Added selected_slot_info
  restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
 ): Promise<CreateTelegramReservationResult> {
@@ -83,12 +83,15 @@ export async function createTelegramReservation(
        console.log(`[TelegramBooking] Found guest by phone ${phone}, associating Telegram ID: ${telegramUserId}`);
        const guestUpdateData: Partial<InsertGuest> = { telegram_user_id: telegramUserId };
        if (guest.language !== effectiveLang) guestUpdateData.language = effectiveLang;
+       
+       // ✅ CRITICAL FIX: Handle confirmed name properly for phone-found guests
        if (confirmedName && guest.name !== confirmedName) {
-            console.log(`[TelegramBooking] Updating guest (found by phone) profile name from '${guest.name}' to '${confirmedName}'.`);
+            console.log(`[TelegramBooking] Updating guest (found by phone) profile name from '${guest.name}' to confirmed name '${confirmedName}'.`);
             guestUpdateData.name = confirmedName;
        } else if (!confirmedName && guest.name !== nameForThisSpecificBooking) {
             console.log(`[TelegramBooking] Guest (found by phone) DB name '${guest.name}' differs from this booking's name '${nameForThisSpecificBooking}'. Profile name NOT changed without confirmation.`);
        }
+       
        if (Object.keys(guestUpdateData).length > 0) {
            guest = await storage.updateGuest(guest.id, guestUpdateData);
        }
@@ -102,20 +105,34 @@ export async function createTelegramReservation(
        });
        console.log(`[TelegramBooking] ✨ New guest ID: ${guest.id} for ${nameForThisSpecificBooking} (lang: ${effectiveLang})`);
      }
-   } else { // Guest found by Telegram ID
+   } else { 
+     // ✅ CRITICAL FIX: Enhanced logic for guests found by Telegram ID
      console.log(`[TelegramBooking] Found guest ID: ${guest.id} (DB Profile: ${guest.name}) by TG ID. This booking name: ${nameForThisSpecificBooking}`);
      const guestProfileUpdates: Partial<InsertGuest> = {};
      let needsProfileUpdate = false;
 
-     if (phone && guest.phone !== phone) { guestProfileUpdates.phone = phone; needsProfileUpdate = true; }
-     if (effectiveLang !== guest.language) { guestProfileUpdates.language = effectiveLang; needsProfileUpdate = true; }
+     if (phone && guest.phone !== phone) { 
+       guestProfileUpdates.phone = phone; 
+       needsProfileUpdate = true; 
+     }
+     if (effectiveLang !== guest.language) { 
+       guestProfileUpdates.language = effectiveLang; 
+       needsProfileUpdate = true; 
+     }
 
-     if (confirmedName && guest.name !== confirmedName) {
-        guestProfileUpdates.name = confirmedName;
-        needsProfileUpdate = true;
-        console.log(`[TelegramBooking] Updating existing guest profile name from '${guest.name}' to confirmed name: '${confirmedName}'`);
-     } else if (!confirmedName && guest.name !== nameForThisSpecificBooking) {
-       console.log(`[TelegramBooking] Name mismatch! DB Profile: '${guest.name}', This booking: '${nameForThisSpecificBooking}'. Clarification needed.`);
+     // ✅ CRITICAL FIX: Enhanced name handling logic
+     if (confirmedName) {
+       // User has explicitly confirmed a name to use
+       if (guest.name !== confirmedName) {
+         guestProfileUpdates.name = confirmedName;
+         needsProfileUpdate = true;
+         console.log(`[TelegramBooking] ✅ Updating existing guest profile name from '${guest.name}' to confirmed name: '${confirmedName}'`);
+       } else {
+         console.log(`[TelegramBooking] ✅ Confirmed name '${confirmedName}' matches existing profile - proceeding with booking`);
+       }
+     } else if (guest.name !== nameForThisSpecificBooking) {
+       // No confirmed name, but names don't match - request clarification
+       console.log(`[TelegramBooking] ⚠️ Name mismatch! DB Profile: '${guest.name}', This booking: '${nameForThisSpecificBooking}'. Clarification needed.`);
        return {
          success: false,
          status: 'name_mismatch_clarification_needed',
@@ -124,30 +141,49 @@ export async function createTelegramReservation(
            guestId: guest.id,
            dbName: guest.name,
            requestName: nameForThisSpecificBooking,
-           phone, telegramUserId, date, time, guests, comments, lang: effectiveLang,
+           phone, 
+           telegramUserId, 
+           date, 
+           time, 
+           guests, 
+           comments, 
+           lang: effectiveLang,
          }
        };
+     } else {
+       console.log(`[TelegramBooking] ✅ Names match - DB: '${guest.name}' = Booking: '${nameForThisSpecificBooking}'`);
      }
+     
      if (needsProfileUpdate) {
        guest = await storage.updateGuest(guest.id, guestProfileUpdates);
-       console.log(`[TelegramBooking] Updated profile for guest ${guest.id}. New DB Profile Name: ${guest.name}`);
+       console.log(`[TelegramBooking] ✅ Updated profile for guest ${guest.id}. New DB Profile Name: ${guest.name}`);
      }
    }
+
+   // ✅ CRITICAL FIX: Use confirmed name for booking guest name if provided
+   const bookingGuestName = confirmedName || nameForThisSpecificBooking;
+   console.log(`[TelegramBooking] Final booking guest name: ${bookingGuestName} (confirmed: ${!!confirmedName})`);
 
    // ✅ CRITICAL FIX: Pass timezone to core booking service
    const bookingServiceRequest: CoreBookingRequest = {
      restaurantId,
      guestId: guest.id,
-     date, time, guests,
+     date, 
+     time, 
+     guests,
      comments: comments || '',
      source: 'telegram',
-     booking_guest_name: nameForThisSpecificBooking,
+     booking_guest_name: bookingGuestName, // ✅ Use effective name
      lang: effectiveLang,
      selected_slot_info: selected_slot_info, // Pass the selected slot if available
      timezone: effectiveTimezone // ✅ CRITICAL ADDITION
    };
 
-   console.log('[TelegramBooking] Calling coreCreateReservation with request:', bookingServiceRequest);
+   console.log('[TelegramBooking] Calling coreCreateReservation with request:', {
+     ...bookingServiceRequest,
+     confirmedNameUsed: !!confirmedName
+   });
+   
    const result: CoreBookingResponse = await coreCreateReservation(bookingServiceRequest);
 
    if (result.success) {
@@ -161,7 +197,7 @@ export async function createTelegramReservation(
        allReservationIds: result.allReservationIds
      };
    } else {
-     console.warn(`[TelegramBooking] Core booking failed: ${result.message}`);
+     console.warn(`[TelegramBooking] ❌ Core booking failed: ${result.message}`);
      return {
        success: false,
        status: 'error',
@@ -180,7 +216,6 @@ export async function createTelegramReservation(
    };
  }
 }
-
 
 // ✅ CRITICAL FIX: Add restaurantTimezone parameter to confirmation message
 export function generateTelegramConfirmationMessage(
@@ -231,6 +266,23 @@ export function generateTelegramConfirmationMessage(
       specialRequestsPrefix: "📝 Особые пожелания:",
       footerBase: "\n✨ С нетерпением ждем вас!",
       footerWithRestaurant: (restaurantName) => `\n✨ С нетерпением ждем вас в ${restaurantName}!`,
+    },
+    sr: {
+      header: "🎉 Rezervacija potvrđena!\n\n",
+      guestPrefix: "👤 Gost:",
+      datePrefix: "📅 Datum:",
+      timePrefix: "⏰ Vreme:",
+      partySizePrefix: (count) => {
+          let peopleStr = "osoba"; // Default
+          if (count === 1) peopleStr = "osoba";
+          else if (count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20)) peopleStr = "osobe";
+          else peopleStr = "osoba";
+          return `👥 Broj gostiju: ${count} ${peopleStr}`;
+      },
+      tablePrefix: "🪑 Sto(lovi):",
+      specialRequestsPrefix: "📝 Posebni zahtevi:",
+      footerBase: "\n✨ Radujemo se što ćemo vas služiti!",
+      footerWithRestaurant: (restaurantName) => `\n✨ Radujemo se što ćemo vas služiti u ${restaurantName}!`,
     }
   };
  const locale = confirmationLocaleStrings[lang] || confirmationLocaleStrings.en;
@@ -239,7 +291,7 @@ export function generateTelegramConfirmationMessage(
  
  // ✅ CRITICAL FIX: Use restaurant timezone instead of hardcoded Moscow
  const dateFormatted = new Date(reservation.date + 'T00:00:00Z')
-    .toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', {
+    .toLocaleDateString(lang === 'ru' ? 'ru-RU' : lang === 'sr' ? 'sr-RS' : 'en-US', {
       weekday: 'long', 
       year: 'numeric', 
       month: 'long', 
@@ -285,7 +337,8 @@ export function formatTimeForTelegram(time24: string, lang: Language = 'en'): st
 
    if (isNaN(hours) || isNaN(minutes)) return time24;
    const formattedMinutes = minutes.toString().padStart(2, '0');
-   if (lang === 'ru') return `${hours.toString().padStart(2, '0')}:${formattedMinutes}`;
+   
+   if (lang === 'ru' || lang === 'sr') return `${hours.toString().padStart(2, '0')}:${formattedMinutes}`;
 
    const period = hours >= 12 ? 'PM' : 'AM';
    const displayHours = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;

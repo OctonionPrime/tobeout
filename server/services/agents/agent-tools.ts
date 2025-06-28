@@ -44,13 +44,13 @@ const createFailureResponse = (
     }
 });
 
-const createValidationFailure = (message: string, field?: string): ToolResponse => 
+const createValidationFailure = (message: string, field?: string): ToolResponse =>
     createFailureResponse('VALIDATION_ERROR', message, 'INVALID_INPUT', { field });
 
-const createBusinessRuleFailure = (message: string, code?: string): ToolResponse => 
+const createBusinessRuleFailure = (message: string, code?: string): ToolResponse =>
     createFailureResponse('BUSINESS_RULE', message, code);
 
-const createSystemError = (message: string, originalError?: any): ToolResponse => 
+const createSystemError = (message: string, originalError?: any): ToolResponse =>
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
 
 /**
@@ -108,16 +108,16 @@ export async function check_availability(
 
         // Find the best matching slot
         let requestedSlot = null;
-        
+
         // First, try exact time match
         requestedSlot = slots.find(slot => slot.time === timeFormatted);
-        
+
         if (!requestedSlot) {
             // Try time without seconds (HH:MM format)
             const timeWithoutSeconds = timeFormatted.substring(0, 5);
             requestedSlot = slots.find(slot => slot.time.substring(0, 5) === timeWithoutSeconds);
         }
-        
+
         if (!requestedSlot && slots.length > 0) {
             // If we still don't find exact match but have slots, take the first available slot
             requestedSlot = slots[0];
@@ -141,15 +141,15 @@ export async function check_availability(
                 fallback_used: requestedSlot.time !== timeFormatted
             });
         } else {
-            // ✅ НОВАЯ ЛОГИКА: Если нет столиков, проверить для меньшего количества гостей
+            // ✅ NEW LOGIC: If no tables, check for smaller party sizes
             console.log(`⚠️ [Agent Tool] No tables for ${guests} guests, checking for smaller party sizes...`);
-            
+
             let suggestedAlternatives = [];
-            
-            // Проверяем для меньшего количества гостей (от guests-1 до 1)
+
+            // Check for smaller number of guests (from guests-1 to 1)
             for (let altGuests = guests - 1; altGuests >= 1 && suggestedAlternatives.length === 0; altGuests--) {
                 console.log(`🔍 [Agent Tool] Checking availability for ${altGuests} guests...`);
-                
+
                 const altSlots = await getAvailableTimeSlots(
                     context.restaurantId,
                     date,
@@ -162,7 +162,7 @@ export async function check_availability(
                         allowCombinations: true
                     }
                 );
-                
+
                 if (altSlots.length > 0) {
                     suggestedAlternatives = altSlots.slice(0, 3).map(slot => ({
                         time: slot.time,
@@ -259,7 +259,7 @@ export async function find_alternative_times(
         const executionTime = Date.now() - startTime;
 
         console.log(`✅ [Agent Tool] Found ${alternatives.length} alternatives`);
-        
+
         if (alternatives.length > 0) {
             return createSuccessResponse({
                 alternatives,
@@ -287,7 +287,7 @@ export async function find_alternative_times(
 
 /**
  * Create a reservation using existing booking system
- * ✅ ENHANCED: Comprehensive error categorization and standardized responses + better success detection
+ * ✅ ENHANCED: Comprehensive error categorization and standardized responses + better success detection + confirmed name handling
  */
 export async function create_reservation(
     guestName: string,
@@ -303,10 +303,17 @@ export async function create_reservation(
         source: string;
         sessionId?: string;
         language: string;
+        confirmedName?: string; // ✅ NEW: Support confirmed name
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`📝 [Agent Tool] create_reservation: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
+
+    // ✅ CRITICAL: Use confirmed name if provided
+    const effectiveGuestName = context.confirmedName || guestName;
+    if (context.confirmedName) {
+        console.log(`📝 [Agent Tool] Using confirmed name: ${context.confirmedName} (original: ${guestName})`);
+    }
 
     try {
         // ✅ VALIDATION: Check context object exists
@@ -315,7 +322,7 @@ export async function create_reservation(
         }
 
         // ✅ VALIDATION: Check required parameters
-        if (!guestName || !guestPhone || !date || !time || !guests) {
+        if (!effectiveGuestName || !guestPhone || !date || !time || !guests) {
             return createValidationFailure('Missing required parameters: guestName, guestPhone, date, time, or guests');
         }
 
@@ -356,7 +363,7 @@ export async function create_reservation(
         }
 
         // ✅ VALIDATION: Clean guest name
-        const cleanName = guestName.trim();
+        const cleanName = effectiveGuestName.trim();
         if (cleanName.length < 2) {
             return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
         }
@@ -367,8 +374,9 @@ export async function create_reservation(
         console.log(`   - Date/Time: ${date} ${timeFormatted}`);
         console.log(`   - Guests: ${guests}`);
         console.log(`   - Timezone: ${context.timezone}`);
+        console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
 
-        // Use existing createTelegramReservation function
+        // ✅ CRITICAL: Use existing createTelegramReservation function with confirmed name
         const result = await createTelegramReservation(
             context.restaurantId,
             date,
@@ -379,14 +387,14 @@ export async function create_reservation(
             context.telegramUserId || context.sessionId || 'web_chat_user',
             specialRequests,
             context.language as any,
-            undefined, // confirmedName
+            context.confirmedName, // ✅ CRITICAL: Pass confirmed name
             undefined, // selected_slot_info
             context.timezone
         );
 
         const executionTime = Date.now() - startTime;
 
-        // ✅ ИСПРАВЛЕНИЕ: Более тщательная проверка успеха
+        // ✅ ENHANCED: More thorough success checking
         console.log(`🔍 [Agent Tool] Reservation result:`, {
             success: result.success,
             status: result.status,
@@ -407,18 +415,34 @@ export async function create_reservation(
                 guests: guests,
                 specialRequests: specialRequests,
                 message: result.message,
-                success: true // ✅ Добавляем явный флаг успеха
+                success: true // ✅ Add explicit success flag
             }, {
                 execution_time_ms: executionTime
             });
         } else {
             console.log(`⚠️ [Agent Tool] Reservation failed:`, {
                 success: result.success,
+                status: result.status,
                 message: result.message,
                 reservation: result.reservation
             });
-            
-            // Categorize the business rule failure based on the message
+
+            // ✅ ENHANCED: Handle the specific name mismatch clarification case
+            if (result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
+                const { dbName, requestName } = result.nameConflict;
+                return createFailureResponse(
+                    'BUSINESS_RULE',
+                    `The user has booked before as '${dbName}' but is now using '${requestName}'. Clarification is required.`,
+                    'NAME_CLARIFICATION_NEEDED', // A new, specific error code for the agent
+                    {
+                        dbName: dbName,
+                        requestName: requestName,
+                        originalMessage: result.message
+                    }
+                );
+            }
+
+            // Categorize other business rule failures based on the message
             let errorCode = 'BOOKING_FAILED';
             if (result.message?.toLowerCase().includes('no table')) {
                 errorCode = 'NO_TABLE_AVAILABLE';
@@ -436,10 +460,10 @@ export async function create_reservation(
 
     } catch (error) {
         console.error(`❌ [Agent Tool] create_reservation error:`, error);
-        
+
         // Enhanced error logging for debugging
         console.error(`❌ [Agent Tool] Error details:`, {
-            guestName,
+            guestName: effectiveGuestName,
             guestPhone,
             date,
             time,
@@ -447,6 +471,7 @@ export async function create_reservation(
             contextExists: !!context,
             contextRestaurantId: context?.restaurantId,
             contextTimezone: context?.timezone,
+            confirmedName: context?.confirmedName,
             errorMessage: error instanceof Error ? error.message : 'Unknown error'
         });
 
@@ -517,7 +542,7 @@ export async function get_restaurant_info(
                 };
                 message = `We're open from ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}`;
                 break;
-                
+
             case 'location':
                 responseData = {
                     name: restaurant.name,
@@ -527,7 +552,7 @@ export async function get_restaurant_info(
                 };
                 message = `${restaurant.name} is located at ${restaurant.address}, ${restaurant.city}${restaurant.country ? `, ${restaurant.country}` : ''}`;
                 break;
-                
+
             case 'cuisine':
                 responseData = {
                     cuisine: restaurant.cuisine,
@@ -536,7 +561,7 @@ export async function get_restaurant_info(
                 };
                 message = `We specialize in ${restaurant.cuisine || 'excellent cuisine'} with a ${restaurant.atmosphere || 'wonderful'} atmosphere.`;
                 break;
-                
+
             case 'contact':
                 responseData = {
                     name: restaurant.name,
@@ -544,7 +569,7 @@ export async function get_restaurant_info(
                 };
                 message = `You can reach ${restaurant.name}${restaurant.phone ? ` at ${restaurant.phone}` : ''}`;
                 break;
-                
+
             default: // 'all'
                 responseData = {
                     name: restaurant.name,
@@ -593,7 +618,7 @@ export const agentTools = [
                         description: "Date in YYYY-MM-DD format (e.g., 2025-06-27)"
                     },
                     time: {
-                        type: "string", 
+                        type: "string",
                         description: "Time in HH:MM format (24-hour) (e.g., 19:00)"
                     },
                     guests: {

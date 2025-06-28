@@ -129,6 +129,9 @@ ERROR TYPES TO HANDLE:
 SPECIAL BUSINESS RULE CODES:
 - NO_AVAILABILITY_SUGGEST_SMALLER: No tables for requested party size, but smaller available
   → Suggest the smaller party size option naturally and helpfully
+// ✅ ENHANCEMENT: Add instruction for the new name clarification error code.
+- NAME_CLARIFICATION_NEEDED: The user has a profile with a different name. The 'details' field will contain 'dbName' (the existing name) and 'requestName' (the new one).
+  → You MUST ask the user which name they want to use. Example: "I see you've booked with us before under the name 'Игорь'. For this reservation, would you like to use the new name 'Эрук', or should I stick with 'Игорь'?"
 
 EXAMPLES:
 ✅ SUCCESS: {"tool_status": "SUCCESS", "data": {"available": true, "table": "5"}}
