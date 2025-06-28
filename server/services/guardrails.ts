@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai';
 import type { BookingSession } from './agents/booking-agent'; // Assuming BookingSession is exported
+import type { Language } from './enhanced-conversation-manager';
 
 const client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
@@ -187,14 +188,19 @@ async function checkSafety(message: string): Promise<GuardrailResult> {
 
 
 /**
- * High-Risk Action Confirmation.
- * Unchanged logic.
+ * ✅ FIXED: High-Risk Action Confirmation with Language Support
+ * Now accepts language parameter and provides localized summaries
  */
-export function requiresConfirmation(toolName: string, args: any): { required: boolean; summary?: string; } {
+export function requiresConfirmation(toolName: string, args: any, lang: Language = 'en'): { required: boolean; summary?: string; } {
     if (toolName === 'create_reservation') {
+        const summaries = {
+            en: `Creating reservation for ${args.guestName} (${args.guestPhone}) - ${args.guests} guests on ${args.date} at ${args.time}`,
+            ru: `Создание брони для ${args.guestName} (${args.guestPhone}) - ${args.guests} гостей на ${args.date} в ${args.time}`,
+            sr: `Kreiranje rezervacije za ${args.guestName} (${args.guestPhone}) - ${args.guests} gostiju dana ${args.date} u ${args.time}`
+        };
         return {
             required: true,
-            summary: `Creating reservation for ${args.guestName} (${args.guestPhone}) - ${args.guests} guests on ${args.date} at ${args.time}`
+            summary: summaries[lang] || summaries.en
         };
     }
     return { required: false };

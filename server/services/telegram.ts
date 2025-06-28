@@ -49,10 +49,10 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
         telegramTestSuccess: (botUsername) => `Successfully connected to Telegram bot: @${botUsername}`,
         telegramTestFailed: (errorMessage) => `Failed to connect to Telegram bot: ${errorMessage}`,
         nameClarificationPrompt: (dbName, requestName) => `I see you've previously booked as '${dbName}'. For this new reservation, would you like to use the name '${requestName}' or keep '${dbName}'?`,
-        useNewNameButton: (requestName) => `Use name: '${requestName}'`,
-        useDbNameButton: (dbName) => `Use name: '${dbName}'`,
+        useNewNameButton: (requestName) => `Use "${requestName}"`,
+        useDbNameButton: (dbName) => `Keep "${dbName}"`,
         pleaseUseButtons: "Please use the buttons above to make your choice.",
-        nameConfirmationUsed: (name) => `Okay, using name: ${name}.`,
+        nameConfirmationUsed: (name) => `Perfect! Using the name: ${name}`,
     },
     ru: {
         welcomeMessage: (restaurantName) => `🌟 Здравствуйте! Добро пожаловать в ${restaurantName}! Я София, и я очень рада помочь вам забронировать идеальный столик! ✨\n\nЯ могу помочь вам сделать бронирование прямо сейчас. Просто сообщите мне:\n• Когда вы хотели бы поужинать 📅\n• Сколько гостей будет с вами 👥\n• Предпочтительное время ⏰\n\nЯ позабочусь обо всем остальном! 🥂\n\nЧто вам подходит?`,
@@ -68,10 +68,10 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
         telegramTestSuccess: (botUsername) => `Успешное подключение к Телеграм-боту: @${botUsername}`,
         telegramTestFailed: (errorMessage) => `Не удалось подключиться к Телеграм-боту: ${errorMessage}`,
         nameClarificationPrompt: (dbName, requestName) => `Я вижу, что ранее вы бронировали под именем '${dbName}'. Для этого нового бронирования использовать имя '${requestName}' или оставить '${dbName}'?`,
-        useNewNameButton: (requestName) => `Использовать '${requestName}'`,
-        useDbNameButton: (dbName) => `Использовать '${dbName}'`,
+        useNewNameButton: (requestName) => `Использовать "${requestName}"`,
+        useDbNameButton: (dbName) => `Оставить "${dbName}"`,
         pleaseUseButtons: "Пожалуйста, выберите один из вариантов с помощью кнопок выше.",
-        nameConfirmationUsed: (name) => `Хорошо, используем имя: ${name}.`,
+        nameConfirmationUsed: (name) => `Отлично! Используем имя: ${name}`,
     },
     sr: {
         welcomeMessage: (restaurantName) => `🌟 Zdravo! Dobrodošli u ${restaurantName}! Ja sam Sofija, i izuzetno sam zadovoljna što mogu da vam pomognem da obezbedite savršen sto! ✨\n\nMogu da vam pomognem da napravite rezervaciju odmah sada. Samo mi recite:\n• Kada biste voleli da dođete 📅\n• Koliko gostiju će vam se pridružiti 👥\n• Vaše željeno vreme ⏰\n\nJa ću se pobrinuti za sve ostalo! 🥂\n\nŠta vam odgovara?`,
@@ -87,10 +87,10 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
         telegramTestSuccess: (botUsername) => `Uspešno povezano sa Telegram botom: @${botUsername}`,
         telegramTestFailed: (errorMessage) => `Neuspešno povezivanje sa Telegram botom: ${errorMessage}`,
         nameClarificationPrompt: (dbName, requestName) => `Vidim da ste ranije rezervisali pod imenom '${dbName}'. Za ovu novu rezervaciju, želite li da koristite ime '${requestName}' ili da zadržite '${dbName}'?`,
-        useNewNameButton: (requestName) => `Koristi ime: '${requestName}'`,
-        useDbNameButton: (dbName) => `Koristi ime: '${dbName}'`,
+        useNewNameButton: (requestName) => `Koristi "${requestName}"`,
+        useDbNameButton: (dbName) => `Zadrži "${dbName}"`,
         pleaseUseButtons: "Molim koristite dugmad iznad da napravite izbor.",
-        nameConfirmationUsed: (name) => `U redu, koristimo ime: ${name}.`,
+        nameConfirmationUsed: (name) => `Savršeno! Koristimo ime: ${name}`,
     },
 };
 
@@ -162,6 +162,37 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
             currentStep: result.session.currentStep,
             gatheringInfo: result.session.gatheringInfo
         });
+
+        // ✅ ENHANCED: Check for name clarification needed
+        const pendingConfirmation = result.session.pendingConfirmation;
+        if (pendingConfirmation?.functionContext?.error?.details?.dbName && 
+            pendingConfirmation?.functionContext?.error?.details?.requestName) {
+            
+            const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
+            const locale = telegramLocaleStrings[currentLang];
+
+            console.log(`[Telegram] 🔄 Sending name clarification with buttons: DB="${dbName}", Request="${requestName}"`);
+
+            await bot.sendMessage(chatId, locale.nameClarificationPrompt(dbName, requestName), {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { 
+                                text: locale.useNewNameButton(requestName), 
+                                callback_data: `confirm_name:new:${requestName}` 
+                            },
+                            { 
+                                text: locale.useDbNameButton(dbName), 
+                                callback_data: `confirm_name:db:${dbName}` 
+                            }
+                        ]
+                    ]
+                }
+            });
+            
+            console.log(`✅ [Sofia AI] Sent name clarification request with buttons to ${chatId}`);
+            return;
+        }
 
         // Check for successful booking
         if (result.hasBooking && result.reservationId) {
@@ -277,6 +308,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             }
         });
 
+        // ✅ ENHANCED: Better callback query handling for name conflicts
         bot.on('callback_query', async (callbackQuery) => {
             const chatId = callbackQuery.message?.chat.id;
             const messageId = callbackQuery.message?.message_id;
@@ -309,23 +341,43 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 
             if (data.startsWith('confirm_name:')) {
                 const parts = data.split(':');
-                const choiceType = parts[1];
+                const choiceType = parts[1]; // 'new' or 'db'
+                const chosenName = parts[2]; // The actual name
                 
-                // For name confirmation, we need to handle this with telegram_booking.ts
-                // This is a complex case that involves the old name conflict resolution system
-                console.log(`[Telegram] Name confirmation callback: ${choiceType}`);
-                
+                console.log(`[Telegram] ✅ Name choice received: ${choiceType} -> "${chosenName}"`);
+
                 try {
-                    await bot.answerCallbackQuery(callbackQuery.id, { text: locale.nameConfirmationUsed(choiceType === 'new' ? 'new name' : 'existing name') });
-                    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+                    // Answer the callback query immediately
+                    await bot.answerCallbackQuery(callbackQuery.id, { 
+                        text: locale.nameConfirmationUsed(chosenName) 
+                    });
                     
-                    // Send message to continue with booking
-                    await bot.sendMessage(chatId, "Thank you for the confirmation. Let me process your booking...");
+                    // Remove the buttons by editing the message
+                    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { 
+                        chat_id: chatId, 
+                        message_id: messageId 
+                    });
+                    
+                    // Send confirmation message
+                    await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
+                    
+                    // ✅ CRITICAL: Send the name choice as a regular message to conversation manager
+                    // This will trigger the simple string matching logic in enhanced-conversation-manager.ts
+                    await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
                     
                 } catch (editError: any) {
                     console.warn(`[Telegram] Could not edit message or answer callback query: ${editError.message || editError}`);
+                    
+                    // Fallback: still try to process the name choice
+                    try {
+                        await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
+                        await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
+                    } catch (fallbackError: any) {
+                        console.error(`[Telegram] Fallback handling also failed: ${fallbackError.message || fallbackError}`);
+                    }
                 }
             } else {
+                // Handle other callback queries
                 await bot.answerCallbackQuery(callbackQuery.id);
             }
         });

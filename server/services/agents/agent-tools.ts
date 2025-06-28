@@ -286,8 +286,7 @@ export async function find_alternative_times(
 }
 
 /**
- * Create a reservation using existing booking system
- * ✅ ENHANCED: Comprehensive error categorization and standardized responses + better success detection + confirmed name handling
+ * ✅ CRITICAL FIX: Create a reservation with proper name clarification handling
  */
 export async function create_reservation(
     guestName: string,
@@ -394,6 +393,27 @@ export async function create_reservation(
 
         const executionTime = Date.now() - startTime;
 
+        // ✅ CRITICAL FIX: Handle the specific name mismatch case
+        if (!result.success && result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
+            console.log(`⚠️ [Agent Tool] NAME MISMATCH DETECTED: Converting to proper format for conversation manager`);
+            
+            const { dbName, requestName } = result.nameConflict;
+            
+            return createFailureResponse(
+                'BUSINESS_RULE',
+                `Name mismatch detected: database has '${dbName}' but booking requests '${requestName}'`,
+                'NAME_CLARIFICATION_NEEDED', // ✅ CRITICAL: This exact code triggers the conversation manager
+                {
+                    dbName: dbName,
+                    requestName: requestName,
+                    guestId: result.nameConflict.guestId,
+                    phone: result.nameConflict.phone,
+                    telegramUserId: result.nameConflict.telegramUserId,
+                    originalMessage: result.message
+                }
+            );
+        }
+
         // ✅ ENHANCED: More thorough success checking
         console.log(`🔍 [Agent Tool] Reservation result:`, {
             success: result.success,
@@ -426,21 +446,6 @@ export async function create_reservation(
                 message: result.message,
                 reservation: result.reservation
             });
-
-            // ✅ ENHANCED: Handle the specific name mismatch clarification case
-            if (result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
-                const { dbName, requestName } = result.nameConflict;
-                return createFailureResponse(
-                    'BUSINESS_RULE',
-                    `The user has booked before as '${dbName}' but is now using '${requestName}'. Clarification is required.`,
-                    'NAME_CLARIFICATION_NEEDED', // A new, specific error code for the agent
-                    {
-                        dbName: dbName,
-                        requestName: requestName,
-                        originalMessage: result.message
-                    }
-                );
-            }
 
             // Categorize other business rule failures based on the message
             let errorCode = 'BOOKING_FAILED';
