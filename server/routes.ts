@@ -21,7 +21,8 @@ import {
     createReservation,
     cancelReservation,
 } from "./services/booking";
-import { getAvailableTimeSlots } from "./services/availability.service";
+// ✅ FIXED: Import both functions from availability service
+import { getAvailableTimeSlots, isTableAvailableAtTimeSlot } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
 import { getPopularRestaurantTimezones } from "./utils/timezone-utils";
 import { eq, and, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
@@ -496,7 +497,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ DYNAMIC: Table Availability with Complete Overnight Support (works for ANY times)
+    // ✅ FIXED: Table Availability with Centralized Logic from Service
     app.get("/api/tables/availability", isAuthenticated, async (req, res, next) => {
         try {
             const { date, time } = req.query;
@@ -566,135 +567,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date} (${restaurant.timezone})`);
 
-                // ✅ DYNAMIC: Enhanced time slot checking for overnight operations
-                const isTimeSlotOccupied = (reservation: any, checkTime: string) => {
-                    const actualReservation = reservation.reservation || reservation;
-                    
-                    if (!actualReservation.reservation_utc) {
-                        console.warn(`[Table Availability] Reservation ${actualReservation.id} missing UTC timestamp, skipping`);
-                        return false;
-                    }
-                    
-                    const restaurantDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
-                    
-                    if (!restaurantDateTime.isValid) {
-                        console.warn(`[Table Availability] Invalid timestamp for reservation ${actualReservation.id}: ${actualReservation.reservation_utc}, skipping`);
-                        return false;
-                    }
-                    
-                    const localDateTime = restaurantDateTime.setZone(restaurant.timezone);
-                    const startTime = localDateTime.toFormat('HH:mm:ss');
-                    const duration = actualReservation.duration || 120;
-
-                    console.log(`🔍 [Time Check] Reservation UTC: ${actualReservation.reservation_utc} -> Local: ${startTime} (${restaurant.timezone})`);
-
-                    const [checkHour, checkMin] = checkTime.split(':').map(Number);
-                    const checkMinutes = checkHour * 60 + checkMin;
-
-                    const [startHour, startMin] = startTime.split(':').map(Number);
-                    const startMinutes = startHour * 60 + startMin;
-                    const endMinutes = startMinutes + duration;
-
-                    // ✅ DYNAMIC: Enhanced overnight conflict detection
-                    const slotEndMinutes = checkMinutes + 120; // Assume 2-hour reservation
-                    
-                    // Standard overlap check
-                    let hasOverlap = startMinutes < slotEndMinutes && endMinutes > checkMinutes;
-                    
-                    // ✅ DYNAMIC: Additional overnight conflict detection
-                    if (isOvernight && !hasOverlap) {
-                        const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
-                        const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
-                        
-                        // Handle conflicts across midnight boundary
-                        if (checkHour < closingHour && startHour > openingHour) {
-                            // Early morning check vs late night reservation from previous day
-                            const adjustedCheckMinutes = checkMinutes + 24 * 60;
-                            const adjustedSlotEnd = slotEndMinutes + 24 * 60;
-                            hasOverlap = startMinutes < adjustedSlotEnd && endMinutes > adjustedCheckMinutes;
-                            console.log(`🌙 [Overnight Conflict] Early morning ${checkTime} vs late night ${startTime}: ${hasOverlap}`);
-                        } else if (checkHour > openingHour && startHour < closingHour) {
-                            // Late night check vs early morning reservation
-                            const adjustedStartMinutes = startMinutes + 24 * 60;
-                            const adjustedEndMinutes = endMinutes + 24 * 60;
-                            hasOverlap = adjustedStartMinutes < slotEndMinutes && adjustedEndMinutes > checkMinutes;
-                            console.log(`🌙 [Overnight Conflict] Late night ${checkTime} vs early morning ${startTime}: ${hasOverlap}`);
-                        }
-                    }
-                    
-                    if (hasOverlap) {
-                        console.log(`⚠️ [Table Availability] ${isOvernight ? 'Overnight' : 'Standard'} conflict detected: Reservation ${startTime}-${Math.floor(endMinutes/60).toString().padStart(2,'0')}:${(endMinutes%60).toString().padStart(2,'0')} overlaps with ${checkTime}`);
-                    }
-                    
-                    return hasOverlap;
-                };
-
+                // ✅ FIXED: Use centralized availability logic from service
                 const availabilityResult = tablesData.map(table => {
                     const tableReservations = reservationsData.filter(r => {
                         const actualReservation = r.reservation || r;
-                        return actualReservation.tableId === table.id;
+                        return actualReservation.tableId === table.id && 
+                               ['confirmed', 'created'].includes(actualReservation.status || '');
                     });
 
                     if (tableReservations.length > 0) {
                         console.log(`🔍 Table ${table.id} (${table.name}) has ${tableReservations.length} reservations`);
                     }
 
-                    const conflictingReservation = reservationsData.find(r => {
-                        const actualReservation = r.reservation || r;
-                        const guest = r.guest || {};
+                    // Use a reasonable default for the slot duration check
+                    const slotDuration = restaurant.avgReservationDuration || 120;
 
-                        const matches = actualReservation.tableId === table.id &&
-                            ['confirmed', 'created'].includes(actualReservation.status || '') &&
-                            isTimeSlotOccupied(r, time as string);
-
-                        if (matches) {
-                            const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
-                            const reservationLocal = reservationDateTime.isValid 
-                                ? reservationDateTime.setZone(restaurant.timezone).toFormat('HH:mm:ss')
-                                : 'Invalid Time';
-                            
-                            console.log(`⚠️ Table ${table.id} conflict found:`, {
-                                guestName: r.guestName || actualReservation.booking_guest_name || guest.name,
-                                timeLocal: reservationLocal,
-                                timeUtc: actualReservation.reservation_utc,
-                                status: actualReservation.status
-                            });
-                        }
-
-                        return matches;
+                    // ✅ FIXED: Use centralized function from availability service
+                    // isTableAvailableAtTimeSlot returns true if it's FREE
+                    // So, we check if ANY reservation makes it UNAVAILABLE
+                    const isOccupied = tableReservations.some(r => {
+                        const reservationDetails = {
+                            reservation_utc: r.reservation?.reservation_utc || r.reservation_utc,
+                            duration: r.reservation?.duration || r.duration,
+                            id: r.reservation?.id || r.id
+                        };
+                        
+                        // Note the "!" to invert the result
+                        // If the table is NOT available, it is occupied
+                        return !isTableAvailableAtTimeSlot(
+                            table.id,
+                            time as string,
+                            [reservationDetails], // The function expects an array
+                            slotDuration,
+                            restaurant.timezone,
+                            date as string,
+                            isOvernight,
+                            // Pass opening/closing times for proper overnight calculation
+                            restaurant.openingTime ? parseInt(restaurant.openingTime.split(':')[0]) * 60 + parseInt(restaurant.openingTime.split(':')[1] || '0') : 0,
+                            restaurant.closingTime ? parseInt(restaurant.closingTime.split(':')[0]) * 60 + parseInt(restaurant.closingTime.split(':')[1] || '0') : 1440
+                        );
                     });
 
-                    if (conflictingReservation) {
-                        const actualReservation = conflictingReservation.reservation || conflictingReservation;
-                        const guest = conflictingReservation.guest || {};
+                    let conflictingReservationData = null;
+                    if (isOccupied) {
+                        // Find the specific conflicting reservation for display
+                        const conflictingReservation = tableReservations.find(r => {
+                            const reservationDetails = {
+                                reservation_utc: r.reservation?.reservation_utc || r.reservation_utc,
+                                duration: r.reservation?.duration || r.duration,
+                                id: r.reservation?.id || r.id
+                            };
+                            
+                            return !isTableAvailableAtTimeSlot(
+                                table.id,
+                                time as string,
+                                [reservationDetails],
+                                slotDuration,
+                                restaurant.timezone,
+                                date as string,
+                                isOvernight,
+                                restaurant.openingTime ? parseInt(restaurant.openingTime.split(':')[0]) * 60 + parseInt(restaurant.openingTime.split(':')[1] || '0') : 0,
+                                restaurant.closingTime ? parseInt(restaurant.closingTime.split(':')[0]) * 60 + parseInt(restaurant.closingTime.split(':')[1] || '0') : 1440
+                            );
+                        });
 
-                        const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
-                        
-                        if (!reservationDateTime.isValid) {
-                            console.warn(`[Table Availability] Invalid timestamp for display, skipping conflict for reservation ${actualReservation.id}`);
-                            return { ...table, status: 'available', reservation: null };
-                        }
-                        
-                        const reservationLocal = reservationDateTime.setZone(restaurant.timezone);
-                        const startTime = reservationLocal.toFormat('HH:mm:ss');
-                        const duration = actualReservation.duration || 120;
-                        const endTime = reservationLocal.plus({ minutes: duration }).toFormat('HH:mm:ss');
+                        if (conflictingReservation) {
+                            const actualReservation = conflictingReservation.reservation || conflictingReservation;
+                            const guest = conflictingReservation.guest || {};
 
-                        return {
-                            ...table,
-                            status: 'reserved',
-                            reservation: {
-                                id: actualReservation.id,
-                                guestName: conflictingReservation.guestName || actualReservation.booking_guest_name || guest.name || 'Guest',
-                                guestCount: actualReservation.guests,
-                                timeSlot: `${startTime}-${endTime}`,
-                                phone: guest.phone || '',
-                                status: actualReservation.status
+                            const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
+                            
+                            if (reservationDateTime.isValid) {
+                                const reservationLocal = reservationDateTime.setZone(restaurant.timezone);
+                                const startTime = reservationLocal.toFormat('HH:mm:ss');
+                                const duration = actualReservation.duration || 120;
+                                const endTime = reservationLocal.plus({ minutes: duration }).toFormat('HH:mm:ss');
+
+                                conflictingReservationData = {
+                                    id: actualReservation.id,
+                                    guestName: conflictingReservation.guestName || actualReservation.booking_guest_name || guest.name || 'Guest',
+                                    guestCount: actualReservation.guests,
+                                    timeSlot: `${startTime}-${endTime}`,
+                                    phone: guest.phone || '',
+                                    status: actualReservation.status
+                                };
                             }
-                        };
+                        }
                     }
 
-                    return { ...table, status: 'available', reservation: null };
+                    return { 
+                        ...table, 
+                        status: isOccupied ? 'reserved' : 'available', 
+                        reservation: conflictingReservationData
+                    };
                 });
 
                 console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${restaurant.timezone} (overnight: ${isOvernight})`);

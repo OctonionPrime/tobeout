@@ -747,3 +747,5 @@ export async function getAvailableTimeSlots(
         return [];
     }
 }
+// Export the function for use in routes
+export { isTableAvailableAtTimeSlot };
