@@ -6,7 +6,7 @@ import {
     insertUserSchema, insertRestaurantSchema,
     insertTableSchema, insertGuestSchema,
     insertReservationSchema, insertIntegrationSettingSchema,
-    timeslots,
+    // ✅ REMOVED: timeslots import
     reservations,
     type Guest
 } from "@shared/schema";
@@ -392,77 +392,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Timeslot routes
-    app.get("/api/timeslots", isAuthenticated, async (req, res, next) => {
-        try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const date = req.query.date as string;
-            if (!date) {
-                return res.status(400).json({ message: "Date parameter is required" });
-            }
-            const timeslotsData = await storage.getTimeslots(restaurant.id, date);
-            res.json(timeslotsData);
-        } catch (error) {
-            next(error);
-        }
-    });
-
-    app.post("/api/timeslots/generate", isAuthenticated, async (req, res, next) => {
-        try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const daysAhead = parseInt(req.query.days as string) || 14;
-            const count = await storage.generateTimeslots(restaurant.id, daysAhead);
-            res.json({ message: `Generated ${count} timeslots` });
-        } catch (error) {
-            next(error);
-        }
-    });
-
-    app.get("/api/timeslots/stats", isAuthenticated, async (req, res, next) => {
-        try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const lastDateResult = await db.select({
-                date: timeslots.date,
-            })
-                .from(timeslots)
-                .where(eq(timeslots.restaurantId, restaurant.id))
-                .orderBy(desc(timeslots.date))
-                .limit(1);
-            const lastDate = lastDateResult[0]?.date;
-            const totalCountResult = await db.select({
-                count: sql<number>`count(*)`,
-            })
-                .from(timeslots)
-                .where(eq(timeslots.restaurantId, restaurant.id));
-            const freeCountResult = await db.select({
-                count: sql<number>`count(*)`,
-            })
-                .from(timeslots)
-                .where(and(
-                    eq(timeslots.restaurantId, restaurant.id),
-                    eq(timeslots.status, 'free')
-                ));
-            res.json({
-                lastDate,
-                totalCount: totalCountResult[0]?.count || 0,
-                freeCount: freeCountResult[0]?.count || 0,
-            });
-        } catch (error: any) {
-            next(error);
-        }
-    });
+    // ✅ REMOVED: All 3 timeslot endpoints
+    // - GET /api/timeslots
+    // - POST /api/timeslots/generate  
+    // - GET /api/timeslots/stats
 
     // Guest routes
     app.get("/api/guests", isAuthenticated, async (req, res, next) => {
