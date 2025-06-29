@@ -7,7 +7,6 @@ import { UpcomingReservations } from "@/components/dashboard/UpcomingReservation
 import { TableStatus } from "@/components/dashboard/TableStatus";
 import { ReservationTimeline } from "@/components/dashboard/ReservationTimeline";
 import { AIAssistant } from "@/components/dashboard/AIAssistant";
-import { TimeslotGenerator } from "@/components/dashboard/TimeslotGenerator";
 import { ReservationModal } from "@/components/reservations/ReservationModal";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -211,7 +210,7 @@ export default function Dashboard() {
                     </div>
                 </div>
 
-                {/* ✅ NEW: Sofia AI Assistant & Timeslot Generator */}
+                {/* ✅ NEW: Sofia AI Assistant */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
                     <div className="lg:col-span-1">
                         {/* ✅ ADDED: Sofia AI Chat Interface */}
@@ -223,20 +222,6 @@ export default function Dashboard() {
                             restaurantId={restaurantId}
                             {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
                         />
-                    </div>
-                </div>
-
-                {/* Timeslot Generator */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-                    <div className="lg:col-span-1">
-                        {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
-                        <TimeslotGenerator
-                            restaurantId={restaurantId}
-                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
-                        />
-                    </div>
-                    <div className="lg:col-span-2">
-                        {/* This space could be used for additional components */}
                     </div>
                 </div>
 
