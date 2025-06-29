@@ -54,8 +54,8 @@ const createSystemError = (message: string, originalError?: any): ToolResponse =
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
 
 /**
- * Check availability for a specific date, time, and party size
- * ✅ ENHANCED: Standardized response format with detailed error categorization + suggests smaller party sizes
+ * ✅ ENHANCED: Check availability for ANY specific time (16:15, 19:43, etc.)
+ * Now supports exact time checking while maintaining backward compatibility
  */
 export async function check_availability(
     date: string,
@@ -77,10 +77,19 @@ export async function check_availability(
             return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
         }
 
-        // ✅ VALIDATION: Check time format (HH:MM or HH:MM:SS)
-        const timeFormatted = time.length === 5 ? time + ":00" : time;
-        if (!/^\d{2}:\d{2}:\d{2}$/.test(timeFormatted)) {
-            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'time');
+        // ✅ ENHANCED: Support ANY time format (HH:MM, HH:MM:SS, or even H:MM)
+        let timeFormatted: string;
+        
+        // Handle various time formats
+        if (/^\d{1,2}:\d{2}$/.test(time)) {
+            // Format like "16:15" or "8:30"
+            const [hours, minutes] = time.split(':');
+            timeFormatted = `${hours.padStart(2, '0')}:${minutes}:00`;
+        } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(time)) {
+            // Format like "16:15:00"
+            timeFormatted = time;
+        } else {
+            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)', 'time');
         }
 
         // ✅ VALIDATION: Check guests is positive number
@@ -88,67 +97,49 @@ export async function check_availability(
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
-        console.log(`✅ [Agent Tool] Validation passed. Calling getAvailableTimeSlots with formatted time: ${timeFormatted}...`);
+        console.log(`✅ [Agent Tool] Validation passed. Using exact time checking for: ${timeFormatted}...`);
 
-        // Use availability service
+        // ✅ NEW: Use exact time checking mode
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
             date,
             guests,
             {
                 requestedTime: timeFormatted,
-                maxResults: 5,
-                lang: context.language as any,
+                exactTimeOnly: true, // NEW: Only check this exact time
                 timezone: context.timezone,
                 allowCombinations: true
             }
         );
 
-        console.log(`✅ [Agent Tool] getAvailableTimeSlots returned ${slots.length} slots`);
-
-        // Find the best matching slot
-        let requestedSlot = null;
-
-        // First, try exact time match
-        requestedSlot = slots.find(slot => slot.time === timeFormatted);
-
-        if (!requestedSlot) {
-            // Try time without seconds (HH:MM format)
-            const timeWithoutSeconds = timeFormatted.substring(0, 5);
-            requestedSlot = slots.find(slot => slot.time.substring(0, 5) === timeWithoutSeconds);
-        }
-
-        if (!requestedSlot && slots.length > 0) {
-            // If we still don't find exact match but have slots, take the first available slot
-            requestedSlot = slots[0];
-            console.log(`⚠️ [Agent Tool] No exact time match found, using first available slot: ${requestedSlot.time}`);
-        }
+        console.log(`✅ [Agent Tool] Found ${slots.length} slots for exact time ${timeFormatted}`);
 
         const executionTime = Date.now() - startTime;
 
-        if (requestedSlot) {
+        if (slots.length > 0) {
+            const bestSlot = slots[0]; // Take the best available option
             return createSuccessResponse({
                 available: true,
-                table: requestedSlot.tableName,
-                capacity: requestedSlot.tableCapacity?.max || null,
-                isCombined: requestedSlot.isCombined || false,
-                message: `Table ${requestedSlot.tableName} available for ${guests} guests${requestedSlot.isCombined ? ' (combined tables)' : ''} at ${requestedSlot.timeDisplay || requestedSlot.time}`,
-                constituentTables: requestedSlot.constituentTables || null,
+                table: bestSlot.tableName,
+                capacity: bestSlot.tableCapacity?.max || null,
+                isCombined: bestSlot.isCombined || false,
+                exactTime: timeFormatted, // NEW: Confirm exact time checked
+                message: `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}`,
+                constituentTables: bestSlot.constituentTables || null,
                 allAvailableSlots: slots.map(s => ({ time: s.time, table: s.tableName })),
-                exactMatch: requestedSlot.time === timeFormatted
+                timeSupported: 'exact' // NEW: Indicate exact time support
             }, {
-                execution_time_ms: executionTime,
-                fallback_used: requestedSlot.time !== timeFormatted
+                execution_time_ms: executionTime
             });
         } else {
-            // ✅ NEW LOGIC: If no tables, check for smaller party sizes
-            console.log(`⚠️ [Agent Tool] No tables for ${guests} guests, checking for smaller party sizes...`);
+            // ✅ ENHANCED: If no tables at exact time, check for smaller party sizes
+            console.log(`⚠️ [Agent Tool] No tables for ${guests} guests at exact time ${timeFormatted}, checking for smaller party sizes...`);
 
             let suggestedAlternatives = [];
 
             // Check for smaller number of guests (from guests-1 to 1)
             for (let altGuests = guests - 1; altGuests >= 1 && suggestedAlternatives.length === 0; altGuests--) {
-                console.log(`🔍 [Agent Tool] Checking availability for ${altGuests} guests...`);
+                console.log(`🔍 [Agent Tool] Checking exact time ${timeFormatted} for ${altGuests} guests...`);
 
                 const altSlots = await getAvailableTimeSlots(
                     context.restaurantId,
@@ -156,8 +147,7 @@ export async function check_availability(
                     altGuests,
                     {
                         requestedTime: timeFormatted,
-                        maxResults: 3,
-                        lang: context.language as any,
+                        exactTimeOnly: true, // NEW: Still use exact time for alternatives
                         timezone: context.timezone,
                         allowCombinations: true
                     }
@@ -176,7 +166,7 @@ export async function check_availability(
 
             if (suggestedAlternatives.length > 0) {
                 return createBusinessRuleFailure(
-                    `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests. Would you like me to check that option?`,
+                    `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would you like me to check that option?`,
                     'NO_AVAILABILITY_SUGGEST_SMALLER'
                 );
             } else {
@@ -197,8 +187,8 @@ export async function check_availability(
 }
 
 /**
- * Find alternative time slots around a preferred time
- * ✅ ENHANCED: Standardized response format
+ * ✅ ENHANCED: Find alternative time slots around ANY preferred time
+ * Supports exact times like 16:15, 19:43, etc.
  */
 export async function find_alternative_times(
     date: string,
@@ -220,10 +210,18 @@ export async function find_alternative_times(
             return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
         }
 
-        // ✅ VALIDATION: Check time format
-        const timeFormatted = preferredTime.length === 5 ? preferredTime + ":00" : preferredTime;
-        if (!/^\d{2}:\d{2}:\d{2}$/.test(timeFormatted)) {
-            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'preferredTime');
+        // ✅ ENHANCED: Support ANY time format for preferred time
+        let timeFormatted: string;
+        
+        if (/^\d{1,2}:\d{2}$/.test(preferredTime)) {
+            // Format like "16:15" or "8:30"
+            const [hours, minutes] = preferredTime.split(':');
+            timeFormatted = `${hours.padStart(2, '0')}:${minutes}:00`;
+        } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(preferredTime)) {
+            // Format like "16:15:00"
+            timeFormatted = preferredTime;
+        } else {
+            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)', 'preferredTime');
         }
 
         // ✅ VALIDATION: Check guests
@@ -231,47 +229,62 @@ export async function find_alternative_times(
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
-        console.log(`✅ [Agent Tool] Validation passed for alternatives. Calling getAvailableTimeSlots...`);
+        console.log(`✅ [Agent Tool] Validation passed for alternatives around exact time: ${timeFormatted}...`);
 
-        // Use availability service for alternatives
+        // ✅ NEW: Use standard slot generation (not exact time only) to find alternatives
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
             date,
             guests,
             {
-                requestedTime: timeFormatted,
-                maxResults: 8,
-                lang: context.language as any,
+                requestedTime: timeFormatted,  // This will sort results by proximity to preferred time
+                exactTimeOnly: false,         // Allow slot generation for alternatives
+                maxResults: 8,                // More alternatives
                 timezone: context.timezone,
                 allowCombinations: true
             }
         );
 
-        const alternatives = slots.map(slot => ({
-            time: slot.timeDisplay,
-            timeInternal: slot.time,
-            table: slot.tableName,
-            capacity: slot.tableCapacity?.max || 0,
-            isCombined: slot.isCombined || false,
-            message: `${slot.timeDisplay || slot.time} - ${slot.tableName}${slot.isCombined ? ' (combined)' : ''}`
-        }));
+        // Calculate proximity to preferred time and format alternatives
+        const preferredTimeMinutes = (() => {
+            const [hours, minutes] = timeFormatted.split(':').map(Number);
+            return hours * 60 + minutes;
+        })();
+
+        const alternatives = slots.map(slot => {
+            const [slotHours, slotMinutes] = slot.time.split(':').map(Number);
+            const slotTimeMinutes = slotHours * 60 + slotMinutes;
+            const timeDifference = Math.abs(slotTimeMinutes - preferredTimeMinutes);
+            
+            return {
+                time: slot.timeDisplay,
+                timeInternal: slot.time,
+                table: slot.tableName,
+                capacity: slot.tableCapacity?.max || 0,
+                isCombined: slot.isCombined || false,
+                proximityMinutes: timeDifference,
+                message: `${slot.timeDisplay || slot.time} - ${slot.tableName}${slot.isCombined ? ' (combined)' : ''}`
+            };
+        }).sort((a, b) => a.proximityMinutes - b.proximityMinutes); // Sort by proximity to preferred time
 
         const executionTime = Date.now() - startTime;
 
-        console.log(`✅ [Agent Tool] Found ${alternatives.length} alternatives`);
+        console.log(`✅ [Agent Tool] Found ${alternatives.length} alternatives around ${preferredTime}`);
 
         if (alternatives.length > 0) {
             return createSuccessResponse({
                 alternatives,
                 count: alternatives.length,
                 date: date,
-                preferredTime: preferredTime
+                preferredTime: preferredTime,
+                exactTimeRequested: timeFormatted,
+                closestAlternative: alternatives[0]
             }, {
                 execution_time_ms: executionTime
             });
         } else {
             return createBusinessRuleFailure(
-                `No alternative times available for ${guests} guests on ${date}`,
+                `No alternative times available for ${guests} guests on ${date} near ${preferredTime}`,
                 'NO_ALTERNATIVES'
             );
         }
@@ -287,6 +300,7 @@ export async function find_alternative_times(
 
 /**
  * ✅ CRITICAL FIX: Create a reservation with proper name clarification handling
+ * Supports ANY time format for reservations
  */
 export async function create_reservation(
     guestName: string,
@@ -339,15 +353,18 @@ export async function create_reservation(
             return createValidationFailure(`Invalid date format: ${date}. Expected YYYY-MM-DD`, 'date');
         }
 
-        // ✅ VALIDATION: Check time format and convert to HH:MM
+        // ✅ ENHANCED: Support ANY time format for exact reservations
         let timeFormatted: string;
+        
         if (/^\d{1,2}:\d{2}$/.test(time)) {
+            // Format like "16:15" or "8:30" - convert to HH:MM
             const [hours, minutes] = time.split(':');
             timeFormatted = `${hours.padStart(2, '0')}:${minutes}`;
         } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(time)) {
+            // Format like "16:15:00" - extract HH:MM
             timeFormatted = time.substring(0, 5);
         } else {
-            return createValidationFailure(`Invalid time format: ${time}. Expected HH:MM or HH:MM:SS`, 'time');
+            return createValidationFailure(`Invalid time format: ${time}. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)`, 'time');
         }
 
         // ✅ VALIDATION: Check guests
@@ -367,10 +384,10 @@ export async function create_reservation(
             return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
         }
 
-        console.log(`✅ [Agent Tool] Validation passed. Creating reservation with:`);
+        console.log(`✅ [Agent Tool] Validation passed. Creating reservation with exact time:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
-        console.log(`   - Date/Time: ${date} ${timeFormatted}`);
+        console.log(`   - Date/Time: ${date} ${timeFormatted} (exact time support)`);
         console.log(`   - Guests: ${guests}`);
         console.log(`   - Timezone: ${context.timezone}`);
         console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
@@ -379,7 +396,7 @@ export async function create_reservation(
         const result = await createTelegramReservation(
             context.restaurantId,
             date,
-            timeFormatted,
+            timeFormatted, // Exact time in HH:MM format
             guests,
             cleanName,
             cleanPhone,
@@ -423,7 +440,7 @@ export async function create_reservation(
         });
 
         if (result.success && result.reservation && result.reservation.id) {
-            console.log(`✅ [Agent Tool] Reservation created successfully: #${result.reservation.id}`);
+            console.log(`✅ [Agent Tool] Exact time reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
             return createSuccessResponse({
                 reservationId: result.reservation.id,
                 confirmationNumber: result.reservation.id,
@@ -432,15 +449,17 @@ export async function create_reservation(
                 guestPhone: cleanPhone,
                 date: date,
                 time: timeFormatted,
+                exactTime: timeFormatted, // NEW: Confirm exact time was used
                 guests: guests,
                 specialRequests: specialRequests,
                 message: result.message,
-                success: true // ✅ Add explicit success flag
+                success: true, // ✅ Add explicit success flag
+                timeSupported: 'exact' // NEW: Indicate exact time support
             }, {
                 execution_time_ms: executionTime
             });
         } else {
-            console.log(`⚠️ [Agent Tool] Reservation failed:`, {
+            console.log(`⚠️ [Agent Tool] Exact time reservation failed:`, {
                 success: result.success,
                 status: result.status,
                 message: result.message,
@@ -543,9 +562,13 @@ export async function get_restaurant_info(
                     closingTime: formatTime(restaurant.closingTime),
                     timezone: restaurant.timezone,
                     rawOpeningTime: restaurant.openingTime,
-                    rawClosingTime: restaurant.closingTime
+                    rawClosingTime: restaurant.closingTime,
+                    // ✅ NEW: Include flexible time configuration
+                    slotInterval: restaurant.slotInterval || 30,
+                    allowAnyTime: restaurant.allowAnyTime !== false,
+                    minTimeIncrement: restaurant.minTimeIncrement || 15
                 };
-                message = `We're open from ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}`;
+                message = `We're open from ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? '. You can book at any time during our hours!' : ''}`;
                 break;
 
             case 'location':
@@ -587,9 +610,13 @@ export async function get_restaurant_info(
                     openingTime: formatTime(restaurant.openingTime),
                     closingTime: formatTime(restaurant.closingTime),
                     features: restaurant.features,
-                    timezone: restaurant.timezone
+                    timezone: restaurant.timezone,
+                    // ✅ NEW: Include flexible time configuration
+                    slotInterval: restaurant.slotInterval || 30,
+                    allowAnyTime: restaurant.allowAnyTime !== false,
+                    minTimeIncrement: restaurant.minTimeIncrement || 15
                 };
-                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}.`;
+                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}.${restaurant.allowAnyTime ? ' You can book at any exact time during our operating hours!' : ''}`;
                 break;
         }
 
@@ -608,13 +635,13 @@ export async function get_restaurant_info(
     }
 }
 
-// ✅ ENHANCED: Export agent tools configuration for OpenAI function calling
+// ✅ ENHANCED: Export agent tools configuration for OpenAI function calling with exact time support
 export const agentTools = [
     {
         type: "function" as const,
         function: {
             name: "check_availability",
-            description: "Check if tables are available for a specific date, time, and party size. Returns standardized response with tool_status and detailed data or error information.",
+            description: "Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30). Returns standardized response with tool_status and detailed data or error information.",
             parameters: {
                 type: "object",
                 properties: {
@@ -624,7 +651,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) (e.g., 19:00)"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30, etc."
                     },
                     guests: {
                         type: "number",
@@ -639,7 +666,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "find_alternative_times",
-            description: "Find alternative time slots around a preferred time. Returns standardized response with available alternatives or business rule explanation.",
+            description: "Find alternative time slots around ANY preferred time (supports exact times like 16:15, 19:43). Returns standardized response with available alternatives sorted by proximity to preferred time.",
             parameters: {
                 type: "object",
                 properties: {
@@ -649,7 +676,7 @@ export const agentTools = [
                     },
                     preferredTime: {
                         type: "string",
-                        description: "Preferred time in HH:MM format (24-hour) (e.g., 19:00)"
+                        description: "Preferred time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43"
                     },
                     guests: {
                         type: "number",
@@ -664,7 +691,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "create_reservation",
-            description: "Create a new reservation. Returns standardized response indicating success with reservation details or failure with categorized error.",
+            description: "Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30). Returns standardized response indicating success with reservation details or failure with categorized error.",
             parameters: {
                 type: "object",
                 properties: {
@@ -682,7 +709,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) (e.g., 19:00)"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
                     },
                     guests: {
                         type: "number",
@@ -702,14 +729,14 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "get_restaurant_info",
-            description: "Get information about the restaurant. Returns standardized response with requested information or error details.",
+            description: "Get information about the restaurant including flexible time booking capabilities. Returns standardized response with requested information or error details.",
             parameters: {
                 type: "object",
                 properties: {
                     infoType: {
                         type: "string",
                         enum: ["hours", "location", "cuisine", "contact", "features", "all"],
-                        description: "Type of information to retrieve"
+                        description: "Type of information to retrieve (hours includes flexible time booking settings)"
                     }
                 },
                 required: ["infoType"]

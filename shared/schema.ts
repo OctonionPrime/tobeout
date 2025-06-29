@@ -27,7 +27,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   }),
 }));
 
-// Restaurants table
+// ✅ ENHANCED: Restaurants table with flexible time configuration
 export const restaurants = pgTable("restaurants", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").references(() => users.id).notNull(),
@@ -51,6 +51,12 @@ export const restaurants = pgTable("restaurants", {
   googleMapsLink: text("google_maps_link"),
   tripAdvisorLink: text("trip_advisor_link"),
   timezone: text("timezone").notNull().default('Europe/Moscow'),
+  
+  // ✅ NEW: Flexible time booking configuration
+  slotInterval: integer("slot_interval").default(30), // 15, 30, or 60 minutes for suggestions
+  allowAnyTime: boolean("allow_any_time").default(true), // Allow booking at any time vs only slots
+  minTimeIncrement: integer("min_time_increment").default(15), // 5, 15, or 30 minutes precision
+  
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -211,8 +217,9 @@ export const aiActivitiesRelations = relations(aiActivities, ({ one }) => ({
   }),
 }));
 
-// Create insert schemas
+// ✅ ENHANCED: Create insert schemas with new time configuration fields
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
+
 export const insertRestaurantSchema = createInsertSchema(restaurants, {
   timezone: z.string().min(1, "Timezone is required")
     .refine((tz) => {
@@ -223,8 +230,13 @@ export const insertRestaurantSchema = createInsertSchema(restaurants, {
       } catch {
         return false;
       }
-    }, "Invalid timezone format")
+    }, "Invalid timezone format"),
+  // ✅ NEW: Validation for flexible time configuration
+  slotInterval: z.number().min(15).max(60).optional(),
+  allowAnyTime: z.boolean().optional(),
+  minTimeIncrement: z.number().min(5).max(30).optional(),
 }).omit({ id: true, createdAt: true });
+
 export const insertTableSchema = createInsertSchema(tables).omit({ id: true, createdAt: true });
 export const insertTimeslotSchema = createInsertSchema(timeslots).omit({ id: true, createdAt: true });
 export const insertGuestSchema = createInsertSchema(guests).omit({ id: true, createdAt: true });

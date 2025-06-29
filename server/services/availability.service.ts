@@ -20,6 +20,15 @@ export interface AvailabilitySlot {
     constituentTables?: Array<{ id: number; name: string; capacity: { min: number; max: number } }>; // Details of tables if combined
 }
 
+// ✅ NEW: Enhanced configuration interface for flexible time booking
+interface FlexibleTimeConfig {
+    slotInterval?: number;
+    allowAnyTime?: boolean;
+    minTimeIncrement?: number;
+    requestedTime?: string; // NEW: Check specific time
+    exactTimeOnly?: boolean; // NEW: Only check requested time, don't generate slots
+}
+
 function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
     if (!timeStr) return null;
     const parts = timeStr.split(':');
@@ -285,6 +294,142 @@ function isTableAvailableAtTimeSlot(
     return true;
 }
 
+// ✅ NEW: Helper function to validate time is within operating hours
+function isTimeWithinOperatingHours(time: string, restaurant: any): boolean {
+    const timeMinutes = parseTimeToMinutes(time);
+    const openingMinutes = parseTimeToMinutes(restaurant.openingTime);
+    const closingMinutes = parseTimeToMinutes(restaurant.closingTime);
+    
+    if (timeMinutes === null || openingMinutes === null || closingMinutes === null) {
+        return false;
+    }
+    
+    // Handle overnight operations
+    if (closingMinutes < openingMinutes) {
+        return timeMinutes >= openingMinutes || timeMinutes <= closingMinutes;
+    } else {
+        const lastBookingTime = closingMinutes - (restaurant.avgReservationDuration || 120);
+        return timeMinutes >= openingMinutes && timeMinutes <= lastBookingTime;
+    }
+}
+
+// ✅ NEW: Check availability for any specific time (16:15, 19:43, etc.)
+async function checkExactTime(
+    restaurantId: number,
+    date: string,
+    requestedTime: string, // "16:15" or "16:15:00"
+    guests: number,
+    timezone: string
+): Promise<AvailabilitySlot[]> {
+    console.log(`🎯 [ExactTime] Checking ${requestedTime} for ${guests} guests on ${date}`);
+    
+    // Normalize time format
+    const timeFormatted = requestedTime.includes(':') 
+        ? (requestedTime.length === 5 ? requestedTime + ":00" : requestedTime)
+        : requestedTime + ":00:00";
+    
+    // Get restaurant and validate time is within operating hours
+    const restaurant = await storage.getRestaurant(restaurantId);
+    if (!restaurant) return [];
+    
+    if (!isTimeWithinOperatingHours(timeFormatted, restaurant)) {
+        console.log(`🎯 [ExactTime] Time ${timeFormatted} is outside operating hours`);
+        return [];
+    }
+    
+    // Get all tables and reservations (reuse existing logic)
+    const allTables = await storage.getTables(restaurantId);
+    const isOvernightOp = isOvernightOperation(restaurant.openingTime!, restaurant.closingTime!);
+    
+    let reservationsData;
+    if (isOvernightOp) {
+        // Handle overnight operation reservations
+        const currentDateReservations = await storage.getReservations(restaurantId, {
+            date: date,
+            status: ['created', 'confirmed'],
+            timezone: timezone
+        });
+        const previousDate = DateTime.fromISO(date, { zone: timezone }).minus({ days: 1 }).toISODate();
+        const previousDateReservations = await storage.getReservations(restaurantId, {
+            date: previousDate,
+            status: ['created', 'confirmed'],
+            timezone: timezone
+        });
+        reservationsData = [...currentDateReservations, ...previousDateReservations];
+    } else {
+        reservationsData = await storage.getReservations(restaurantId, {
+            date: date,
+            status: ['created', 'confirmed'],
+            timezone: timezone
+        });
+    }
+    
+    // Filter reservations for the specific date
+    const validReservations = reservationsData.filter(r => {
+        const reservation = r.reservation || r;
+        return reservation.reservation_utc && 
+               validateReservationDate(reservation.reservation_utc, date, timezone, isOvernightOp);
+    });
+    
+    const availableSlots: AvailabilitySlot[] = [];
+    const slotDuration = restaurant.avgReservationDuration || 120;
+    
+    // Check each table at the exact time (reuse existing logic)
+    for (const table of allTables) {
+        if (table.status === 'unavailable') continue;
+        
+        // Check if table can accommodate guests
+        if (table.minGuests <= guests && table.maxGuests >= guests) {
+            const tableReservations = validReservations
+                .filter(r => (r.reservation || r).tableId === table.id)
+                .map(r => ({
+                    reservation_utc: (r.reservation || r).reservation_utc,
+                    duration: (r.reservation || r).duration,
+                    id: (r.reservation || r).id
+                }));
+            
+            // ✅ REUSE EXISTING FUNCTION (no changes needed)
+            const isAvailable = isTableAvailableAtTimeSlot(
+                table.id,
+                timeFormatted,
+                tableReservations,
+                slotDuration,
+                timezone,
+                date,
+                isOvernightOp,
+                parseTimeToMinutes(restaurant.openingTime || '10:00') || 600,
+                parseTimeToMinutes(restaurant.closingTime || '22:00') || 1320
+            );
+            
+            if (isAvailable) {
+                availableSlots.push({
+                    date: date,
+                    time: timeFormatted,
+                    timeDisplay: formatTimeForRestaurant(timeFormatted, timezone),
+                    tableId: table.id,
+                    tableName: table.name,
+                    tableCapacity: { min: table.minGuests, max: table.maxGuests },
+                    isCombined: false
+                });
+            }
+        }
+    }
+    
+    // Check table combinations if no single table available
+    if (availableSlots.length === 0) {
+        const combinedSlots = await findCombinableTwoTableSlots(
+            timeFormatted, guests, allTables, validReservations, slotDuration,
+            timezone, 'en', date, isOvernightOp,
+            parseTimeToMinutes(restaurant.openingTime || '10:00') || 600,
+            parseTimeToMinutes(restaurant.closingTime || '22:00') || 1320
+        );
+        availableSlots.push(...combinedSlots);
+    }
+    
+    console.log(`🎯 [ExactTime] Found ${availableSlots.length} available tables at ${timeFormatted}`);
+    return availableSlots;
+}
+
 // Selects the best single table that fits the guests, preferring tighter fits.
 function selectBestSingleTableForGuests(fittingTables: Table[], guests: number): Table | null {
     if (!fittingTables.length) return null;
@@ -466,13 +611,14 @@ function generateOvernightTimeSlots(
     return slots;
 }
 
-// ✅ MAIN FUNCTION: Complete overnight support (DYNAMIC for ANY times)
+// ✅ ENHANCED: Main function with exact time checking support
 export async function getAvailableTimeSlots(
     restaurantId: number,
     date: string,
     guests: number,
     configOverrides?: {
         requestedTime?: string;
+        exactTimeOnly?: boolean; // NEW: Only check exact time, don't generate slots
         maxResults?: number;
         slotIntervalMinutes?: number;
         operatingHours?: { open: string; close: string };
@@ -488,6 +634,18 @@ export async function getAvailableTimeSlots(
     const restaurantTimezone = configOverrides?.timezone || 'Europe/Moscow';
 
     console.log(`[AvailabilityService] 🔍 Starting slot search: R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Timezone ${restaurantTimezone}, Combinations: ${allowCombinations}`);
+
+    // ✅ NEW: Handle exact time checking
+    if (configOverrides?.exactTimeOnly && configOverrides?.requestedTime) {
+        console.log(`🎯 [AvailabilityService] Exact time only mode: ${configOverrides.requestedTime}`);
+        return await checkExactTime(
+            restaurantId, 
+            date, 
+            configOverrides.requestedTime, 
+            guests, 
+            restaurantTimezone
+        );
+    }
 
     const dateRange = getRestaurantDateRange(date, restaurantTimezone);
     if (!dateRange.isValid) {
@@ -523,7 +681,8 @@ export async function getAvailableTimeSlots(
         
         console.log(`[AvailabilityService] 🕒 Operating hours: ${operatingOpenTimeStr} to ${operatingCloseTimeStr} | Overnight: ${isOvernightOp ? 'YES' : 'NO'}`);
 
-        const slotIntervalMinutes = configOverrides?.slotIntervalMinutes || 30;
+        // ✅ NEW: Use restaurant's configured slot interval or fallback to override
+        const slotIntervalMinutes = configOverrides?.slotIntervalMinutes || restaurant.slotInterval || 30;
         const maxResults = configOverrides?.maxResults || (isOvernightOp ? 80 : 20); // ✅ More slots for overnight
         const requestedTimeStr = configOverrides?.requestedTime;
 
@@ -747,5 +906,6 @@ export async function getAvailableTimeSlots(
         return [];
     }
 }
+
 // Export the function for use in routes
 export { isTableAvailableAtTimeSlot };

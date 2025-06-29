@@ -681,10 +681,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ DYNAMIC: Available Times with Complete Overnight Support (works for ANY times)
+    // ✅ ENHANCED: Available Times with Exact Time Support
     app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response, next) => {
         try {
-            const { restaurantId, date, guests } = req.query;
+            const { restaurantId, date, guests, exactTime } = req.query; // NEW: exactTime param
             const user = req.user as any;
             
             const restaurant = await storage.getRestaurantByUserId(user.id);
@@ -700,13 +700,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Missing required parameters" });
             }
             
-            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${restaurant.timezone}`);
+            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${restaurant.timezone}${exactTime ? ` (exact time: ${exactTime})` : ''}`);
             
-            // ✅ DYNAMIC: Check for overnight operation (works for ANY times)
+            // ✅ NEW: Handle exact time checking
+            if (exactTime) {
+                console.log(`[Routes] 🎯 Exact time check: ${exactTime} for ${guests} guests on ${date}`);
+                
+                const availableSlots = await getAvailableTimeSlots(
+                    parseInt(restaurantId as string),
+                    date as string,
+                    parseInt(guests as string),
+                    { 
+                        requestedTime: exactTime as string,
+                        exactTimeOnly: true, // NEW: Only check this exact time
+                        timezone: restaurant.timezone,
+                        allowCombinations: true
+                    }
+                );
+                
+                return res.json({
+                    exactTimeRequested: exactTime,
+                    available: availableSlots.length > 0,
+                    availableSlots: availableSlots.map(slot => ({
+                        time: slot.time,
+                        timeDisplay: slot.timeDisplay,
+                        available: true,
+                        tableName: slot.tableName,
+                        tableCapacity: slot.tableCapacity.max,
+                        canAccommodate: true,
+                        isCombined: slot.isCombined,
+                        tablesCount: slot.isCombined ? slot.constituentTables?.length || 1 : 1,
+                        message: `${slot.tableName} available at ${slot.timeDisplay}`
+                    })),
+                    timezone: restaurant.timezone,
+                    slotInterval: restaurant.slotInterval || 30, // NEW: Include restaurant setting
+                    allowAnyTime: restaurant.allowAnyTime !== false, // NEW: Include restaurant setting
+                    minTimeIncrement: restaurant.minTimeIncrement || 15 // NEW: Include restaurant setting
+                });
+            }
+            
+            // ✅ EXISTING LOGIC (enhanced with restaurant settings):
             const isOvernight = restaurant.openingTime && restaurant.closingTime && 
                                isOvernightOperation(restaurant.openingTime, restaurant.closingTime);
             
-            // ✅ DYNAMIC: Enhanced maxResults calculation for overnight operations
+            // Use restaurant's configured slot interval
+            const slotInterval = restaurant.slotInterval || 30; // NEW: Use restaurant setting
+            
+            // ✅ ENHANCED: maxResults calculation for overnight operations
             let maxResults: number;
             let operatingHours: number;
             
@@ -743,7 +783,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 console.log(`[Routes] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
             }
             
-            // ✅ DYNAMIC: Pass enhanced configuration to getAvailableTimeSlots
+            // ✅ ENHANCED: Pass restaurant configuration to getAvailableTimeSlots
             const availableSlots = await getAvailableTimeSlots(
                 parseInt(restaurantId as string),
                 date as string,
@@ -753,7 +793,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     timezone: restaurant.timezone,
                     lang: 'en',
                     allowCombinations: true,
-                    slotIntervalMinutes: 30,
+                    slotIntervalMinutes: slotInterval, // NEW: Use restaurant setting
                     slotDurationMinutes: restaurant.avgReservationDuration || 120,
                     operatingHours: {
                         open: restaurant.openingTime || '10:00:00',
@@ -762,7 +802,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
             );
             
-            // ✅ DYNAMIC: Better slot information with overnight support
+            // ✅ ENHANCED: Better slot information with overnight support
             const timeSlots = availableSlots.map(slot => ({
                 time: slot.time,
                 timeDisplay: slot.timeDisplay,
@@ -790,19 +830,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             console.log(`[Routes] 📊 Found ${timeSlots.length} available time slots for ${restaurant.timezone} ${isOvernight ? '(overnight operation)' : '(standard operation)'}`);
             
-            // ✅ DYNAMIC: Enhanced debug information for overnight operations
-            if (isOvernight && timeSlots.length > 0) {
-                const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
-                const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
-                
-                const earlyMorning = timeSlots.filter(s => s.slotType === 'early_morning').length;
-                const day = timeSlots.filter(s => s.slotType === 'day').length;
-                const lateNight = timeSlots.filter(s => s.slotType === 'late_night').length;
-                
-                console.log(`[Routes] 🌙 Overnight slot distribution: Early Morning (00:00-${closingHour.toString().padStart(2,'0')}:00): ${earlyMorning}, Day (${closingHour.toString().padStart(2,'0')}:00-${openingHour.toString().padStart(2,'0')}:00): ${day}, Late Night (${openingHour.toString().padStart(2,'0')}:00-24:00): ${lateNight}`);
-            }
-            
-            // ✅ DYNAMIC: Comprehensive response with debug info
+            // ✅ ENHANCED: Response with restaurant time configuration
             res.json({ 
                 availableSlots: timeSlots,
                 isOvernightOperation: isOvernight,
@@ -812,10 +840,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     totalHours: operatingHours
                 },
                 timezone: restaurant.timezone,
+                
+                // ✅ NEW: Include restaurant's flexible time configuration
+                slotInterval: slotInterval, // Restaurant's preferred slot interval
+                allowAnyTime: restaurant.allowAnyTime !== false, // Whether any time booking is allowed
+                minTimeIncrement: restaurant.minTimeIncrement || 15, // Minimum time precision
+                
                 totalSlotsGenerated: timeSlots.length,
                 maxSlotsRequested: maxResults,
-                slotInterval: 30,
                 reservationDuration: restaurant.avgReservationDuration || 120,
+                
                 debugInfo: {
                     openingTime: restaurant.openingTime,
                     closingTime: restaurant.closingTime,
@@ -825,7 +859,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     requestedGuests: guests,
                     operatingHours: operatingHours,
                     calculatedMaxResults: maxResults,
-                    actualSlotsReturned: timeSlots.length
+                    actualSlotsReturned: timeSlots.length,
+                    
+                    // ✅ NEW: Debug info for time configuration
+                    restaurantSlotInterval: restaurant.slotInterval,
+                    restaurantAllowAnyTime: restaurant.allowAnyTime,
+                    restaurantMinTimeIncrement: restaurant.minTimeIncrement
                 }
             });
         } catch (error) {

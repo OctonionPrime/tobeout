@@ -288,6 +288,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 restaurantId, displayDate, guests,
                 {
                     requestedTime: displayTime,
+                    exactTimeOnly: true,
                     maxResults: 1,
                     slotDurationMinutes: slotDurationMinutes,
                     lang: bookingRequest.lang || 'en',
@@ -354,7 +355,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 return {
                     success: true,
                     reservation: primaryReservation,
-                    message: locale.reservationConfirmed(guests, selectedSlot.tableName, displayDate, selectedSlot.timeDisplay, nameForConfirmationMessage),
+                    message: locale.reservationConfirmed(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
                     table: { id: tableDetails.id, name: tableDetails.name, isCombined: false },
                     allReservationIds: allCreatedReservationIds,
                 };
@@ -500,7 +501,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 return {
                     success: true,
                     reservation: primaryReservation,
-                    message: locale.reservationConfirmedCombined(guests, selectedSlot.tableName, displayDate, selectedSlot.timeDisplay, nameForConfirmationMessage),
+                    message: locale.reservationConfirmedCombined(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
                     table: {
                         id: 0,
                         name: selectedSlot.tableName,
