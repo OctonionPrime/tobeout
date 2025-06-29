@@ -1,15 +1,14 @@
 //
-// storage.ts (Complete Timezone-Aware Version with UTC Timestamps + Type Safety Fixes)
-// This version fixes ALL timezone issues in the storage layer + TypeScript errors
+// storage.ts (Complete Timezone-Aware Version with UTC Timestamps + Legacy Timeslot System Removed)
+// ✅ PHASE 3: All legacy timeslot code completely removed
 //
 
 import {
-    users, restaurants, tables, timeslots, guests, reservations,
+    users, restaurants, tables, guests, reservations,
     integrationSettings, aiActivities,
     type User, type InsertUser,
     type Restaurant, type InsertRestaurant,
     type Table, type InsertTable,
-    type Timeslot, type InsertTimeslot,
     type Guest, type InsertGuest,
     type Reservation, type InsertReservation,
     type AiActivity, type InsertAiActivity,
@@ -17,7 +16,6 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
-import { addMinutes, format, parse, parseISO } from "date-fns";
 import { DateTime } from 'luxon'; 
 // ✅ PROPER FIX: Use centralized timezone utilities for consistency across the application
 // This ensures all timezone handling follows the same logic and supports all 600+ timezones
@@ -44,13 +42,6 @@ export interface IStorage {
     createTable(table: InsertTable): Promise<Table>;
     updateTable(id: number, table: Partial<InsertTable>): Promise<Table>;
     deleteTable(id: number): Promise<void>;
-
-    // Timeslot methods
-    getTimeslots(restaurantId: number, date: string): Promise<Timeslot[]>;
-    getTimeslot(id: number): Promise<Timeslot | undefined>;
-    createTimeslot(timeslot: InsertTimeslot): Promise<Timeslot>;
-    updateTimeslot(id: number, timeslot: Partial<InsertTimeslot>): Promise<Timeslot>;
-    generateTimeslots(restaurantId: number, daysAhead: number): Promise<number>;
 
     // Guest methods
     getGuests(restaurantId: number): Promise<Guest[]>;
@@ -193,104 +184,6 @@ export class DatabaseStorage implements IStorage {
 
     async deleteTable(id: number): Promise<void> {
         await db.delete(tables).where(eq(tables.id, id));
-    }
-
-    // Timeslot methods
-    async getTimeslots(restaurantId: number, date: string): Promise<Timeslot[]> {
-        return db
-            .select()
-            .from(timeslots)
-            .where(
-                and(
-                    eq(timeslots.restaurantId, restaurantId),
-                    eq(timeslots.date, date)
-                )
-            )
-            .orderBy(timeslots.time);
-    }
-
-    async getTimeslot(id: number): Promise<Timeslot | undefined> {
-        const [timeslot] = await db.select().from(timeslots).where(eq(timeslots.id, id));
-        return timeslot;
-    }
-
-    async createTimeslot(timeslot: InsertTimeslot): Promise<Timeslot> {
-        const [newTimeslot] = await db.insert(timeslots).values(timeslot).returning();
-        return newTimeslot;
-    }
-
-    async updateTimeslot(id: number, timeslot: Partial<InsertTimeslot>): Promise<Timeslot> {
-        const [updatedTimeslot] = await db
-            .update(timeslots)
-            .set(timeslot)
-            .where(eq(timeslots.id, id))
-            .returning();
-        return updatedTimeslot;
-    }
-
-    // ✅ FIXED: Now timezone-aware with self-contained utilities
-    async generateTimeslots(restaurantId: number, daysAhead: number): Promise<number> {
-        const restaurant = await this.getRestaurant(restaurantId);
-        if (!restaurant || !restaurant.openingTime || !restaurant.closingTime) {
-            throw new Error("Restaurant or opening hours not found");
-        }
-
-        const restaurantTables = await this.getTables(restaurantId);
-        if (!restaurantTables.length) {
-            return 0;
-        }
-
-        // ✅ FIXED: Use restaurant timezone for date calculations
-        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
-        const timeSlotInterval = 30;
-        let timeslotsCreated = 0;
-
-        for (let day = 0; day < daysAhead; day++) {
-            // ✅ FIXED: Use centralized timezone utility
-            const restaurantDateTime = getRestaurantDateTime(restaurantTimezone);
-            const targetDate = restaurantDateTime.plus({ days: day });
-            const dateString = targetDate.toISODate() as string;
-
-            for (const table of restaurantTables) {
-                const startTime = parse(restaurant.openingTime, 'HH:mm:ss', new Date());
-                const endTime = parse(restaurant.closingTime, 'HH:mm:ss', new Date());
-
-                const lastSlotTime = new Date(endTime);
-                lastSlotTime.setMinutes(lastSlotTime.getMinutes() - (restaurant.avgReservationDuration || 90));
-
-                let currentTime = new Date(startTime);
-                while (currentTime <= lastSlotTime) {
-                    const timeString = format(currentTime, 'HH:mm:ss');
-
-                    const existingSlots = await db
-                        .select()
-                        .from(timeslots)
-                        .where(
-                            and(
-                                eq(timeslots.restaurantId, restaurantId),
-                                eq(timeslots.tableId, table.id),
-                                eq(timeslots.date, dateString),
-                                eq(timeslots.time, timeString)
-                            )
-                        );
-
-                    if (existingSlots.length === 0) {
-                        await db.insert(timeslots).values({
-                            restaurantId,
-                            tableId: table.id,
-                            date: dateString,
-                            time: timeString,
-                            status: 'free'
-                        });
-                        timeslotsCreated++;
-                    }
-
-                    currentTime = addMinutes(currentTime, timeSlotInterval);
-                }
-            }
-        }
-
-        return timeslotsCreated;
     }
 
     // Guest methods (unchanged)
@@ -450,12 +343,8 @@ export class DatabaseStorage implements IStorage {
     async createReservation(reservation: InsertReservation): Promise<Reservation> {
         const [newReservation] = await db.insert(reservations).values(reservation).returning();
 
-        if (newReservation.timeslotId) {
-            await db
-                .update(timeslots)
-                .set({ status: 'pending' })
-                .where(eq(timeslots.id, newReservation.timeslotId));
-        }
+        // ✅ REMOVED: All timeslot-related code from legacy system
+
         if (newReservation.tableId) {
             // ✅ FIXED: Now need timezone for table status updates
             const restaurant = await this.getRestaurant(newReservation.restaurantId);
@@ -544,14 +433,7 @@ export class DatabaseStorage implements IStorage {
 
                 console.log(`✅ [AtomicBooking] Created reservation ID ${newReservation.id} for table ${expectedSlot.tableId} with UTC timestamp`);
 
-                if (newReservation.timeslotId) {
-                    await tx
-                        .update(timeslots)
-                        .set({ status: 'pending' })
-                        .where(eq(timeslots.id, newReservation.timeslotId));
-
-                    console.log(`✅ [AtomicBooking] Updated timeslot ${newReservation.timeslotId} status to pending`);
-                }
+                // ✅ REMOVED: All timeslot-related code from legacy system
 
                 console.log(`🎉 [AtomicBooking] Atomic reservation creation completed successfully for reservation ID ${newReservation.id}`);
                 return newReservation;
@@ -580,18 +462,8 @@ export class DatabaseStorage implements IStorage {
             .where(eq(reservations.id, id))
             .returning();
 
-        if (reservation.status === 'confirmed' && updatedReservation.timeslotId) {
-            await db
-                .update(timeslots)
-                .set({ status: 'occupied' })
-                .where(eq(timeslots.id, updatedReservation.timeslotId));
-        }
-        if (reservation.status === 'canceled' && updatedReservation.timeslotId) {
-            await db
-                .update(timeslots)
-                .set({ status: 'free' })
-                .where(eq(timeslots.id, updatedReservation.timeslotId));
-        }
+        // ✅ REMOVED: All timeslot-related code from legacy system
+
         if (updatedReservation.tableId) {
             // ✅ FIXED: Now need timezone for table status updates
             const restaurant = await this.getRestaurant(updatedReservation.restaurantId);

@@ -1,4 +1,5 @@
 // server/services/booking.ts
+// ✅ PHASE 3: Legacy timeslot system completely removed
 
 import { storage } from '../storage';
 import {
@@ -631,54 +632,6 @@ export async function cancelReservation(reservationId: number, lang?: Language):
     }
 }
 
-// Legacy functions for timeslot-based availability (can be deprecated if not used)
-export async function getDateAvailabilityFromTimeslots(
-    restaurantId: number,
-    date: string
-): Promise<{
-    totalDefinedSlots: number;
-    availableDefinedSlots: number;
-    occupiedDefinedSlots: number;
-    timeSlotsSummary: Array<{
-        time: string;
-        availableCount: number;
-        totalCount: number;
-    }>;
-}> {
-    logger.warn("getDateAvailabilityFromTimeslots is using legacy timeslot logic.");
-    const timeslotsForDate = await storage.getTimeslots(restaurantId, date);
-    const timeGroups: { [time: string]: { free: number, pending: number, occupied: number, total: number } } = {};
-
-    for (const slot of timeslotsForDate) {
-        if (!timeGroups[slot.time]) {
-            timeGroups[slot.time] = { free: 0, pending: 0, occupied: 0, total: 0 };
-        }
-        timeGroups[slot.time].total++;
-        if (slot.status === 'free') {
-            timeGroups[slot.time].free++;
-        } else if (slot.status === 'pending') {
-            timeGroups[slot.time].pending++;
-        } else if (slot.status === 'occupied') {
-            timeGroups[slot.time].occupied++;
-        }
-    }
-
-    const timeSlotsSummary = Object.entries(timeGroups)
-        .map(([time, counts]) => ({
-            time: time,
-            availableCount: counts.free,
-            totalCount: counts.total,
-        }))
-        .sort((a, b) => a.time.localeCompare(b.time));
-
-    return {
-        totalDefinedSlots: timeslotsForDate.length,
-        availableDefinedSlots: timeslotsForDate.filter(s => s.status === 'free').length,
-        occupiedDefinedSlots: timeslotsForDate.filter(s => s.status === 'occupied' || s.status === 'pending').length,
-        timeSlotsSummary,
-    };
-}
-
 // ✅ CRITICAL FIX: Updated wrapper functions with timezone support
 export async function findAvailableTables(
     restaurantId: number,
@@ -730,31 +683,4 @@ export async function findAlternativeSlots(
         logger.error('Error in findAlternativeSlots (new wrapper):', error);
         return [];
     }
-}
-
-export async function getDateAvailability(
-    restaurantId: number,
-    date: string
-): Promise<{
-    totalSlots: number;
-    availableSlots: number;
-    occupiedSlots: number;
-    timeSlots: Array<{
-        time: string;
-        available: number;
-        total: number;
-    }>;
-}> {
-    logger.warn("getDateAvailability is using legacy timeslot logic and may not be accurate with combined bookings.");
-    const result = await getDateAvailabilityFromTimeslots(restaurantId, date);
-    return {
-        totalSlots: result.totalDefinedSlots,
-        availableSlots: result.availableDefinedSlots,
-        occupiedSlots: result.occupiedDefinedSlots,
-        timeSlots: result.timeSlotsSummary.map(slot => ({
-            time: slot.time,
-            available: slot.availableCount,
-            total: slot.totalCount
-        }))
-    };
 }
