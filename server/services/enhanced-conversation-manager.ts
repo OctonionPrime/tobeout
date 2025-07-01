@@ -15,6 +15,7 @@ export type AgentType = 'booking' | 'reservations';
  * Enhanced conversation manager with guardrails, intelligent name clarification, and Maya agent
  * ✅ ENHANCED: Multi-agent support with Sofia (booking) and Maya (reservations)
  * ✅ NEW: Smart agent detection with fuzzy matching + LLM fallback
+ * ✅ POLISHED: Enhanced Maya conversation flow with contextual responses
  */
 export class EnhancedConversationManager {
   private sessions = new Map<string, BookingSessionWithAgent>();
@@ -242,6 +243,65 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
   }
 
   /**
+   * ✅ NEW: Natural date parsing for contextual understanding
+   */
+  private parseNaturalDate(message: string, language: string, timezone: string): string | null {
+    const today = DateTime.now().setZone(timezone);
+    
+    if (language === 'ru') {
+        // "3 июля" → "2025-07-03"
+        const monthMatch = message.match(/(\d{1,2})\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)/i);
+        if (monthMatch) {
+            const day = monthMatch[1];
+            const monthMap: { [key: string]: number } = {
+                'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'июн': 6,
+                'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
+            };
+            const month = monthMap[monthMatch[2].toLowerCase().slice(0, 3)];
+            if (month) {
+                return `${today.year}-${month.toString().padStart(2, '0')}-${day.padStart(2, '0')}`;
+            }
+        }
+    }
+    
+    // Add more language patterns as needed
+    return null;
+  }
+
+  /**
+   * ✅ NEW: Get contextual response based on emotional understanding
+   */
+  private getContextualResponse(userMessage: string, language: string): string {
+    const msg = userMessage.toLowerCase();
+    
+    if (msg.includes('задержали') || msg.includes('задержка') || msg.includes('late') || msg.includes('delayed')) {
+        return language === 'ru' 
+            ? "Понимаю, на работе задержали! Такое случается. "
+            : language === 'sr'
+            ? "Razumem, zadržani ste na poslu! To se dešava. "
+            : "I understand, work delays happen! ";
+    }
+    
+    if (msg.includes('не смогу') || msg.includes("can't make it") || msg.includes("won't be able")) {
+        return language === 'ru'
+            ? "Не переживайте, перенесем на удобное время. "
+            : language === 'sr'
+            ? "Ne brinite, prebacićemo na pogodno vreme. "
+            : "No worries, let's reschedule for a better time. ";
+    }
+
+    if (msg.includes('опоздаю') || msg.includes('running late')) {
+        return language === 'ru'
+            ? "Хорошо, на сколько минут опоздаете? Посмотрю, что можно сделать. "
+            : language === 'sr'
+            ? "U redu, koliko minuta ćete kasniti? Videćemo šta možemo da uradimo. "
+            : "Alright, how many minutes will you be late? Let me see what we can do. ";
+    }
+    
+    return "";
+  }
+
+  /**
    * ✅ NEW: Get tools for specific agent type
    */
   private getToolsForAgent(agentType: AgentType) {
@@ -459,7 +519,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
   }
 
   /**
-   * ✅ NEW: Get agent personality and system prompt for different agent types
+   * ✅ ENHANCED: Agent personality with improved conversation flow
    */
   private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any): string {
     const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
@@ -513,7 +573,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
 🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.`
         },
         reservations: {
-            en: `You are Maya, the helpful reservation management specialist for ${restaurantConfig.name}. You help guests manage their EXISTING reservations.
+            en: `You are Maya, the helpful reservation management specialist for ${restaurantConfig.name}. You help guests manage their EXISTING reservations with warmth and understanding.
 
 🎯 YOUR ROLE:
 - Help guests find their existing reservations
@@ -522,29 +582,31 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
 - Provide excellent customer service for existing bookings
 
 💬 COMMUNICATION STYLE:
-- Be solution-focused and empathetic
-- Always verify guest identity before making changes
-- Explain policies clearly and offer alternatives when possible
-- Confirm all changes explicitly
+- Always show understanding of the guest's situation
+- Be decisive and confident in your actions
+- Confirm changes clearly and in detail
+- Offer alternatives when possible
+- Use warm, supportive phrases
 
-🔧 YOUR TOOLS:
-- find_existing_reservation: Search for guest's reservations by phone/name/confirmation
-- modify_reservation: Change reservation details
-- cancel_reservation: Cancel reservations with policy enforcement
-- get_restaurant_info: Share restaurant information
+✨ NATURAL CONVERSATION EXAMPLES:
+Guest: "I need to change my reservation time"
+Maya: "Of course! I'll help you change your reservation time. Could you please provide your confirmation number or the phone number it's under?"
 
-✨ REMEMBER:
-- Always verify guest identity first (ask for phone, name, or confirmation number)
-- Explain modification and cancellation policies clearly
-- Offer alternatives when changes aren't possible
-- Confirm all modifications before applying them
+Guest: "running late from work, will be later"
+Maya: "I understand, these things happen! How much later can you make it? I'll check available times for you."
+
+🎯 KEY PHRASES FOR NATURALNESS:
+- "Of course I can help!" (instead of just "yes")
+- "I understand, these things happen" (for delays)
+- "Perfect! I found your reservation" (when found)
+- "Excellent! All updated" (on success)
 
 🔒 SECURITY:
-- Never modify reservations without proper guest verification
+- Always verify guest identity before making changes
 - Ask for phone number, confirmation number, or name on reservation
 - If verification fails, politely decline and suggest calling the restaurant`,
 
-            ru: `Вы Майя, полезный специалист по управлению бронированиями ресторана ${restaurantConfig.name}. Вы помогаете гостям управлять их СУЩЕСТВУЮЩИМИ бронированиями.
+            ru: `Вы Майя, специалист по управлению бронированиями ресторана ${restaurantConfig.name}. Вы помогаете гостям управлять их СУЩЕСТВУЮЩИМИ бронированиями с теплотой и пониманием.
 
 🎯 ВАША РОЛЬ:
 - Помогать гостям находить их существующие бронирования
@@ -552,9 +614,29 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
 - Обрабатывать отмены с соблюдением политики
 - Обеспечивать отличное обслуживание для существующих бронирований
 
-🚺 ВАЖНО: Вы женского пола, всегда говорите о себе в женском роде.`,
+💬 СТИЛЬ ОБЩЕНИЯ:
+- Всегда проявляйте понимание ситуации гостя
+- Будьте решительной и уверенной в своих действиях  
+- Подтверждайте изменения четко и детально
+- Предлагайте альтернативы, когда это возможно
+- Используйте теплые, поддерживающие фразы
 
-            sr: `Vi ste Maja, korisni specijalista za upravljanje rezervacijama restorana ${restaurantConfig.name}. Pomažete gostima da upravljaju njihovim POSTOJEĆIM rezervacijama.
+✨ ПРИМЕРЫ ЕСТЕСТВЕННОГО ОБЩЕНИЯ:
+Гость: "надо изменить время бронирования"
+Майя: "Конечно! Я помогу изменить время вашего бронирования. Скажите, пожалуйста, номер бронирования или телефон, на который оно оформлено?"
+
+Гость: "на работе задержали, буду позже"
+Майя: "Понимаю, такое случается! На сколько позже сможете прийти? Я проверю свободные времена."
+
+🎯 КЛЮЧЕВЫЕ ФРАЗЫ ДЛЯ ЕСТЕСТВЕННОСТИ:
+- "Конечно помогу!" (вместо просто "да")
+- "Понимаю, такое случается" (для опозданий)
+- "Отлично! Нашла ваше бронирование" (при находке)
+- "Прекрасно! Все изменила" (при успехе)
+
+🚺 ВАЖНО: Вы женского пола, говорите о себе в женском роде.`,
+
+            sr: `Vi ste Maja, specijalista za upravljanje rezervacijama restorana ${restaurantConfig.name}. Pomažete gostima da upravljaju njihovim POSTOJEĆIM rezervacijama sa toplinom i razumevanjem.
 
 🎯 VAŠA ULOGA:
 - Pomažete gostima da pronađu svoje postojeće rezervacije
@@ -786,7 +868,7 @@ Respond with JSON only.`;
   }
 
   /**
-   * Main message handling with enhanced logic and Maya support
+   * ✅ ENHANCED: Main message handling with contextual responses and Maya support
    */
   async handleMessage(sessionId: string, message: string): Promise<{
     response: string;
@@ -985,6 +1067,14 @@ Respond with JSON only.`;
       let systemPrompt = agent.updateInstructions 
         ? agent.updateInstructions(session.context, session.language)
         : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig);
+
+      // ✅ NEW: Add contextual understanding for Maya
+      if (session.currentAgent === 'reservations') {
+        const contextualResponse = this.getContextualResponse(message, session.language);
+        if (contextualResponse) {
+          systemPrompt += `\n\n🔄 CONTEXTUAL RESPONSE: Start your response with: "${contextualResponse}"`;
+        }
+      }
 
       // Add agent history context if there was a handoff
       if (session.agentHistory && session.agentHistory.length > 0) {

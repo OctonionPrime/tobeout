@@ -1,12 +1,12 @@
 // server/services/agents/agent-tools.ts
-// ✅ MAYA FIX: Added excludeReservationId parameter support to prevent conflicts during reservation modifications
+// ✅ MAYA FIX: Added proper table reassignment logic to prevent capacity bypassing
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
 import { storage } from '../../storage';
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
-import { getRestaurantDateTime } from '../../utils/timezone-utils';; // ✅ NEW: timezone utilities
+import { getRestaurantDateTime } from '../../utils/timezone-utils';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
@@ -19,7 +19,6 @@ import {
     reservationModifications,
     reservationCancellations
 } from '@shared/schema';
-
 
 // ✅ NEW: Standardized tool response interface
 interface ToolResponse<T = any> {
@@ -71,27 +70,22 @@ const createSystemError = (message: string, originalError?: any): ToolResponse =
 
 /**
  * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
- * Converts "2025-07-02 14:15:00+00" to proper ISO format "2025-07-02T14:15:00+00:00"
  */
 function normalizeDatabaseTimestamp(dbTimestamp: string): string {
     if (!dbTimestamp) return '';
     
-    // Replace space with T for ISO format
     let normalized = dbTimestamp.replace(' ', 'T');
     
-    // Add seconds if missing (HH:MM → HH:MM:SS)
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
         normalized += ':00';
     }
     
-    // Ensure timezone has proper format (+00 → +00:00)
     if (normalized.endsWith('+00')) {
         normalized = normalized.replace('+00', '+00:00');
     } else if (normalized.endsWith('-00')) {
         normalized = normalized.replace('-00', '-00:00');
     }
     
-    // Add UTC timezone if missing completely
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
         normalized += '+00:00';
     }
@@ -102,7 +96,6 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 
 /**
  * ✅ MAYA FIX: Check availability for ANY specific time with optional reservation exclusion
- * Now supports excluding a specific reservation ID to prevent conflicts during modifications
  */
 export async function check_availability(
     date: string,
@@ -112,56 +105,47 @@ export async function check_availability(
         restaurantId: number; 
         timezone: string; 
         language: string;
-        excludeReservationId?: number; // 🆕 MAYA FIX: Exclude specific reservation from conflict checking
+        excludeReservationId?: number;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
-        // ✅ VALIDATION: Check required parameters
         if (!date || !time || !guests || !context.restaurantId) {
             return createValidationFailure('Missing required parameters: date, time, guests, or restaurantId');
         }
 
-        // ✅ VALIDATION: Check date format (YYYY-MM-DD)
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
         }
 
-        // ✅ ENHANCED: Support ANY time format (HH:MM, HH:MM:SS, or even H:MM)
         let timeFormatted: string;
-
-        // Handle various time formats
         if (/^\d{1,2}:\d{2}$/.test(time)) {
-            // Format like "16:15" or "8:30"
             const [hours, minutes] = time.split(':');
             timeFormatted = `${hours.padStart(2, '0')}:${minutes}:00`;
         } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(time)) {
-            // Format like "16:15:00"
             timeFormatted = time;
         } else {
-            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)', 'time');
+            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'time');
         }
 
-        // ✅ VALIDATION: Check guests is positive number
         if (guests <= 0 || guests > 50) {
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
         console.log(`✅ [Agent Tool] Validation passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
-        // ✅ MAYA FIX: Pass excludeReservationId to availability service
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
             date,
             guests,
             {
                 requestedTime: timeFormatted,
-                exactTimeOnly: true, // NEW: Only check this exact time
+                exactTimeOnly: true,
                 timezone: context.timezone,
                 allowCombinations: true,
-                excludeReservationId: context.excludeReservationId // 🆕 MAYA FIX: Pass excludeReservationId
+                excludeReservationId: context.excludeReservationId
             }
         );
 
@@ -170,40 +154,35 @@ export async function check_availability(
         const executionTime = Date.now() - startTime;
 
         if (slots.length > 0) {
-            const bestSlot = slots[0]; // Take the best available option
+            const bestSlot = slots[0];
             return createSuccessResponse({
                 available: true,
                 table: bestSlot.tableName,
                 capacity: bestSlot.tableCapacity?.max || null,
                 isCombined: bestSlot.isCombined || false,
-                exactTime: timeFormatted, // NEW: Confirm exact time checked
+                exactTime: timeFormatted,
                 message: `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`,
                 constituentTables: bestSlot.constituentTables || null,
                 allAvailableSlots: slots.map(s => ({ time: s.time, table: s.tableName })),
-                timeSupported: 'exact' // NEW: Indicate exact time support
+                timeSupported: 'exact'
             }, {
                 execution_time_ms: executionTime
             });
         } else {
-            // ✅ ENHANCED: If no tables at exact time, check for smaller party sizes
             console.log(`⚠️ [Agent Tool] No tables for ${guests} guests at exact time ${timeFormatted}, checking for smaller party sizes...`);
 
             let suggestedAlternatives = [];
-
-            // Check for smaller number of guests (from guests-1 to 1)
             for (let altGuests = guests - 1; altGuests >= 1 && suggestedAlternatives.length === 0; altGuests--) {
-                console.log(`🔍 [Agent Tool] Checking exact time ${timeFormatted} for ${altGuests} guests...`);
-
                 const altSlots = await getAvailableTimeSlots(
                     context.restaurantId,
                     date,
                     altGuests,
                     {
                         requestedTime: timeFormatted,
-                        exactTimeOnly: true, // NEW: Still use exact time for alternatives
+                        exactTimeOnly: true,
                         timezone: context.timezone,
                         allowCombinations: true,
-                        excludeReservationId: context.excludeReservationId // 🆕 MAYA FIX: Also exclude from alternatives
+                        excludeReservationId: context.excludeReservationId
                     }
                 );
 
@@ -233,16 +212,12 @@ export async function check_availability(
 
     } catch (error) {
         console.error(`❌ [Agent Tool] check_availability error:`, error);
-        return createSystemError(
-            'Failed to check availability due to system error',
-            error
-        );
+        return createSystemError('Failed to check availability due to system error', error);
     }
 }
 
 /**
  * ✅ ENHANCED: Find alternative time slots around ANY preferred time
- * Supports exact times like 16:15, 19:43, etc.
  */
 export async function find_alternative_times(
     date: string,
@@ -254,52 +229,43 @@ export async function find_alternative_times(
     console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests`);
 
     try {
-        // ✅ VALIDATION: Check required parameters
         if (!date || !preferredTime || !guests || !context.restaurantId) {
             return createValidationFailure('Missing required parameters: date, preferredTime, guests, or restaurantId');
         }
 
-        // ✅ VALIDATION: Check date format
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
         }
 
-        // ✅ ENHANCED: Support ANY time format for preferred time
         let timeFormatted: string;
-
         if (/^\d{1,2}:\d{2}$/.test(preferredTime)) {
-            // Format like "16:15" or "8:30"
             const [hours, minutes] = preferredTime.split(':');
             timeFormatted = `${hours.padStart(2, '0')}:${minutes}:00`;
         } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(preferredTime)) {
-            // Format like "16:15:00"
             timeFormatted = preferredTime;
         } else {
-            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)', 'preferredTime');
+            return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'preferredTime');
         }
 
-        // ✅ VALIDATION: Check guests
         if (guests <= 0 || guests > 50) {
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
         console.log(`✅ [Agent Tool] Validation passed for alternatives around exact time: ${timeFormatted}...`);
 
-        // ✅ NEW: Use standard slot generation (not exact time only) to find alternatives
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
             date,
             guests,
             {
-                requestedTime: timeFormatted,  // This will sort results by proximity to preferred time
-                exactTimeOnly: false,         // Allow slot generation for alternatives
-                maxResults: 8,                // More alternatives
+                requestedTime: timeFormatted,
+                exactTimeOnly: false,
+                maxResults: 8,
                 timezone: context.timezone,
                 allowCombinations: true
             }
         );
 
-        // Calculate proximity to preferred time and format alternatives
         const preferredTimeMinutes = (() => {
             const [hours, minutes] = timeFormatted.split(':').map(Number);
             return hours * 60 + minutes;
@@ -319,7 +285,7 @@ export async function find_alternative_times(
                 proximityMinutes: timeDifference,
                 message: `${slot.timeDisplay || slot.time} - ${slot.tableName}${slot.isCombined ? ' (combined)' : ''}`
             };
-        }).sort((a, b) => a.proximityMinutes - b.proximityMinutes); // Sort by proximity to preferred time
+        }).sort((a, b) => a.proximityMinutes - b.proximityMinutes);
 
         const executionTime = Date.now() - startTime;
 
@@ -345,16 +311,12 @@ export async function find_alternative_times(
 
     } catch (error) {
         console.error(`❌ [Agent Tool] find_alternative_times error:`, error);
-        return createSystemError(
-            'Failed to find alternative times due to system error',
-            error
-        );
+        return createSystemError('Failed to find alternative times due to system error', error);
     }
 }
 
 /**
  * ✅ CRITICAL FIX: Create a reservation with proper name clarification handling
- * Supports ANY time format for reservations
  */
 export async function create_reservation(
     guestName: string,
@@ -370,30 +332,26 @@ export async function create_reservation(
         source: string;
         sessionId?: string;
         language: string;
-        confirmedName?: string; // ✅ NEW: Support confirmed name
+        confirmedName?: string;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`📝 [Agent Tool] create_reservation: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
 
-    // ✅ CRITICAL: Use confirmed name if provided
     const effectiveGuestName = context.confirmedName || guestName;
     if (context.confirmedName) {
         console.log(`📝 [Agent Tool] Using confirmed name: ${context.confirmedName} (original: ${guestName})`);
     }
 
     try {
-        // ✅ VALIDATION: Check context object exists
         if (!context) {
             return createValidationFailure('Context object is required but undefined');
         }
 
-        // ✅ VALIDATION: Check required parameters
         if (!effectiveGuestName || !guestPhone || !date || !time || !guests) {
             return createValidationFailure('Missing required parameters: guestName, guestPhone, date, time, or guests');
         }
 
-        // ✅ VALIDATION: Check context has required fields
         if (!context.restaurantId) {
             return createValidationFailure('Context missing restaurantId');
         }
@@ -402,37 +360,29 @@ export async function create_reservation(
             return createValidationFailure('Context missing timezone');
         }
 
-        // ✅ VALIDATION: Check date format
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             return createValidationFailure(`Invalid date format: ${date}. Expected YYYY-MM-DD`, 'date');
         }
 
-        // ✅ ENHANCED: Support ANY time format for exact reservations
         let timeFormatted: string;
-
         if (/^\d{1,2}:\d{2}$/.test(time)) {
-            // Format like "16:15" or "8:30" - convert to HH:MM
             const [hours, minutes] = time.split(':');
             timeFormatted = `${hours.padStart(2, '0')}:${minutes}`;
         } else if (/^\d{1,2}:\d{2}:\d{2}$/.test(time)) {
-            // Format like "16:15:00" - extract HH:MM
             timeFormatted = time.substring(0, 5);
         } else {
-            return createValidationFailure(`Invalid time format: ${time}. Expected HH:MM or HH:MM:SS (supports exact times like 16:15, 19:43)`, 'time');
+            return createValidationFailure(`Invalid time format: ${time}. Expected HH:MM or HH:MM:SS`, 'time');
         }
 
-        // ✅ VALIDATION: Check guests
         if (guests <= 0 || guests > 50) {
             return createValidationFailure(`Invalid number of guests: ${guests}. Must be between 1 and 50`, 'guests');
         }
 
-        // ✅ VALIDATION: Clean phone number
         const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
         if (!cleanPhone) {
             return createValidationFailure('Invalid phone number format', 'guestPhone');
         }
 
-        // ✅ VALIDATION: Clean guest name
         const cleanName = effectiveGuestName.trim();
         if (cleanName.length < 2) {
             return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
@@ -446,25 +396,23 @@ export async function create_reservation(
         console.log(`   - Timezone: ${context.timezone}`);
         console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
 
-        // ✅ CRITICAL: Use existing createTelegramReservation function with confirmed name
         const result = await createTelegramReservation(
             context.restaurantId,
             date,
-            timeFormatted, // Exact time in HH:MM format
+            timeFormatted,
             guests,
             cleanName,
             cleanPhone,
             context.telegramUserId || context.sessionId || 'web_chat_user',
             specialRequests,
             context.language as any,
-            context.confirmedName, // ✅ CRITICAL: Pass confirmed name
-            undefined, // selected_slot_info
+            context.confirmedName,
+            undefined,
             context.timezone
         );
 
         const executionTime = Date.now() - startTime;
 
-        // ✅ CRITICAL FIX: Handle the specific name mismatch case
         if (!result.success && result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
             console.log(`⚠️ [Agent Tool] NAME MISMATCH DETECTED: Converting to proper format for conversation manager`);
 
@@ -473,7 +421,7 @@ export async function create_reservation(
             return createFailureResponse(
                 'BUSINESS_RULE',
                 `Name mismatch detected: database has '${dbName}' but booking requests '${requestName}'`,
-                'NAME_CLARIFICATION_NEEDED', // ✅ CRITICAL: This exact code triggers the conversation manager
+                'NAME_CLARIFICATION_NEEDED',
                 {
                     dbName: dbName,
                     requestName: requestName,
@@ -485,7 +433,6 @@ export async function create_reservation(
             );
         }
 
-        // ✅ ENHANCED: More thorough success checking
         console.log(`🔍 [Agent Tool] Reservation result:`, {
             success: result.success,
             status: result.status,
@@ -503,12 +450,12 @@ export async function create_reservation(
                 guestPhone: cleanPhone,
                 date: date,
                 time: timeFormatted,
-                exactTime: timeFormatted, // NEW: Confirm exact time was used
+                exactTime: timeFormatted,
                 guests: guests,
                 specialRequests: specialRequests,
                 message: result.message,
-                success: true, // ✅ Add explicit success flag
-                timeSupported: 'exact' // NEW: Indicate exact time support
+                success: true,
+                timeSupported: 'exact'
             }, {
                 execution_time_ms: executionTime
             });
@@ -520,7 +467,6 @@ export async function create_reservation(
                 reservation: result.reservation
             });
 
-            // Categorize other business rule failures based on the message
             let errorCode = 'BOOKING_FAILED';
             if (result.message?.toLowerCase().includes('no table')) {
                 errorCode = 'NO_TABLE_AVAILABLE';
@@ -539,7 +485,6 @@ export async function create_reservation(
     } catch (error) {
         console.error(`❌ [Agent Tool] create_reservation error:`, error);
 
-        // Enhanced error logging for debugging
         console.error(`❌ [Agent Tool] Error details:`, {
             guestName: effectiveGuestName,
             guestPhone,
@@ -553,16 +498,12 @@ export async function create_reservation(
             errorMessage: error instanceof Error ? error.message : 'Unknown error'
         });
 
-        return createSystemError(
-            'Failed to create reservation due to system error',
-            error
-        );
+        return createSystemError('Failed to create reservation due to system error', error);
     }
 }
 
 /**
  * Get restaurant information
- * ✅ ENHANCED: Standardized response format
  */
 export async function get_restaurant_info(
     infoType: 'hours' | 'location' | 'cuisine' | 'contact' | 'features' | 'all',
@@ -572,12 +513,10 @@ export async function get_restaurant_info(
     console.log(`ℹ️ [Agent Tool] get_restaurant_info: ${infoType} for restaurant ${context.restaurantId}`);
 
     try {
-        // ✅ VALIDATION: Check context exists
         if (!context || !context.restaurantId) {
             return createValidationFailure('Context with restaurantId is required');
         }
 
-        // ✅ VALIDATION: Check infoType is valid
         const validInfoTypes = ['hours', 'location', 'cuisine', 'contact', 'features', 'all'];
         if (!validInfoTypes.includes(infoType)) {
             return createValidationFailure(
@@ -588,7 +527,6 @@ export async function get_restaurant_info(
 
         console.log(`✅ [Agent Tool] Getting restaurant info for ID: ${context.restaurantId}`);
 
-        // Use existing storage.getRestaurant method
         const restaurant = await storage.getRestaurant(context.restaurantId);
         if (!restaurant) {
             return createBusinessRuleFailure('Restaurant not found', 'RESTAURANT_NOT_FOUND');
@@ -617,7 +555,6 @@ export async function get_restaurant_info(
                     timezone: restaurant.timezone,
                     rawOpeningTime: restaurant.openingTime,
                     rawClosingTime: restaurant.closingTime,
-                    // ✅ NEW: Include flexible time configuration
                     slotInterval: restaurant.slotInterval || 30,
                     allowAnyTime: restaurant.allowAnyTime !== false,
                     minTimeIncrement: restaurant.minTimeIncrement || 15
@@ -665,7 +602,6 @@ export async function get_restaurant_info(
                     closingTime: formatTime(restaurant.closingTime),
                     features: restaurant.features,
                     timezone: restaurant.timezone,
-                    // ✅ NEW: Include flexible time configuration
                     slotInterval: restaurant.slotInterval || 30,
                     allowAnyTime: restaurant.allowAnyTime !== false,
                     minTimeIncrement: restaurant.minTimeIncrement || 15
@@ -682,10 +618,7 @@ export async function get_restaurant_info(
 
     } catch (error) {
         console.error(`❌ [Agent Tool] get_restaurant_info error:`, error);
-        return createSystemError(
-            'Failed to retrieve restaurant information due to system error',
-            error
-        );
+        return createSystemError('Failed to retrieve restaurant information due to system error', error);
     }
 }
 
@@ -709,12 +642,10 @@ export async function find_existing_reservation(
     console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (${identifierType})`);
 
     try {
-        // Auto-detect identifier type if not specified
         if (identifierType === 'phone' && !/^\+?[\d\s-()]+$/.test(identifier)) {
             identifierType = isNaN(Number(identifier)) ? 'name' : 'confirmation';
         }
 
-        // ✅ TIMEZONE FIX: Use your excellent timezone utilities
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
         const conditions = [
             eq(reservations.restaurantId, context.restaurantId),
@@ -722,7 +653,6 @@ export async function find_existing_reservation(
             gt(reservations.reservation_utc, nowUtc)
         ];
 
-        // Apply identifier-specific filters
         switch (identifierType) {
             case 'phone':
                 if (identifier) conditions.push(eq(guests.phone, identifier.replace(/\D/g, '')));
@@ -757,7 +687,9 @@ export async function find_existing_reservation(
                 status: reservations.status,
                 guest_name: guests.name,
                 guest_phone: guests.phone,
-                table_name: tables.name
+                table_name: tables.name,
+                table_id: tables.id,
+                table_capacity: tables.maxGuests
             })
             .from(reservations)
             .innerJoin(guests, eq(reservations.guestId, guests.id))
@@ -765,7 +697,6 @@ export async function find_existing_reservation(
             .where(and(...conditions))
             .orderBy(desc(reservations.reservation_utc))
             .limit(10);
-
 
         if (!results || results.length === 0) {
             const notFoundMessages = {
@@ -780,20 +711,12 @@ export async function find_existing_reservation(
             );
         }
 
-        // ✅ CRITICAL FIX: Format reservations with proper date parsing using timezone utils
         const formattedReservations = results.map((r: any) => {
-            // ✅ FIXED: Normalize database date format before parsing
             const normalizedDateString = normalizeDatabaseTimestamp(r.reservation_utc);
             const reservationUtcDt = DateTime.fromISO(normalizedDateString);
             
-            // ✅ TIMEZONE FIX: Use your timezone utilities for proper time calculation
-            const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
-            
-            // ✅ DEFENSIVE: Check if date parsing was successful
             if (!reservationUtcDt.isValid) {
                 console.error(`[Maya Tool] Invalid date format: ${r.reservation_utc} → ${normalizedDateString}`);
-                console.error(`[Maya Tool] DateTime error:`, reservationUtcDt.invalidReason);
-                // Fallback: assume reservation is in the future and can be modified
                 return {
                     id: r.id,
                     confirmationNumber: r.id,
@@ -803,29 +726,30 @@ export async function find_existing_reservation(
                     guestName: r.booking_guest_name || r.guest_name || 'Unknown Guest',
                     guestPhone: r.guest_phone || '',
                     tableName: r.table_name || 'Table TBD',
+                    tableId: r.table_id,
+                    tableCapacity: r.table_capacity,
                     comments: r.comments || '',
                     status: r.status,
-                    canModify: true, // Safe default
-                    canCancel: true, // Safe default
-                    hoursUntil: 48, // Safe default
+                    canModify: true,
+                    canCancel: true,
+                    hoursUntil: 48,
                     dateParsingError: true
                 };
             }
             
+            const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
             const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
 
-            // ✅ DIAGNOSTIC LOGGING: Enhanced debugging
             console.log(`[Maya Tool] DIAGNOSTICS FOR RESERVATION #${r.id}:`);
             console.log(`  - Original DB Date: ${r.reservation_utc}`);
             console.log(`  - Normalized Date:  ${normalizedDateString}`);
             console.log(`  - Parsed DateTime:  ${reservationUtcDt.toISO()}`);
             console.log(`  - Current UTC:      ${nowUtcDt.toISO()}`);
             console.log(`  - Hours Until:      ${hoursUntilReservation}`);
-            console.log(`  - DateTime Valid:   ${reservationUtcDt.isValid}`);
+            console.log(`  - Table ID:         ${r.table_id}`);
+            console.log(`  - Table Capacity:   ${r.table_capacity}`);
 
-            // ✅ TIMEZONE FIX: For display purposes, convert to the restaurant's local timezone using your utilities
             const localDateTime = reservationUtcDt.setZone(context.timezone);
-
             const canModify = hoursUntilReservation >= 4;
             const canCancel = hoursUntilReservation >= 2;
 
@@ -838,11 +762,13 @@ export async function find_existing_reservation(
                 guestName: r.booking_guest_name || r.guest_name || 'Unknown Guest',
                 guestPhone: r.guest_phone || '',
                 tableName: r.table_name || 'Table TBD',
+                tableId: r.table_id,
+                tableCapacity: r.table_capacity,
                 comments: r.comments || '',
                 status: r.status,
                 canModify,
                 canCancel,
-                hoursUntil: Math.round(hoursUntilReservation * 10) / 10, // Round to 1 decimal
+                hoursUntil: Math.round(hoursUntilReservation * 10) / 10,
             };
         });
 
@@ -867,15 +793,15 @@ export async function find_existing_reservation(
     }
 }
 
-
 /**
- * ✅ MAYA FIX: Modify an existing reservation with excludeReservationId support
+ * ✅ MAYA FIX: Modified reservation with PROPER TABLE REASSIGNMENT LOGIC
+ * This prevents guests from being assigned to tables that can't accommodate them
  */
 export async function modify_reservation(
     reservationId: number,
     modifications: {
-        newDate?: string;      // YYYY-MM-DD format
-        newTime?: string;      // HH:MM format
+        newDate?: string;
+        newTime?: string;
         newGuests?: number;
         newSpecialRequests?: string;
     },
@@ -892,16 +818,19 @@ export async function modify_reservation(
     console.log(`✏️ [Maya Tool] Modifying reservation ${reservationId}:`, modifications);
 
     try {
-        // 1. Get existing reservation using Drizzle
+        // 1. Get existing reservation with table info
         const [existingReservation] = await db
-            .select()
+            .select({
+                reservation: reservations,
+                table: tables
+            })
             .from(reservations)
+            .leftJoin(tables, eq(reservations.tableId, tables.id))
             .where(and(
                 eq(reservations.id, reservationId),
                 eq(reservations.restaurantId, context.restaurantId)
             ));
 
-        // ✅ DEFENSIVE FIX: Check if reservation was found before proceeding
         if (!existingReservation) {
             return createBusinessRuleFailure(
                 'Reservation not found. Please provide the correct confirmation number or phone number first.',
@@ -909,20 +838,28 @@ export async function modify_reservation(
             );
         }
 
-        // ✅ CRITICAL FIX: Normalize date before parsing with timezone utils
-        const normalizedDateString = normalizeDatabaseTimestamp(existingReservation.reservation_utc);
+        const currentReservation = existingReservation.reservation;
+        const currentTable = existingReservation.table;
+
+        console.log(`📋 [Maya] Current reservation details:`, {
+            id: currentReservation.id,
+            currentGuests: currentReservation.guests,
+            currentTable: currentTable?.name,
+            currentTableCapacity: `${currentTable?.minGuests}-${currentTable?.maxGuests}`,
+            newGuests: modifications.newGuests
+        });
+
+        // 2. Check modification policy
+        const normalizedDateString = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
         const reservationUtcDt = DateTime.fromISO(normalizedDateString);
         
         if (!reservationUtcDt.isValid) {
-            console.error(`[Maya Tool] Invalid existing reservation date: ${existingReservation.reservation_utc}`);
+            console.error(`[Maya Tool] Invalid existing reservation date: ${currentReservation.reservation_utc}`);
             return createSystemError('Invalid reservation date format in database');
         }
 
-        // ✅ TIMEZONE FIX: Use your timezone utilities for proper time calculation
         const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
         const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
-
-        console.log(`[Maya Tool] Modification policy check: ${hoursUntilReservation} hours until reservation`);
 
         if (hoursUntilReservation < 4) {
             const tooLateMessages = {
@@ -937,89 +874,149 @@ export async function modify_reservation(
             );
         }
 
-        // 3. ✅ MAYA FIX: If time/date/guests changed, check availability excluding current reservation
-        if (modifications.newDate || modifications.newTime || modifications.newGuests) {
-            // ✅ DEFENSIVE FIX: Use existing reservation data as a baseline with proper timezone handling
-            const checkDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-            const checkTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
-            const checkGuests = modifications.newGuests || existingReservation.guests;
+        // 3. ✅ CRITICAL FIX: Check if table reassignment is needed
+        const needsTableReassignment = (
+            modifications.newGuests && modifications.newGuests !== currentReservation.guests
+        ) || (
+            modifications.newDate && modifications.newDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd')
+        ) || (
+            modifications.newTime && modifications.newTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')
+        );
 
-            console.log(`🔍 [Maya Tool] Checking availability for modified time: ${checkDate} ${checkTime} for ${checkGuests} guests (excluding reservation ${reservationId})`);
+        let newTableId = currentTable?.id; // Default to keeping current table
+        let newTableInfo = currentTable;
+        let requiresTableChange = false;
 
-            // ✅ MAYA FIX: Pass current reservation ID to exclude it from conflict checking
-            const availabilityResult = await check_availability(
-                checkDate,
-                checkTime,
-                checkGuests,
-                {
-                    ...context,
-                    excludeReservationId: reservationId // 🆕 CRITICAL: Exclude current reservation from conflict check
+        if (needsTableReassignment) {
+            // Determine final reservation details
+            const finalDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+            const finalTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+            const finalGuests = modifications.newGuests || currentReservation.guests;
+
+            console.log(`🔍 [Maya] Checking table capacity for ${finalGuests} guests...`);
+
+            // ✅ CRITICAL FIX: Check if current table can still accommodate the new guest count
+            if (modifications.newGuests && currentTable) {
+                const canCurrentTableHandle = finalGuests >= currentTable.minGuests && finalGuests <= currentTable.maxGuests;
+                
+                if (!canCurrentTableHandle) {
+                    console.log(`❌ [Maya] Current table "${currentTable.name}" (capacity: ${currentTable.minGuests}-${currentTable.maxGuests}) cannot accommodate ${finalGuests} guests`);
+                    requiresTableChange = true;
+                } else {
+                    console.log(`✅ [Maya] Current table "${currentTable.name}" can still accommodate ${finalGuests} guests`);
                 }
-            );
+            }
 
-            if (availabilityResult.tool_status === 'FAILURE') {
-                console.log(`❌ [Maya Tool] Availability check failed for modified time: ${availabilityResult.error?.message}`);
-                return createBusinessRuleFailure(
-                    'The requested new time is not available. Please choose a different time.',
-                    'NEW_TIME_UNAVAILABLE'
+            // ✅ CRITICAL FIX: If table change is needed OR time/date changed, find available tables
+            if (requiresTableChange || modifications.newDate || modifications.newTime) {
+                console.log(`🔄 [Maya] Finding available tables for ${finalGuests} guests at ${finalTime} on ${finalDate}...`);
+
+                // Use availability service to find suitable tables (excluding current reservation)
+                const availableSlots = await getAvailableTimeSlots(
+                    context.restaurantId,
+                    finalDate,
+                    finalGuests,
+                    {
+                        requestedTime: finalTime + ':00',
+                        exactTimeOnly: true,
+                        timezone: context.timezone,
+                        allowCombinations: true,
+                        excludeReservationId: reservationId // ✅ CRITICAL: Exclude current reservation
+                    }
                 );
+
+                if (availableSlots.length === 0) {
+                    return createBusinessRuleFailure(
+                        `No tables available for ${finalGuests} guests at ${finalTime} on ${finalDate}. Please choose a different time or party size.`,
+                        'NEW_TIME_UNAVAILABLE'
+                    );
+                }
+
+                // ✅ CRITICAL FIX: Get the best available table
+                const bestSlot = availableSlots[0];
+                
+                // Get table details for the assigned table
+                const [newTable] = await db
+                    .select()
+                    .from(tables)
+                    .where(eq(tables.id, bestSlot.tableId));
+
+                if (newTable) {
+                    newTableId = newTable.id;
+                    newTableInfo = newTable;
+                    
+                    if (newTable.id !== currentTable?.id) {
+                        console.log(`🔄 [Maya] Reassigning from table "${currentTable?.name}" to table "${newTable.name}" for ${finalGuests} guests`);
+                    } else {
+                        console.log(`✅ [Maya] Keeping same table "${newTable.name}" (it can handle the changes)`);
+                    }
+                } else {
+                    console.error(`❌ [Maya] Could not find table details for tableId ${bestSlot.tableId}`);
+                    return createSystemError('Table assignment error during modification');
+                }
             } else {
-                console.log(`✅ [Maya Tool] New time is available (reservation ${reservationId} excluded from conflict check)`);
+                console.log(`✅ [Maya] No table reassignment needed for current changes`);
             }
         }
 
-        // 4. Prepare update data for Drizzle
+        // 4. Build update data
         const updateData: Partial<typeof reservations.$inferInsert> = {};
         const modificationHistory: Array<{ field: string, oldValue: any, newValue: any }> = [];
 
         if (modifications.newDate || modifications.newTime) {
-            // ✅ TIMEZONE FIX: Use proper timezone handling for new date/time
             const newDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
             const newTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
 
-            // ✅ TIMEZONE FIX: Convert to UTC using your timezone utilities
             const newUtcTime = DateTime.fromISO(`${newDate}T${newTime}`, { zone: context.timezone }).toUTC().toISO();
             updateData.reservation_utc = newUtcTime;
 
             modificationHistory.push({
                 field: 'datetime',
-                oldValue: existingReservation.reservation_utc,
+                oldValue: currentReservation.reservation_utc,
                 newValue: newUtcTime
             });
         }
 
-        if (modifications.newGuests && modifications.newGuests !== existingReservation.guests) {
+        if (modifications.newGuests && modifications.newGuests !== currentReservation.guests) {
             updateData.guests = modifications.newGuests;
             modificationHistory.push({
                 field: 'guests',
-                oldValue: existingReservation.guests,
+                oldValue: currentReservation.guests,
                 newValue: modifications.newGuests
             });
         }
 
-        if (modifications.newSpecialRequests !== undefined && modifications.newSpecialRequests !== existingReservation.specialRequests) {
-            updateData.specialRequests = modifications.newSpecialRequests;
+        if (modifications.newSpecialRequests !== undefined && modifications.newSpecialRequests !== currentReservation.comments) {
+            updateData.comments = modifications.newSpecialRequests;
             modificationHistory.push({
                 field: 'special_requests',
-                oldValue: existingReservation.specialRequests,
+                oldValue: currentReservation.comments,
                 newValue: modifications.newSpecialRequests
             });
         }
 
-        // Add last modified timestamp
+        // ✅ CRITICAL FIX: Update table assignment if needed
+        if (newTableId && newTableId !== currentTable?.id) {
+            updateData.tableId = newTableId;
+            modificationHistory.push({
+                field: 'table',
+                oldValue: currentTable?.name || 'Unknown',
+                newValue: newTableInfo?.name || 'Unknown'
+            });
+        }
+
         updateData.lastModifiedAt = new Date();
 
         // 5. Update reservation if there are changes
-        if (Object.keys(updateData).length > 1) { // More than just last_modified_at
+        if (Object.keys(updateData).length > 1) { // More than just lastModifiedAt
             const [updatedReservation] = await db
                 .update(reservations)
                 .set(updateData)
                 .where(eq(reservations.id, reservationId))
                 .returning();
 
-            // 6. Log modifications in audit table
+            // 6. Log modifications
             for (const mod of modificationHistory) {
-                // ✅ FIX: Use correct camelCase column names
                 await db.insert(reservationModifications).values({
                     reservationId,
                     fieldChanged: mod.field,
@@ -1031,27 +1028,29 @@ export async function modify_reservation(
                 });
             }
 
+            // 7. Format success message
+            const changes = modificationHistory.map(mod => {
+                switch (mod.field) {
+                    case 'datetime':
+                        const finalDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+                        const finalTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+                        return `time to ${finalDate} at ${finalTime}`;
+                    case 'guests':
+                        return `party size to ${mod.newValue} guests`;
+                    case 'table':
+                        return `table to ${mod.newValue}`;
+                    case 'special_requests':
+                        return 'special requests';
+                    default:
+                        return mod.field;
+                }
+            }).join(', ');
+
             const successMessages = {
-                en: `Perfect! Your reservation has been successfully updated with ${modificationHistory.length} change(s).`,
-                ru: `Отлично! Ваше бронирование успешно обновлено с ${modificationHistory.length} изменением(ями).`,
-                sr: `Savršeno! Vaša rezervacija je uspešno ažurirana sa ${modificationHistory.length} izmenom(ama).`
+                en: `Perfect! I've successfully updated your reservation: ${changes}.`,
+                ru: `Отлично! Ваше бронирование успешно обновлено: ${changes}.`,
+                sr: `Savršeno! Vaša rezervacija je uspešno ažurirana: ${changes}.`
             };
-
-            // ✅ FIXED: Use the modification data instead of trying to parse potentially problematic DB timestamp
-            let displayDate: string;
-            let displayTime: string;
-
-            if (modifications.newDate || modifications.newTime) {
-                // Use the new date/time from modifications
-                displayDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-                displayTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
-            } else {
-                // No date/time changes, use original reservation time
-                displayDate = reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-                displayTime = reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
-            }
-
-            console.log(`[Maya Tool] Formatted reservation display: ${displayDate} ${displayTime}`);
 
             return createSuccessResponse({
                 reservationId: updatedReservation.id,
@@ -1059,10 +1058,12 @@ export async function modify_reservation(
                 message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
                 updatedReservation: {
                     id: updatedReservation.id,
-                    date: displayDate,
-                    time: displayTime,
+                    date: modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd'),
+                    time: modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm'),
                     guests: updatedReservation.guests,
-                    comments: updatedReservation.comments || updatedReservation.specialRequests || ''
+                    tableName: newTableInfo?.name || 'Unknown',
+                    tableCapacity: newTableInfo ? `${newTableInfo.minGuests}-${newTableInfo.maxGuests}` : 'Unknown',
+                    comments: updatedReservation.comments || ''
                 }
             }, {
                 execution_time_ms: Date.now() - startTime
@@ -1079,7 +1080,6 @@ export async function modify_reservation(
         return createSystemError('Failed to modify reservation', error);
     }
 }
-
 
 /**
  * ✅ FIXED: Cancel an existing reservation using Drizzle ORM with timezone utils
@@ -1113,7 +1113,6 @@ export async function cancel_reservation(
             );
         }
 
-        // 1. Get existing reservation using Drizzle
         const [existingReservation] = await db
             .select()
             .from(reservations)
@@ -1139,7 +1138,6 @@ export async function cancel_reservation(
             );
         }
 
-        // ✅ CRITICAL FIX: Check cancellation policy using timezone utils
         const normalizedDateString = normalizeDatabaseTimestamp(existingReservation.reservation_utc);
         const reservationUtcDt = DateTime.fromISO(normalizedDateString);
         const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
@@ -1158,20 +1156,17 @@ export async function cancel_reservation(
             );
         }
 
-        // 3. Update reservation status to cancelled using Drizzle
         const [cancelledReservation] = await db
             .update(reservations)
             .set({ status: 'canceled', lastModifiedAt: new Date() })
             .where(eq(reservations.id, reservationId))
             .returning();
 
-        // 4. Log cancellation in audit table using Drizzle
-        // ✅ FIX: Use correct camelCase column names
         await db.insert(reservationCancellations).values({
             reservationId,
             cancelledBy: context.telegramUserId ? 'guest_telegram' : 'guest_web',
             reason,
-            cancellationPolicy: 'free', // Policy determination logic can be added later
+            cancellationPolicy: 'free',
             source: context.telegramUserId ? 'telegram' : 'web'
         });
 
@@ -1186,7 +1181,7 @@ export async function cancel_reservation(
             reason: reason,
             message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
             cancelledAt: new Date().toISOString(),
-            refundEligible: hoursUntilReservation >= 24 // Free cancellation if 24+ hours
+            refundEligible: hoursUntilReservation >= 24
         }, {
             execution_time_ms: Date.now() - startTime
         });
@@ -1197,8 +1192,7 @@ export async function cancel_reservation(
     }
 }
 
-
-// ✅ ENHANCED: Export agent tools configuration for OpenAI function calling with exact time support + Maya
+// ✅ ENHANCED: Export agent tools configuration
 export const agentTools = [
     {
         type: "function" as const,
@@ -1333,7 +1327,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "Modify details of an existing reservation (time, date, party size, special requests). Check availability before confirming changes.",
+            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1354,7 +1348,7 @@ export const agentTools = [
                             },
                             newGuests: {
                                 type: "number",
-                                description: "New number of guests (optional)"
+                                description: "New number of guests (optional) - will automatically find suitable table"
                             },
                             newSpecialRequests: {
                                 type: "string",
@@ -1400,7 +1394,7 @@ export const agentTools = [
     }
 ];
 
-// ✅ ENHANCED: Export function implementations for agent to call (including Maya)
+// ✅ ENHANCED: Export function implementations
 export const agentFunctions = {
     // Sofia's tools (existing)
     check_availability,
@@ -1408,7 +1402,7 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (newly fixed with timezone integration and excludeReservationId support)
+    // Maya's tools (with proper table reassignment)
     find_existing_reservation,
     modify_reservation,
     cancel_reservation
