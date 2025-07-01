@@ -4,6 +4,21 @@ import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
 import { storage } from '../../storage';
 import type { Restaurant } from '@shared/schema';
+import { DateTime } from 'luxon';
+import { getRestaurantDateTime } from '../../utils/timezone-utils';; // ✅ NEW: timezone utilities
+
+// ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
+import { db } from '../../db';
+import { eq, and, gt, gte, like, inArray, sql, desc, ne } from 'drizzle-orm';
+// ✅ FIX: Use the correct camelCase table names from your schema
+import {
+    reservations,
+    guests,
+    tables,
+    reservationModifications,
+    reservationCancellations
+} from '@shared/schema';
+
 
 // ✅ NEW: Standardized tool response interface
 interface ToolResponse<T = any> {
@@ -54,6 +69,37 @@ const createSystemError = (message: string, originalError?: any): ToolResponse =
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
 
 /**
+ * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
+ * Converts "2025-07-02 14:15:00+00" to proper ISO format "2025-07-02T14:15:00+00:00"
+ */
+function normalizeDatabaseTimestamp(dbTimestamp: string): string {
+    if (!dbTimestamp) return '';
+    
+    // Replace space with T for ISO format
+    let normalized = dbTimestamp.replace(' ', 'T');
+    
+    // Add seconds if missing (HH:MM → HH:MM:SS)
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
+        normalized += ':00';
+    }
+    
+    // Ensure timezone has proper format (+00 → +00:00)
+    if (normalized.endsWith('+00')) {
+        normalized = normalized.replace('+00', '+00:00');
+    } else if (normalized.endsWith('-00')) {
+        normalized = normalized.replace('-00', '-00:00');
+    }
+    
+    // Add UTC timezone if missing completely
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
+        normalized += '+00:00';
+    }
+    
+    console.log(`[DateFix] ${dbTimestamp} → ${normalized}`);
+    return normalized;
+}
+
+/**
  * ✅ ENHANCED: Check availability for ANY specific time (16:15, 19:43, etc.)
  * Now supports exact time checking while maintaining backward compatibility
  */
@@ -79,7 +125,7 @@ export async function check_availability(
 
         // ✅ ENHANCED: Support ANY time format (HH:MM, HH:MM:SS, or even H:MM)
         let timeFormatted: string;
-        
+
         // Handle various time formats
         if (/^\d{1,2}:\d{2}$/.test(time)) {
             // Format like "16:15" or "8:30"
@@ -212,7 +258,7 @@ export async function find_alternative_times(
 
         // ✅ ENHANCED: Support ANY time format for preferred time
         let timeFormatted: string;
-        
+
         if (/^\d{1,2}:\d{2}$/.test(preferredTime)) {
             // Format like "16:15" or "8:30"
             const [hours, minutes] = preferredTime.split(':');
@@ -255,7 +301,7 @@ export async function find_alternative_times(
             const [slotHours, slotMinutes] = slot.time.split(':').map(Number);
             const slotTimeMinutes = slotHours * 60 + slotMinutes;
             const timeDifference = Math.abs(slotTimeMinutes - preferredTimeMinutes);
-            
+
             return {
                 time: slot.timeDisplay,
                 timeInternal: slot.time,
@@ -355,7 +401,7 @@ export async function create_reservation(
 
         // ✅ ENHANCED: Support ANY time format for exact reservations
         let timeFormatted: string;
-        
+
         if (/^\d{1,2}:\d{2}$/.test(time)) {
             // Format like "16:15" or "8:30" - convert to HH:MM
             const [hours, minutes] = time.split(':');
@@ -413,9 +459,9 @@ export async function create_reservation(
         // ✅ CRITICAL FIX: Handle the specific name mismatch case
         if (!result.success && result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
             console.log(`⚠️ [Agent Tool] NAME MISMATCH DETECTED: Converting to proper format for conversation manager`);
-            
+
             const { dbName, requestName } = result.nameConflict;
-            
+
             return createFailureResponse(
                 'BUSINESS_RULE',
                 `Name mismatch detected: database has '${dbName}' but booking requests '${requestName}'`,
@@ -542,7 +588,7 @@ export async function get_restaurant_info(
 
         console.log(`✅ [Agent Tool] Found restaurant: ${restaurant.name}`);
 
-        const formatTime = (time: string) => {
+        const formatTime = (time: string | null) => {
             if (!time) return 'Not specified';
             const [hours, minutes] = time.split(':');
             const hour = parseInt(hours);
@@ -616,7 +662,7 @@ export async function get_restaurant_info(
                     allowAnyTime: restaurant.allowAnyTime !== false,
                     minTimeIncrement: restaurant.minTimeIncrement || 15
                 };
-                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}.${restaurant.allowAnyTime ? ' You can book at any exact time during our operating hours!' : ''}`;
+                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? ' You can book at any exact time during our operating hours!' : ''}`;
                 break;
         }
 
@@ -635,7 +681,494 @@ export async function get_restaurant_info(
     }
 }
 
-// ✅ ENHANCED: Export agent tools configuration for OpenAI function calling with exact time support
+// ===== 🆕 MAYA'S RESERVATION MANAGEMENT TOOLS =====
+
+/**
+ * ✅ FIXED: Find existing reservations for a guest using Drizzle ORM with timezone utils
+ */
+export async function find_existing_reservation(
+    identifier: string,
+    identifierType: 'phone' | 'telegram' | 'name' | 'confirmation' = 'phone',
+    context: {
+        restaurantId: number;
+        timezone: string;
+        language: string;
+        telegramUserId?: string;
+        sessionId?: string;
+    }
+): Promise<ToolResponse> {
+    const startTime = Date.now();
+    console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (${identifierType})`);
+
+    try {
+        // Auto-detect identifier type if not specified
+        if (identifierType === 'phone' && !/^\+?[\d\s-()]+$/.test(identifier)) {
+            identifierType = isNaN(Number(identifier)) ? 'name' : 'confirmation';
+        }
+
+        // ✅ TIMEZONE FIX: Use your excellent timezone utilities
+        const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
+        const conditions = [
+            eq(reservations.restaurantId, context.restaurantId),
+            inArray(reservations.status, ['created', 'confirmed']),
+            gt(reservations.reservation_utc, nowUtc)
+        ];
+
+        // Apply identifier-specific filters
+        switch (identifierType) {
+            case 'phone':
+                if (identifier) conditions.push(eq(guests.phone, identifier.replace(/\D/g, '')));
+                break;
+            case 'telegram':
+                if (context.telegramUserId) {
+                    conditions.push(eq(guests.telegram_user_id, context.telegramUserId));
+                }
+                break;
+            case 'name':
+                conditions.push(like(guests.name, `%${identifier}%`));
+                break;
+            case 'confirmation':
+                try {
+                    const reservationId = parseInt(identifier);
+                    conditions.push(eq(reservations.id, reservationId));
+                } catch {
+                    return createBusinessRuleFailure(`"${identifier}" is not a valid confirmation number`, 'INVALID_CONFIRMATION');
+                }
+                break;
+        }
+
+        console.log(`[Maya Tool] Executing Drizzle query...`);
+
+        const results = await db
+            .select({
+                id: reservations.id,
+                reservation_utc: reservations.reservation_utc,
+                guests: reservations.guests,
+                booking_guest_name: reservations.booking_guest_name,
+                comments: reservations.comments,
+                status: reservations.status,
+                guest_name: guests.name,
+                guest_phone: guests.phone,
+                table_name: tables.name
+            })
+            .from(reservations)
+            .innerJoin(guests, eq(reservations.guestId, guests.id))
+            .leftJoin(tables, eq(reservations.tableId, tables.id))
+            .where(and(...conditions))
+            .orderBy(desc(reservations.reservation_utc))
+            .limit(10);
+
+
+        if (!results || results.length === 0) {
+            const notFoundMessages = {
+                en: `I couldn't find any upcoming reservations for "${identifier}". Please check the information or try a different way to identify your booking.`,
+                ru: `Не удалось найти предстоящие бронирования для "${identifier}". Проверьте информацию или попробуйте другой способ.`,
+                sr: `Nisam mogao da pronađem nadolazeće rezervacije za "${identifier}". Molim proverite informacije ili pokušajte drugi način.`
+            };
+
+            return createBusinessRuleFailure(
+                notFoundMessages[context.language as keyof typeof notFoundMessages] || notFoundMessages.en,
+                'NO_RESERVATIONS_FOUND'
+            );
+        }
+
+        // ✅ CRITICAL FIX: Format reservations with proper date parsing using timezone utils
+        const formattedReservations = results.map((r: any) => {
+            // ✅ FIXED: Normalize database date format before parsing
+            const normalizedDateString = normalizeDatabaseTimestamp(r.reservation_utc);
+            const reservationUtcDt = DateTime.fromISO(normalizedDateString);
+            
+            // ✅ TIMEZONE FIX: Use your timezone utilities for proper time calculation
+            const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
+            
+            // ✅ DEFENSIVE: Check if date parsing was successful
+            if (!reservationUtcDt.isValid) {
+                console.error(`[Maya Tool] Invalid date format: ${r.reservation_utc} → ${normalizedDateString}`);
+                console.error(`[Maya Tool] DateTime error:`, reservationUtcDt.invalidReason);
+                // Fallback: assume reservation is in the future and can be modified
+                return {
+                    id: r.id,
+                    confirmationNumber: r.id,
+                    date: 'Invalid Date',
+                    time: 'Invalid Time',
+                    guests: r.guests,
+                    guestName: r.booking_guest_name || r.guest_name || 'Unknown Guest',
+                    guestPhone: r.guest_phone || '',
+                    tableName: r.table_name || 'Table TBD',
+                    comments: r.comments || '',
+                    status: r.status,
+                    canModify: true, // Safe default
+                    canCancel: true, // Safe default
+                    hoursUntil: 48, // Safe default
+                    dateParsingError: true
+                };
+            }
+            
+            const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
+
+            // ✅ DIAGNOSTIC LOGGING: Enhanced debugging
+            console.log(`[Maya Tool] DIAGNOSTICS FOR RESERVATION #${r.id}:`);
+            console.log(`  - Original DB Date: ${r.reservation_utc}`);
+            console.log(`  - Normalized Date:  ${normalizedDateString}`);
+            console.log(`  - Parsed DateTime:  ${reservationUtcDt.toISO()}`);
+            console.log(`  - Current UTC:      ${nowUtcDt.toISO()}`);
+            console.log(`  - Hours Until:      ${hoursUntilReservation}`);
+            console.log(`  - DateTime Valid:   ${reservationUtcDt.isValid}`);
+
+            // ✅ TIMEZONE FIX: For display purposes, convert to the restaurant's local timezone using your utilities
+            const localDateTime = reservationUtcDt.setZone(context.timezone);
+
+            const canModify = hoursUntilReservation >= 4;
+            const canCancel = hoursUntilReservation >= 2;
+
+            return {
+                id: r.id,
+                confirmationNumber: r.id,
+                date: localDateTime.toFormat('yyyy-MM-dd'),
+                time: localDateTime.toFormat('HH:mm'),
+                guests: r.guests,
+                guestName: r.booking_guest_name || r.guest_name || 'Unknown Guest',
+                guestPhone: r.guest_phone || '',
+                tableName: r.table_name || 'Table TBD',
+                comments: r.comments || '',
+                status: r.status,
+                canModify,
+                canCancel,
+                hoursUntil: Math.round(hoursUntilReservation * 10) / 10, // Round to 1 decimal
+            };
+        });
+
+        const successMessages = {
+            en: `Found ${formattedReservations.length} upcoming reservation(s) for you. Let me show you the details.`,
+            ru: `Нашел ${formattedReservations.length} предстоящих бронирования для вас. Позвольте показать детали.`,
+            sr: `Pronašao sam ${formattedReservations.length} nadolazećih rezervacija za vas. Evo detalja.`
+        };
+
+        return createSuccessResponse({
+            reservations: formattedReservations,
+            count: formattedReservations.length,
+            searchedBy: identifierType,
+            message: successMessages[context.language as keyof typeof successMessages] || successMessages.en
+        }, {
+            execution_time_ms: Date.now() - startTime
+        });
+
+    } catch (error) {
+        console.error(`❌ [Maya Tool] Error finding reservations:`, error);
+        return createSystemError('Failed to search for reservations', error);
+    }
+}
+
+
+/**
+ * ✅ FIXED: Modify an existing reservation using Drizzle ORM with timezone utils
+ */
+export async function modify_reservation(
+    reservationId: number,
+    modifications: {
+        newDate?: string;      // YYYY-MM-DD format
+        newTime?: string;      // HH:MM format
+        newGuests?: number;
+        newSpecialRequests?: string;
+    },
+    reason: string = 'Guest requested change',
+    context: {
+        restaurantId: number;
+        timezone: string;
+        language: string;
+        telegramUserId?: string;
+        sessionId?: string;
+    }
+): Promise<ToolResponse> {
+    const startTime = Date.now();
+    console.log(`✏️ [Maya Tool] Modifying reservation ${reservationId}:`, modifications);
+
+    try {
+        // 1. Get existing reservation using Drizzle
+        const [existingReservation] = await db
+            .select()
+            .from(reservations)
+            .where(and(
+                eq(reservations.id, reservationId),
+                eq(reservations.restaurantId, context.restaurantId)
+            ));
+
+        // ✅ DEFENSIVE FIX: Check if reservation was found before proceeding
+        if (!existingReservation) {
+            return createBusinessRuleFailure(
+                'Reservation not found. Please provide the correct confirmation number or phone number first.',
+                'RESERVATION_NOT_FOUND'
+            );
+        }
+
+        // ✅ CRITICAL FIX: Normalize date before parsing with timezone utils
+        const normalizedDateString = normalizeDatabaseTimestamp(existingReservation.reservation_utc);
+        const reservationUtcDt = DateTime.fromISO(normalizedDateString);
+        
+        if (!reservationUtcDt.isValid) {
+            console.error(`[Maya Tool] Invalid existing reservation date: ${existingReservation.reservation_utc}`);
+            return createSystemError('Invalid reservation date format in database');
+        }
+
+        // ✅ TIMEZONE FIX: Use your timezone utilities for proper time calculation
+        const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
+        const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
+
+        console.log(`[Maya Tool] Modification policy check: ${hoursUntilReservation} hours until reservation`);
+
+        if (hoursUntilReservation < 4) {
+            const tooLateMessages = {
+                en: `Sorry, this reservation is too close to modify (${Math.round(hoursUntilReservation * 10) / 10} hours away, minimum 4 hours required). Please call the restaurant directly.`,
+                ru: `Извините, это бронирование слишком близко для изменения (${Math.round(hoursUntilReservation * 10) / 10} часов, минимум 4 часа). Пожалуйста, позвоните в ресторан.`,
+                sr: `Izvinjavam se, ova rezervacija je previše blizu za izmenu (${Math.round(hoursUntilReservation * 10) / 10} sati, minimum 4 sata). Molim pozovite restoran direktno.`
+            };
+
+            return createBusinessRuleFailure(
+                tooLateMessages[context.language as keyof typeof tooLateMessages] || tooLateMessages.en,
+                'MODIFICATION_TOO_LATE'
+            );
+        }
+
+        // 3. If time/date/guests changed, check availability
+        if (modifications.newDate || modifications.newTime || modifications.newGuests) {
+            // ✅ DEFENSIVE FIX: Use existing reservation data as a baseline with proper timezone handling
+            const checkDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+            const checkTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+            const checkGuests = modifications.newGuests || existingReservation.guests;
+
+            const availabilityResult = await check_availability(
+                checkDate,
+                checkTime,
+                checkGuests,
+                context
+            );
+
+            if (availabilityResult.tool_status === 'FAILURE') {
+                return createBusinessRuleFailure(
+                    'The requested new time is not available. Please choose a different time.',
+                    'NEW_TIME_UNAVAILABLE'
+                );
+            }
+        }
+
+        // 4. Prepare update data for Drizzle
+        const updateData: Partial<typeof reservations.$inferInsert> = {};
+        const modificationHistory: Array<{ field: string, oldValue: any, newValue: any }> = [];
+
+        if (modifications.newDate || modifications.newTime) {
+            // ✅ TIMEZONE FIX: Use proper timezone handling for new date/time
+            const newDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+            const newTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+
+            // ✅ TIMEZONE FIX: Convert to UTC using your timezone utilities
+            const newUtcTime = DateTime.fromISO(`${newDate}T${newTime}`, { zone: context.timezone }).toUTC().toISO();
+            updateData.reservation_utc = newUtcTime;
+
+            modificationHistory.push({
+                field: 'datetime',
+                oldValue: existingReservation.reservation_utc,
+                newValue: newUtcTime
+            });
+        }
+
+        if (modifications.newGuests && modifications.newGuests !== existingReservation.guests) {
+            updateData.guests = modifications.newGuests;
+            modificationHistory.push({
+                field: 'guests',
+                oldValue: existingReservation.guests,
+                newValue: modifications.newGuests
+            });
+        }
+
+        if (modifications.newSpecialRequests !== undefined && modifications.newSpecialRequests !== existingReservation.specialRequests) {
+            updateData.specialRequests = modifications.newSpecialRequests;
+            modificationHistory.push({
+                field: 'special_requests',
+                oldValue: existingReservation.specialRequests,
+                newValue: modifications.newSpecialRequests
+            });
+        }
+
+        // Add last modified timestamp
+        updateData.lastModifiedAt = new Date();
+
+        // 5. Update reservation if there are changes
+        if (Object.keys(updateData).length > 1) { // More than just last_modified_at
+            const [updatedReservation] = await db
+                .update(reservations)
+                .set(updateData)
+                .where(eq(reservations.id, reservationId))
+                .returning();
+
+            // 6. Log modifications in audit table
+            for (const mod of modificationHistory) {
+                // ✅ FIX: Use correct camelCase column names
+                await db.insert(reservationModifications).values({
+                    reservationId,
+                    fieldChanged: mod.field,
+                    oldValue: String(mod.oldValue),
+                    newValue: String(mod.newValue),
+                    modifiedBy: context.telegramUserId ? 'guest_telegram' : 'guest_web',
+                    reason,
+                    source: context.telegramUserId ? 'telegram' : 'web'
+                });
+            }
+
+            const successMessages = {
+                en: `Perfect! Your reservation has been successfully updated with ${modificationHistory.length} change(s).`,
+                ru: `Отлично! Ваше бронирование успешно обновлено с ${modificationHistory.length} изменением(ями).`,
+                sr: `Savršeno! Vaša rezervacija je uspešno ažurirana sa ${modificationHistory.length} izmenom(ama).`
+            };
+
+            // ✅ TIMEZONE FIX: Format updated reservation for display using timezone utils
+            const updatedDateTime = DateTime.fromISO(updatedReservation.reservation_utc).setZone(context.timezone);
+
+            return createSuccessResponse({
+                reservationId: updatedReservation.id,
+                modifications: modificationHistory,
+                message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
+                updatedReservation: {
+                    id: updatedReservation.id,
+                    date: updatedDateTime.toFormat('yyyy-MM-dd'),
+                    time: updatedDateTime.toFormat('HH:mm'),
+                    guests: updatedReservation.guests,
+                    comments: updatedReservation.comments
+                }
+            }, {
+                execution_time_ms: Date.now() - startTime
+            });
+        } else {
+            return createBusinessRuleFailure(
+                'No changes were specified for the reservation.',
+                'NO_CHANGES_SPECIFIED'
+            );
+        }
+
+    } catch (error) {
+        console.error(`❌ [Maya Tool] Error modifying reservation:`, error);
+        return createSystemError('Failed to modify reservation', error);
+    }
+}
+
+
+/**
+ * ✅ FIXED: Cancel an existing reservation using Drizzle ORM with timezone utils
+ */
+export async function cancel_reservation(
+    reservationId: number,
+    reason: string = 'Guest requested cancellation',
+    confirmCancellation: boolean = false,
+    context: {
+        restaurantId: number;
+        timezone: string;
+        language: string;
+        telegramUserId?: string;
+        sessionId?: string;
+    }
+): Promise<ToolResponse> {
+    const startTime = Date.now();
+    console.log(`❌ [Maya Tool] Cancelling reservation ${reservationId}, confirmed: ${confirmCancellation}`);
+
+    try {
+        if (!confirmCancellation) {
+            const confirmMessages = {
+                en: `Are you sure you want to cancel your reservation? This action cannot be undone. Please confirm if you want to proceed.`,
+                ru: `Вы уверены, что хотите отменить бронирование? Это действие нельзя отменить. Подтвердите, если хотите продолжить.`,
+                sr: `Da li ste sigurni da želite da otkažete rezervaciju? Ova radnja se ne može poništiti. Molim potvrdite ako želite da nastavite.`
+            };
+
+            return createBusinessRuleFailure(
+                confirmMessages[context.language as keyof typeof confirmMessages] || confirmMessages.en,
+                'CANCELLATION_NOT_CONFIRMED'
+            );
+        }
+
+        // 1. Get existing reservation using Drizzle
+        const [existingReservation] = await db
+            .select()
+            .from(reservations)
+            .where(and(
+                eq(reservations.id, reservationId),
+                eq(reservations.restaurantId, context.restaurantId)
+            ));
+
+        if (!existingReservation) {
+            return createBusinessRuleFailure('Reservation not found', 'RESERVATION_NOT_FOUND');
+        }
+
+        if (existingReservation.status === 'canceled') {
+            const alreadyCancelledMessages = {
+                en: `This reservation is already cancelled.`,
+                ru: `Это бронирование уже отменено.`,
+                sr: `Ova rezervacija je već otkazana.`
+            };
+
+            return createBusinessRuleFailure(
+                alreadyCancelledMessages[context.language as keyof typeof alreadyCancelledMessages] || alreadyCancelledMessages.en,
+                'ALREADY_CANCELLED'
+            );
+        }
+
+        // ✅ CRITICAL FIX: Check cancellation policy using timezone utils
+        const normalizedDateString = normalizeDatabaseTimestamp(existingReservation.reservation_utc);
+        const reservationUtcDt = DateTime.fromISO(normalizedDateString);
+        const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
+        const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
+
+        if (hoursUntilReservation < 2) {
+            const tooLateMessages = {
+                en: `Sorry, cancellations are not allowed less than 2 hours before the reservation. Please call the restaurant directly.`,
+                ru: `Извините, отмены не разрешены менее чем за 2 часа до бронирования. Пожалуйста, позвоните в ресторан.`,
+                sr: `Izvinjavam se, otkazivanja nisu dozvoljena manje od 2 sata pre rezervacije. Molim pozovite restoran direktno.`
+            };
+
+            return createBusinessRuleFailure(
+                tooLateMessages[context.language as keyof typeof tooLateMessages] || tooLateMessages.en,
+                'CANCELLATION_TOO_LATE'
+            );
+        }
+
+        // 3. Update reservation status to cancelled using Drizzle
+        const [cancelledReservation] = await db
+            .update(reservations)
+            .set({ status: 'canceled', lastModifiedAt: new Date() })
+            .where(eq(reservations.id, reservationId))
+            .returning();
+
+        // 4. Log cancellation in audit table using Drizzle
+        // ✅ FIX: Use correct camelCase column names
+        await db.insert(reservationCancellations).values({
+            reservationId,
+            cancelledBy: context.telegramUserId ? 'guest_telegram' : 'guest_web',
+            reason,
+            cancellationPolicy: 'free', // Policy determination logic can be added later
+            source: context.telegramUserId ? 'telegram' : 'web'
+        });
+
+        const successMessages = {
+            en: `Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!`,
+            ru: `Ваше бронирование успешно отменено. Жаль, что вы не сможете прийти, надеемся увидеть вас в будущем!`,
+            sr: `Vaša rezervacija je uspešno otkazana. Žao nam je što nećete doći i nadamo se da ćemo vas služiti u budućnosti!`
+        };
+
+        return createSuccessResponse({
+            reservationId: cancelledReservation.id,
+            reason: reason,
+            message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
+            cancelledAt: new Date().toISOString(),
+            refundEligible: hoursUntilReservation >= 24 // Free cancellation if 24+ hours
+        }, {
+            execution_time_ms: Date.now() - startTime
+        });
+
+    } catch (error) {
+        console.error(`❌ [Maya Tool] Error cancelling reservation:`, error);
+        return createSystemError('Failed to cancel reservation', error);
+    }
+}
+
+
+// ✅ ENHANCED: Export agent tools configuration for OpenAI function calling with exact time support + Maya
 export const agentTools = [
     {
         type: "function" as const,
@@ -742,13 +1275,111 @@ export const agentTools = [
                 required: ["infoType"]
             }
         }
+    },
+    // ===== 🆕 MAYA'S TOOLS =====
+    {
+        type: "function" as const,
+        function: {
+            name: "find_existing_reservation",
+            description: "Find guest's existing reservations by phone, name, or confirmation number. Use this when guest wants to modify or view existing bookings.",
+            parameters: {
+                type: "object",
+                properties: {
+                    identifier: {
+                        type: "string",
+                        description: "Phone number, guest name, or confirmation number to search by"
+                    },
+                    identifierType: {
+                        type: "string",
+                        enum: ["phone", "telegram", "name", "confirmation"],
+                        description: "Type of identifier being used (auto-detected if not specified)"
+                    }
+                },
+                required: ["identifier"]
+            }
+        }
+    },
+    {
+        type: "function" as const,
+        function: {
+            name: "modify_reservation",
+            description: "Modify details of an existing reservation (time, date, party size, special requests). Check availability before confirming changes.",
+            parameters: {
+                type: "object",
+                properties: {
+                    reservationId: {
+                        type: "number",
+                        description: "ID of the reservation to modify"
+                    },
+                    modifications: {
+                        type: "object",
+                        properties: {
+                            newDate: {
+                                type: "string",
+                                description: "New date in YYYY-MM-DD format (optional)"
+                            },
+                            newTime: {
+                                type: "string",
+                                description: "New time in HH:MM format (optional)"
+                            },
+                            newGuests: {
+                                type: "number",
+                                description: "New number of guests (optional)"
+                            },
+                            newSpecialRequests: {
+                                type: "string",
+                                description: "Updated special requests (optional)"
+                            }
+                        }
+                    },
+                    reason: {
+                        type: "string",
+                        description: "Reason for the modification",
+                        default: "Guest requested change"
+                    }
+                },
+                required: ["reservationId", "modifications"]
+            }
+        }
+    },
+    {
+        type: "function" as const,
+        function: {
+            name: "cancel_reservation",
+            description: "Cancel an existing reservation. Always ask for confirmation before proceeding.",
+            parameters: {
+                type: "object",
+                properties: {
+                    reservationId: {
+                        type: "number",
+                        description: "ID of the reservation to cancel"
+                    },
+                    reason: {
+                        type: "string",
+                        description: "Reason for cancellation",
+                        default: "Guest requested cancellation"
+                    },
+                    confirmCancellation: {
+                        type: "boolean",
+                        description: "Explicit confirmation from guest that they want to cancel"
+                    }
+                },
+                required: ["reservationId", "confirmCancellation"]
+            }
+        }
     }
 ];
 
-// ✅ ENHANCED: Export function implementations for agent to call
+// ✅ ENHANCED: Export function implementations for agent to call (including Maya)
 export const agentFunctions = {
+    // Sofia's tools (existing)
     check_availability,
     find_alternative_times,
     create_reservation,
-    get_restaurant_info
+    get_restaurant_info,
+
+    // Maya's tools (newly fixed with timezone integration)
+    find_existing_reservation,
+    modify_reservation,
+    cancel_reservation
 };

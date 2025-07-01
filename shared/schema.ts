@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, boolean, timestamp, date, time, foreignKey, json, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, boolean, timestamp, date, time, foreignKey, json, pgEnum, decimal } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { relations } from "drizzle-orm";
 import { z } from "zod";
@@ -68,6 +68,8 @@ export const restaurantsRelations = relations(restaurants, ({ one, many }) => ({
   tables: many(tables),
   reservations: many(reservations),
   timeslots: many(timeslots),
+  // ✅ NEW: Maya's policy relations
+  policies: many(restaurantPolicies),
 }));
 
 // Tables table
@@ -136,7 +138,7 @@ export const guestsRelations = relations(guests, ({ many }) => ({
   reservations: many(reservations),
 }));
 
-// ✅ FIXED: Reservations table with UTC timestamp
+// ✅ ENHANCED: Reservations table with Maya's last_modified_at field
 export const reservations = pgTable("reservations", {
   id: serial("id").primaryKey(),
   restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
@@ -159,10 +161,12 @@ export const reservations = pgTable("reservations", {
   confirmation24h: boolean("confirmation_24h").default(false),
   confirmation2h: boolean("confirmation_2h").default(false),
   source: text("source").default('direct'), // direct, telegram, web, facebook, etc.
+  // ✅ NEW: Maya's modification tracking
+  lastModifiedAt: timestamp("last_modified_at").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const reservationsRelations = relations(reservations, ({ one }) => ({
+export const reservationsRelations = relations(reservations, ({ one, many }) => ({
   restaurant: one(restaurants, {
     fields: [reservations.restaurantId],
     references: [restaurants.id],
@@ -178,6 +182,91 @@ export const reservationsRelations = relations(reservations, ({ one }) => ({
   timeslot: one(timeslots, {
     fields: [reservations.timeslotId],
     references: [timeslots.id],
+  }),
+  // ✅ NEW: Maya's audit trail relations
+  modifications: many(reservationModifications),
+  cancellation: one(reservationCancellations, {
+    fields: [reservations.id],
+    references: [reservationCancellations.reservationId],
+  }),
+}));
+
+// ===== 🆕 MAYA'S NEW AUDIT TABLES =====
+
+// Track all reservation modifications for audit trail
+export const reservationModifications = pgTable("reservation_modifications", {
+  id: serial("id").primaryKey(),
+  reservationId: integer("reservation_id").references(() => reservations.id).notNull(),
+  fieldChanged: text("field_changed").notNull(), // 'time', 'date', 'guests', 'special_requests'
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  modifiedBy: text("modified_by"), // 'guest_telegram', 'guest_web', 'staff'
+  modifiedAt: timestamp("modified_at").defaultNow().notNull(),
+  reason: text("reason"),
+  source: text("source"), // 'telegram', 'web', 'phone', 'staff'
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Track reservation cancellations with policy details
+export const reservationCancellations = pgTable("reservation_cancellations", {
+  id: serial("id").primaryKey(),
+  reservationId: integer("reservation_id").references(() => reservations.id).notNull(),
+  cancelledAt: timestamp("cancelled_at").defaultNow().notNull(),
+  cancelledBy: text("cancelled_by"), // 'guest_telegram', 'guest_web', 'staff'
+  reason: text("reason"),
+  cancellationPolicy: text("cancellation_policy"), // 'free', 'fee_applied', 'no_refund'
+  feeAmount: text("fee_amount"), // Stored as string like totalAmount
+  refundStatus: text("refund_status"), // 'not_applicable', 'pending', 'processed'
+  refundAmount: text("refund_amount"),
+  source: text("source"), // 'telegram', 'web', 'phone', 'staff'
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Restaurant policies for modification and cancellation rules
+export const restaurantPolicies = pgTable("restaurant_policies", {
+  id: serial("id").primaryKey(),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
+  policyType: text("policy_type").notNull(), // 'modification', 'cancellation', 'verification'
+  policyData: json("policy_data").$type<{
+    // Modification policies
+    freeModificationHours?: number; // Free changes if X hours before
+    maxModificationsPerReservation?: number; // Limit number of changes
+    allowedModifications?: string[]; // ['time', 'date', 'guests', 'special_requests']
+    
+    // Cancellation policies  
+    freeCancellationHours?: number; // Free cancellation if X hours before
+    cancellationFeePercentage?: number; // Fee as percentage
+    noRefundHours?: number; // No refund if less than X hours
+    
+    // Verification policies
+    verificationRequired?: boolean; // Require identity verification
+    verificationMethods?: string[]; // ['phone', 'telegram', 'email']
+  }>(),
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ===== MAYA'S AUDIT RELATIONS =====
+
+export const reservationModificationsRelations = relations(reservationModifications, ({ one }) => ({
+  reservation: one(reservations, {
+    fields: [reservationModifications.reservationId],
+    references: [reservations.id],
+  }),
+}));
+
+export const reservationCancellationsRelations = relations(reservationCancellations, ({ one }) => ({
+  reservation: one(reservations, {
+    fields: [reservationCancellations.reservationId],
+    references: [reservations.id],
+  }),
+}));
+
+export const restaurantPoliciesRelations = relations(restaurantPolicies, ({ one }) => ({
+  restaurant: one(restaurants, {
+    fields: [restaurantPolicies.restaurantId],
+    references: [restaurants.id],
   }),
 }));
 
@@ -241,12 +330,30 @@ export const insertTableSchema = createInsertSchema(tables).omit({ id: true, cre
 export const insertTimeslotSchema = createInsertSchema(timeslots).omit({ id: true, createdAt: true });
 export const insertGuestSchema = createInsertSchema(guests).omit({ id: true, createdAt: true });
 
-// ✅ FIXED: Updated insert schema for reservations
+// ✅ ENHANCED: Updated insert schema for reservations with lastModifiedAt
 export const insertReservationSchema = createInsertSchema(reservations, {
   booking_guest_name: z.string().optional().nullable(),
   // ✅ Add validation for our new, required field
   reservation_utc: z.string().datetime({ message: "Invalid ISO 8601 UTC timestamp format" }),
+  lastModifiedAt: z.date().optional(),
 }).omit({ id: true, createdAt: true });
+
+// ✅ NEW: Maya's audit insert schemas
+export const insertReservationModificationSchema = createInsertSchema(reservationModifications).omit({ 
+  id: true, 
+  createdAt: true 
+});
+
+export const insertReservationCancellationSchema = createInsertSchema(reservationCancellations).omit({ 
+  id: true, 
+  createdAt: true 
+});
+
+export const insertRestaurantPolicySchema = createInsertSchema(restaurantPolicies).omit({ 
+  id: true, 
+  createdAt: true, 
+  updatedAt: true 
+});
 
 export const insertIntegrationSettingSchema = createInsertSchema(integrationSettings).omit({ id: true, createdAt: true });
 export const insertAiActivitySchema = createInsertSchema(aiActivities).omit({ id: true, createdAt: true });
@@ -269,6 +376,16 @@ export type InsertGuest = z.infer<typeof insertGuestSchema>;
 
 export type Reservation = typeof reservations.$inferSelect;
 export type InsertReservation = z.infer<typeof insertReservationSchema>;
+
+// ✅ NEW: Maya's audit types
+export type ReservationModification = typeof reservationModifications.$inferSelect;
+export type InsertReservationModification = z.infer<typeof insertReservationModificationSchema>;
+
+export type ReservationCancellation = typeof reservationCancellations.$inferSelect;
+export type InsertReservationCancellation = z.infer<typeof insertReservationCancellationSchema>;
+
+export type RestaurantPolicy = typeof restaurantPolicies.$inferSelect;
+export type InsertRestaurantPolicy = z.infer<typeof insertRestaurantPolicySchema>;
 
 export type IntegrationSetting = typeof integrationSettings.$inferSelect;
 export type InsertIntegrationSetting = z.infer<typeof insertIntegrationSettingSchema>;

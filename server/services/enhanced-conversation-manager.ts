@@ -6,27 +6,582 @@ import { agentFunctions } from './agents/agent-tools';
 import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
 import type { Restaurant } from '@shared/schema';
+import { DateTime } from 'luxon';
 
 export type Language = 'en' | 'ru' | 'sr';
+export type AgentType = 'booking' | 'reservations';
 
 /**
- * Enhanced conversation manager with guardrails and intelligent name clarification
- * ✅ FIXED: Name clarification in BOTH main loop AND confirmation path
+ * Enhanced conversation manager with guardrails, intelligent name clarification, and Maya agent
+ * ✅ ENHANCED: Multi-agent support with Sofia (booking) and Maya (reservations)
+ * ✅ NEW: Smart agent detection with fuzzy matching + LLM fallback
  */
 export class EnhancedConversationManager {
-  private sessions = new Map<string, BookingSessionWithConfirmation>();
-  private agents = new Map<number, any>();
+  private sessions = new Map<string, BookingSessionWithAgent>();
+  private agents = new Map<string, any>();
   private sessionCleanupInterval: NodeJS.Timeout;
-  private client: OpenAI; // ✅ ADD: OpenAI client for intelligent name processing
+  private client: OpenAI;
 
   constructor() {
-    this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); // ✅ ADD: Initialize OpenAI client
+    this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
     this.sessionCleanupInterval = setInterval(() => {
       this.cleanupOldSessions();
     }, 60 * 60 * 1000);
 
-    console.log('[EnhancedConversationManager] Initialized with guardrails and intelligent name clarification');
+    console.log('[EnhancedConversationManager] Initialized with Sofia (booking) + Maya (reservations) agents');
+  }
+
+  /**
+   * ✅ NEW: Enhanced agent detection with fuzzy matching and LLM fallback
+   */
+  private async detectAgentType(message: string, currentAgent?: AgentType): Promise<AgentType> {
+    const normalizedMessage = message.toLowerCase();
+    
+    // ===== LAYER 1: EXACT KEYWORD MATCHING (FREE, INSTANT) =====
+    
+    // ✅ EXPANDED: More comprehensive reservation keywords including common typos
+    const reservationKeywords = [
+        // English
+        'change', 'modify', 'update', 'cancel', 'existing reservation',
+        'booked already', 'move reservation', 'different time', 'more people',
+        'fewer people', 'less people', 'add people', 'reduce', 'increase',
+        'special request', 'dietary requirement', 'anniversary', 'birthday',
+        'my reservation', 'our reservation', 'confirmation number',
+        'i have a reservation', 'we have a reservation', 'my booking', 'our booking',
+        'reschedule', 'postpone', 'shift time', 'earlier', 'later',
+        
+        // Russian - expanded with common variations and typos
+        'изменить', 'отменить', 'уже забронировал', 'другое время', 'моё бронирование',
+        'наше бронирование', 'изменить бронь', 'отменить бронь',
+        'поменять', 'перенести', 'поиенять', 'паменять', 'поенять', // ✅ Common typos
+        'сдвинуть', 'перенос', 'изменение', 'отмена', 'измнить', 'отмнить',
+        'моя бронь', 'наша бронь', 'бронирование на', 'забронировано',
+        'раньше', 'позже', 'другой день', 'другая дата', 'надо изменить',
+        'надо поменять', 'надо перенести', 'хочу изменить', 'хочу поменять',
+        
+        // Serbian
+        'promeniti', 'otkazati', 'već rezervisao', 'drugo vreme', 'moja rezervacija',
+        'naša rezervacija', 'promeniti rezervaciju', 'otkazati rezervaciju',
+        'pomeriti', 'preneti', 'ranije', 'kasnije'
+    ];
+    
+    // ✅ STRONG indicators that override other detection
+    const strongReservationIndicators = [
+        'i need to change', 'i want to change', 'can i change',
+        'i need to cancel', 'i want to cancel', 'can i cancel',
+        'i have a reservation', 'we have a reservation',
+        'existing booking', 'current booking', 'booked for tonight',
+        'booked for tomorrow', 'already booked', 'confirmation',
+        // Russian
+        'мне нужно изменить', 'хочу изменить', 'могу ли изменить',
+        'мне нужно отменить', 'хочу отменить', 'могу ли отменить',
+        'у меня есть бронь', 'у нас есть бронь', 'уже забронировано',
+        'надо изменить', 'надо поменять', 'надо перенести',
+        // Serbian
+        'treba da promenim', 'želim da promenim', 'mogu li da promenim',
+        'treba da otkazujem', 'želim da otkazujem', 'mogu li da otkazujem',
+        'imam rezervaciju', 'imamo rezervaciju', 'već rezervisano'
+    ];
+    
+    // Check strong indicators first (highest priority)
+    if (strongReservationIndicators.some(indicator => normalizedMessage.includes(indicator))) {
+        console.log(`[ConversationManager] 🎯 Strong reservation indicator detected: switching to Maya`);
+        return 'reservations';
+    }
+    
+    // Check exact keyword matches
+    if (reservationKeywords.some(keyword => normalizedMessage.includes(keyword))) {
+        console.log(`[ConversationManager] 📝 Reservation keyword detected: switching to Maya`);
+        return 'reservations';
+    }
+    
+    // ===== LAYER 2: FUZZY PATTERN MATCHING (FREE, INSTANT) =====
+    
+    const fuzzyReservationPatterns = [
+        /по\w*менять/i,  // поменять, поиенять, поенять, etc.
+        /изм\w*нить/i,   // изменить, измнить, etc.
+        /перен\w*сти/i,  // перенести, перенсти, etc.
+        /отм\w*нить/i,   // отменить, отмнить, etc.
+        /ch\w*nge/i,     // change, chnge, etc.
+        /mod\w*fy/i,     // modify, modfy, etc.
+        /canc\w*l/i,     // cancel, cancl, etc.
+        /резерв\w*/i,    // резервация, резерв, etc.
+        /бронир\w*/i,    // бронирование, бронир, etc.
+    ];
+    
+    if (fuzzyReservationPatterns.some(pattern => pattern.test(normalizedMessage))) {
+        console.log(`[ConversationManager] 🔍 Fuzzy reservation pattern detected: switching to Maya`);
+        return 'reservations';
+    }
+    
+    // ===== LAYER 3: LLM FALLBACK FOR AMBIGUOUS CASES (CHEAP, SMART) =====
+    
+    // Only use LLM for ambiguous cases that passed layers 1-2 but need intelligent analysis
+    const isAmbiguous = this.isAmbiguousMessage(normalizedMessage, currentAgent);
+    
+    if (isAmbiguous) {
+        console.log(`[ConversationManager] 🤖 Using LLM fallback for ambiguous message: "${message}"`);
+        
+        try {
+            const agentType = await this.llmAgentDetection(message, currentAgent);
+            if (agentType) {
+                console.log(`[ConversationManager] 🎯 LLM detected agent: ${agentType}`);
+                return agentType;
+            }
+        } catch (error) {
+            console.error(`[ConversationManager] LLM agent detection failed:`, error);
+            // Fall through to default logic
+        }
+    }
+    
+    // ===== FALLBACK: DEFAULT LOGIC =====
+    
+    // Number + context detection (like "1" after asking for confirmation number)
+    if (/^\d{1,6}$/.test(normalizedMessage.trim()) && currentAgent === 'reservations') {
+        console.log(`[ConversationManager] 🔢 Number detected in reservations context: staying with Maya`);
+        return 'reservations';
+    }
+    
+    // Sofia (Booking) keywords for new reservations
+    const bookingKeywords = [
+        'book', 'reserve', 'new reservation', 'table', 'available', 'tonight', 
+        'tomorrow', 'first time', 'make a reservation', 'book a table',
+        // Russian
+        'забронировать', 'новое бронирование', 'столик', 'свободно',
+        'сегодня вечером', 'завтра', 'впервые', 'забронировать столик',
+        // Serbian
+        'rezervisati', 'nova rezervacija', 'sto', 'dostupno',
+        'večeras', 'sutra', 'prvi put', 'rezervisati sto'
+    ];
+    
+    // Only switch to booking if explicitly mentioned and no current agent
+    if (bookingKeywords.some(keyword => normalizedMessage.includes(keyword)) && !currentAgent) {
+        console.log(`[ConversationManager] 📅 Booking keyword detected: using Sofia`);
+        return 'booking';
+    }
+    
+    // Continue with current agent if exists, otherwise default to Sofia
+    if (currentAgent) {
+        console.log(`[ConversationManager] ➡️ Continuing with current agent: ${currentAgent}`);
+        return currentAgent;
+    }
+    
+    console.log(`[ConversationManager] 🏠 Default to Sofia for new conversations`);
+    return 'booking';
+  }
+
+  /**
+   * ✅ NEW: Detect if message is ambiguous and needs LLM analysis
+   */
+  private isAmbiguousMessage(normalizedMessage: string, currentAgent?: AgentType): boolean {
+    // Messages that are clearly context-dependent and benefit from LLM
+    const ambiguousPatterns = [
+        // Very short messages that could mean anything
+        /^[а-яё]{1,3}$/i,  // Russian 1-3 letter words
+        /^[a-z]{1,2}$/i,   // English 1-2 letter words
+        /^\d{1,2}$/,       // Just numbers
+        
+        // Unclear intent
+        /время/i,          // "время" could be asking time or changing time
+        /когда/i,          // "когда" could be asking when open or when is my booking
+        /помочь/i,         // "помочь" is generic help request
+        /можно/i,          // "можно" is generic "can I"
+        
+        // Messages with typos that fuzzy didn't catch
+        /[а-яё]{4,}.*[а-яё]{4,}/i, // Longer Russian text that might have complex typos
+    ];
+    
+    const isShort = normalizedMessage.trim().length < 10;
+    const hasAmbiguousPattern = ambiguousPatterns.some(pattern => pattern.test(normalizedMessage));
+    const hasCurrentAgent = !!currentAgent;
+    
+    // Use LLM if message is ambiguous AND we have context to work with
+    return (isShort || hasAmbiguousPattern) && hasCurrentAgent;
+  }
+
+  /**
+   * ✅ NEW: LLM-based agent detection for ambiguous cases
+   */
+  private async llmAgentDetection(message: string, currentAgent?: AgentType): Promise<AgentType | null> {
+    try {
+        const prompt = `You are an expert classifier for a restaurant booking system. The system has two specialized agents:
+
+1. SOFIA (booking) - Handles NEW reservations, table availability, making new bookings
+2. MAYA (reservations) - Handles EXISTING reservations, modifications, cancellations
+
+Current agent: ${currentAgent || 'none'}
+User message: "${message}"
+
+Based on the message, which agent should handle this request? Consider:
+- Does the user want to make a NEW booking? → Sofia
+- Does the user want to modify/cancel/change an EXISTING booking? → Maya
+- Is the message unclear or just a greeting? → Continue with current agent
+
+Respond with ONLY: "booking", "reservations", or "continue"`;
+
+        const completion = await this.client.chat.completions.create({
+            model: "gpt-4o-mini", // Cheap and fast
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.0,
+            max_tokens: 10
+        });
+
+        const result = completion.choices[0]?.message?.content?.trim().toLowerCase();
+        
+        if (result === 'booking') return 'booking';
+        if (result === 'reservations') return 'reservations';
+        if (result === 'continue' && currentAgent) return currentAgent;
+        
+        return null; // Fall back to default logic
+        
+    } catch (error) {
+        console.error('[ConversationManager] LLM agent detection error:', error);
+        return null;
+    }
+  }
+
+  /**
+   * ✅ NEW: Get tools for specific agent type
+   */
+  private getToolsForAgent(agentType: AgentType) {
+    const baseTools = [
+        {
+            type: "function" as const,
+            function: {
+                name: "get_restaurant_info",
+                description: "Get restaurant information, hours, location, contact details",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        infoType: {
+                            type: "string",
+                            enum: ["hours", "location", "cuisine", "contact", "features", "all"],
+                            description: "Type of information to retrieve"
+                        }
+                    },
+                    required: ["infoType"]
+                }
+            }
+        }
+    ];
+
+    if (agentType === 'reservations') {
+        // Maya's tools for reservation management
+        return [
+            ...baseTools,
+            {
+                type: "function" as const,
+                function: {
+                    name: "find_existing_reservation",
+                    description: "Find guest's existing reservations by phone, name, or confirmation number",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            identifier: {
+                                type: "string",
+                                description: "Phone number, guest name, or confirmation number to search by"
+                            },
+                            identifierType: {
+                                type: "string",
+                                enum: ["phone", "telegram", "name", "confirmation"],
+                                description: "Type of identifier being used (auto-detected if not specified)"
+                            }
+                        },
+                        required: ["identifier"]
+                    }
+                }
+            },
+            {
+                type: "function" as const,
+                function: {
+                    name: "modify_reservation",
+                    description: "Modify details of an existing reservation (time, date, party size, special requests)",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            reservationId: {
+                                type: "number",
+                                description: "ID of the reservation to modify"
+                            },
+                            modifications: {
+                                type: "object",
+                                properties: {
+                                    newDate: {
+                                        type: "string",
+                                        description: "New date in YYYY-MM-DD format (optional)"
+                                    },
+                                    newTime: {
+                                        type: "string",
+                                        description: "New time in HH:MM format (optional)"
+                                    },
+                                    newGuests: {
+                                        type: "number",
+                                        description: "New number of guests (optional)"
+                                    },
+                                    newSpecialRequests: {
+                                        type: "string",
+                                        description: "Updated special requests (optional)"
+                                    }
+                                }
+                            },
+                            reason: {
+                                type: "string",
+                                description: "Reason for the modification",
+                                default: "Guest requested change"
+                            }
+                        },
+                        required: ["reservationId", "modifications"]
+                    }
+                }
+            },
+            {
+                type: "function" as const,
+                function: {
+                    name: "cancel_reservation",
+                    description: "Cancel an existing reservation",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            reservationId: {
+                                type: "number",
+                                description: "ID of the reservation to cancel"
+                            },
+                            reason: {
+                                type: "string",
+                                description: "Reason for cancellation",
+                                default: "Guest requested cancellation"
+                            },
+                            confirmCancellation: {
+                                type: "boolean",
+                                description: "Explicit confirmation from guest that they want to cancel"
+                            }
+                        },
+                        required: ["reservationId", "confirmCancellation"]
+                    }
+                }
+            }
+        ];
+    }
+
+    // Sofia's tools for new bookings (your existing tools)
+    return [
+        ...baseTools,
+        {
+            type: "function" as const,
+            function: {
+                name: "check_availability",
+                description: "Check table availability for a specific date and time",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        date: {
+                            type: "string",
+                            description: "Date in YYYY-MM-DD format"
+                        },
+                        time: {
+                            type: "string", 
+                            description: "Time in HH:MM format"
+                        },
+                        guests: {
+                            type: "number",
+                            description: "Number of guests"
+                        }
+                    },
+                    required: ["date", "time", "guests"]
+                }
+            }
+        },
+        {
+            type: "function" as const,
+            function: {
+                name: "find_alternative_times",
+                description: "Find alternative available times if the requested time is not available",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        date: {
+                            type: "string",
+                            description: "Date in YYYY-MM-DD format"
+                        },
+                        time: {
+                            type: "string",
+                            description: "Preferred time in HH:MM format"
+                        },
+                        guests: {
+                            type: "number", 
+                            description: "Number of guests"
+                        }
+                    },
+                    required: ["date", "time", "guests"]
+                }
+            }
+        },
+        {
+            type: "function" as const,
+            function: {
+                name: "create_reservation",
+                description: "Create a new reservation when availability is confirmed",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        guestName: {
+                            type: "string",
+                            description: "Guest's full name"
+                        },
+                        guestPhone: {
+                            type: "string",
+                            description: "Guest's phone number"
+                        },
+                        date: {
+                            type: "string",
+                            description: "Date in YYYY-MM-DD format"
+                        },
+                        time: {
+                            type: "string",
+                            description: "Time in HH:MM format"
+                        },
+                        guests: {
+                            type: "number",
+                            description: "Number of guests"
+                        },
+                        specialRequests: {
+                            type: "string",
+                            description: "Special requests or comments",
+                            default: ""
+                        }
+                    },
+                    required: ["guestName", "guestPhone", "date", "time", "guests"]
+                }
+            }
+        }
+    ];
+  }
+
+  /**
+   * ✅ NEW: Get agent personality and system prompt for different agent types
+   */
+  private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any): string {
+    const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
+    
+    const personalities = {
+        booking: {
+            en: `You are Sofia, the friendly and efficient booking specialist for ${restaurantConfig.name}. You help guests make NEW reservations.
+
+🎯 YOUR ROLE:
+- Help guests find available times and make new bookings
+- Provide information about the restaurant
+- Guide guests through the booking process step by step  
+- Be warm, professional, and detail-oriented
+
+💬 COMMUNICATION STYLE:
+- Always greet guests warmly
+- Ask for details step by step (date, time, party size, name, phone)
+- Confirm all details before creating the reservation
+- Use natural, conversational language
+
+🔧 YOUR TOOLS:
+- check_availability: Check if requested time is available
+- find_alternative_times: Suggest alternatives if requested time is busy
+- create_reservation: Make the actual booking
+- get_restaurant_info: Share restaurant details
+
+✨ REMEMBER:
+- Always confirm guest details before finalizing
+- Be helpful with alternative suggestions
+- Maintain a warm, professional tone
+- You can book at ANY exact time during operating hours (like 16:15, 19:43, etc.)`,
+
+            ru: `Вы София, дружелюбный и эффективный специалист по бронированию ресторана ${restaurantConfig.name}. Вы помогаете гостям делать НОВЫЕ бронирования.
+
+🎯 ВАША РОЛЬ:
+- Помогать гостям находить свободное время и делать новые бронирования
+- Предоставлять информацию о ресторане
+- Вести гостей через процесс бронирования пошагово
+- Быть теплой, профессиональной и внимательной к деталям
+
+🚺 ВАЖНО: Вы женского пола, всегда говорите о себе в женском роде.`,
+
+            sr: `Vi ste Sofija, prijateljski i efikasni specijalista za rezervacije restorana ${restaurantConfig.name}. Pomažete gostima da prave NOVE rezervacije.
+
+🎯 VAŠA ULOGA:
+- Pomažete gostima da pronađu dostupno vreme i naprave nove rezervacije
+- Pružate informacije o restoranu
+- Vodite goste kroz proces rezervacije korak po korak
+- Budete topla, profesionalna i orijentisana na detalje
+
+🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.`
+        },
+        reservations: {
+            en: `You are Maya, the helpful reservation management specialist for ${restaurantConfig.name}. You help guests manage their EXISTING reservations.
+
+🎯 YOUR ROLE:
+- Help guests find their existing reservations
+- Modify reservation details (time, date, party size, special requests)
+- Handle cancellations with proper policy enforcement
+- Provide excellent customer service for existing bookings
+
+💬 COMMUNICATION STYLE:
+- Be solution-focused and empathetic
+- Always verify guest identity before making changes
+- Explain policies clearly and offer alternatives when possible
+- Confirm all changes explicitly
+
+🔧 YOUR TOOLS:
+- find_existing_reservation: Search for guest's reservations by phone/name/confirmation
+- modify_reservation: Change reservation details
+- cancel_reservation: Cancel reservations with policy enforcement
+- get_restaurant_info: Share restaurant information
+
+✨ REMEMBER:
+- Always verify guest identity first (ask for phone, name, or confirmation number)
+- Explain modification and cancellation policies clearly
+- Offer alternatives when changes aren't possible
+- Confirm all modifications before applying them
+
+🔒 SECURITY:
+- Never modify reservations without proper guest verification
+- Ask for phone number, confirmation number, or name on reservation
+- If verification fails, politely decline and suggest calling the restaurant`,
+
+            ru: `Вы Майя, полезный специалист по управлению бронированиями ресторана ${restaurantConfig.name}. Вы помогаете гостям управлять их СУЩЕСТВУЮЩИМИ бронированиями.
+
+🎯 ВАША РОЛЬ:
+- Помогать гостям находить их существующие бронирования
+- Изменять детали бронирования (время, дата, количество гостей, особые просьбы)
+- Обрабатывать отмены с соблюдением политики
+- Обеспечивать отличное обслуживание для существующих бронирований
+
+🚺 ВАЖНО: Вы женского пола, всегда говорите о себе в женском роде.`,
+
+            sr: `Vi ste Maja, korisni specijalista za upravljanje rezervacijama restorana ${restaurantConfig.name}. Pomažete gostima da upravljaju njihovim POSTOJEĆIM rezervacijama.
+
+🎯 VAŠA ULOGA:
+- Pomažete gostima da pronađu svoje postojeće rezervacije
+- Menjate detalje rezervacije (vreme, datum, broj gostiju, posebne zahteve)
+- Rukujete otkazivanjima uz pravilnu primenu politike
+- Pružate odličnu uslugu za postojeće rezervacije
+
+🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.`
+        }
+    };
+
+    let basePrompt = personalities[agentType][language as keyof typeof personalities[agentType]] || 
+                     personalities[agentType].en;
+
+    // Add restaurant context
+    const restaurantContext = `
+
+🏪 RESTAURANT DETAILS:
+- Name: ${restaurantConfig.name}
+- Hours: ${restaurantConfig.openingTime} - ${restaurantConfig.closingTime}
+- Current Date: ${currentTime.toFormat('yyyy-MM-dd')}
+- Current Time: ${currentTime.toFormat('HH:mm')}
+- Timezone: ${restaurantConfig.timezone}
+- Cuisine: ${restaurantConfig.cuisine || 'Excellent cuisine'}
+- Atmosphere: ${restaurantConfig.atmosphere || 'Welcoming atmosphere'}`;
+
+    return basePrompt + restaurantContext;
   }
 
   /**
@@ -120,7 +675,7 @@ Respond with JSON only.`;
   }
 
   /**
-   * Create session with context detection
+   * Create session with context detection and agent type
    */
   createSession(config: {
     restaurantId: number;
@@ -129,14 +684,16 @@ Respond with JSON only.`;
     telegramUserId?: string;
     webSessionId?: string;
   }): string {
-    const session = createBookingSession(config) as BookingSessionWithConfirmation;
+    const session = createBookingSession(config) as BookingSessionWithAgent;
     
-    // Add context detection
+    // Add context detection and agent type
     session.context = this.detectContext(config.platform);
+    session.currentAgent = 'booking'; // Default to Sofia
+    session.agentHistory = []; // Track agent switches
     
     this.sessions.set(session.sessionId, session);
     
-    console.log(`[EnhancedConversationManager] Created ${session.context} session ${session.sessionId} for restaurant ${config.restaurantId}`);
+    console.log(`[EnhancedConversationManager] Created ${session.context} session ${session.sessionId} for restaurant ${config.restaurantId} with Sofia (booking) agent`);
     
     return session.sessionId;
   }
@@ -149,11 +706,13 @@ Respond with JSON only.`;
   }
 
   /**
-   * Get or create agent for restaurant
+   * Get or create agent for restaurant and agent type
    */
-  private async getAgent(restaurantId: number) {
-    if (this.agents.has(restaurantId)) {
-      return this.agents.get(restaurantId);
+  private async getAgent(restaurantId: number, agentType: AgentType = 'booking') {
+    const agentKey = `${restaurantId}_${agentType}`;
+    
+    if (this.agents.has(agentKey)) {
+      return this.agents.get(agentKey);
     }
 
     const restaurant = await storage.getRestaurant(restaurantId);
@@ -161,7 +720,8 @@ Respond with JSON only.`;
       throw new Error(`Restaurant ${restaurantId} not found`);
     }
 
-    const agent = createBookingAgent({
+    // Create agent configuration
+    const restaurantConfig = {
       id: restaurant.id,
       name: restaurant.name,
       timezone: restaurant.timezone || 'Europe/Moscow',
@@ -172,10 +732,23 @@ Respond with JSON only.`;
       atmosphere: restaurant.atmosphere,
       country: restaurant.country,
       languages: restaurant.languages
-    });
+    };
 
-    this.agents.set(restaurantId, agent);
-    console.log(`[EnhancedConversationManager] Created Sofia agent for ${restaurant.name} with languages: ${restaurant.languages?.join(', ') || 'en'}`);
+    // For now, both agents use the same client and basic structure
+    // In the future, you might want separate agent classes
+    const agent = {
+      client: this.client,
+      restaurantConfig,
+      tools: this.getToolsForAgent(agentType),
+      agentType,
+      systemPrompt: '', // Will be set dynamically
+      updateInstructions: (context: string, language: string) => {
+        return this.getAgentPersonality(agentType, language, restaurantConfig);
+      }
+    };
+
+    this.agents.set(agentKey, agent);
+    console.log(`[EnhancedConversationManager] Created ${agentType} agent for ${restaurant.name}`);
     
     return agent;
   }
@@ -213,15 +786,17 @@ Respond with JSON only.`;
   }
 
   /**
-   * Main message handling with enhanced logic
+   * Main message handling with enhanced logic and Maya support
    */
   async handleMessage(sessionId: string, message: string): Promise<{
     response: string;
     hasBooking: boolean;
     reservationId?: number;
-    session: BookingSessionWithConfirmation;
+    session: BookingSessionWithAgent;
     blocked?: boolean;
     blockReason?: string;
+    currentAgent?: AgentType;
+    agentHandoff?: { from: AgentType; to: AgentType; reason: string };
   }> {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -292,7 +867,8 @@ Respond with JSON only.`;
             return {
               response: clarificationMessage,
               hasBooking: false,
-              session
+              session,
+              currentAgent: session.currentAgent
             };
           }
         }
@@ -322,7 +898,32 @@ Respond with JSON only.`;
         }
       }
 
-      // STEP 2: Run guardrails for non-confirmation messages
+      // STEP 2: Agent Detection and Switching (NOW WITH LLM FALLBACK)
+      const detectedAgent = await this.detectAgentType(message, session.currentAgent);
+      let agentHandoff;
+      
+      if (session.currentAgent && session.currentAgent !== detectedAgent) {
+        console.log(`[EnhancedConversationManager] 🔄 Agent handoff: ${session.currentAgent} → ${detectedAgent}`);
+        
+        agentHandoff = {
+          from: session.currentAgent,
+          to: detectedAgent,
+          reason: `Message indicates ${detectedAgent === 'reservations' ? 'existing reservation management' : 'new booking request'}`
+        };
+        
+        // Store handoff in session for context
+        if (!session.agentHistory) session.agentHistory = [];
+        session.agentHistory.push({
+          from: session.currentAgent,
+          to: detectedAgent,
+          at: new Date().toISOString(),
+          trigger: message.substring(0, 100) // First 100 chars that triggered handoff
+        });
+      }
+
+      session.currentAgent = detectedAgent;
+
+      // STEP 3: Run guardrails for non-confirmation messages
       console.log(`[EnhancedConversationManager] Running guardrails for session ${sessionId}`);
       
       const guardrailResult = await runGuardrails(message, session);
@@ -350,12 +951,12 @@ Respond with JSON only.`;
           hasBooking: false,
           session,
           blocked: true,
-          blockReason: guardrailResult.category
+          blockReason: guardrailResult.category,
+          currentAgent: session.currentAgent
         };
       }
 
-      // STEP 3: Continue with normal processing, with improved language detection
-      // ✅ FIX: Prevent language switching on simple/numeric input
+      // STEP 4: Language detection (with improved logic)
       const isNumericOrShortMessage = /^\d+[\d\s-()+]*$/.test(message) || message.trim().length < 5;
 
       if (isNumericOrShortMessage && session.conversationHistory.length > 0) {
@@ -378,11 +979,26 @@ Respond with JSON only.`;
         timestamp: new Date()
       });
 
-      // Get agent and prepare messages
-      const agent = await this.getAgent(session.restaurantId);
-      let systemPrompt = agent.systemPrompt;
-      if (agent.updateInstructions) {
-        systemPrompt = agent.updateInstructions(session.context, session.language);
+      // STEP 5: Get agent and prepare messages
+      const agent = await this.getAgent(session.restaurantId, session.currentAgent);
+      
+      let systemPrompt = agent.updateInstructions 
+        ? agent.updateInstructions(session.context, session.language)
+        : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig);
+
+      // Add agent history context if there was a handoff
+      if (session.agentHistory && session.agentHistory.length > 0) {
+        const recentHandoff = session.agentHistory[session.agentHistory.length - 1];
+        if (recentHandoff.to === session.currentAgent) {
+          systemPrompt += `\n\n🔄 CONTEXT: Guest was just transferred from ${recentHandoff.from} agent because: "${recentHandoff.trigger}"`;
+        }
+      }
+
+      // Add guest context if available
+      if (session.gatheringInfo.name || session.gatheringInfo.phone) {
+        systemPrompt += `\n\n👤 GUEST CONTEXT:`;
+        if (session.gatheringInfo.name) systemPrompt += `\n- Name: ${session.gatheringInfo.name}`;
+        if (session.gatheringInfo.phone) systemPrompt += `\n- Phone: ${session.gatheringInfo.phone}`;
       }
 
       const messages = [
@@ -396,7 +1012,7 @@ Respond with JSON only.`;
         }))
       ];
 
-      // STEP 4: Initial completion with function calling
+      // STEP 6: Initial completion with function calling
       let completion = await agent.client.chat.completions.create({
         model: "gpt-4o",
         messages: messages,
@@ -409,9 +1025,9 @@ Respond with JSON only.`;
       let hasBooking = false;
       let reservationId: number | undefined;
 
-      // STEP 5: Handle function calls
+      // STEP 7: Handle function calls
       if (completion.choices[0]?.message?.tool_calls) {
-        console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls`);
+        console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls with ${session.currentAgent} agent`);
 
         // Add assistant message with tool calls
         messages.push({
@@ -473,15 +1089,18 @@ Respond with JSON only.`;
                 return {
                   response: confirmationMessage,
                   hasBooking: false,
-                  session
+                  session,
+                  currentAgent: session.currentAgent,
+                  agentHandoff
                 };
               }
 
-              // Execute function
-              console.log(`[EnhancedConversationManager] Calling function: ${toolCall.function.name}`);
+              // Execute function based on agent capabilities
+              console.log(`[EnhancedConversationManager] Calling function: ${toolCall.function.name} with ${session.currentAgent} agent`);
               
               let result;
               switch (toolCall.function.name) {
+                // Sofia's functions (booking agent)
                 case 'check_availability':
                   result = await agentFunctions.check_availability(
                     args.date, args.time, args.guests, functionContext
@@ -498,35 +1117,46 @@ Respond with JSON only.`;
                     args.guests, args.specialRequests || '', functionContext
                   );
                   break;
+                
+                // Maya's functions (reservations agent)  
+                case 'find_existing_reservation':
+                  result = await agentFunctions.find_existing_reservation(
+                    args.identifier, args.identifierType, functionContext
+                  );
+                  break;
+                case 'modify_reservation':
+                  result = await agentFunctions.modify_reservation(
+                    args.reservationId, args.modifications, args.reason, functionContext
+                  );
+                  break;
+                case 'cancel_reservation':
+                  result = await agentFunctions.cancel_reservation(
+                    args.reservationId, args.reason, args.confirmCancellation, functionContext
+                  );
+                  break;
+                
+                // Shared functions
                 case 'get_restaurant_info':
                   result = await agentFunctions.get_restaurant_info(
                     args.infoType, functionContext
                   );
                   break;
+                  
                 default:
                   console.warn(`[EnhancedConversationManager] Unknown function: ${toolCall.function.name}`);
                   result = { error: "Unknown function" };
               }
               
-              console.log(`[EnhancedConversationManager] Function result:`, result);
-
-              // ✅ DEBUG: Add extensive logging to identify name clarification issues
-              console.log(`[DEBUG] Checking for name clarification...`);
-              console.log(`[DEBUG] Function name: ${toolCall.function.name}`);
-              console.log(`[DEBUG] Tool status: ${result.tool_status}`);
-              console.log(`[DEBUG] Error code: ${result.error?.code}`);
-              console.log(`[DEBUG] Error details:`, result.error?.details);
+              console.log(`[EnhancedConversationManager] Function result for ${toolCall.function.name}:`, result);
 
               // ✅ ENHANCED: Handle name clarification errors specifically
               if (toolCall.function.name === 'create_reservation' && 
                   result.tool_status === 'FAILURE' && 
                   result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
                 
-                console.log(`[DEBUG] ✅ NAME CLARIFICATION NEEDED - Processing...`);
+                console.log(`[ConversationManager] ✅ NAME CLARIFICATION NEEDED - Processing...`);
                 
                 const { dbName, requestName } = result.error.details;
-                
-                console.log(`[DEBUG] dbName: "${dbName}", requestName: "${requestName}"`);
                 
                 // Store pending confirmation with name conflict info
                 session.pendingConfirmation = {
@@ -545,8 +1175,6 @@ Respond with JSON only.`;
                   ? `Vidim da ste ranije rezervisali pod imenom "${dbName}". Za ovu rezervaciju želite da koristite ime "${requestName}" ili da zadržite "${dbName}"?`
                   : `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
 
-                console.log(`[DEBUG] Clarification message: "${clarificationMessage}"`);
-
                 session.conversationHistory.push({
                   role: 'assistant',
                   content: clarificationMessage,
@@ -555,18 +1183,13 @@ Respond with JSON only.`;
 
                 this.sessions.set(sessionId, session);
 
-                console.log(`[DEBUG] ✅ Returning clarification response`);
-
                 return {
                   response: clarificationMessage,
                   hasBooking: false,
-                  session
+                  session,
+                  currentAgent: session.currentAgent,
+                  agentHandoff
                 };
-              } else {
-                console.log(`[DEBUG] ❌ Name clarification condition not met`);
-                console.log(`[DEBUG] - Is create_reservation: ${toolCall.function.name === 'create_reservation'}`);
-                console.log(`[DEBUG] - Is FAILURE: ${result.tool_status === 'FAILURE'}`);
-                console.log(`[DEBUG] - Has correct error code: ${result.error?.code === 'NAME_CLARIFICATION_NEEDED'}`);
               }
 
               // Add function result to messages
@@ -576,10 +1199,12 @@ Respond with JSON only.`;
                 tool_call_id: toolCall.id
               });
 
-              // Check if booking was successfully created
-              if (toolCall.function.name === 'create_reservation') {
+              // Check if booking was successfully created (Sofia) or reservation modified (Maya)
+              if (toolCall.function.name === 'create_reservation' || 
+                  toolCall.function.name === 'modify_reservation') {
                 // Check correct response format with tool_status
-                if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
+                if (result.tool_status === 'SUCCESS' && result.data && 
+                    (result.data.success || result.data.reservationId)) {
                   hasBooking = true;
                   reservationId = result.data.reservationId;
                   session.hasActiveReservation = reservationId;
@@ -589,13 +1214,7 @@ Respond with JSON only.`;
                   delete session.pendingConfirmation;
                   delete session.confirmedName;
                   
-                  console.log(`[EnhancedConversationManager] Booking completed successfully! Reservation ID: ${reservationId}`);
-                } else {
-                  console.log(`[EnhancedConversationManager] Booking failed:`, {
-                    tool_status: result.tool_status,
-                    error: result.error,
-                    data: result.data
-                  });
+                  console.log(`[EnhancedConversationManager] ${toolCall.function.name} completed successfully! Reservation ID: ${reservationId}`);
                 }
               }
 
@@ -620,8 +1239,8 @@ Respond with JSON only.`;
           }
         }
 
-        // STEP 6: Get final response incorporating function results
-        console.log(`[EnhancedConversationManager] Getting final response with function results`);
+        // STEP 8: Get final response incorporating function results
+        console.log(`[EnhancedConversationManager] Getting final response with function results for ${session.currentAgent} agent`);
         
         completion = await agent.client.chat.completions.create({
           model: "gpt-4o",
@@ -636,7 +1255,7 @@ Respond with JSON only.`;
         (session.language === 'ru' 
           ? "Извините, я не смогла понять. Попробуйте еще раз."
           : session.language === 'sr'
-          ? "Izvините, nisam razumela. Molim pokušajte ponovo."
+          ? "Извините, nisam razumela. Molim pokušajte ponovo."
           : "I apologize, I didn't understand that. Could you please try again?");
 
       // Add response to conversation history
@@ -650,13 +1269,15 @@ Respond with JSON only.`;
       // Update session
       this.sessions.set(sessionId, session);
 
-      console.log(`[EnhancedConversationManager] Message handled. Booking: ${hasBooking}, Reservation: ${reservationId}`);
+      console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
 
       return {
         response,
         hasBooking,
         reservationId,
-        session
+        session,
+        currentAgent: session.currentAgent,
+        agentHandoff
       };
 
     } catch (error) {
@@ -682,7 +1303,8 @@ Respond with JSON only.`;
       return {
         response: fallbackResponse,
         hasBooking: false,
-        session
+        session,
+        currentAgent: session.currentAgent
       };
     }
   }
@@ -694,7 +1316,8 @@ Respond with JSON only.`;
     response: string;
     hasBooking: boolean;
     reservationId?: number;
-    session: BookingSessionWithConfirmation;
+    session: BookingSessionWithAgent;
+    currentAgent?: AgentType;
   }> {
     const session = this.sessions.get(sessionId)!;
     
@@ -709,12 +1332,6 @@ Respond with JSON only.`;
       }
       
       console.log(`[EnhancedConversationManager] Executing booking with confirmed name: ${session.confirmedName}`);
-      console.log(`[EnhancedConversationManager] About to call create_reservation with:`, {
-        originalName: args.guestName,
-        confirmedName: session.confirmedName,
-        finalName: session.confirmedName || args.guestName,
-        sessionId
-      });
       
       const result = await agentFunctions.create_reservation(
         args.guestName, args.guestPhone, args.date, args.time,
@@ -747,7 +1364,8 @@ Respond with JSON only.`;
           response: successMessage,
           hasBooking: true,
           reservationId: result.data.reservationId,
-          session
+          session,
+          currentAgent: session.currentAgent
         };
       } else {
         const errorMessage = session.language === 'ru'
@@ -767,7 +1385,8 @@ Respond with JSON only.`;
         return {
           response: errorMessage,
           hasBooking: false,
-          session
+          session,
+          currentAgent: session.currentAgent
         };
       }
     } catch (error) {
@@ -782,19 +1401,21 @@ Respond with JSON only.`;
       return {
         response: errorMessage,
         hasBooking: false,
-        session
+        session,
+        currentAgent: session.currentAgent
       };
     }
   }
 
   /**
-   * ✅ FIXED: Handle confirmation responses with name clarification support
+   * ✅ ENHANCED: Handle confirmation responses with multi-agent support
    */
   async handleConfirmation(sessionId: string, confirmed: boolean): Promise<{
     response: string;
     hasBooking: boolean;
     reservationId?: number;
-    session: BookingSessionWithConfirmation;
+    session: BookingSessionWithAgent;
+    currentAgent?: AgentType;
   }> {
     const session = this.sessions.get(sessionId);
     if (!session?.pendingConfirmation) {
@@ -816,16 +1437,27 @@ Respond with JSON only.`;
         
         console.log(`[EnhancedConversationManager] Executing confirmed action: ${toolCall.function.name}`);
         
-        const result = await agentFunctions.create_reservation(
-          args.guestName, args.guestPhone, args.date, args.time,
-          args.guests, args.specialRequests || '', functionContext
-        );
-
-        console.log(`[DEBUG] handleConfirmation result:`, result);
+        // Route to appropriate function based on the pending tool call
+        let result;
+        switch (toolCall.function.name) {
+          case 'create_reservation':
+            result = await agentFunctions.create_reservation(
+              args.guestName, args.guestPhone, args.date, args.time,
+              args.guests, args.specialRequests || '', functionContext
+            );
+            break;
+          case 'cancel_reservation':
+            result = await agentFunctions.cancel_reservation(
+              args.reservationId, args.reason, true, functionContext
+            );
+            break;
+          default:
+            throw new Error(`Unsupported pending confirmation for: ${toolCall.function.name}`);
+        }
 
         // ✅ CRITICAL FIX: Handle name clarification in confirmation path
         if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-          console.log(`[DEBUG] ✅ NAME CLARIFICATION NEEDED in handleConfirmation`);
+          console.log(`[ConversationManager] ✅ NAME CLARIFICATION NEEDED in handleConfirmation`);
           
           const { dbName, requestName } = result.error.details;
           
@@ -846,8 +1478,6 @@ Respond with JSON only.`;
             ? `Vidim da ste ranije rezervisali pod imenom "${dbName}". Za ovu rezervaciju želite da koristite ime "${requestName}" ili da zadržite "${dbName}"?`
             : `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
 
-          console.log(`[DEBUG] Sending clarification from handleConfirmation: "${clarificationMessage}"`);
-
           session.conversationHistory.push({
             role: 'assistant',
             content: clarificationMessage,
@@ -859,7 +1489,8 @@ Respond with JSON only.`;
           return {
             response: clarificationMessage,
             hasBooking: false,
-            session
+            session,
+            currentAgent: session.currentAgent
           };
         }
 
@@ -868,15 +1499,28 @@ Respond with JSON only.`;
         delete session.confirmedName;
         
         // Check success with new format
-        if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
-          session.hasActiveReservation = result.data.reservationId;
+        if (result.tool_status === 'SUCCESS' && result.data && 
+            (result.data.success || result.data.reservationId)) {
+          
+          const reservationId = result.data.reservationId;
+          session.hasActiveReservation = reservationId;
           session.currentStep = 'completed';
           
-          const successMessage = session.language === 'ru'
-            ? `🎉 Отлично! Ваше бронирование подтверждено. Номер брони: ${result.data.reservationId}`
-            : session.language === 'sr'
-            ? `🎉 Odlično! Vaša rezervacija je potvrđena. Broj rezervacije: ${result.data.reservationId}`
-            : `🎉 Perfect! Your reservation is confirmed. Reservation number: ${result.data.reservationId}`;
+          let successMessage;
+          
+          if (toolCall.function.name === 'create_reservation') {
+            successMessage = session.language === 'ru'
+              ? `🎉 Отлично! Ваше бронирование подтверждено. Номер брони: ${reservationId}`
+              : session.language === 'sr'
+              ? `🎉 Odlično! Vaša rezervacija je potvrđena. Broj rezervacije: ${reservationId}`
+              : `🎉 Perfect! Your reservation is confirmed. Reservation number: ${reservationId}`;
+          } else if (toolCall.function.name === 'cancel_reservation') {
+            successMessage = session.language === 'ru'
+              ? `✅ Ваше бронирование успешно отменено.`
+              : session.language === 'sr'
+              ? `✅ Vaša rezervacija je uspešno otkazana.`
+              : `✅ Your reservation has been successfully cancelled.`;
+          }
           
           session.conversationHistory.push({
             role: 'assistant',
@@ -888,16 +1532,17 @@ Respond with JSON only.`;
 
           return {
             response: successMessage,
-            hasBooking: true,
-            reservationId: result.data.reservationId,
-            session
+            hasBooking: toolCall.function.name === 'create_reservation',
+            reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined,
+            session,
+            currentAgent: session.currentAgent
           };
         } else {
           const errorMessage = session.language === 'ru'
-            ? `Извините, не удалось создать бронирование: ${result.error?.message || 'неизвестная ошибка'}`
+            ? `Извините, не удалось выполнить операцию: ${result.error?.message || 'неизвестная ошибка'}`
             : session.language === 'sr'
-            ? `Izvините, nije moguće kreirati rezervaciju: ${result.error?.message || 'nepoznata greška'}`
-            : `Sorry, I couldn't create the reservation: ${result.error?.message || 'unknown error'}`;
+            ? `Izvините, nije moguće izvršiti operaciju: ${result.error?.message || 'nepoznata greška'}`
+            : `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`;
           
           session.conversationHistory.push({
             role: 'assistant',
@@ -910,7 +1555,8 @@ Respond with JSON only.`;
           return {
             response: errorMessage,
             hasBooking: false,
-            session
+            session,
+            currentAgent: session.currentAgent
           };
         }
       } else {
@@ -919,10 +1565,10 @@ Respond with JSON only.`;
         delete session.confirmedName;
         
         const cancelMessage = session.language === 'ru'
-          ? "Хорошо, бронирование отменено. Чем еще могу помочь?"
+          ? "Хорошо, операция отменена. Чем еще могу помочь?"
           : session.language === 'sr'
-          ? "U redu, rezervacija je otkazana. Čime još mogu da pomognem?"
-          : "Okay, reservation cancelled. How else can I help you?";
+          ? "U redu, operacija je otkazana. Čime još mogu da pomognem?"
+          : "Okay, operation cancelled. How else can I help you?";
         
         session.conversationHistory.push({
           role: 'assistant',
@@ -935,7 +1581,8 @@ Respond with JSON only.`;
         return {
           response: cancelMessage,
           hasBooking: false,
-          session
+          session,
+          currentAgent: session.currentAgent
         };
       }
     } catch (error) {
@@ -952,7 +1599,8 @@ Respond with JSON only.`;
       return {
         response: errorMessage,
         hasBooking: false,
-        session
+        session,
+        currentAgent: session.currentAgent
       };
     }
   }
@@ -960,7 +1608,7 @@ Respond with JSON only.`;
   /**
    * Extract gathering info from function arguments
    */
-  private extractGatheringInfo(session: BookingSessionWithConfirmation, args: any) {
+  private extractGatheringInfo(session: BookingSessionWithAgent, args: any) {
     const updates: Partial<BookingSession['gatheringInfo']> = {};
     
     if (args.date) updates.date = args.date;
@@ -1013,7 +1661,7 @@ Respond with JSON only.`;
   /**
    * Get session information
    */
-  getSession(sessionId: string): BookingSessionWithConfirmation | undefined {
+  getSession(sessionId: string): BookingSessionWithAgent | undefined {
     return this.sessions.get(sessionId);
   }
 
@@ -1024,7 +1672,7 @@ Respond with JSON only.`;
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    const updatedSession = updateSessionInfo(session, updates) as BookingSessionWithConfirmation;
+    const updatedSession = updateSessionInfo(session, updates) as BookingSessionWithAgent;
     this.sessions.set(sessionId, updatedSession);
     return true;
   }
@@ -1056,7 +1704,7 @@ Respond with JSON only.`;
   }
 
   /**
-   * Enhanced session statistics
+   * Enhanced session statistics with agent tracking
    */
   getStats(): {
     totalSessions: number;
@@ -1064,7 +1712,9 @@ Respond with JSON only.`;
     completedBookings: number;
     sessionsByPlatform: { web: number; telegram: number };
     sessionsByContext: { hostess: number; guest: number };
+    sessionsByAgent: { booking: number; reservations: number };
     languageDistribution: { en: number; ru: number; sr: number };
+    agentHandoffs: number;
   } {
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -1075,9 +1725,12 @@ Respond with JSON only.`;
     let telegramSessions = 0;
     let hostessSessions = 0;
     let guestSessions = 0;
+    let bookingSessions = 0;
+    let reservationsSessions = 0;
     let enSessions = 0;
     let ruSessions = 0;
     let srSessions = 0;
+    let agentHandoffs = 0;
 
     for (const session of this.sessions.values()) {
       if (session.lastActivity > oneHourAgo) activeSessions++;
@@ -1086,9 +1739,14 @@ Respond with JSON only.`;
       else telegramSessions++;
       if (session.context === 'hostess') hostessSessions++;
       else guestSessions++;
+      if (session.currentAgent === 'booking') bookingSessions++;
+      else reservationsSessions++;
       if (session.language === 'en') enSessions++;
       else if (session.language === 'ru') ruSessions++;
       else if (session.language === 'sr') srSessions++;
+      if (session.agentHistory && session.agentHistory.length > 0) {
+        agentHandoffs += session.agentHistory.length;
+      }
     }
 
     return {
@@ -1097,7 +1755,9 @@ Respond with JSON only.`;
       completedBookings,
       sessionsByPlatform: { web: webSessions, telegram: telegramSessions },
       sessionsByContext: { hostess: hostessSessions, guest: guestSessions },
-      languageDistribution: { en: enSessions, ru: ruSessions, sr: srSessions }
+      sessionsByAgent: { booking: bookingSessions, reservations: reservationsSessions },
+      languageDistribution: { en: enSessions, ru: ruSessions, sr: srSessions },
+      agentHandoffs
     };
   }
 
@@ -1112,14 +1772,21 @@ Respond with JSON only.`;
   }
 }
 
-// Extended session interface with confirmation support
-interface BookingSessionWithConfirmation extends BookingSession {
+// Extended session interface with agent and confirmation support
+interface BookingSessionWithAgent extends BookingSession {
+  currentAgent: AgentType;
+  agentHistory?: Array<{
+    from: AgentType;
+    to: AgentType;
+    at: string;
+    trigger: string;
+  }>;
   pendingConfirmation?: {
     toolCall: any;
     functionContext: any;
     summary: string;
   };
-  confirmedName?: string; // ✅ NEW: Store confirmed name
+  confirmedName?: string;
 }
 
 // Global instance
