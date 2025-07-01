@@ -1,6 +1,7 @@
 //
 // storage.ts (Complete Timezone-Aware Version with UTC Timestamps + Legacy Timeslot System Removed)
 // ✅ PHASE 3: All legacy timeslot code completely removed
+// ✅ MAYA FIX: Added excludeReservationId parameter to prevent reservation conflicts during modifications
 //
 
 import {
@@ -51,12 +52,13 @@ export interface IStorage {
     createGuest(guest: InsertGuest): Promise<Guest>;
     updateGuest(id: number, guest: Partial<InsertGuest>): Promise<Guest>;
 
-    // Reservation methods
+    // Reservation methods - ✅ MAYA FIX: Updated interface
     getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
         upcoming?: boolean;
         timezone?: string;
+        excludeReservationId?: number; // 🆕 NEW: Exclude specific reservation from results
     }): Promise<any[]>;
     getReservation(id: number): Promise<any | undefined>;
     createReservation(reservation: InsertReservation): Promise<Reservation>;
@@ -84,7 +86,7 @@ export interface IStorage {
     // Real-time table availability methods
     updateTableStatusFromReservations(tableId: number, restaurantTimezone: string): Promise<void>;
     updateAllTableStatuses(restaurantId: number, restaurantTimezone: string): Promise<void>;
-    getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]>;
+    getTableAvailability(restaurantId: number, date: string, time: string, excludeReservationId?: number): Promise<Table[]>; // 🆕 MAYA FIX
 }
 
 export class DatabaseStorage implements IStorage {
@@ -246,14 +248,21 @@ export class DatabaseStorage implements IStorage {
         return updatedGuest;
     }
 
-    // ✅ COMPLETELY REWRITTEN: Reservation methods with UTC timestamp support + TYPE FIXES
+    // ✅ MAYA FIX: Updated getReservations method with excludeReservationId parameter
     async getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
         upcoming?: boolean;
         timezone?: string;
+        excludeReservationId?: number; // 🆕 NEW: Exclude specific reservation from results
     }): Promise<any[]> {
         const whereConditions = [eq(reservations.restaurantId, restaurantId)];
+
+        // ✅ MAYA FIX: Exclude specific reservation if provided
+        if (filters?.excludeReservationId) {
+            whereConditions.push(ne(reservations.id, filters.excludeReservationId));
+            console.log(`📋 [Storage] Excluding reservation ID ${filters.excludeReservationId} from results`);
+        }
 
         // ✅ FIXED: Date filtering now works with UTC timestamps + TYPE SAFETY
         if (filters?.date && filters?.timezone) {
@@ -310,7 +319,7 @@ export class DatabaseStorage implements IStorage {
             .where(and(...whereConditions))
             .orderBy(reservations.reservation_utc); // ✅ FIXED: Order by UTC timestamp
 
-        console.log(`📋 [Storage] Found ${results.length} reservations with ${whereConditions.length} conditions`);
+        console.log(`📋 [Storage] Found ${results.length} reservations with ${whereConditions.length} conditions${filters?.excludeReservationId ? ` (excluded reservation ${filters.excludeReservationId})` : ''}`);
 
         return results.map(r => ({
             ...r,
@@ -354,7 +363,7 @@ export class DatabaseStorage implements IStorage {
         return newReservation;
     }
 
-    // ✅ FIXED: Atomic reservation creation with improved UTC timestamp conflict detection
+    // ✅ MAYA FIX: Updated atomic reservation creation with excludeReservationId support
     async createReservationAtomic(
         reservation: InsertReservation,
         expectedSlot: { tableId: number; time: string; duration: number }
@@ -711,8 +720,8 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // ✅ FIXED: Table availability with UTC timestamp support + TYPE SAFETY
-    async getTableAvailability(restaurantId: number, date: string, time: string): Promise<Table[]> {
+    // ✅ MAYA FIX: Updated table availability with excludeReservationId parameter
+    async getTableAvailability(restaurantId: number, date: string, time: string, excludeReservationId?: number): Promise<Table[]> {
         // Get restaurant timezone for conversion
         const restaurant = await this.getRestaurant(restaurantId);
         const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
@@ -727,7 +736,21 @@ export class DatabaseStorage implements IStorage {
             return [];
         }
 
-        console.log(`🏢 [Storage] Checking table availability for UTC range: ${startOfSlotUtc} to ${endOfSlotUtc}`);
+        console.log(`🏢 [Storage] Checking table availability for UTC range: ${startOfSlotUtc} to ${endOfSlotUtc}${excludeReservationId ? ` (excluding reservation ${excludeReservationId})` : ''}`);
+
+        // ✅ MAYA FIX: Build conflict check conditions with optional exclusion
+        const conflictConditions = [
+            eq(reservations.tableId, tables.id),
+            // Check for overlap using UTC timestamps
+            sql`${reservations.reservation_utc} < ${endOfSlotUtc}`,
+            sql`${reservations.reservation_utc} + INTERVAL '2 hours' > ${startOfSlotUtc}`,
+            inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
+        ];
+
+        // ✅ MAYA FIX: Add exclusion condition if provided
+        if (excludeReservationId) {
+            conflictConditions.push(ne(reservations.id, excludeReservationId));
+        }
 
         const availableTables = await db
             .select()
@@ -739,20 +762,12 @@ export class DatabaseStorage implements IStorage {
                     notExists(
                         db.select()
                             .from(reservations)
-                            .where(
-                                and(
-                                    eq(reservations.tableId, tables.id),
-                                    // Check for overlap using UTC timestamps
-                                    sql`${reservations.reservation_utc} < ${endOfSlotUtc}`,
-                                    sql`${reservations.reservation_utc} + INTERVAL '2 hours' > ${startOfSlotUtc}`,
-                                    inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
-                                )
-                            )
+                            .where(and(...conflictConditions))
                     )
                 )
             );
         
-        console.log(`🏢 [Storage] Found ${availableTables.length} available tables`);
+        console.log(`🏢 [Storage] Found ${availableTables.length} available tables${excludeReservationId ? ` (excluded reservation ${excludeReservationId})` : ''}`);
         return availableTables;
     }
 }

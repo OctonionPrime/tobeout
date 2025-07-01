@@ -1,4 +1,6 @@
 // server/services/availability.service.ts
+// ✅ MAYA FIX: Added excludeReservationId parameter to prevent conflicts during reservation modifications
+
 import { storage } from '../storage';
 import { formatTimeForRestaurant } from '../utils/timezone-utils';
 import { DateTime } from 'luxon';
@@ -27,6 +29,7 @@ interface FlexibleTimeConfig {
     minTimeIncrement?: number;
     requestedTime?: string; // NEW: Check specific time
     exactTimeOnly?: boolean; // NEW: Only check requested time, don't generate slots
+    excludeReservationId?: number; // 🆕 MAYA FIX: Exclude specific reservation from conflict checking
 }
 
 function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
@@ -313,15 +316,16 @@ function isTimeWithinOperatingHours(time: string, restaurant: any): boolean {
     }
 }
 
-// ✅ NEW: Check availability for any specific time (16:15, 19:43, etc.)
+// ✅ MAYA FIX: Updated checkExactTime to support excludeReservationId
 async function checkExactTime(
     restaurantId: number,
     date: string,
     requestedTime: string, // "16:15" or "16:15:00"
     guests: number,
-    timezone: string
+    timezone: string,
+    excludeReservationId?: number // 🆕 MAYA FIX: Exclude specific reservation
 ): Promise<AvailabilitySlot[]> {
-    console.log(`🎯 [ExactTime] Checking ${requestedTime} for ${guests} guests on ${date}`);
+    console.log(`🎯 [ExactTime] Checking ${requestedTime} for ${guests} guests on ${date}${excludeReservationId ? ` (excluding reservation ${excludeReservationId})` : ''}`);
     
     // Normalize time format
     const timeFormatted = requestedTime.includes(':') 
@@ -337,30 +341,34 @@ async function checkExactTime(
         return [];
     }
     
-    // Get all tables and reservations (reuse existing logic)
+    // Get all tables and reservations (reuse existing logic) - ✅ MAYA FIX: Pass excludeReservationId
     const allTables = await storage.getTables(restaurantId);
     const isOvernightOp = isOvernightOperation(restaurant.openingTime!, restaurant.closingTime!);
     
     let reservationsData;
     if (isOvernightOp) {
-        // Handle overnight operation reservations
+        // Handle overnight operation reservations - ✅ MAYA FIX: Pass excludeReservationId to both calls
         const currentDateReservations = await storage.getReservations(restaurantId, {
             date: date,
             status: ['created', 'confirmed'],
-            timezone: timezone
+            timezone: timezone,
+            excludeReservationId // 🆕 MAYA FIX: Exclude reservation from current date
         });
         const previousDate = DateTime.fromISO(date, { zone: timezone }).minus({ days: 1 }).toISODate();
         const previousDateReservations = await storage.getReservations(restaurantId, {
             date: previousDate,
             status: ['created', 'confirmed'],
-            timezone: timezone
+            timezone: timezone,
+            excludeReservationId // 🆕 MAYA FIX: Exclude reservation from previous date
         });
         reservationsData = [...currentDateReservations, ...previousDateReservations];
     } else {
+        // ✅ MAYA FIX: Pass excludeReservationId to standard operation
         reservationsData = await storage.getReservations(restaurantId, {
             date: date,
             status: ['created', 'confirmed'],
-            timezone: timezone
+            timezone: timezone,
+            excludeReservationId // 🆕 MAYA FIX: Exclude reservation
         });
     }
     
@@ -426,7 +434,7 @@ async function checkExactTime(
         availableSlots.push(...combinedSlots);
     }
     
-    console.log(`🎯 [ExactTime] Found ${availableSlots.length} available tables at ${timeFormatted}`);
+    console.log(`🎯 [ExactTime] Found ${availableSlots.length} available tables at ${timeFormatted}${excludeReservationId ? ` (excluded reservation ${excludeReservationId})` : ''}`);
     return availableSlots;
 }
 
@@ -611,7 +619,7 @@ function generateOvernightTimeSlots(
     return slots;
 }
 
-// ✅ ENHANCED: Main function with exact time checking support
+// ✅ MAYA FIX: Enhanced main function with excludeReservationId support
 export async function getAvailableTimeSlots(
     restaurantId: number,
     date: string,
@@ -627,23 +635,26 @@ export async function getAvailableTimeSlots(
         searchRadiusMinutes?: number;
         allowCombinations?: boolean;
         timezone?: string;
+        excludeReservationId?: number; // 🆕 MAYA FIX: Exclude specific reservation from conflict checking
     }
 ): Promise<AvailabilitySlot[]> {
     const currentLang = configOverrides?.lang || 'en';
     const allowCombinations = configOverrides?.allowCombinations !== undefined ? configOverrides.allowCombinations : true;
     const restaurantTimezone = configOverrides?.timezone || 'Europe/Moscow';
+    const excludeReservationId = configOverrides?.excludeReservationId; // 🆕 MAYA FIX
 
-    console.log(`[AvailabilityService] 🔍 Starting slot search: R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Timezone ${restaurantTimezone}, Combinations: ${allowCombinations}`);
+    console.log(`[AvailabilityService] 🔍 Starting slot search: R${restaurantId}, Date ${date}, Guests ${guests}, Lang ${currentLang}, Timezone ${restaurantTimezone}, Combinations: ${allowCombinations}${excludeReservationId ? `, Excluding reservation ${excludeReservationId}` : ''}`);
 
-    // ✅ NEW: Handle exact time checking
+    // ✅ MAYA FIX: Handle exact time checking with exclusion
     if (configOverrides?.exactTimeOnly && configOverrides?.requestedTime) {
-        console.log(`🎯 [AvailabilityService] Exact time only mode: ${configOverrides.requestedTime}`);
+        console.log(`🎯 [AvailabilityService] Exact time only mode: ${configOverrides.requestedTime}${excludeReservationId ? ` (excluding reservation ${excludeReservationId})` : ''}`);
         return await checkExactTime(
             restaurantId, 
             date, 
             configOverrides.requestedTime, 
             guests, 
-            restaurantTimezone
+            restaurantTimezone,
+            excludeReservationId // 🆕 MAYA FIX: Pass excludeReservationId
         );
     }
 
@@ -679,7 +690,7 @@ export async function getAvailableTimeSlots(
         // ✅ DYNAMIC: Detect overnight operations (works for ANY times)
         const isOvernightOp = isOvernightOperation(operatingOpenTimeStr, operatingCloseTimeStr);
         
-        console.log(`[AvailabilityService] 🕒 Operating hours: ${operatingOpenTimeStr} to ${operatingCloseTimeStr} | Overnight: ${isOvernightOp ? 'YES' : 'NO'}`);
+        console.log(`[AvailabilityService] 🕒 Operating hours: ${operatingOpenTimeStr} to ${operatingCloseTimeStr} | Overnight: ${isOvernightOp ? 'YES' : 'NO'}${excludeReservationId ? ` | Excluding reservation ${excludeReservationId}` : ''}`);
 
         // ✅ NEW: Use restaurant's configured slot interval or fallback to override
         const slotIntervalMinutes = configOverrides?.slotIntervalMinutes || restaurant.slotInterval || 30;
@@ -698,13 +709,14 @@ export async function getAvailableTimeSlots(
             return [];
         }
 
-        // ✅ DYNAMIC: Enhanced reservation fetching for overnight operations
+        // ✅ MAYA FIX: Enhanced reservation fetching for overnight operations with excludeReservationId
         let validReservationsForDate;
         if (isOvernightOp) {
             const currentDateReservations = await storage.getReservations(restaurantId, {
                 date: date,
                 status: ['created', 'confirmed'],
-                timezone: restaurantTimezone
+                timezone: restaurantTimezone,
+                excludeReservationId // 🆕 MAYA FIX: Exclude reservation from current date
             });
             
             const previousDate = DateTime.fromISO(date, { zone: restaurantTimezone })
@@ -712,7 +724,8 @@ export async function getAvailableTimeSlots(
             const previousDateReservations = await storage.getReservations(restaurantId, {
                 date: previousDate,
                 status: ['created', 'confirmed'],
-                timezone: restaurantTimezone
+                timezone: restaurantTimezone,
+                excludeReservationId // 🆕 MAYA FIX: Exclude reservation from previous date
             });
             
             const nestedReservationsForDate = [...currentDateReservations, ...previousDateReservations];
@@ -726,12 +739,14 @@ export async function getAvailableTimeSlots(
                 return validateReservationDate(reservation.reservation_utc, date, restaurantTimezone, isOvernightOp);
             });
             
-            console.log(`[AvailabilityService] 🌙 Overnight reservations: ${currentDateReservations.length} current + ${previousDateReservations.length} previous = ${validReservationsForDate.length} valid for ${date}`);
+            console.log(`[AvailabilityService] 🌙 Overnight reservations: ${currentDateReservations.length} current + ${previousDateReservations.length} previous = ${validReservationsForDate.length} valid for ${date}${excludeReservationId ? ` (excluded ${excludeReservationId})` : ''}`);
         } else {
+            // ✅ MAYA FIX: Pass excludeReservationId to standard operation
             const nestedReservationsForDate = await storage.getReservations(restaurantId, {
                 date: date,
                 status: ['created', 'confirmed'],
-                timezone: restaurantTimezone
+                timezone: restaurantTimezone,
+                excludeReservationId // 🆕 MAYA FIX: Exclude reservation
             });
             
             validReservationsForDate = nestedReservationsForDate.filter(r => {
@@ -743,7 +758,7 @@ export async function getAvailableTimeSlots(
                 return validateReservationDate(reservation.reservation_utc, date, restaurantTimezone, false);
             });
             
-            console.log(`[AvailabilityService] 📅 Standard reservations: ${validReservationsForDate.length} valid for ${date}`);
+            console.log(`[AvailabilityService] 📅 Standard reservations: ${validReservationsForDate.length} valid for ${date}${excludeReservationId ? ` (excluded ${excludeReservationId})` : ''}`);
         }
 
         // ✅ DYNAMIC: Generate time slots based on operation type
@@ -791,7 +806,7 @@ export async function getAvailableTimeSlots(
         for (const timeSlot of potentialTimeSlots) {
             if (foundAvailableSlots.length >= maxResults) break;
 
-            console.log(`[AvailabilityService] 🔍 Checking time slot: ${timeSlot} on ${date} (${restaurantTimezone}) [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]`);
+            console.log(`[AvailabilityService] 🔍 Checking time slot: ${timeSlot} on ${date} (${restaurantTimezone}) [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]${excludeReservationId ? ` (excluding ${excludeReservationId})` : ''}`);
 
             const singleSuitableTables = bookableTables.filter(table => {
                 if (table.minGuests > guests || table.maxGuests < guests) {
@@ -888,7 +903,7 @@ export async function getAvailableTimeSlots(
             return (a.tableCapacity.max - guests) - (b.tableCapacity.max - guests);
         });
 
-        console.log(`[AvailabilityService] 🎯 Search complete. Found ${foundAvailableSlots.length} available slots for R${restaurantId}, Date ${date}, Guests ${guests} [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]`);
+        console.log(`[AvailabilityService] 🎯 Search complete. Found ${foundAvailableSlots.length} available slots for R${restaurantId}, Date ${date}, Guests ${guests} [${isOvernightOp ? 'OVERNIGHT' : 'STANDARD'}]${excludeReservationId ? ` (excluded ${excludeReservationId})` : ''}`);
         
         if (foundAvailableSlots.length > 0) {
             console.log(`[AvailabilityService] 📋 Available slots summary:`);
@@ -896,7 +911,7 @@ export async function getAvailableTimeSlots(
                 console.log(`  ${index + 1}. ${slot.tableName} at ${slot.timeDisplay} (${slot.time})`);
             });
         } else {
-            console.log(`[AvailabilityService] ❌ No available slots found. Generated ${potentialTimeSlots.length} potential slots, checked against ${validReservationsForDate.length} reservations.`);
+            console.log(`[AvailabilityService] ❌ No available slots found. Generated ${potentialTimeSlots.length} potential slots, checked against ${validReservationsForDate.length} reservations${excludeReservationId ? ` (excluded ${excludeReservationId})` : ''}.`);
         }
         
         return foundAvailableSlots.slice(0, maxResults);

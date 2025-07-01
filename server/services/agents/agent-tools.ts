@@ -1,4 +1,5 @@
 // server/services/agents/agent-tools.ts
+// ✅ MAYA FIX: Added excludeReservationId parameter support to prevent conflicts during reservation modifications
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -100,17 +101,22 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 }
 
 /**
- * ✅ ENHANCED: Check availability for ANY specific time (16:15, 19:43, etc.)
- * Now supports exact time checking while maintaining backward compatibility
+ * ✅ MAYA FIX: Check availability for ANY specific time with optional reservation exclusion
+ * Now supports excluding a specific reservation ID to prevent conflicts during modifications
  */
 export async function check_availability(
     date: string,
     time: string,
     guests: number,
-    context: { restaurantId: number; timezone: string; language: string }
+    context: { 
+        restaurantId: number; 
+        timezone: string; 
+        language: string;
+        excludeReservationId?: number; // 🆕 MAYA FIX: Exclude specific reservation from conflict checking
+    }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})`);
+    console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
         // ✅ VALIDATION: Check required parameters
@@ -143,9 +149,9 @@ export async function check_availability(
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
-        console.log(`✅ [Agent Tool] Validation passed. Using exact time checking for: ${timeFormatted}...`);
+        console.log(`✅ [Agent Tool] Validation passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
-        // ✅ NEW: Use exact time checking mode
+        // ✅ MAYA FIX: Pass excludeReservationId to availability service
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
             date,
@@ -154,11 +160,12 @@ export async function check_availability(
                 requestedTime: timeFormatted,
                 exactTimeOnly: true, // NEW: Only check this exact time
                 timezone: context.timezone,
-                allowCombinations: true
+                allowCombinations: true,
+                excludeReservationId: context.excludeReservationId // 🆕 MAYA FIX: Pass excludeReservationId
             }
         );
 
-        console.log(`✅ [Agent Tool] Found ${slots.length} slots for exact time ${timeFormatted}`);
+        console.log(`✅ [Agent Tool] Found ${slots.length} slots for exact time ${timeFormatted}${context.excludeReservationId ? ` (excluded reservation ${context.excludeReservationId})` : ''}`);
 
         const executionTime = Date.now() - startTime;
 
@@ -170,7 +177,7 @@ export async function check_availability(
                 capacity: bestSlot.tableCapacity?.max || null,
                 isCombined: bestSlot.isCombined || false,
                 exactTime: timeFormatted, // NEW: Confirm exact time checked
-                message: `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}`,
+                message: `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`,
                 constituentTables: bestSlot.constituentTables || null,
                 allAvailableSlots: slots.map(s => ({ time: s.time, table: s.tableName })),
                 timeSupported: 'exact' // NEW: Indicate exact time support
@@ -195,7 +202,8 @@ export async function check_availability(
                         requestedTime: timeFormatted,
                         exactTimeOnly: true, // NEW: Still use exact time for alternatives
                         timezone: context.timezone,
-                        allowCombinations: true
+                        allowCombinations: true,
+                        excludeReservationId: context.excludeReservationId // 🆕 MAYA FIX: Also exclude from alternatives
                     }
                 );
 
@@ -217,7 +225,7 @@ export async function check_availability(
                 );
             } else {
                 return createBusinessRuleFailure(
-                    `No tables available for ${guests} guests at ${time} on ${date}`,
+                    `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`,
                     'NO_AVAILABILITY'
                 );
             }
@@ -861,7 +869,7 @@ export async function find_existing_reservation(
 
 
 /**
- * ✅ FIXED: Modify an existing reservation using Drizzle ORM with timezone utils
+ * ✅ MAYA FIX: Modify an existing reservation with excludeReservationId support
  */
 export async function modify_reservation(
     reservationId: number,
@@ -929,25 +937,34 @@ export async function modify_reservation(
             );
         }
 
-        // 3. If time/date/guests changed, check availability
+        // 3. ✅ MAYA FIX: If time/date/guests changed, check availability excluding current reservation
         if (modifications.newDate || modifications.newTime || modifications.newGuests) {
             // ✅ DEFENSIVE FIX: Use existing reservation data as a baseline with proper timezone handling
             const checkDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
             const checkTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
             const checkGuests = modifications.newGuests || existingReservation.guests;
 
+            console.log(`🔍 [Maya Tool] Checking availability for modified time: ${checkDate} ${checkTime} for ${checkGuests} guests (excluding reservation ${reservationId})`);
+
+            // ✅ MAYA FIX: Pass current reservation ID to exclude it from conflict checking
             const availabilityResult = await check_availability(
                 checkDate,
                 checkTime,
                 checkGuests,
-                context
+                {
+                    ...context,
+                    excludeReservationId: reservationId // 🆕 CRITICAL: Exclude current reservation from conflict check
+                }
             );
 
             if (availabilityResult.tool_status === 'FAILURE') {
+                console.log(`❌ [Maya Tool] Availability check failed for modified time: ${availabilityResult.error?.message}`);
                 return createBusinessRuleFailure(
                     'The requested new time is not available. Please choose a different time.',
                     'NEW_TIME_UNAVAILABLE'
                 );
+            } else {
+                console.log(`✅ [Maya Tool] New time is available (reservation ${reservationId} excluded from conflict check)`);
             }
         }
 
@@ -1378,7 +1395,7 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (newly fixed with timezone integration)
+    // Maya's tools (newly fixed with timezone integration and excludeReservationId support)
     find_existing_reservation,
     modify_reservation,
     cancel_reservation
