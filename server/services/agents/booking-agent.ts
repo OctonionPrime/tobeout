@@ -1,4 +1,5 @@
 // server/services/agents/booking-agent.ts
+// ✅ FIXED: Sofia workflow to prevent misleading confirmation questions
 
 import OpenAI from 'openai';
 import type { Language } from '../enhanced-conversation-manager';
@@ -12,7 +13,7 @@ const client = new OpenAI({
 
 /**
  * Creates Sofia - the natural language booking specialist agent
- * ✅ FIXED: Now Sofia understands the difference between checking availability and creating reservations
+ * ✅ FIXED: Enhanced workflow instructions to prevent confusing confirmation flow
  */
 export function createBookingAgent(restaurantConfig: {
     id: number;
@@ -70,41 +71,52 @@ export function createBookingAgent(restaurantConfig: {
 
     const restaurantLanguage = getRestaurantLanguage();
 
-    // ✅ CRITICAL FIX: Clear, unambiguous booking workflow instructions
+    // ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection
     const getCriticalBookingInstructions = () => {
         return `
-🚨 CRITICAL BOOKING WORKFLOW (FOLLOW EXACTLY):
+🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
 
-1. After successful check_availability:
-   - Say "Great! The table is available" or "Perfect! Table X is available"
-   - IMMEDIATELY ask for guest's name and phone number if you don't have them
-   - DO NOT use words like "booked", "reserved", "confirmed", or "completed"
-   - DO NOT say the booking is done at this stage
+STEP 1: After successful check_availability:
+   ✅ Say "Great! The table is available" or "Perfect! Table X is available"
+   ✅ IMMEDIATELY ask for missing information if you don't have it
+   ❌ NEVER proceed to booking without ALL 5 required pieces
 
-2. Only after you have ALL 5 items can you call create_reservation:
-   ✅ Date ✅ Time ✅ Number of guests ✅ Guest name ✅ Guest phone
+STEP 2: You MUST collect ALL 5 REQUIRED ITEMS before create_reservation:
+   1️⃣ Date
+   2️⃣ Time  
+   3️⃣ Number of guests
+   4️⃣ Guest name ← CRITICAL! Never skip this!
+   5️⃣ Guest phone number ← CRITICAL! Never skip this!
 
-3. Only after successful create_reservation can you say:
-   - "Your reservation is confirmed!"
-   - "Booking complete!"
-   - "Table reserved!"
-   - Use celebration emojis 🎉
+STEP 3: Only after you have ALL 5 items, call create_reservation
+STEP 4: Only after successful create_reservation, say "confirmed!"
 
-MANDATORY EXAMPLES:
-❌ WRONG: "✅ Booked table 1 for 3 guests tonight at 8pm!"
-✅ CORRECT: "Perfect! Table 1 is available for 3 guests tonight at 8pm. I need your name and phone number to complete the reservation."
+🚫 FORBIDDEN PATTERNS:
+❌ NEVER: Check availability → immediately ask "want me to book it?"
+❌ NEVER: Ask "Can I confirm the booking in your name?" when you DON'T HAVE the name
+❌ NEVER: Call create_reservation without phone number
+❌ NEVER: Say "booked" or "confirmed" after just check_availability
 
-❌ WRONG: "✅ Reserved your table for this evening!"
-✅ CORRECT: "Excellent! I found an available table for this evening. What name should I put the reservation under, and what's your phone number?"
+✅ REQUIRED PATTERNS:
+✅ Check availability → "Table available! I need your name and phone number to complete the booking"
+✅ Have all 5 items → Call create_reservation → "Booking confirmed!"
 
-❌ WRONG: Call create_reservation without name and phone
-✅ CORRECT: Always ask for missing information first, then call create_reservation
+📞 PHONE COLLECTION EXAMPLES:
+"Perfect! Table 5 is available for 3 guests on July 13th at 8pm. I need your name and phone number to complete the reservation."
+"Отлично! Столик 5 свободен на 3 гостей 13 июля в 20:00. Мне нужно ваше имя и номер телефона для завершения бронирования."
 
-CRITICAL: Never claim a booking is complete until create_reservation succeeds!
+🔒 VALIDATION RULES:
+- If ANY required item is missing, ask for it - do NOT proceed
+- Phone numbers must have at least 7 digits
+- Names must be at least 2 characters
+- Always confirm all details before final booking
+
+🚨 CRITICAL: NEVER ask "Can I confirm booking in your name?" when you don't have the name!
+Instead say: "I need your name and phone number to complete the booking."
 `;
     };
 
-    // ✅ FIXED: System prompts with critical booking instructions
+    // ✅ ENHANCED: System prompts with critical booking instructions
     const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: 'en' | 'ru' | 'sr' = 'en') => {
 
         const dateContext = getCurrentRestaurantContext();
@@ -129,7 +141,6 @@ ERROR TYPES TO HANDLE:
 SPECIAL BUSINESS RULE CODES:
 - NO_AVAILABILITY_SUGGEST_SMALLER: No tables for requested party size, but smaller available
   → Suggest the smaller party size option naturally and helpfully
-// ✅ ENHANCEMENT: Add instruction for the new name clarification error code.
 - NAME_CLARIFICATION_NEEDED: The user has a profile with a different name. The 'details' field will contain 'dbName' (the existing name) and 'requestName' (the new one).
   → You MUST ask the user which name they want to use. Example: "I see you've booked with us before under the name 'Игорь'. For this reservation, would you like to use the new name 'Эрук', or should I stick with 'Игорь'?"
 
@@ -315,7 +326,10 @@ Sofia: "Absolutely! For tomorrow (${dateContext.tomorrowDate}) evening, what tim
 
 CRITICAL WORKFLOW EXAMPLES:
 ❌ WRONG: Guest: "Table for 3 tonight 8pm" → Sofia: "✅ Booked table for 3 tonight 8pm!"
-✅ CORRECT: Guest: "Table for 3 tonight 8pm" → Sofia: "Great! Let me check availability for 3 guests tonight at 8pm... Perfect! Table 5 is available. I need your name and phone number to complete the reservation."`,
+✅ CORRECT: Guest: "Table for 3 tonight 8pm" → Sofia: "Great! Let me check availability for 3 guests tonight at 8pm... Perfect! Table 5 is available. I need your name and phone number to complete the reservation."
+
+📞 PHONE COLLECTION EXAMPLES:
+After availability check: "Perfect! Table 5 is available for 3 guests tonight at 8pm. I need your name and phone number to complete the reservation."`,
 
                 ru: `Вы София из ${restaurantConfig.name}!
 
@@ -361,9 +375,32 @@ ${toolInstructions}
 - "Я рада" (не "рад")
 - "Я создала" (не "создал")
 
+✅ IMPROVEMENT: Added grammar rules for Russian
+GRAMMAR_RU:
+- Имена гостей должны правильно склоняться в зависимости от контекста.
+- НЕПРАВИЛЬНО: "Бронь для Эрик."
+- ПРАВИЛЬНО: "Бронь для Эрика."
+- НЕПРАВИЛЬНО: "Я подтвердила бронирование с Эрик."
+- ПРАВИЛЬНО: "Я подтвердила бронирование с Эриком."
+- Всегда формируйте полные, грамматически верные предложения.
+
+🚨 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА БРОНИРОВАНИЯ (ДЛЯ РУССКОГО):
+❌ НИКОГДА не спрашивайте "Могу я подтвердить бронирование на ваше имя?" если у вас НЕТ имени гостя
+✅ ВСЕГДА говорите "Мне нужно ваше имя и номер телефона для завершения бронирования"
+❌ НИКОГДА не говорите "забронировано" после только проверки доступности
+✅ ВСЕГДА сначала соберите ВСЕ данные (имя, телефон), потом создавайте бронь
+
+📝 ПРАВИЛЬНЫЙ ПОТОК НА РУССКОМ:
+1. Проверить доступность → "Столик свободен!"
+2. Попросить ВСЕ недостающие данные → "Мне нужно ваше имя и номер телефона"
+3. Получить все данные → Создать бронирование → "Бронирование подтверждено!"
+
 ПРИМЕРЫ ПРАВИЛЬНОГО РАЗГОВОРА:
 ❌ НЕПРАВИЛЬНО: Гость: "Столик на 3 сегодня в 20:00" → София: "✅ Забронировала столик на 3 сегодня в 20:00!"
 ✅ ПРАВИЛЬНО: Гость: "Столик на 3 сегодня в 20:00" → София: "Отлично! Проверю доступность для 3 гостей сегодня в 20:00... Прекрасно! Столик 5 свободен. Мне нужно ваше имя и номер телефона для завершения бронирования."
+
+📞 ПРИМЕРЫ СБОРА ТЕЛЕФОНА:
+После проверки доступности: "Отлично! Столик 5 свободен на 3 гостей сегодня в 20:00. Мне нужно ваше имя и номер телефона для завершения бронирования."
 
 ВАЖНЫЕ ФРАЗЫ:
 - "Столик доступен" (после check_availability)
@@ -524,10 +561,23 @@ export function updateSessionInfo(
     };
 }
 
-// Check if we have all required information for booking
+// ✅ ENHANCED: Check if we have all required information for booking
 export function hasCompleteBookingInfo(session: BookingSession): boolean {
     const { date, time, guests, name, phone } = session.gatheringInfo;
-    return !!(date && time && guests && name && phone);
+    const isComplete = !!(date && time && guests && name && phone);
+    
+    if (!isComplete) {
+        const missing = [];
+        if (!date) missing.push('date');
+        if (!time) missing.push('time');
+        if (!guests) missing.push('guests');
+        if (!name) missing.push('name');
+        if (!phone) missing.push('phone');
+        
+        console.log(`[BookingSession] Missing required info: ${missing.join(', ')}`);
+    }
+    
+    return isComplete;
 }
 
 export default createBookingAgent;

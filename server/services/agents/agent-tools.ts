@@ -1,5 +1,6 @@
 // server/services/agents/agent-tools.ts
 // ✅ MAYA FIX: Added proper table reassignment logic to prevent capacity bypassing
+// ✅ MAYA FIX: Enhanced time calculation and immediate response logic
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -73,23 +74,23 @@ const createSystemError = (message: string, originalError?: any): ToolResponse =
  */
 function normalizeDatabaseTimestamp(dbTimestamp: string): string {
     if (!dbTimestamp) return '';
-    
+
     let normalized = dbTimestamp.replace(' ', 'T');
-    
+
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
         normalized += ':00';
     }
-    
+
     if (normalized.endsWith('+00')) {
         normalized = normalized.replace('+00', '+00:00');
     } else if (normalized.endsWith('-00')) {
         normalized = normalized.replace('-00', '-00:00');
     }
-    
+
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
         normalized += '+00:00';
     }
-    
+
     console.log(`[DateFix] ${dbTimestamp} → ${normalized}`);
     return normalized;
 }
@@ -101,9 +102,9 @@ export async function check_availability(
     date: string,
     time: string,
     guests: number,
-    context: { 
-        restaurantId: number; 
-        timezone: string; 
+    context: {
+        restaurantId: number;
+        timezone: string;
         language: string;
         excludeReservationId?: number;
     }
@@ -117,7 +118,7 @@ export async function check_availability(
         }
 
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
+            return createValidationFailure('Invalid date format. Expected yyyy-MM-dd', 'date');
         }
 
         let timeFormatted: string;
@@ -149,7 +150,7 @@ export async function check_availability(
             }
         );
 
-        console.log(`✅ [Agent Tool] Found ${slots.length} slots for exact time ${timeFormatted}${context.excludeReservationId ? ` (excluded reservation ${context.excludeReservationId})` : ''}`);
+        console.log(`✅ [Agent Tool] Found ${slots.length} slots for exact time ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
         const executionTime = Date.now() - startTime;
 
@@ -234,7 +235,7 @@ export async function find_alternative_times(
         }
 
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure('Invalid date format. Expected YYYY-MM-DD', 'date');
+            return createValidationFailure('Invalid date format. Expected yyyy-MM-dd', 'date');
         }
 
         let timeFormatted: string;
@@ -361,7 +362,7 @@ export async function create_reservation(
         }
 
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure(`Invalid date format: ${date}. Expected YYYY-MM-DD`, 'date');
+            return createValidationFailure(`Invalid date format: ${date}. Expected yyyy-MM-dd`, 'date');
         }
 
         let timeFormatted: string;
@@ -642,8 +643,16 @@ export async function find_existing_reservation(
     console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (${identifierType})`);
 
     try {
-        if (identifierType === 'phone' && !/^\+?[\d\s-()]+$/.test(identifier)) {
-            identifierType = isNaN(Number(identifier)) ? 'name' : 'confirmation';
+        // ✅ BUG FIX: Robustly parse the numeric part of the identifier.
+        const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
+
+        if (identifierType === 'phone' && isNaN(numericIdentifier)) {
+            identifierType = 'name';
+            console.log(`[Maya Tool] Identifier "${identifier}" is not a number, switching search type to 'name'`);
+        } else if (identifierType === 'phone') {
+            // Assume numbers are confirmation IDs unless specified otherwise by the LLM
+            identifierType = 'confirmation';
+            console.log(`[Maya Tool] Identifier "${identifier}" is numeric, assuming search type 'confirmation'`);
         }
 
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
@@ -655,7 +664,8 @@ export async function find_existing_reservation(
 
         switch (identifierType) {
             case 'phone':
-                if (identifier) conditions.push(eq(guests.phone, identifier.replace(/\D/g, '')));
+                // This case might be less used now but kept for completeness
+                conditions.push(eq(guests.phone, String(numericIdentifier)));
                 break;
             case 'telegram':
                 if (context.telegramUserId) {
@@ -666,16 +676,14 @@ export async function find_existing_reservation(
                 conditions.push(like(guests.name, `%${identifier}%`));
                 break;
             case 'confirmation':
-                try {
-                    const reservationId = parseInt(identifier);
-                    conditions.push(eq(reservations.id, reservationId));
-                } catch {
-                    return createBusinessRuleFailure(`"${identifier}" is not a valid confirmation number`, 'INVALID_CONFIRMATION');
+                if (isNaN(numericIdentifier)) {
+                    return createBusinessRuleFailure(`"${identifier}" is not a valid confirmation number. It must be a number.`, 'INVALID_CONFIRMATION');
                 }
+                conditions.push(eq(reservations.id, numericIdentifier));
                 break;
         }
 
-        console.log(`[Maya Tool] Executing Drizzle query...`);
+        console.log(`[Maya Tool] Executing Drizzle query with type '${identifierType}'...`);
 
         const results = await db
             .select({
@@ -714,7 +722,7 @@ export async function find_existing_reservation(
         const formattedReservations = results.map((r: any) => {
             const normalizedDateString = normalizeDatabaseTimestamp(r.reservation_utc);
             const reservationUtcDt = DateTime.fromISO(normalizedDateString);
-            
+
             if (!reservationUtcDt.isValid) {
                 console.error(`[Maya Tool] Invalid date format: ${r.reservation_utc} → ${normalizedDateString}`);
                 return {
@@ -736,7 +744,7 @@ export async function find_existing_reservation(
                     dateParsingError: true
                 };
             }
-            
+
             const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
             const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
 
@@ -794,8 +802,9 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ MAYA FIX: Modified reservation with PROPER TABLE REASSIGNMENT LOGIC
+ * ✅ MAYA FIX: Modified reservation with PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
  * This prevents guests from being assigned to tables that can't accommodate them
+ * ✅ NEW: Enhanced with proper time calculation for relative changes
  */
 export async function modify_reservation(
     reservationId: number,
@@ -852,7 +861,7 @@ export async function modify_reservation(
         // 2. Check modification policy
         const normalizedDateString = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
         const reservationUtcDt = DateTime.fromISO(normalizedDateString);
-        
+
         if (!reservationUtcDt.isValid) {
             console.error(`[Maya Tool] Invalid existing reservation date: ${currentReservation.reservation_utc}`);
             return createSystemError('Invalid reservation date format in database');
@@ -874,14 +883,54 @@ export async function modify_reservation(
             );
         }
 
+        // ✅ NEW: Enhanced time calculation logic
+        let finalTime = modifications.newTime;
+        let finalDate = modifications.newDate;
+
+        // If no explicit new time provided, check if this is a relative time change (like "+30 minutes")
+        if (!finalTime && reason) {
+            const currentLocalTime = reservationUtcDt.setZone(context.timezone);
+            finalDate = finalDate || currentLocalTime.toFormat('yyyy-MM-dd');
+            finalTime = currentLocalTime.toFormat('HH:mm');
+
+            // Try to parse relative time changes from the reason
+            const relativeTimeMatch = reason.match(/(\d+)\s*(минут|minutes?|час|hours?)\s*(позже|later|раньше|earlier)/i);
+            if (relativeTimeMatch) {
+                const amount = parseInt(relativeTimeMatch[1]);
+                const unit = relativeTimeMatch[2].toLowerCase();
+                const direction = relativeTimeMatch[3].toLowerCase();
+
+                let minutesToAdd = 0;
+                if (unit.includes('минут') || unit.includes('minute')) {
+                    minutesToAdd = amount;
+                } else if (unit.includes('час') || unit.includes('hour')) {
+                    minutesToAdd = amount * 60;
+                }
+
+                if (direction.includes('раньше') || direction.includes('earlier')) {
+                    minutesToAdd = -minutesToAdd;
+                }
+
+                const newDateTime = currentLocalTime.plus({ minutes: minutesToAdd });
+                finalTime = newDateTime.toFormat('HH:mm');
+                finalDate = newDateTime.toFormat('yyyy-MM-dd');
+
+                console.log(`🧮 [Maya] Calculated relative time change: ${currentLocalTime.toFormat('HH:mm')} + ${minutesToAdd} minutes = ${finalTime}`);
+            }
+        }
+
+        // Use existing values if not modified
+        if (!finalDate) finalDate = reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+        if (!finalTime) finalTime = reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+
         // 3. ✅ CRITICAL FIX: Check if table reassignment is needed
         const needsTableReassignment = (
             modifications.newGuests && modifications.newGuests !== currentReservation.guests
         ) || (
-            modifications.newDate && modifications.newDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd')
-        ) || (
-            modifications.newTime && modifications.newTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')
-        );
+                finalDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd')
+            ) || (
+                finalTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')
+            );
 
         let newTableId = currentTable?.id; // Default to keeping current table
         let newTableInfo = currentTable;
@@ -889,8 +938,6 @@ export async function modify_reservation(
 
         if (needsTableReassignment) {
             // Determine final reservation details
-            const finalDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-            const finalTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
             const finalGuests = modifications.newGuests || currentReservation.guests;
 
             console.log(`🔍 [Maya] Checking table capacity for ${finalGuests} guests...`);
@@ -898,7 +945,7 @@ export async function modify_reservation(
             // ✅ CRITICAL FIX: Check if current table can still accommodate the new guest count
             if (modifications.newGuests && currentTable) {
                 const canCurrentTableHandle = finalGuests >= currentTable.minGuests && finalGuests <= currentTable.maxGuests;
-                
+
                 if (!canCurrentTableHandle) {
                     console.log(`❌ [Maya] Current table "${currentTable.name}" (capacity: ${currentTable.minGuests}-${currentTable.maxGuests}) cannot accommodate ${finalGuests} guests`);
                     requiresTableChange = true;
@@ -908,7 +955,7 @@ export async function modify_reservation(
             }
 
             // ✅ CRITICAL FIX: If table change is needed OR time/date changed, find available tables
-            if (requiresTableChange || modifications.newDate || modifications.newTime) {
+            if (requiresTableChange || finalDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd') || finalTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')) {
                 console.log(`🔄 [Maya] Finding available tables for ${finalGuests} guests at ${finalTime} on ${finalDate}...`);
 
                 // Use availability service to find suitable tables (excluding current reservation)
@@ -934,7 +981,7 @@ export async function modify_reservation(
 
                 // ✅ CRITICAL FIX: Get the best available table
                 const bestSlot = availableSlots[0];
-                
+
                 // Get table details for the assigned table
                 const [newTable] = await db
                     .select()
@@ -944,7 +991,7 @@ export async function modify_reservation(
                 if (newTable) {
                     newTableId = newTable.id;
                     newTableInfo = newTable;
-                    
+
                     if (newTable.id !== currentTable?.id) {
                         console.log(`🔄 [Maya] Reassigning from table "${currentTable?.name}" to table "${newTable.name}" for ${finalGuests} guests`);
                     } else {
@@ -963,11 +1010,10 @@ export async function modify_reservation(
         const updateData: Partial<typeof reservations.$inferInsert> = {};
         const modificationHistory: Array<{ field: string, oldValue: any, newValue: any }> = [];
 
-        if (modifications.newDate || modifications.newTime) {
-            const newDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-            const newTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
-
-            const newUtcTime = DateTime.fromISO(`${newDate}T${newTime}`, { zone: context.timezone }).toUTC().toISO();
+        if (finalDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd') || 
+            finalTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')) {
+            
+            const newUtcTime = DateTime.fromISO(`${finalDate}T${finalTime}`, { zone: context.timezone }).toUTC().toISO();
             updateData.reservation_utc = newUtcTime;
 
             modificationHistory.push({
@@ -1028,38 +1074,51 @@ export async function modify_reservation(
                 });
             }
 
-            // 7. Format success message
+            // 7. ✅ IMPROVEMENT: Format success message using localization
+            const modificationStrings = {
+                en: {
+                    time: `time to ${finalDate} at ${finalTime}`,
+                    guests: (val: any) => `party size to ${val} guests`,
+                    table: (val: any) => `table to ${val}`,
+                    requests: 'special requests',
+                    success: (changes: string) => `Perfect! I've successfully updated your reservation: ${changes}.`
+                },
+                ru: {
+                    time: `время на ${finalDate} в ${finalTime}`,
+                    guests: (val: any) => `количество гостей на ${val}`,
+                    table: (val: any) => `столик на ${val}`,
+                    requests: 'особые пожелания',
+                    success: (changes: string) => `Отлично! Ваше бронирование успешно обновлено: ${changes}.`
+                },
+                sr: {
+                    time: `vreme na ${finalDate} u ${finalTime}`,
+                    guests: (val: any) => `broj gostiju na ${val}`,
+                    table: (val: any) => `sto na ${val}`,
+                    requests: 'posebni zahtevi',
+                    success: (changes: string) => `Savršeno! Vaša rezervacija je uspešno ažurirana: ${changes}.`
+                }
+            };
+
+            const locale = modificationStrings[context.language as keyof typeof modificationStrings] || modificationStrings.en;
+
             const changes = modificationHistory.map(mod => {
                 switch (mod.field) {
-                    case 'datetime':
-                        const finalDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
-                        const finalTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
-                        return `time to ${finalDate} at ${finalTime}`;
-                    case 'guests':
-                        return `party size to ${mod.newValue} guests`;
-                    case 'table':
-                        return `table to ${mod.newValue}`;
-                    case 'special_requests':
-                        return 'special requests';
-                    default:
-                        return mod.field;
+                    case 'datetime': return locale.time;
+                    case 'guests': return locale.guests(mod.newValue);
+                    case 'table': return locale.table(mod.newValue);
+                    case 'special_requests': return locale.requests;
+                    default: return mod.field;
                 }
             }).join(', ');
-
-            const successMessages = {
-                en: `Perfect! I've successfully updated your reservation: ${changes}.`,
-                ru: `Отлично! Ваше бронирование успешно обновлено: ${changes}.`,
-                sr: `Savršeno! Vaša rezervacija je uspešno ažurirana: ${changes}.`
-            };
 
             return createSuccessResponse({
                 reservationId: updatedReservation.id,
                 modifications: modificationHistory,
-                message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
+                message: locale.success(changes),
                 updatedReservation: {
                     id: updatedReservation.id,
-                    date: modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd'),
-                    time: modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm'),
+                    date: finalDate,
+                    time: finalTime,
                     guests: updatedReservation.guests,
                     tableName: newTableInfo?.name || 'Unknown',
                     tableCapacity: newTableInfo ? `${newTableInfo.minGuests}-${newTableInfo.maxGuests}` : 'Unknown',
@@ -1204,7 +1263,7 @@ export const agentTools = [
                 properties: {
                     date: {
                         type: "string",
-                        description: "Date in YYYY-MM-DD format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
                     },
                     time: {
                         type: "string",
@@ -1229,7 +1288,7 @@ export const agentTools = [
                 properties: {
                     date: {
                         type: "string",
-                        description: "Date in YYYY-MM-DD format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
                     },
                     preferredTime: {
                         type: "string",
@@ -1262,7 +1321,7 @@ export const agentTools = [
                     },
                     date: {
                         type: "string",
-                        description: "Date in YYYY-MM-DD format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
                     },
                     time: {
                         type: "string",
@@ -1327,7 +1386,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met.",
+            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. AUTOMATICALLY CALCULATES relative time changes.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1340,11 +1399,11 @@ export const agentTools = [
                         properties: {
                             newDate: {
                                 type: "string",
-                                description: "New date in YYYY-MM-DD format (optional)"
+                                description: "New date in yyyy-MM-dd format (optional)"
                             },
                             newTime: {
                                 type: "string",
-                                description: "New time in HH:MM format (optional)"
+                                description: "New time in HH:MM format (optional) - for relative changes, leave empty and specify in reason"
                             },
                             newGuests: {
                                 type: "number",
@@ -1358,7 +1417,7 @@ export const agentTools = [
                     },
                     reason: {
                         type: "string",
-                        description: "Reason for the modification",
+                        description: "Reason for the modification - can include relative time changes like 'move 30 minutes later' or 'change to 1 hour earlier'",
                         default: "Guest requested change"
                     }
                 },
@@ -1402,7 +1461,7 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (with proper table reassignment)
+    // Maya's tools (with proper table reassignment + time calculation)
     find_existing_reservation,
     modify_reservation,
     cancel_reservation
