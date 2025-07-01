@@ -1037,8 +1037,21 @@ export async function modify_reservation(
                 sr: `Savršeno! Vaša rezervacija je uspešno ažurirana sa ${modificationHistory.length} izmenom(ama).`
             };
 
-            // ✅ TIMEZONE FIX: Format updated reservation for display using timezone utils
-            const updatedDateTime = DateTime.fromISO(updatedReservation.reservation_utc).setZone(context.timezone);
+            // ✅ FIXED: Use the modification data instead of trying to parse potentially problematic DB timestamp
+            let displayDate: string;
+            let displayTime: string;
+
+            if (modifications.newDate || modifications.newTime) {
+                // Use the new date/time from modifications
+                displayDate = modifications.newDate || reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+                displayTime = modifications.newTime || reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+            } else {
+                // No date/time changes, use original reservation time
+                displayDate = reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd');
+                displayTime = reservationUtcDt.setZone(context.timezone).toFormat('HH:mm');
+            }
+
+            console.log(`[Maya Tool] Formatted reservation display: ${displayDate} ${displayTime}`);
 
             return createSuccessResponse({
                 reservationId: updatedReservation.id,
@@ -1046,10 +1059,10 @@ export async function modify_reservation(
                 message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
                 updatedReservation: {
                     id: updatedReservation.id,
-                    date: updatedDateTime.toFormat('yyyy-MM-dd'),
-                    time: updatedDateTime.toFormat('HH:mm'),
+                    date: displayDate,
+                    time: displayTime,
                     guests: updatedReservation.guests,
-                    comments: updatedReservation.comments
+                    comments: updatedReservation.comments || updatedReservation.specialRequests || ''
                 }
             }, {
                 execution_time_ms: Date.now() - startTime
