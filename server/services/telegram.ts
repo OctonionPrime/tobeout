@@ -34,6 +34,7 @@ interface TelegramLocalizedStrings {
     nameConfirmationUsed: (name: string) => string;
 }
 
+// ✅ ENHANCED: Expanded localization for all supported languages
 const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
     en: {
         welcomeMessage: (restaurantName) => `🌟 Hello! Welcome to ${restaurantName}! I'm Sofia, and I'm absolutely delighted to help you secure the perfect table! ✨\n\nI can assist you with making a reservation right now. Just let me know:\n• When you'd like to dine 📅\n• How many guests will be joining you 👥\n• Your preferred time ⏰\n\nI'll take care of everything else! 🥂\n\nWhat sounds good to you?`,
@@ -92,6 +93,161 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
         pleaseUseButtons: "Molim koristite dugmad iznad da napravite izbor.",
         nameConfirmationUsed: (name) => `Savršeno! Koristimo ime: ${name}`,
     },
+    // ✅ NEW: Additional language support
+    hu: {
+        welcomeMessage: (restaurantName) => `🌟 Szia! Üdvözlöm a ${restaurantName}-ban! Én Szófia vagyok, és nagyon örülök, hogy segíthetek a tökéletes asztal lefoglalásában! ✨\n\nSegíthetek most rögtön asztalfoglalást intézni. Csak mondd meg:\n• Mikor szeretnél vacsorázni 📅\n• Hány vendég lesz veled 👥\n• Milyen időpontot szeretnél ⏰\n\nA többiről én gondoskodom! 🥂\n\nMi lenne jó neked?`,
+        helpMessage: `🆘 **Hogyan segíthetek:**\n\nÉn Szófia vagyok, a te éttermi asszisztensed! Segíthetek:\n\n✅ Asztalfoglalás\n✅ Asztal elérhetőség ellenőrzése\n✅ Alternatív időpontok keresése\n✅ Étteremmel kapcsolatos kérdések megválaszolása\n\n**Csak mondd meg:**\n• Melyik napra szeretnél jönni\n• Milyen időpontot szeretnél\n• Hány főre\n• A neved\n\nA többit intézem!\n\n**Parancsok:**\n/start - Új beszélgetés kezdése\n/help - Segítség megjelenítése\n/cancel - Jelenlegi foglalási folyamat megszakítása\n\nKész vagy foglalni? Csak mondd meg, mire van szükséged! 😊`,
+        cancelMessage: "Semmi baj! Töröltem a beszélgetésünket. Nyugodtan kezdj újat, amikor kész vagy foglalni! 😊",
+        genericError: "Elnézést a technikai hibáért! Én Szófia vagyok. Hogyan segíthetek ma foglalásban? 😊",
+        slotUnavailableAnymore: "Sajnálom, de ez az időpont éppen elérhetetlenné vált. Hadd nézzek más lehetőségeket... 🔄",
+        errorCreatingReservation: "Kis problémába ütköztem a foglalás megerősítése közben. Hadd próbáljam újra egy pillanat múlva!",
+        errorCheckingAvailability: "Sajnálom, most nem tudtam ellenőrizni az elérhetőséget. Kérlek próbáld újra egy pillanat múlva.",
+        errorHandlingAlternative: "Hadd segítsek más lehetőséget találni. Milyen időpontot preferálnál?",
+        invalidAlternativeSelection: "Ez nem érvényes opció szám. Kérlek válassz a felsorolt számok közül, vagy mondd meg ha másik dátumot vagy időt szeretnél.",
+        botNotConfigured: "A Telegram bot nincs beállítva vagy engedélyezve ehhez az étteremhez.",
+        telegramTestSuccess: (botUsername) => `Sikeresen csatlakoztam a Telegram bothoz: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Nem sikerült csatlakozni a Telegram bothoz: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Látom, hogy korábban '${dbName}' néven foglaltál. Ehhez az új foglaláshoz a '${requestName}' nevet használjam vagy megtartsam a '${dbName}'-t?`,
+        useNewNameButton: (requestName) => `"${requestName}" használata`,
+        useDbNameButton: (dbName) => `"${dbName}" megtartása`,
+        pleaseUseButtons: "Kérlek használd a fenti gombokat a választáshoz.",
+        nameConfirmationUsed: (name) => `Tökéletes! A következő nevet használom: ${name}`,
+    },
+    // ✅ Add minimal versions for other languages (these can be expanded later)
+    de: {
+        welcomeMessage: (restaurantName) => `🌟 Hallo! Willkommen im ${restaurantName}! Ich bin Sofia und helfe Ihnen gerne bei der Tischreservierung! ✨`,
+        helpMessage: `🆘 **Wie ich helfen kann:** Ich bin Sofia, Ihre Restaurant-Assistentin!`,
+        cancelMessage: "Kein Problem! Gespräch gelöscht. Starten Sie neu, wenn Sie bereit sind!",
+        genericError: "Entschuldigung für das technische Problem! Ich bin Sofia. Wie kann ich bei einer Reservierung helfen?",
+        slotUnavailableAnymore: "Entschuldigung, dieser Zeitslot ist nicht mehr verfügbar.",
+        errorCreatingReservation: "Kleines Problem bei der Reservierungsbestätigung.",
+        errorCheckingAvailability: "Verfügbarkeit kann momentan nicht geprüft werden.",
+        errorHandlingAlternative: "Lassen Sie mich eine andere Option finden.",
+        invalidAlternativeSelection: "Das ist keine gültige Option.",
+        botNotConfigured: "Telegram-Bot ist für dieses Restaurant nicht konfiguriert.",
+        telegramTestSuccess: (botUsername) => `Erfolgreich mit Telegram-Bot verbunden: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Verbindung mit Telegram-Bot fehlgeschlagen: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Sie haben früher als '${dbName}' gebucht. Möchten Sie '${requestName}' oder '${dbName}' verwenden?`,
+        useNewNameButton: (requestName) => `"${requestName}" verwenden`,
+        useDbNameButton: (dbName) => `"${dbName}" behalten`,
+        pleaseUseButtons: "Bitte verwenden Sie die Tasten oben.",
+        nameConfirmationUsed: (name) => `Perfekt! Verwende den Namen: ${name}`,
+    },
+    fr: {
+        welcomeMessage: (restaurantName) => `🌟 Bonjour! Bienvenue chez ${restaurantName}! Je suis Sofia et je suis ravie de vous aider avec votre réservation! ✨`,
+        helpMessage: `🆘 **Comment je peux vous aider:** Je suis Sofia, votre assistante restaurant!`,
+        cancelMessage: "Pas de problème! Conversation effacée. Recommencez quand vous voulez!",
+        genericError: "Désolée pour le problème technique! Je suis Sofia. Comment puis-je vous aider avec une réservation?",
+        slotUnavailableAnymore: "Désolée, ce créneau n'est plus disponible.",
+        errorCreatingReservation: "Petit problème lors de la confirmation de votre réservation.",
+        errorCheckingAvailability: "Impossible de vérifier la disponibilité maintenant.",
+        errorHandlingAlternative: "Laissez-moi trouver une autre option.",
+        invalidAlternativeSelection: "Ce n'est pas une option valide.",
+        botNotConfigured: "Le bot Telegram n'est pas configuré pour ce restaurant.",
+        telegramTestSuccess: (botUsername) => `Connexion réussie au bot Telegram: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Échec de connexion au bot Telegram: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Vous avez réservé précédemment sous '${dbName}'. Voulez-vous utiliser '${requestName}' ou garder '${dbName}'?`,
+        useNewNameButton: (requestName) => `Utiliser "${requestName}"`,
+        useDbNameButton: (dbName) => `Garder "${dbName}"`,
+        pleaseUseButtons: "Veuillez utiliser les boutons ci-dessus.",
+        nameConfirmationUsed: (name) => `Parfait! J'utilise le nom: ${name}`,
+    },
+    es: {
+        welcomeMessage: (restaurantName) => `🌟 ¡Hola! ¡Bienvenido/a a ${restaurantName}! Soy Sofia y estoy encantada de ayudarte con tu reserva! ✨`,
+        helpMessage: `🆘 **Cómo puedo ayudarte:** ¡Soy Sofia, tu asistente del restaurante!`,
+        cancelMessage: "¡No hay problema! Conversación borrada. ¡Empieza de nuevo cuando quieras!",
+        genericError: "¡Disculpa por el problema técnico! Soy Sofia. ¿Cómo puedo ayudarte con una reserva?",
+        slotUnavailableAnymore: "Lo siento, ese horario ya no está disponible.",
+        errorCreatingReservation: "Pequeño problema al confirmar tu reserva.",
+        errorCheckingAvailability: "No puedo verificar disponibilidad ahora.",
+        errorHandlingAlternative: "Déjame encontrar otra opción.",
+        invalidAlternativeSelection: "Esa no es una opción válida.",
+        botNotConfigured: "El bot de Telegram no está configurado para este restaurante.",
+        telegramTestSuccess: (botUsername) => `Conexión exitosa con bot de Telegram: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Fallo al conectar con bot de Telegram: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Veo que reservaste anteriormente como '${dbName}'. ¿Quieres usar '${requestName}' o mantener '${dbName}'?`,
+        useNewNameButton: (requestName) => `Usar "${requestName}"`,
+        useDbNameButton: (dbName) => `Mantener "${dbName}"`,
+        pleaseUseButtons: "Por favor usa los botones de arriba.",
+        nameConfirmationUsed: (name) => `¡Perfecto! Usando el nombre: ${name}`,
+    },
+    it: {
+        welcomeMessage: (restaurantName) => `🌟 Ciao! Benvenuto/a al ${restaurantName}! Sono Sofia e sono felice di aiutarti con la tua prenotazione! ✨`,
+        helpMessage: `🆘 **Come posso aiutarti:** Sono Sofia, la tua assistente del ristorante!`,
+        cancelMessage: "Nessun problema! Conversazione cancellata. Ricomincia quando vuoi!",
+        genericError: "Scusa per il problema tecnico! Sono Sofia. Come posso aiutarti con una prenotazione?",
+        slotUnavailableAnymore: "Mi dispiace, quell'orario non è più disponibile.",
+        errorCreatingReservation: "Piccolo problema nel confermare la tua prenotazione.",
+        errorCheckingAvailability: "Non riesco a verificare la disponibilità ora.",
+        errorHandlingAlternative: "Lascia che trovi un'altra opzione.",
+        invalidAlternativeSelection: "Quella non è un'opzione valida.",
+        botNotConfigured: "Il bot Telegram non è configurato per questo ristorante.",
+        telegramTestSuccess: (botUsername) => `Connessione riuscita con bot Telegram: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Connessione fallita con bot Telegram: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Vedo che hai prenotato prima come '${dbName}'. Vuoi usare '${requestName}' o mantenere '${dbName}'?`,
+        useNewNameButton: (requestName) => `Usa "${requestName}"`,
+        useDbNameButton: (dbName) => `Mantieni "${dbName}"`,
+        pleaseUseButtons: "Per favore usa i pulsanti sopra.",
+        nameConfirmationUsed: (name) => `Perfetto! Usando il nome: ${name}`,
+    },
+    pt: {
+        welcomeMessage: (restaurantName) => `🌟 Olá! Bem-vindo/a ao ${restaurantName}! Eu sou Sofia e estou feliz em ajudar com sua reserva! ✨`,
+        helpMessage: `🆘 **Como posso ajudar:** Eu sou Sofia, sua assistente do restaurante!`,
+        cancelMessage: "Sem problemas! Conversa apagada. Comece novamente quando quiser!",
+        genericError: "Desculpe pelo problema técnico! Eu sou Sofia. Como posso ajudar com uma reserva?",
+        slotUnavailableAnymore: "Desculpe, esse horário não está mais disponível.",
+        errorCreatingReservation: "Pequeno problema ao confirmar sua reserva.",
+        errorCheckingAvailability: "Não consigo verificar disponibilidade agora.",
+        errorHandlingAlternative: "Deixe-me encontrar outra opção.",
+        invalidAlternativeSelection: "Essa não é uma opção válida.",
+        botNotConfigured: "O bot do Telegram não está configurado para este restaurante.",
+        telegramTestSuccess: (botUsername) => `Conexão bem-sucedida com bot do Telegram: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Falha na conexão com bot do Telegram: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Vejo que você reservou antes como '${dbName}'. Quer usar '${requestName}' ou manter '${dbName}'?`,
+        useNewNameButton: (requestName) => `Usar "${requestName}"`,
+        useDbNameButton: (dbName) => `Manter "${dbName}"`,
+        pleaseUseButtons: "Por favor use os botões acima.",
+        nameConfirmationUsed: (name) => `Perfeito! Usando o nome: ${name}`,
+    },
+    nl: {
+        welcomeMessage: (restaurantName) => `🌟 Hallo! Welkom bij ${restaurantName}! Ik ben Sofia en ik help je graag met je reservering! ✨`,
+        helpMessage: `🆘 **Hoe ik kan helpen:** Ik ben Sofia, je restaurant assistent!`,
+        cancelMessage: "Geen probleem! Gesprek gewist. Begin opnieuw wanneer je wilt!",
+        genericError: "Sorry voor het technische probleem! Ik ben Sofia. Hoe kan ik helpen met een reservering?",
+        slotUnavailableAnymore: "Sorry, dat tijdslot is niet meer beschikbaar.",
+        errorCreatingReservation: "Klein probleem bij het bevestigen van je reservering.",
+        errorCheckingAvailability: "Kan nu geen beschikbaarheid controleren.",
+        errorHandlingAlternative: "Laat me een andere optie vinden.",
+        invalidAlternativeSelection: "Dat is geen geldige optie.",
+        botNotConfigured: "Telegram bot is niet geconfigureerd voor dit restaurant.",
+        telegramTestSuccess: (botUsername) => `Succesvol verbonden met Telegram bot: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Verbinding met Telegram bot mislukt: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `Ik zie dat je eerder gereserveerd hebt als '${dbName}'. Wil je '${requestName}' gebruiken of '${dbName}' houden?`,
+        useNewNameButton: (requestName) => `"${requestName}" gebruiken`,
+        useDbNameButton: (dbName) => `"${dbName}" houden`,
+        pleaseUseButtons: "Gebruik de knoppen hierboven.",
+        nameConfirmationUsed: (name) => `Perfect! Gebruik de naam: ${name}`,
+    },
+    auto: {
+        // Fallback to English for 'auto'
+        welcomeMessage: (restaurantName) => `🌟 Hello! Welcome to ${restaurantName}! I'm Sofia, and I'm absolutely delighted to help you secure the perfect table! ✨`,
+        helpMessage: `🆘 **How I can help you:** I'm Sofia, your restaurant assistant!`,
+        cancelMessage: "No worries! I've cleared our conversation. Feel free to start fresh whenever you're ready to make a reservation! 😊",
+        genericError: "I apologize for the technical hiccup! I'm Sofia. How can I help you with a reservation today? 😊",
+        slotUnavailableAnymore: "I'm sorry, but that time slot just became unavailable.",
+        errorCreatingReservation: "I encountered a small issue while confirming your reservation.",
+        errorCheckingAvailability: "Sorry, I couldn't check availability right now.",
+        errorHandlingAlternative: "Let me help you find another option.",
+        invalidAlternativeSelection: "That's not a valid option number.",
+        botNotConfigured: "Telegram bot is not configured or enabled for this restaurant.",
+        telegramTestSuccess: (botUsername) => `Successfully connected to Telegram bot: @${botUsername}`,
+        telegramTestFailed: (errorMessage) => `Failed to connect to Telegram bot: ${errorMessage}`,
+        nameClarificationPrompt: (dbName, requestName) => `I see you've previously booked as '${dbName}'. Would you like to use '${requestName}' or keep '${dbName}'?`,
+        useNewNameButton: (requestName) => `Use "${requestName}"`,
+        useDbNameButton: (dbName) => `Keep "${dbName}"`,
+        pleaseUseButtons: "Please use the buttons above to make your choice.",
+        nameConfirmationUsed: (name) => `Perfect! Using the name: ${name}`,
+    }
 };
 
 async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: number, text: string, restaurant: Restaurant) {
@@ -102,25 +258,9 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     // Get or create session
     let sessionId = telegramSessions.get(chatId);
     if (!sessionId) {
-        // Detect language from message
-        if (/[\u0400-\u04FF]/.test(text)) {
-            // Cyrillic - check if Serbian or Russian
-            const serbianCyrillicWords = ['здраво', 'хвала', 'молим', 'добро', 'како'];
-            const lowerText = text.toLowerCase();
-            if (serbianCyrillicWords.some(word => lowerText.includes(word))) {
-                currentLang = 'sr';
-            } else {
-                currentLang = 'ru';
-            }
-        } else {
-            // Latin script - check for Serbian
-            const serbianLatin = ['zdravo', 'hvala', 'molim', 'rezervacija'];
-            if (serbianLatin.some(word => text.toLowerCase().includes(word))) {
-                currentLang = 'sr';
-            } else {
-                currentLang = 'en';
-            }
-        }
+        // ✅ CRITICAL: Use Language Detection Agent instead of hardcoded detection
+        // The Language Detection Agent will be called within handleMessage automatically
+        currentLang = 'auto'; // Let the Language Detection Agent decide
 
         sessionId = enhancedConversationManager.createSession({
             restaurantId,
@@ -130,7 +270,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
         });
         
         telegramSessions.set(chatId, sessionId);
-        console.log(`🎯 [Sofia AI] Created new Telegram session ${sessionId} for chat ${chatId} with language: ${currentLang}, timezone: ${restaurantTimezone}`);
+        console.log(`🎯 [Sofia AI] Created new Telegram session ${sessionId} for chat ${chatId} with language: auto-detect, timezone: ${restaurantTimezone}`);
     }
 
     // Get current session to check language
@@ -140,7 +280,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     }
 
     const restaurantName = restaurant.name || defaultRestaurantName;
-    const locale = telegramLocaleStrings[currentLang];
+    const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
     try {
         console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
@@ -169,7 +309,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
             pendingConfirmation?.functionContext?.error?.details?.requestName) {
             
             const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
-            const locale = telegramLocaleStrings[currentLang];
+            const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
             console.log(`[Telegram] 🔄 Sending name clarification with buttons: DB="${dbName}", Request="${requestName}"`);
 
@@ -194,13 +334,11 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
             return;
         }
 
-        // Check for successful booking
+        // ✅ FIXED: Session now continues after successful booking
         if (result.hasBooking && result.reservationId) {
             await bot.sendMessage(chatId, result.response);
-            // Clear session after successful booking
-            telegramSessions.delete(chatId);
-            enhancedConversationManager.endSession(sessionId);
-            console.log(`✅ [Sofia AI] Telegram reservation confirmed and session cleared for chat ${chatId}, reservation #${result.reservationId}`);
+            // Session continues with 'conductor' agent for follow-up requests
+            console.log(`✅ [Sofia AI] Telegram reservation confirmed for chat ${chatId}, reservation #${result.reservationId}, session continues`);
             return;
         }
 
@@ -222,7 +360,8 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
 }
 
 async function sendWelcomeMessage(bot: TelegramBot, chatId: number, restaurantName: string, lang: Language) {
-    await bot.sendMessage(chatId, telegramLocaleStrings[lang].welcomeMessage(restaurantName));
+    const locale = telegramLocaleStrings[lang] || telegramLocaleStrings.en;
+    await bot.sendMessage(chatId, locale.welcomeMessage(restaurantName));
 }
 
 export async function initializeTelegramBot(restaurantId: number): Promise<boolean> {
@@ -245,10 +384,28 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 
         const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
         const initialBotLang = (settings.settings as any)?.language === 'ru' ? 'ru' : 
-                             (settings.settings as any)?.language === 'sr' ? 'sr' : 'en';
-        const actualRestaurantName = restaurant.name || (initialBotLang === 'ru' ? "Наш Ресторан" : initialBotLang === 'sr' ? "Naš Restoran" : "Our Restaurant");
+                             (settings.settings as any)?.language === 'sr' ? 'sr' : 
+                             (settings.settings as any)?.language === 'hu' ? 'hu' : 
+                             (settings.settings as any)?.language === 'de' ? 'de' : 
+                             (settings.settings as any)?.language === 'fr' ? 'fr' : 
+                             (settings.settings as any)?.language === 'es' ? 'es' : 
+                             (settings.settings as any)?.language === 'it' ? 'it' : 
+                             (settings.settings as any)?.language === 'pt' ? 'pt' : 
+                             (settings.settings as any)?.language === 'nl' ? 'nl' : 'en';
+        const actualRestaurantName = restaurant.name || (
+            initialBotLang === 'ru' ? "Наш Ресторан" : 
+            initialBotLang === 'sr' ? "Naš Restoran" : 
+            initialBotLang === 'hu' ? "Éttermünk" :
+            initialBotLang === 'de' ? "Unser Restaurant" :
+            initialBotLang === 'fr' ? "Notre Restaurant" :
+            initialBotLang === 'es' ? "Nuestro Restaurante" :
+            initialBotLang === 'it' ? "Il nostro Ristorante" :
+            initialBotLang === 'pt' ? "Nosso Restaurante" :
+            initialBotLang === 'nl' ? "Ons Restaurant" :
+            "Our Restaurant"
+        );
 
-        console.log(`🚀 [Sofia AI] Initializing enhanced bot for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}`);
+        console.log(`🚀 [Sofia AI] Initializing enhanced bot for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}, default language: ${initialBotLang}`);
         const token = settings.token;
         const bot = new TelegramBot(token, { polling: { interval: 300, params: { timeout: 10 } } });
         activeBots.set(restaurantId, bot);
@@ -262,8 +419,36 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 telegramSessions.delete(chatId);
             }
             
-            const userLang = msg.from?.language_code?.startsWith('ru') ? 'ru' : 
-                           msg.from?.language_code?.startsWith('sr') ? 'sr' : initialBotLang;
+            // ✅ ENHANCED: Use Telegram language hint but let Language Detection Agent decide
+            let userLang: Language = initialBotLang; // Default to restaurant's configured language
+            
+            // Use Telegram language code as a hint for the Language Detection Agent
+            if (msg.from?.language_code) {
+                if (msg.from.language_code.startsWith('ru')) {
+                    userLang = 'ru';
+                } else if (msg.from.language_code.startsWith('sr')) {
+                    userLang = 'sr';
+                } else if (msg.from.language_code.startsWith('hu')) {
+                    userLang = 'hu';
+                } else if (msg.from.language_code.startsWith('de')) {
+                    userLang = 'de';
+                } else if (msg.from.language_code.startsWith('fr')) {
+                    userLang = 'fr';
+                } else if (msg.from.language_code.startsWith('es')) {
+                    userLang = 'es';
+                } else if (msg.from.language_code.startsWith('it')) {
+                    userLang = 'it';
+                } else if (msg.from.language_code.startsWith('pt')) {
+                    userLang = 'pt';
+                } else if (msg.from.language_code.startsWith('nl')) {
+                    userLang = 'nl';
+                } else if (msg.from.language_code.startsWith('en')) {
+                    userLang = 'en';
+                }
+                // If no clear match, keep restaurant default (initialBotLang)
+            }
+            
+            console.log(`🌍 [Sofia AI] /start language detection: Telegram=${msg.from?.language_code}, Hint=${userLang}, RestaurantDefault=${initialBotLang}`);
             await sendWelcomeMessage(bot, chatId, actualRestaurantName, userLang);
         });
 
@@ -276,11 +461,32 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 const session = enhancedConversationManager.getSession(sessionId);
                 lang = session?.language || initialBotLang;
             } else {
-                lang = msg.from?.language_code?.startsWith('ru') ? 'ru' : 
-                      msg.from?.language_code?.startsWith('sr') ? 'sr' : initialBotLang;
+                // Use Telegram language code as hint
+                if (msg.from?.language_code?.startsWith('ru')) {
+                    lang = 'ru';
+                } else if (msg.from?.language_code?.startsWith('sr')) {
+                    lang = 'sr';
+                } else if (msg.from?.language_code?.startsWith('hu')) {
+                    lang = 'hu';
+                } else if (msg.from?.language_code?.startsWith('de')) {
+                    lang = 'de';
+                } else if (msg.from?.language_code?.startsWith('fr')) {
+                    lang = 'fr';
+                } else if (msg.from?.language_code?.startsWith('es')) {
+                    lang = 'es';
+                } else if (msg.from?.language_code?.startsWith('it')) {
+                    lang = 'it';
+                } else if (msg.from?.language_code?.startsWith('pt')) {
+                    lang = 'pt';
+                } else if (msg.from?.language_code?.startsWith('nl')) {
+                    lang = 'nl';
+                } else {
+                    lang = initialBotLang; // Use restaurant default
+                }
             }
             
-            await bot.sendMessage(chatId, telegramLocaleStrings[lang].helpMessage, { parse_mode: 'Markdown' });
+            const locale = telegramLocaleStrings[lang] || telegramLocaleStrings.en;
+            await bot.sendMessage(chatId, locale.helpMessage, { parse_mode: 'Markdown' });
         });
 
         bot.onText(/\/cancel/, async (msg) => {
@@ -294,11 +500,32 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 enhancedConversationManager.endSession(sessionId);
                 telegramSessions.delete(chatId);
             } else {
-                lang = msg.from?.language_code?.startsWith('ru') ? 'ru' : 
-                      msg.from?.language_code?.startsWith('sr') ? 'sr' : initialBotLang;
+                // Use Telegram language code as hint
+                if (msg.from?.language_code?.startsWith('ru')) {
+                    lang = 'ru';
+                } else if (msg.from?.language_code?.startsWith('sr')) {
+                    lang = 'sr';
+                } else if (msg.from?.language_code?.startsWith('hu')) {
+                    lang = 'hu';
+                } else if (msg.from?.language_code?.startsWith('de')) {
+                    lang = 'de';
+                } else if (msg.from?.language_code?.startsWith('fr')) {
+                    lang = 'fr';
+                } else if (msg.from?.language_code?.startsWith('es')) {
+                    lang = 'es';
+                } else if (msg.from?.language_code?.startsWith('it')) {
+                    lang = 'it';
+                } else if (msg.from?.language_code?.startsWith('pt')) {
+                    lang = 'pt';
+                } else if (msg.from?.language_code?.startsWith('nl')) {
+                    lang = 'nl';
+                } else {
+                    lang = initialBotLang; // Use restaurant default
+                }
             }
             
-            await bot.sendMessage(chatId, telegramLocaleStrings[lang].cancelMessage);
+            const locale = telegramLocaleStrings[lang] || telegramLocaleStrings.en;
+            await bot.sendMessage(chatId, locale.cancelMessage);
         });
 
         bot.on('message', async (msg) => {
@@ -335,7 +562,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             }
 
             const currentLang = session.language;
-            const locale = telegramLocaleStrings[currentLang];
+            const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
             console.log(`[Telegram] Callback query received: ${data} from chat ${chatId} (timezone: ${restaurantTimezone})`);
 
@@ -362,7 +589,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                     await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
                     
                     // ✅ CRITICAL: Send the name choice as a regular message to conversation manager
-                    // This will trigger the simple string matching logic in enhanced-conversation-manager.ts
+                    // This will trigger the name choice extraction logic in enhanced-conversation-manager.ts
                     await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
                     
                 } catch (editError: any) {
@@ -392,7 +619,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
         
         bot.on('error', (error) => console.error(`❌ [Sofia AI] General Bot error for restaurant ${restaurantId} (${actualRestaurantName}, ${restaurantTimezone}):`, error.message));
 
-        console.log(`✅ [Sofia AI] Enhanced conversation bot initialized and listening for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}`);
+        console.log(`✅ [Sofia AI] Enhanced conversation bot initialized and listening for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}, default language: ${initialBotLang}`);
         return true;
         
     } catch (error) {

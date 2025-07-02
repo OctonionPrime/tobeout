@@ -1,8 +1,9 @@
 // server/services/guardrails.ts
+// ✅ LANGUAGE ENHANCEMENT: Added Translation Service integration for error messages
 // ✅ FIX (This version): Corrected the requiresConfirmation logic for cancellations to prevent redundant prompts.
 
 import OpenAI from 'openai';
-import type { BookingSession } from './agents/booking-agent'; // Assuming BookingSession is exported
+import type { BookingSession } from './agents/booking-agent';
 import type { Language } from './enhanced-conversation-manager';
 
 const client = new OpenAI({
@@ -13,6 +14,48 @@ export interface GuardrailResult {
     allowed: boolean;
     reason?: string;
     category?: 'off_topic' | 'safety' | 'inappropriate';
+}
+
+/**
+ * ✅ NEW: Translation Service for error messages
+ */
+class GuardrailTranslationService {
+    private static client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    
+    static async translateGuardrailMessage(
+        message: string, 
+        targetLanguage: Language
+    ): Promise<string> {
+        if (targetLanguage === 'en' || targetLanguage === 'auto') return message;
+        
+        const languageNames: Record<Language, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+        
+        const prompt = `Translate this restaurant guardrail/error message to ${languageNames[targetLanguage]}:
+
+"${message}"
+
+Context: This is an error or restriction message for a restaurant booking system
+Keep the same tone and professional style.
+Return only the translation, no explanations.`;
+
+        try {
+            const completion = await this.client.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [{ role: 'user', content: prompt }],
+                max_tokens: 200,
+                temperature: 0.2
+            });
+            
+            return completion.choices[0]?.message?.content?.trim() || message;
+        } catch (error) {
+            console.error('[GuardrailTranslation] Error:', error);
+            return message; // Fallback to original
+        }
+    }
 }
 
 /**
@@ -31,7 +74,8 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
     if (!lastBotMessage) return false;
 
     // ✅ ENHANCED: Better phone number detection
-    if (lastBotMessage.includes('phone') || lastBotMessage.includes('телефон') || lastBotMessage.includes('номер')) {
+    if (lastBotMessage.includes('phone') || lastBotMessage.includes('телефон') || lastBotMessage.includes('номер') || 
+        lastBotMessage.includes('telefon') || lastBotMessage.includes('szám') || lastBotMessage.includes('numero')) {
         // Enhanced phone number patterns: supports various formats
         const phonePatterns = [
             /^\+?[\d\s\-\(\)]{7,15}$/,  // International formats
@@ -46,18 +90,22 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    // ✅ ENHANCED: Better name detection 
-    if (lastBotMessage.includes('name') || lastBotMessage.includes('имя') || lastBotMessage.includes('зовут')) {
+    // ✅ ENHANCED: Better name detection with multilingual support
+    if (lastBotMessage.includes('name') || lastBotMessage.includes('имя') || lastBotMessage.includes('зовут') ||
+        lastBotMessage.includes('ime') || lastBotMessage.includes('név') || lastBotMessage.includes('nome') ||
+        lastBotMessage.includes('nom') || lastBotMessage.includes('naam')) {
         // A message with letters, possibly some spaces, no numbers, reasonable length
         if (userMessage.length >= 2 && userMessage.length <= 50 &&
-            /^[a-zA-Zа-яёА-ЯЁ\s\-\.\']+$/.test(userMessage)) {
+            /^[a-zA-Zа-яёА-ЯЁáéíóúýčďĺľňŕšťžàèùâêîôûäëïöüÿçñáéíóúüñçăâîşţ\s\-\.\']+$/.test(userMessage)) {
             console.log(`[Guardrails] Pre-approved as a direct answer (name): "${userMessage}"`);
             return true;
         }
     }
 
-    // If bot asked for number of guests
-    if (lastBotMessage.includes('guests') || lastBotMessage.includes('гостей') || lastBotMessage.includes('человек') || lastBotMessage.includes('people')) {
+    // If bot asked for number of guests (multilingual)
+    if (lastBotMessage.includes('guests') || lastBotMessage.includes('гостей') || lastBotMessage.includes('человек') || 
+        lastBotMessage.includes('people') || lastBotMessage.includes('gostiju') || lastBotMessage.includes('fő') ||
+        lastBotMessage.includes('persone') || lastBotMessage.includes('personas') || lastBotMessage.includes('personnes')) {
         // A short message that is just a number is likely the party size.
         if (userMessage.match(/^\d{1,2}$/)) {
             console.log(`[Guardrails] Pre-approved as a direct answer (party size): "${userMessage}"`);
@@ -65,14 +113,17 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    // ✅ ENHANCED: Date and time detection
-    if (lastBotMessage.includes('date') || lastBotMessage.includes('дата') || lastBotMessage.includes('когда')) {
+    // ✅ ENHANCED: Date and time detection with multilingual support
+    if (lastBotMessage.includes('date') || lastBotMessage.includes('дата') || lastBotMessage.includes('когда') ||
+        lastBotMessage.includes('datum') || lastBotMessage.includes('dátum') || lastBotMessage.includes('data') ||
+        lastBotMessage.includes('fecha') || lastBotMessage.includes('date')) {
         // Date patterns: "13 июля", "July 13", "2025-07-13", "tomorrow", etc.
         const datePatterns = [
             /\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)/i,
             /\d{4}-\d{2}-\d{2}/,
-            /(today|tomorrow|tonight|завтра|сегодня)/i,
-            /(january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{1,2}/i
+            /(today|tomorrow|tonight|завтра|сегодня|danas|sutra|ma|holnap|oggi|domani|hoy|mañana|aujourd|demain)/i,
+            /(january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{1,2}/i,
+            /(január|február|március|április|május|június|július|augusztus|szeptember|október|november|december)\s*\d{1,2}/i
         ];
 
         if (datePatterns.some(pattern => pattern.test(userMessage))) {
@@ -81,13 +132,17 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    if (lastBotMessage.includes('time') || lastBotMessage.includes('время') || lastBotMessage.includes('часов')) {
+    if (lastBotMessage.includes('time') || lastBotMessage.includes('время') || lastBotMessage.includes('часов') ||
+        lastBotMessage.includes('vreme') || lastBotMessage.includes('idő') || lastBotMessage.includes('ora') ||
+        lastBotMessage.includes('tiempo') || lastBotMessage.includes('heure')) {
         // Time patterns: "20:00", "8 pm", "в 20-00", etc.
         const timePatterns = [
             /\d{1,2}:\d{2}/,
             /\d{1,2}\s*(pm|am)/i,
             /в\s*\d{1,2}[\-:]\d{2}/i,
-            /\d{1,2}\s*(вечера|утра|дня)/i
+            /\d{1,2}\s*(вечера|утра|дня)/i,
+            /\d{1,2}\s*(uveče|ujutru|popodne)/i,
+            /\d{1,2}\s*(este|délután|reggel)/i
         ];
 
         if (timePatterns.some(pattern => pattern.test(userMessage))) {
@@ -96,9 +151,12 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    // If bot asked for confirmation (yes/no)
-    if (lastBotMessage.includes('confirm') || lastBotMessage.includes('подтвердить') || lastBotMessage.includes('верно')) {
-        if (['yes', 'no', 'да', 'нет', 'yep', 'nope'].includes(userMessage)) {
+    // If bot asked for confirmation (yes/no) - multilingual
+    if (lastBotMessage.includes('confirm') || lastBotMessage.includes('подтвердить') || lastBotMessage.includes('верно') ||
+        lastBotMessage.includes('potvrdi') || lastBotMessage.includes('megerősít') || lastBotMessage.includes('conferma') ||
+        lastBotMessage.includes('confirma') || lastBotMessage.includes('confirmer')) {
+        const confirmWords = ['yes', 'no', 'да', 'нет', 'yep', 'nope', 'da', 'ne', 'igen', 'nem', 'sì', 'sí', 'oui', 'non', 'ja', 'nein'];
+        if (confirmWords.includes(userMessage)) {
             console.log(`[Guardrails] Pre-approved as a direct answer (confirmation): "${userMessage}"`);
             return true;
         }
@@ -117,7 +175,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
 function containsBookingKeywords(message: string): boolean {
     const normalized = message.toLowerCase().trim();
 
-    // ✅ ENHANCED: More comprehensive booking keywords
+    // ✅ ENHANCED: More comprehensive booking keywords with all supported languages
     const bookingKeywords = [
         // English - expanded
         'table', 'reservation', 'book', 'reserve', 'restaurant', 'menu', 'dinner', 'lunch',
@@ -136,7 +194,49 @@ function containsBookingKeywords(message: string): boolean {
         'sto', 'rezervacija', 'rezervisati', 'restoran', 'meni', 'večera', 'ručak',
         'danas', 'sutra', 'vreme', 'dostupno', 'slobodno', 'rezervacija',
         'gostiju', 'osoba', 'jesti', 'večerati', 'ručati',
-        'otkazati', 'promeniti', 'pomeriti', 'drugo vreme'
+        'otkazati', 'promeniti', 'pomeriti', 'drugo vreme',
+
+        // ✅ NEW: Hungarian
+        'asztal', 'foglalás', 'foglalni', 'étterem', 'menü', 'vacsora', 'ebéd',
+        'ma', 'holnap', 'idő', 'elérhető', 'szabad', 'foglalás',
+        'vendég', 'fő', 'enni', 'vacsorázni', 'ebédelni',
+        'lemondani', 'változtatni', 'áttenni', 'másik idő',
+
+        // ✅ NEW: German
+        'tisch', 'reservierung', 'reservieren', 'restaurant', 'menü', 'abendessen', 'mittagessen',
+        'heute', 'morgen', 'zeit', 'verfügbar', 'frei', 'buchung',
+        'gäste', 'personen', 'essen', 'dinieren', 'speisen',
+        'stornieren', 'ändern', 'verschieben', 'andere zeit',
+
+        // ✅ NEW: French
+        'table', 'réservation', 'réserver', 'restaurant', 'menu', 'dîner', 'déjeuner',
+        'aujourd', 'demain', 'temps', 'disponible', 'libre', 'réservation',
+        'invités', 'personnes', 'manger', 'dîner', 'déjeuner',
+        'annuler', 'changer', 'modifier', 'autre heure',
+
+        // ✅ NEW: Spanish
+        'mesa', 'reserva', 'reservar', 'restaurante', 'menú', 'cena', 'almuerzo',
+        'hoy', 'mañana', 'tiempo', 'disponible', 'libre', 'reserva',
+        'invitados', 'personas', 'comer', 'cenar', 'almorzar',
+        'cancelar', 'cambiar', 'modificar', 'otra hora',
+
+        // ✅ NEW: Italian
+        'tavolo', 'prenotazione', 'prenotare', 'ristorante', 'menu', 'cena', 'pranzo',
+        'oggi', 'domani', 'tempo', 'disponibile', 'libero', 'prenotazione',
+        'ospiti', 'persone', 'mangiare', 'cenare', 'pranzare',
+        'cancellare', 'cambiare', 'modificare', 'altro orario',
+
+        // ✅ NEW: Portuguese
+        'mesa', 'reserva', 'reservar', 'restaurante', 'menu', 'jantar', 'almoço',
+        'hoje', 'amanhã', 'tempo', 'disponível', 'livre', 'reserva',
+        'convidados', 'pessoas', 'comer', 'jantar', 'almoçar',
+        'cancelar', 'mudar', 'modificar', 'outro horário',
+
+        // ✅ NEW: Dutch
+        'tafel', 'reservering', 'reserveren', 'restaurant', 'menu', 'diner', 'lunch',
+        'vandaag', 'morgen', 'tijd', 'beschikbaar', 'vrij', 'boeking',
+        'gasten', 'personen', 'eten', 'dineren', 'lunchen',
+        'annuleren', 'wijzigen', 'veranderen', 'andere tijd'
     ];
 
     if (bookingKeywords.some(keyword => normalized.includes(keyword))) {
@@ -147,7 +247,7 @@ function containsBookingKeywords(message: string): boolean {
 }
 
 /**
- * ✅ ENHANCED: CONTEXT-AWARE Relevance Classifier.
+ * ✅ ENHANCED: CONTEXT-AWARE Relevance Classifier with Translation Service.
  * For ambiguous cases, it asks an LLM for help, providing conversation context.
  * Now with better prompting and more nuanced understanding.
  *
@@ -223,19 +323,16 @@ Based on the context and enhanced rules, is the user's message relevant to the r
         if (result.is_relevant === true || result.confidence < 0.85) {
             return { allowed: true };
         } else {
-            const contextualMessages = {
-                en: `I can only help with restaurant reservations and dining. ${result.reasoning || 'Your message doesn\'t seem related to booking a table.'}`,
-                ru: `Я могу помочь только с бронированием ресторана и ужином. ${result.reasoning || 'Ваше сообщение не касается бронирования столика.'}`,
-                sr: `Mogu pomoći samo sa rezervacijom restorana i večerom. ${result.reasoning || 'Vaša poruka se ne odnosi na rezervaciju stola.'}`
-            };
-
-            // Detect language from session or message
-            const language = session.language || 'en';
-            const responseMessage = contextualMessages[language as keyof typeof contextualMessages] || contextualMessages.en;
+            // ✅ USE TRANSLATION SERVICE
+            const baseMessage = `I can only help with restaurant reservations and dining. ${result.reasoning || 'Your message doesn\'t seem related to booking a table.'}`;
+            const localizedMessage = await GuardrailTranslationService.translateGuardrailMessage(
+                baseMessage, 
+                session.language
+            );
 
             return {
                 allowed: false,
-                reason: responseMessage,
+                reason: localizedMessage,
                 category: 'off_topic',
             };
         }
@@ -246,13 +343,14 @@ Based on the context and enhanced rules, is the user's message relevant to the r
 }
 
 /**
- * ✅ ENHANCED: Safety check for prompt injection and other attacks.
+ * ✅ ENHANCED: Safety check for prompt injection and other attacks with Translation Service.
  * Now with more comprehensive patterns and better detection.
  *
  * @param message The user's message.
+ * @param language The user's language for localized error messages.
  * @returns GuardrailResult
  */
-async function checkSafety(message: string): Promise<GuardrailResult> {
+async function checkSafety(message: string, language: Language = 'en'): Promise<GuardrailResult> {
     const suspiciousPatterns = [
         // Prompt injection attempts
         /ignore.*(previous|above|earlier).*(instruction|prompt|rule)/i,
@@ -276,9 +374,17 @@ async function checkSafety(message: string): Promise<GuardrailResult> {
 
     if (suspiciousPatterns.some(pattern => pattern.test(message))) {
         console.warn(`[Guardrails] Blocked by enhanced safety regex: "${message.substring(0, 100)}..."`);
+        
+        // ✅ USE TRANSLATION SERVICE
+        const baseMessage = "I'm here to help with restaurant reservations. How can I assist you with booking a table?";
+        const localizedMessage = await GuardrailTranslationService.translateGuardrailMessage(
+            baseMessage,
+            language
+        );
+
         return {
             allowed: false,
-            reason: "I'm here to help with restaurant reservations. How can I assist you with booking a table?",
+            reason: localizedMessage,
             category: 'safety',
         };
     }
@@ -338,7 +444,7 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
 }
 
 /**
- * ✅ ENHANCED: Main guardrail orchestrator function.
+ * ✅ ENHANCED: Main guardrail orchestrator function with Translation Service integration.
  * This is the only function you need to call from the outside.
  * Now with better logging and more intelligent flow.
  *
@@ -347,7 +453,7 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
  * @returns GuardrailResult
  */
 export async function runGuardrails(message: string, session: BookingSession): Promise<GuardrailResult> {
-    console.log(`[Guardrails] Checking message: "${message}" (Context: ${session.context}, Step: ${session.currentStep}, Agent: ${(session as any).currentAgent || 'booking'})`);
+    console.log(`[Guardrails] Checking message: "${message}" (Context: ${session.context}, Step: ${session.currentStep}, Agent: ${(session as any).currentAgent || 'booking'}, Language: ${session.language})`);
 
     // ✅ ENHANCED: More intelligent pre-checks with better logging
 
@@ -363,8 +469,8 @@ export async function runGuardrails(message: string, session: BookingSession): P
         return { allowed: true };
     }
 
-    // ✅ ENHANCED: Allow very short confirmations and common responses
-    const shortResponsePatterns = /^(да|нет|yes|no|ok|okay|thanks|спасибо|hvala|ок|k)$/i;
+    // ✅ ENHANCED: Allow very short confirmations and common responses (multilingual)
+    const shortResponsePatterns = /^(да|нет|yes|no|ok|okay|thanks|спасибо|hvala|ок|k|igen|nem|ja|nein|oui|non|sì|sí|tak|nie)$/i;
     if (shortResponsePatterns.test(message.trim())) {
         console.log(`[Guardrails] ✅ ALLOWED - Short confirmation/response`);
         return { allowed: true };
@@ -381,10 +487,10 @@ export async function runGuardrails(message: string, session: BookingSession): P
     if (missingInfo.length > 0) {
         console.log(`[Guardrails] Missing booking info: ${missingInfo.join(', ')} - being more permissive`);
         // Be more permissive when we're clearly in a booking flow and missing info
-        const containsDate = /\d{1,2}.*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|\d{4}|tomorrow|today|tonight)/i.test(message);
-        const containsTime = /\d{1,2}[:]\d{2}|\d{1,2}\s*(pm|am|вечера|утра|дня)/i.test(message);
+        const containsDate = /\d{1,2}.*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|\d{4}|tomorrow|today|tonight|holnap|ma|sutra|danas)/i.test(message);
+        const containsTime = /\d{1,2}[:]\d{2}|\d{1,2}\s*(pm|am|вечера|утра|дня|uveče|ujutru)/i.test(message);
         const containsNumber = /\d+/.test(message);
-        const containsName = /^[a-zA-Zа-яёА-ЯЁ\s\-\.\']{2,30}$/.test(message.trim());
+        const containsName = /^[a-zA-Zа-яёА-ЯЁáéíóúýčďĺľňŕšťžàèùâêîôûäëïöüÿçñáéíóúüñçăâîşţ\s\-\.\']{2,30}$/.test(message.trim());
 
         if (containsDate || containsTime || (containsNumber && message.length < 20) || containsName) {
             console.log(`[Guardrails] ✅ ALLOWED - Appears to provide missing booking info`);
@@ -393,7 +499,7 @@ export async function runGuardrails(message: string, session: BookingSession): P
     }
 
     // --- Step 2: Safety Check (for malicious content) ---
-    const safetyResult = await checkSafety(message);
+    const safetyResult = await checkSafety(message, session.language);
     if (!safetyResult.allowed) {
         console.log(`[Guardrails] ❌ BLOCKED - Safety check failed: ${safetyResult.reason}`);
         return safetyResult;

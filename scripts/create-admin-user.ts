@@ -51,7 +51,7 @@ async function createAdminUser() {
     console.log("Demo restaurant created with ID:", restaurant.id);
     console.log("\nAdmin user created successfully!");
     console.log("Email: admin@tobeout.com");
-    console.log("Password: admin");
+    console.log("Password: admin123");
     
     process.exit(0);
   } catch (error) {
