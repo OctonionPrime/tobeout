@@ -1,15 +1,15 @@
 // server/services/enhanced-conversation-manager.ts
-// ✅ FIX (This version): Corrected agent detection logic and Maya's instructions for handling multiple bookings.
+// ✅ OVERSEER IMPLEMENTATION: Intelligent Agent Management with Gemini
+// ✅ FIXED: Agent detection logic and Maya's instructions for handling multiple bookings.
 // ✅ FIXED: Maya time calculation, Sofia workflow, conversation flow
 // ✅ NEW: Added automatic guest history retrieval for personalized interactions
 // ✅ FIXED: Personalized greeting implementation
 // ✅ FIXED: Undefined values in cancellation confirmation
 // ✅ FIXED: Reservation ID tracking for cancellations by storing activeReservationId in session
-// ✅ FIX (This version): Strengthened agent detection for "book again" scenarios.
-// ✅ FIX (This version): Made agent state "stickier" to prevent incorrect handoffs. Refined identifier logic.
-// ✅ FIX (This version): Differentiated session state handling for 'create' vs 'modify' to prevent premature session clearing.
+// ✅ OVERSEER: Replaced brittle keyword rules with intelligent Gemini-powered analysis
 
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from "@google/generative-ai"; // ✅ NEW: Gemini for Overseer
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
 import { agentFunctions } from './agents/agent-tools';
 import { storage } from '../storage';
@@ -34,7 +34,8 @@ interface GuestHistory {
 }
 
 /**
- * Enhanced conversation manager with guardrails, intelligent name clarification, and Maya agent
+ * Enhanced conversation manager with guardrails, intelligent name clarification, Maya agent, and Overseer
+ * ✅ OVERSEER: Intelligent agent switching with Gemini Flash
  * ✅ FIXED: Time calculation examples, Sofia workflow, Maya immediate responses
  * ✅ NEW: Automatic guest history retrieval and personalized interactions
  * ✅ FIXED: Personalized greeting implementation
@@ -45,15 +46,25 @@ export class EnhancedConversationManager {
     private agents = new Map<string, any>();
     private sessionCleanupInterval: NodeJS.Timeout;
     private client: OpenAI;
+    
+    // ✅ NEW: Gemini client for Overseer
+    private geminiClient: GoogleGenerativeAI;
+    private geminiModel: any;
 
     constructor() {
         this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        
+        // ✅ NEW: Initialize Gemini for Overseer
+        this.geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+        this.geminiModel = this.geminiClient.getGenerativeModel({ 
+            model: "gemini-1.5-flash-latest" 
+        });
 
         this.sessionCleanupInterval = setInterval(() => {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with Sofia (booking) + Maya (reservations) agents + Guest History + ALL FIXES');
+        console.log('[EnhancedConversationManager] Initialized with Sofia + Maya + Overseer (Gemini) agents');
     }
 
     /**
@@ -154,180 +165,148 @@ export class EnhancedConversationManager {
     }
 
     /**
-     * ✅ NEW & FIXED: Enhanced agent detection with fuzzy matching, LLM fallback, and corrected logic for "book again".
+     * ✅ NEW: THE OVERSEER - Intelligent Agent Decision System
+     * Replaces detectAgentType, isAmbiguousMessage, and llmAgentDetection
      */
-    private async detectAgentType(message: string, currentAgent?: AgentType): Promise<AgentType> {
-        const normalizedMessage = message.toLowerCase();
-
-        // If current agent is conductor, we MUST re-evaluate.
-        if (currentAgent === 'conductor') {
-            console.log(`[Conductor] Agent is in neutral state. Re-evaluating intent for: "${message}"`);
-            currentAgent = undefined; // Force re-detection
-        }
-
-        // ===== LAYER 0: STRONG OVERRIDES (FIX FOR "BOOK AGAIN") =====
-        const strongBookingIndicators = [
-            'book again', 'book new', 'make a new', 'start over', 'another booking', 'new one',
-            'забронировать снова', 'забронировать новый', 'начать сначала', 'сделать новую бронь', 'другое бронирование', 'новую', 'еще раз',
-            'rezervisati ponovo', 'napraviti novu', 'drugu rezervaciju'
-        ];
-
-
-        if (strongBookingIndicators.some(indicator => normalizedMessage.includes(indicator))) {
-            console.log(`[ConversationManager] 🎯 Strong BOOKING indicator detected: switching to Sofia`);
-            return 'booking';
-        }
-
-
-        // ===== LAYER 1: EXACT KEYWORD MATCHING (FREE, INSTANT) =====
-        const reservationKeywords = [
-            // English
-            'change', 'modify', 'update', 'cancel', 'existing reservation',
-            'booked already', 'move reservation', 'different time', 'more people',
-            'fewer people', 'less people', 'add people', 'reduce', 'increase',
-            'special request', 'dietary requirement', 'anniversary', 'birthday',
-            'my reservation', 'our reservation', 'confirmation number',
-            'i have a reservation', 'we have a reservation', 'my booking', 'our booking',
-            'reschedule', 'postpone', 'shift time', 'earlier', 'later',
-
-            // Russian
-            'изменить', 'отменить', 'уже забронировал', 'другое время', 'моё бронирование',
-            'наше бронирование', 'изменить бронь', 'отменить бронь',
-            'поменять', 'перенести', 'поиенять', 'паменять', 'поенять',
-            'сдвинуть', 'перенос', 'изменение', 'отмена', 'измнить', 'отмнить',
-            'моя бронь', 'наша бронь', 'бронирование на', 'забронировано',
-            'раньше', 'позже', 'другой день', 'другая дата', 'надо изменить',
-            'надо поменять', 'надо перенести', 'хочу изменить', 'хочу поменять',
-
-            // Serbian
-            'promeniti', 'otkazati', 'već rezervisao', 'drugo vreme', 'moja rezervacija',
-            'naša rezervacija', 'promeniti rezervaciju', 'otkazati rezervaciju',
-            'pomeriti', 'preneti', 'ranije', 'kasnije'
-        ];
-
-        if (reservationKeywords.some(keyword => normalizedMessage.includes(keyword))) {
-            console.log(`[ConversationManager] 📝 Reservation keyword detected: switching to Maya`);
-            return 'reservations';
-        }
-
-        // ===== LAYER 2: FUZZY PATTERN MATCHING (FREE, INSTANT) =====
-        const fuzzyReservationPatterns = [
-            /по\w*менять.*(бронь|резерв)/i,
-            /изм\w*нить.*(бронь|резерв)/i,
-            /перен\w*сти.*(бронь|резерв)/i,
-            /отм\w*нить.*(бронь|резерв)/i,
-            /ch\w*nge.*(booking|reservation)/i,
-            /mod\w*fy.*(booking|reservation)/i,
-            /canc\w*l.*(booking|reservation)/i,
-        ];
-
-        if (fuzzyReservationPatterns.some(pattern => pattern.test(normalizedMessage))) {
-            console.log(`[ConversationManager] 🔍 Fuzzy reservation pattern detected: switching to Maya`);
-            return 'reservations';
-        }
-
-        // ===== LAYER 3: LLM FALLBACK FOR AMBIGUOUS CASES (CHEAP, SMART) =====
-        const isAmbiguous = this.isAmbiguousMessage(normalizedMessage, currentAgent);
-
-        if (isAmbiguous) {
-            console.log(`[ConversationManager] 🤖 Using LLM fallback for ambiguous message: "${message}"`);
-            try {
-                const agentType = await this.llmAgentDetection(message, currentAgent);
-                if (agentType) {
-                    console.log(`[ConversationManager] 🎯 LLM detected agent: ${agentType}`);
-                    return agentType;
-                }
-            } catch (error) {
-                console.error(`[ConversationManager] LLM agent detection failed:`, error);
-            }
-        }
-
-        // ===== FALLBACK: DEFAULT LOGIC =====
-        // ✅ FIX: Make booking keywords more specific to NEW bookings to avoid incorrect switching.
-        const bookingKeywords = [
-            'book a table', 'reserve a table', 'new reservation', 'is a table available', 'availability for',
-            'забронировать столик', 'зарезервировать стол', 'новое бронирование', 'свободен ли столик',
-            'rezervisati sto', 'nova rezervacija', 'da li ima slobodnog stola'
-        ];
-
-        if (bookingKeywords.some(keyword => normalizedMessage.includes(keyword))) {
-            console.log(`[ConversationManager] 📅 Booking keyword detected: using Sofia`);
-            return 'booking';
-        }
-
-        // ✅ FIX: Prioritize the current agent if no strong indicators are found.
-        if (currentAgent) {
-            console.log(`[ConversationManager] ➡️ No strong indicators found. Continuing with current agent: ${currentAgent}`);
-            return currentAgent;
-        }
-
-        console.log(`[ConversationManager] 🏠 Default to Sofia for new conversations`);
-        return 'booking';
-    }
-
-    /**
-     * ✅ NEW: Detect if message is ambiguous and needs LLM analysis
-     */
-    private isAmbiguousMessage(normalizedMessage: string, currentAgent?: AgentType): boolean {
-        // Messages that are clearly context-dependent and benefit from LLM
-        const ambiguousPatterns = [
-            /^[а-яё]{1,3}$/i,
-            /^[a-z]{1,2}$/i,
-            /^\d{1,2}$/,
-            /время/i,
-            /когда/i,
-            /помочь/i,
-            /можно/i,
-            /[а-яё]{4,}.*[а-яё]{4,}/i,
-        ];
-
-        const isShort = normalizedMessage.trim().length < 10;
-        const hasAmbiguousPattern = ambiguousPatterns.some(pattern => pattern.test(normalizedMessage));
-        const hasCurrentAgent = !!currentAgent;
-
-        return (isShort || hasAmbiguousPattern) && hasCurrentAgent;
-    }
-
-    /**
-     * ✅ NEW: LLM-based agent detection for ambiguous cases
-     */
-    private async llmAgentDetection(message: string, currentAgent?: AgentType): Promise<AgentType | null> {
+    private async runOverseer(
+        session: BookingSessionWithAgent, 
+        userMessage: string
+    ): Promise<{
+        agentToUse: AgentType;
+        reasoning: string;
+        intervention?: string;
+    }> {
         try {
-            const prompt = `You are an expert classifier for a restaurant booking system. The system has two specialized agents:
+            // Prepare conversation context
+            const recentHistory = session.conversationHistory
+                .slice(-6)
+                .map(msg => `${msg.role}: ${msg.content}`)
+                .join('\n');
 
-1. SOFIA (booking) - Handles NEW reservations, table availability, making new bookings
-2. MAYA (reservations) - Handles EXISTING reservations, modifications, cancellations
+            const sessionState = {
+                currentAgent: session.currentAgent,
+                activeReservationId: session.activeReservationId || null,
+                gatheringInfo: session.gatheringInfo,
+                turnCount: session.turnCount || 0,
+                agentTurnCount: session.agentTurnCount || 0,
+                platform: session.platform,
+                hasGuestHistory: !!session.guestHistory
+            };
 
-Current agent: ${currentAgent || 'none'}
-User message: "${message}"
+            // ✅ CRITICAL: The Overseer Prompt
+            const prompt = `You are the master "Overseer" for a restaurant booking system. Analyze the conversation and decide which agent should handle the user's request.
 
-Based on the message, which agent should handle this request? Consider:
-- Does the user want to make a NEW booking? → Sofia
-- Does the user want to modify/cancel/change an EXISTING booking? → Maya
-- Is the message unclear or just a greeting? → Continue with current agent
+## AGENT ROLES:
+- **Sofia (booking):** Handles ONLY NEW reservations. Use for availability checks, creating new bookings.
+- **Maya (reservations):** Handles ONLY EXISTING reservations. Use for modifications, cancellations, checking status.
+- **Conductor (conductor):** Neutral state after task completion.
 
-- CRITICAL EXAMPLE: If the user says "book again" or "забронировать снова", they want to make a NEW booking. This is a job for Sofia.
+## SESSION STATE:
+- **Current Agent:** ${sessionState.currentAgent}
+- **Active Reservation ID:** ${sessionState.activeReservationId}
+- **Gathering Info:** ${JSON.stringify(sessionState.gatheringInfo)}
+- **Turn Count:** ${sessionState.turnCount}
+- **Agent Turn Count:** ${sessionState.agentTurnCount}
+- **Platform:** ${sessionState.platform}
 
-Respond with ONLY: "booking", "reservations", or "continue"`;
+## RECENT CONVERSATION:
+${recentHistory}
 
-            const completion = await this.client.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.0,
-                max_tokens: 10
+## USER'S LATEST MESSAGE:
+"${userMessage}"
+
+## CRITICAL ANALYSIS RULES:
+
+### RULE 1: TASK CONTINUITY (HIGHEST PRIORITY)
+If current agent is Sofia/Maya and they're MID-TASK, KEEP the current agent unless user EXPLICITLY starts a completely new task.
+
+**Sofia mid-task indicators:**
+- Has some booking info (date/time/guests) but missing others (name/phone)
+- User providing clarifications like "earlier time", "different time", "more people"
+- User answering Sofia's questions
+
+**Maya mid-task indicators:**
+- Found existing reservations and discussing them
+- User confirming cancellation/modification
+- Active reservation ID exists
+
+### RULE 2: EXPLICIT NEW TASK DETECTION
+Switch to Sofia ONLY if user says:
+- "book again", "new reservation", "make another booking"
+- "забронировать снова", "новое бронирование", "еще одну бронь"
+
+Switch to Maya ONLY if user explicitly mentions:
+- "change my existing", "cancel my booking", "modify reservation"
+- "изменить мое", "отменить бронь", "поменять существующее"
+
+### RULE 3: AMBIGUOUS TIME REQUESTS
+If user mentions time changes ("earlier", "later", "different time") consider context:
+- If Sofia is gathering NEW booking info → STAY with Sofia (they're clarifying their preferred time)
+- If Maya found existing reservations → Use Maya (they want to modify existing)
+
+### RULE 4: CONDUCTOR RESET
+Use "conductor" ONLY after successful task completion (booking created, cancellation confirmed).
+
+## EXAMPLES:
+
+**CORRECT - Stay with Sofia during NEW booking:**
+- Sofia: "Table available at 8pm for 5 guests. Need your name and phone."
+- User: "earlier time, 6pm available?"
+- Decision: STAY with Sofia (user clarifying time for THIS booking)
+
+**CORRECT - Switch to Maya for existing reservations:**
+- User: "cancel my reservation"
+- Decision: Switch to Maya (explicit existing reservation request)
+
+**INCORRECT - Don't switch mid-task:**
+- Sofia: "Checking availability..."
+- User: "actually, different time"
+- Wrong: Switch to Maya
+- Right: Stay with Sofia
+
+Respond with ONLY a JSON object:
+
+{
+  "reasoning": "Brief explanation of your decision based on the rules and context",
+  "agentToUse": "booking" | "reservations" | "conductor",
+  "intervention": null | "Message if user seems stuck and needs clarification"
+}`;
+
+            const result = await this.geminiModel.generateContent(prompt);
+            const responseText = result.response.text();
+            
+            // Parse JSON response
+            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            const decision = JSON.parse(cleanJson);
+
+            console.log(`🧠 [Overseer] Decision for "${userMessage}":`, {
+                currentAgent: session.currentAgent,
+                decision: decision.agentToUse,
+                reasoning: decision.reasoning
             });
 
-            const result = completion.choices[0]?.message?.content?.trim().toLowerCase();
-
-            if (result === 'booking') return 'booking';
-            if (result === 'reservations') return 'reservations';
-            if (result === 'continue' && currentAgent) return currentAgent;
-
-            return null;
+            return {
+                agentToUse: decision.agentToUse,
+                reasoning: decision.reasoning,
+                intervention: decision.intervention
+            };
 
         } catch (error) {
-            console.error('[ConversationManager] LLM agent detection error:', error);
-            return null;
+            console.error('[Overseer] Error:', error);
+            
+            // Fallback logic if Gemini fails
+            if (session.currentAgent && session.currentAgent !== 'conductor') {
+                console.log('[Overseer] Fallback: keeping current agent due to error');
+                return {
+                    agentToUse: session.currentAgent,
+                    reasoning: 'Fallback due to Overseer error - keeping current agent',
+                };
+            }
+            
+            return {
+                agentToUse: 'booking',
+                reasoning: 'Fallback to Sofia due to Overseer error',
+            };
         }
     }
 
@@ -473,7 +452,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                                     properties: {
                                         newDate: {
                                             type: "string",
-                                            description: "New date in<y_bin_46>-MM-DD format (optional)"
+                                            description: "New date in YYYY-MM-DD format (optional)"
                                         },
                                         newTime: {
                                             type: "string",
@@ -541,7 +520,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in<y_bin_46>-MM-DD format"
+                                description: "Date in YYYY-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -566,7 +545,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in<y_bin_46>-MM-DD format"
+                                description: "Date in YYYY-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -599,7 +578,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                             },
                             date: {
                                 type: "string",
-                                description: "Date in<y_bin_46>-MM-DD format"
+                                description: "Date in YYYY-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -1041,6 +1020,8 @@ Respond with JSON only.`;
         session.currentAgent = 'booking'; // Default to Sofia
         session.agentHistory = [];
         session.guestHistory = null;
+        session.turnCount = 0; // ✅ NEW: Initialize turn tracking
+        session.agentTurnCount = 0; // ✅ NEW: Initialize agent turn tracking
 
         this.sessions.set(session.sessionId, session);
 
@@ -1132,8 +1113,8 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ ENHANCED: Main message handling with contextual responses and Maya support + Guest History
-     * ✅ FIXED: Now includes personalized greeting generation
+     * ✅ ENHANCED: Main message handling with Overseer and contextual responses + Maya support + Guest History
+     * ✅ FIXED: Now includes personalized greeting generation and Overseer intelligence
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1222,18 +1203,61 @@ Respond with JSON only.`;
                 }
             }
 
-            // STEP 2: Agent Detection and Switching
-            const detectedAgent = await this.detectAgentType(message, session.currentAgent);
+            // ✅ STEP 2: OVERSEER AGENT DECISION (Replaces detectAgentType)
+            const overseerDecision = await this.runOverseer(session, message);
+            
+            // Check for intervention
+            if (overseerDecision.intervention) {
+                session.conversationHistory.push({ 
+                    role: 'user', content: message, timestamp: new Date() 
+                });
+                session.conversationHistory.push({ 
+                    role: 'assistant', content: overseerDecision.intervention, timestamp: new Date() 
+                });
+                this.sessions.set(sessionId, session);
+                
+                return {
+                    response: overseerDecision.intervention,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent
+                };
+            }
+
+            const detectedAgent = overseerDecision.agentToUse;
             let agentHandoff;
 
+            // Track agent handoffs with Overseer reasoning
             if (session.currentAgent && session.currentAgent !== detectedAgent) {
                 console.log(`[EnhancedConversationManager] 🔄 Agent handoff: ${session.currentAgent} → ${detectedAgent}`);
-                agentHandoff = { from: session.currentAgent, to: detectedAgent, reason: `Message indicates ${detectedAgent === 'reservations' ? 'existing reservation management' : 'new booking request'}` };
+                console.log(`[Overseer] Reasoning: ${overseerDecision.reasoning}`);
+                
+                agentHandoff = { 
+                    from: session.currentAgent, 
+                    to: detectedAgent, 
+                    reason: overseerDecision.reasoning 
+                };
+                
                 if (!session.agentHistory) session.agentHistory = [];
-                session.agentHistory.push({ from: session.currentAgent, to: detectedAgent, at: new Date().toISOString(), trigger: message.substring(0, 100) });
+                session.agentHistory.push({ 
+                    from: session.currentAgent, 
+                    to: detectedAgent, 
+                    at: new Date().toISOString(), 
+                    trigger: message.substring(0, 100),
+                    overseerReasoning: overseerDecision.reasoning
+                });
             }
 
             session.currentAgent = detectedAgent;
+
+            // ✅ NEW: Update turn tracking for Overseer
+            session.turnCount = (session.turnCount || 0) + 1;
+            if (!session.agentTurnCount) session.agentTurnCount = 0;
+            if (agentHandoff) {
+                session.agentTurnCount = 1; // Reset counter on agent switch
+            } else {
+                session.agentTurnCount += 1; // Increment for same agent
+            }
 
             // STEP 3: Run guardrails
             console.log(`[EnhancedConversationManager] Running guardrails for session ${sessionId}`);
@@ -1472,7 +1496,6 @@ Respond with JSON only.`;
                                     this.resetAgentState(session); // Reset to conductor after cancellation
                                 }
                             }
-
 
                             this.extractGatheringInfo(session, args);
                         } catch (funcError) {
@@ -1777,7 +1800,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * Enhanced session statistics with agent tracking and guest history
+     * Enhanced session statistics with agent tracking and guest history + Overseer metrics
      */
     getStats(): {
         totalSessions: number;
@@ -1790,6 +1813,8 @@ Respond with JSON only.`;
         agentHandoffs: number;
         sessionsWithGuestHistory: number;
         returningGuests: number;
+        overseerDecisions: number; // ✅ NEW: Track Overseer usage
+        avgTurnsPerSession: number; // ✅ NEW: Track conversation efficiency
     } {
         const now = new Date();
         const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -1805,6 +1830,8 @@ Respond with JSON only.`;
         let agentHandoffs = 0;
         let sessionsWithGuestHistory = 0;
         let returningGuests = 0;
+        let overseerDecisions = 0;
+        let totalTurns = 0;
 
         for (const session of this.sessions.values()) {
             if (session.lastActivity > oneHourAgo) activeSessions++;
@@ -1819,6 +1846,8 @@ Respond with JSON only.`;
 
             if (session.agentHistory && session.agentHistory.length > 0) {
                 agentHandoffs += session.agentHistory.length;
+                // Count Overseer decisions (those with reasoning)
+                overseerDecisions += session.agentHistory.filter(h => h.overseerReasoning).length;
             }
             if (session.guestHistory) {
                 sessionsWithGuestHistory++;
@@ -1826,7 +1855,12 @@ Respond with JSON only.`;
                     returningGuests++;
                 }
             }
+            if (session.turnCount) {
+                totalTurns += session.turnCount;
+            }
         }
+
+        const avgTurnsPerSession = this.sessions.size > 0 ? Math.round((totalTurns / this.sessions.size) * 10) / 10 : 0;
 
         return {
             totalSessions: this.sessions.size,
@@ -1838,7 +1872,9 @@ Respond with JSON only.`;
             languageDistribution,
             agentHandoffs,
             sessionsWithGuestHistory,
-            returningGuests
+            returningGuests,
+            overseerDecisions,
+            avgTurnsPerSession
         };
     }
 
@@ -1853,7 +1889,7 @@ Respond with JSON only.`;
     }
 }
 
-// Extended session interface with agent, confirmation support, and guest history
+// ✅ UPDATED: Extended session interface with agent, confirmation support, guest history, and Overseer tracking
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -1861,6 +1897,7 @@ interface BookingSessionWithAgent extends BookingSession {
         to: AgentType;
         at: string;
         trigger: string;
+        overseerReasoning?: string; // ✅ NEW: Track Overseer decisions
     }>;
     pendingConfirmation?: {
         toolCall: any;
@@ -1870,7 +1907,11 @@ interface BookingSessionWithAgent extends BookingSession {
     };
     confirmedName?: string;
     guestHistory?: GuestHistory | null;
-    activeReservationId?: number; // ✅ BUG FIX: Added to track the reservation in context
+    activeReservationId?: number;
+    
+    // ✅ NEW: Overseer tracking fields
+    turnCount?: number;        // Total conversation turns
+    agentTurnCount?: number;   // How many turns current agent has been active
 }
 
 // Global instance
