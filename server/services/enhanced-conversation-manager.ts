@@ -1,5 +1,13 @@
 // server/services/enhanced-conversation-manager.ts
+// ✅ FIX (This version): Corrected agent detection logic and Maya's instructions for handling multiple bookings.
 // ✅ FIXED: Maya time calculation, Sofia workflow, conversation flow
+// ✅ NEW: Added automatic guest history retrieval for personalized interactions
+// ✅ FIXED: Personalized greeting implementation
+// ✅ FIXED: Undefined values in cancellation confirmation
+// ✅ FIXED: Reservation ID tracking for cancellations by storing activeReservationId in session
+// ✅ FIX (This version): Strengthened agent detection for "book again" scenarios.
+// ✅ FIX (This version): Made agent state "stickier" to prevent incorrect handoffs. Refined identifier logic.
+// ✅ FIX (This version): Differentiated session state handling for 'create' vs 'modify' to prevent premature session clearing.
 
 import OpenAI from 'openai';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
@@ -13,8 +21,24 @@ export type Language = 'en' | 'ru' | 'sr';
 export type AgentType = 'booking' | 'reservations' | 'conductor';
 
 /**
+ * ✅ NEW: Guest history interface for personalized interactions
+ */
+interface GuestHistory {
+    guest_name: string;
+    total_bookings: number;
+    total_cancellations: number;
+    last_visit_date: string | null;
+    common_party_size: number | null;
+    frequent_special_requests: string[];
+    retrieved_at: string;
+}
+
+/**
  * Enhanced conversation manager with guardrails, intelligent name clarification, and Maya agent
  * ✅ FIXED: Time calculation examples, Sofia workflow, Maya immediate responses
+ * ✅ NEW: Automatic guest history retrieval and personalized interactions
+ * ✅ FIXED: Personalized greeting implementation
+ * ✅ FIXED: Undefined values in cancellation confirmation
  */
 export class EnhancedConversationManager {
     private sessions = new Map<string, BookingSessionWithAgent>();
@@ -29,7 +53,7 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with Sofia (booking) + Maya (reservations) agents + ALL FIXES');
+        console.log('[EnhancedConversationManager] Initialized with Sofia (booking) + Maya (reservations) agents + Guest History + ALL FIXES');
     }
 
     /**
@@ -38,6 +62,39 @@ export class EnhancedConversationManager {
     private resetAgentState(session: BookingSessionWithAgent) {
         console.log(`[Conductor] Task complete. Resetting agent from '${session.currentAgent}' to 'conductor'.`);
         session.currentAgent = 'conductor';
+    }
+
+    /**
+     * ✅ NEW: Automatically retrieve guest history for personalized interactions
+     */
+    private async retrieveGuestHistory(
+        telegramUserId: string,
+        restaurantId: number
+    ): Promise<GuestHistory | null> {
+        try {
+            console.log(`👤 [GuestHistory] Retrieving history for telegram user: ${telegramUserId}`);
+
+            const result = await agentFunctions.get_guest_history(telegramUserId, { restaurantId });
+
+            if (result.tool_status === 'SUCCESS' && result.data) {
+                const history: GuestHistory = {
+                    ...result.data,
+                    retrieved_at: new Date().toISOString()
+                };
+
+                console.log(`👤 [GuestHistory] Retrieved for ${history.guest_name}: ${history.total_bookings} bookings, usual party: ${history.common_party_size}, last visit: ${history.last_visit_date}`);
+                return history;
+            } else if (result.error?.code === 'GUEST_NOT_FOUND') {
+                console.log(`👤 [GuestHistory] No history found for new guest: ${telegramUserId}`);
+                return null;
+            } else {
+                console.warn(`👤 [GuestHistory] Failed to retrieve history:`, result.error?.message);
+                return null;
+            }
+        } catch (error) {
+            console.error(`👤 [GuestHistory] Error retrieving guest history:`, error);
+            return null;
+        }
     }
 
     /**
@@ -97,7 +154,7 @@ export class EnhancedConversationManager {
     }
 
     /**
-     * ✅ NEW: Enhanced agent detection with fuzzy matching and LLM fallback
+     * ✅ NEW & FIXED: Enhanced agent detection with fuzzy matching, LLM fallback, and corrected logic for "book again".
      */
     private async detectAgentType(message: string, currentAgent?: AgentType): Promise<AgentType> {
         const normalizedMessage = message.toLowerCase();
@@ -108,9 +165,21 @@ export class EnhancedConversationManager {
             currentAgent = undefined; // Force re-detection
         }
 
-        // ===== LAYER 1: EXACT KEYWORD MATCHING (FREE, INSTANT) =====
+        // ===== LAYER 0: STRONG OVERRIDES (FIX FOR "BOOK AGAIN") =====
+        const strongBookingIndicators = [
+            'book again', 'book new', 'make a new', 'start over', 'another booking', 'new one',
+            'забронировать снова', 'забронировать новый', 'начать сначала', 'сделать новую бронь', 'другое бронирование', 'новую', 'еще раз',
+            'rezervisati ponovo', 'napraviti novu', 'drugu rezervaciju'
+        ];
 
-        // ✅ EXPANDED: More comprehensive reservation keywords including common typos
+
+        if (strongBookingIndicators.some(indicator => normalizedMessage.includes(indicator))) {
+            console.log(`[ConversationManager] 🎯 Strong BOOKING indicator detected: switching to Sofia`);
+            return 'booking';
+        }
+
+
+        // ===== LAYER 1: EXACT KEYWORD MATCHING (FREE, INSTANT) =====
         const reservationKeywords = [
             // English
             'change', 'modify', 'update', 'cancel', 'existing reservation',
@@ -121,10 +190,10 @@ export class EnhancedConversationManager {
             'i have a reservation', 'we have a reservation', 'my booking', 'our booking',
             'reschedule', 'postpone', 'shift time', 'earlier', 'later',
 
-            // Russian - expanded with common variations and typos
+            // Russian
             'изменить', 'отменить', 'уже забронировал', 'другое время', 'моё бронирование',
             'наше бронирование', 'изменить бронь', 'отменить бронь',
-            'поменять', 'перенести', 'поиенять', 'паменять', 'поенять', // ✅ Common typos
+            'поменять', 'перенести', 'поиенять', 'паменять', 'поенять',
             'сдвинуть', 'перенос', 'изменение', 'отмена', 'измнить', 'отмнить',
             'моя бронь', 'наша бронь', 'бронирование на', 'забронировано',
             'раньше', 'позже', 'другой день', 'другая дата', 'надо изменить',
@@ -136,43 +205,17 @@ export class EnhancedConversationManager {
             'pomeriti', 'preneti', 'ranije', 'kasnije'
         ];
 
-        // ✅ STRONG indicators that override other detection
-        const strongReservationIndicators = [
-            'i need to change', 'i want to change', 'can i change',
-            'i need to cancel', 'i want to cancel', 'can i cancel',
-            'i have a reservation', 'we have a reservation',
-            'existing booking', 'current booking', 'booked for tonight',
-            'booked for tomorrow', 'already booked', 'confirmation',
-            // Russian
-            'мне нужно изменить', 'хочу изменить', 'могу ли изменить',
-            'мне нужно отменить', 'хочу отменить', 'могу ли отменить',
-            'у меня есть бронь', 'у нас есть бронь', 'уже забронировано',
-            'надо изменить', 'надо поменять', 'надо перенести',
-            // Serbian
-            'treba da promenim', 'želim da promenim', 'mogu li da promenim',
-            'treba da otkazujem', 'želim da otkazujem', 'mogu li da otkazujem',
-            'imam rezervaciju', 'imamo rezervaciju', 'već rezervisano'
-        ];
-
-        // Check strong indicators first (highest priority)
-        if (strongReservationIndicators.some(indicator => normalizedMessage.includes(indicator))) {
-            console.log(`[ConversationManager] 🎯 Strong reservation indicator detected: switching to Maya`);
-            return 'reservations';
-        }
-
-        // Check exact keyword matches
         if (reservationKeywords.some(keyword => normalizedMessage.includes(keyword))) {
             console.log(`[ConversationManager] 📝 Reservation keyword detected: switching to Maya`);
             return 'reservations';
         }
 
         // ===== LAYER 2: FUZZY PATTERN MATCHING (FREE, INSTANT) =====
-        // ✅ REFINED: Made this pattern more specific to avoid false positives.
         const fuzzyReservationPatterns = [
-            /по\w*менять.*(бронь|резерв)/i,  // "поменять бронь"
-            /изм\w*нить.*(бронь|резерв)/i,   // "изменить резерв"
-            /перен\w*сти.*(бронь|резерв)/i,  // "перенести бронь"
-            /отм\w*нить.*(бронь|резерв)/i,   // "отменить бронь"
+            /по\w*менять.*(бронь|резерв)/i,
+            /изм\w*нить.*(бронь|резерв)/i,
+            /перен\w*сти.*(бронь|резерв)/i,
+            /отм\w*нить.*(бронь|резерв)/i,
             /ch\w*nge.*(booking|reservation)/i,
             /mod\w*fy.*(booking|reservation)/i,
             /canc\w*l.*(booking|reservation)/i,
@@ -184,13 +227,10 @@ export class EnhancedConversationManager {
         }
 
         // ===== LAYER 3: LLM FALLBACK FOR AMBIGUOUS CASES (CHEAP, SMART) =====
-
-        // Only use LLM for ambiguous cases that passed layers 1-2 but need intelligent analysis
         const isAmbiguous = this.isAmbiguousMessage(normalizedMessage, currentAgent);
 
         if (isAmbiguous) {
             console.log(`[ConversationManager] 🤖 Using LLM fallback for ambiguous message: "${message}"`);
-
             try {
                 const agentType = await this.llmAgentDetection(message, currentAgent);
                 if (agentType) {
@@ -199,39 +239,25 @@ export class EnhancedConversationManager {
                 }
             } catch (error) {
                 console.error(`[ConversationManager] LLM agent detection failed:`, error);
-                // Fall through to default logic
             }
         }
 
         // ===== FALLBACK: DEFAULT LOGIC =====
-
-        // Number + context detection (like "1" after asking for confirmation number)
-        if (/^\d{1,6}$/.test(normalizedMessage.trim()) && currentAgent === 'reservations') {
-            console.log(`[ConversationManager] 🔢 Number detected in reservations context: staying with Maya`);
-            return 'reservations';
-        }
-
-        // Sofia (Booking) keywords for new reservations
+        // ✅ FIX: Make booking keywords more specific to NEW bookings to avoid incorrect switching.
         const bookingKeywords = [
-            'book', 'reserve', 'new reservation', 'table', 'available', 'tonight',
-            'tomorrow', 'first time', 'make a reservation', 'book a table',
-            // Russian
-            'забронировать', 'новое бронирование', 'столик', 'свободно',
-            'сегодня вечером', 'завтра', 'впервые', 'забронировать столик',
-            // Serbian
-            'rezervisati', 'nova rezervacija', 'sto', 'dostupno',
-            'večeras', 'sutra', 'prvi put', 'rezervisati sto'
+            'book a table', 'reserve a table', 'new reservation', 'is a table available', 'availability for',
+            'забронировать столик', 'зарезервировать стол', 'новое бронирование', 'свободен ли столик',
+            'rezervisati sto', 'nova rezervacija', 'da li ima slobodnog stola'
         ];
 
-        // Only switch to booking if explicitly mentioned and no current agent
-        if (bookingKeywords.some(keyword => normalizedMessage.includes(keyword)) && !currentAgent) {
+        if (bookingKeywords.some(keyword => normalizedMessage.includes(keyword))) {
             console.log(`[ConversationManager] 📅 Booking keyword detected: using Sofia`);
             return 'booking';
         }
 
-        // Continue with current agent if exists, otherwise default to Sofia
+        // ✅ FIX: Prioritize the current agent if no strong indicators are found.
         if (currentAgent) {
-            console.log(`[ConversationManager] ➡️ Continuing with current agent: ${currentAgent}`);
+            console.log(`[ConversationManager] ➡️ No strong indicators found. Continuing with current agent: ${currentAgent}`);
             return currentAgent;
         }
 
@@ -245,26 +271,20 @@ export class EnhancedConversationManager {
     private isAmbiguousMessage(normalizedMessage: string, currentAgent?: AgentType): boolean {
         // Messages that are clearly context-dependent and benefit from LLM
         const ambiguousPatterns = [
-            // Very short messages that could mean anything
-            /^[а-яё]{1,3}$/i,  // Russian 1-3 letter words
-            /^[a-z]{1,2}$/i,   // English 1-2 letter words
-            /^\d{1,2}$/,       // Just numbers
-
-            // Unclear intent
-            /время/i,          // "время" could be asking time or changing time
-            /когда/i,          // "когда" could be asking when open or when is my booking
-            /помочь/i,         // "помочь" is generic help request
-            /можно/i,          // "можно" is generic "can I"
-
-            // Messages with typos that fuzzy didn't catch
-            /[а-яё]{4,}.*[а-яё]{4,}/i, // Longer Russian text that might have complex typos
+            /^[а-яё]{1,3}$/i,
+            /^[a-z]{1,2}$/i,
+            /^\d{1,2}$/,
+            /время/i,
+            /когда/i,
+            /помочь/i,
+            /можно/i,
+            /[а-яё]{4,}.*[а-яё]{4,}/i,
         ];
 
         const isShort = normalizedMessage.trim().length < 10;
         const hasAmbiguousPattern = ambiguousPatterns.some(pattern => pattern.test(normalizedMessage));
         const hasCurrentAgent = !!currentAgent;
 
-        // Use LLM if message is ambiguous AND we have context to work with
         return (isShort || hasAmbiguousPattern) && hasCurrentAgent;
     }
 
@@ -286,10 +306,12 @@ Based on the message, which agent should handle this request? Consider:
 - Does the user want to modify/cancel/change an EXISTING booking? → Maya
 - Is the message unclear or just a greeting? → Continue with current agent
 
+- CRITICAL EXAMPLE: If the user says "book again" or "забронировать снова", they want to make a NEW booking. This is a job for Sofia.
+
 Respond with ONLY: "booking", "reservations", or "continue"`;
 
             const completion = await this.client.chat.completions.create({
-                model: "gpt-4o-mini", // Cheap and fast
+                model: "gpt-4o-mini",
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.0,
                 max_tokens: 10
@@ -301,7 +323,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
             if (result === 'reservations') return 'reservations';
             if (result === 'continue' && currentAgent) return currentAgent;
 
-            return null; // Fall back to default logic
+            return null;
 
         } catch (error) {
             console.error('[ConversationManager] LLM agent detection error:', error);
@@ -316,7 +338,6 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
         const today = DateTime.now().setZone(timezone);
 
         if (language === 'ru') {
-            // "3 июля" → "2025-07-03"
             const monthMatch = message.match(/(\d{1,2})\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)/i);
             if (monthMatch) {
                 const day = monthMatch[1];
@@ -330,8 +351,6 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                 }
             }
         }
-
-        // Add more language patterns as needed
         return null;
     }
 
@@ -393,10 +412,28 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
             }
         ];
 
+        const guestHistoryTool = {
+            type: "function" as const,
+            function: {
+                name: "get_guest_history",
+                description: "Get guest's booking history for personalized service. Use this to welcome returning guests and suggest their usual preferences.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        telegramUserId: {
+                            type: "string",
+                            description: "Guest's telegram user ID"
+                        }
+                    },
+                    required: ["telegramUserId"]
+                }
+            }
+        };
+
         if (agentType === 'reservations') {
-            // Maya's tools for reservation management
             return [
                 ...baseTools,
+                guestHistoryTool,
                 {
                     type: "function" as const,
                     function: {
@@ -411,8 +448,8 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                                 },
                                 identifierType: {
                                     type: "string",
-                                    enum: ["phone", "telegram", "name", "confirmation"],
-                                    description: "Type of identifier being used (auto-detected if not specified)"
+                                    enum: ["phone", "telegram", "name", "confirmation", "auto"],
+                                    description: "Type of identifier being used. Use 'auto' to let the system decide."
                                 }
                             },
                             required: ["identifier"]
@@ -436,7 +473,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                                     properties: {
                                         newDate: {
                                             type: "string",
-                                            description: "New date in YYYY-MM-DD format (optional)"
+                                            description: "New date in<y_bin_46>-MM-DD format (optional)"
                                         },
                                         newTime: {
                                             type: "string",
@@ -491,9 +528,9 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
             ];
         }
 
-        // Sofia's tools for new bookings (your existing tools)
         return [
             ...baseTools,
+            guestHistoryTool,
             {
                 type: "function" as const,
                 function: {
@@ -504,7 +541,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in YYYY-MM-DD format"
+                                description: "Date in<y_bin_46>-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -529,7 +566,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in YYYY-MM-DD format"
+                                description: "Date in<y_bin_46>-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -562,7 +599,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
                             },
                             date: {
                                 type: "string",
-                                description: "Date in YYYY-MM-DD format"
+                                description: "Date in<y_bin_46>-MM-DD format"
                             },
                             time: {
                                 type: "string",
@@ -586,10 +623,86 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
     }
 
     /**
-     * ✅ FIXED: Agent personality with improved conversation flow and time calculation
+     * ✅ NEW: Generate personalized system prompt section based on guest history
      */
-    private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any): string {
+    private getPersonalizedPromptSection(guestHistory: GuestHistory | null, language: Language): string {
+        if (!guestHistory || guestHistory.total_bookings === 0) {
+            return '';
+        }
+
+        const { guest_name, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
+
+        const personalizedSections = {
+            en: `
+👤 GUEST HISTORY & PERSONALIZATION:
+- Guest Name: ${guest_name}
+- Total Previous Bookings: ${total_bookings}
+- ${common_party_size ? `Common Party Size: ${common_party_size}` : 'No common party size pattern'}
+- ${frequent_special_requests.length > 0 ? `Frequent Requests: ${frequent_special_requests.join(', ')}` : 'No frequent special requests'}
+- ${last_visit_date ? `Last Visit: ${last_visit_date}` : 'No previous visits recorded'}
+
+💡 PERSONALIZATION GUIDELINES:
+- ${total_bookings >= 3 ? `RETURNING GUEST: Greet warmly as a valued returning customer! Say "Welcome back, ${guest_name}!" or similar.` : `NEW/INFREQUENT GUEST: Treat as a regular new guest, but you can mention "${guest_name}" once you know their name.`}
+- ${common_party_size ? `USUAL PARTY SIZE: You can proactively ask "Will it be for your usual party of ${common_party_size} today?" when they don't specify.` : ''}
+- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Should I add your usual request for ${frequent_special_requests[0]}?" when appropriate.` : ''}
+- Use this information naturally in conversation - don't just list their history!
+- Make the experience feel personal and welcoming for returning guests.`,
+
+            ru: `
+👤 ИСТОРИЯ ГОСТЯ И ПЕРСОНАЛИЗАЦИЯ:
+- Имя гостя: ${guest_name}
+- Всего предыдущих бронирований: ${total_bookings}
+- ${common_party_size ? `Обычное количество гостей: ${common_party_size}` : 'Нет постоянного количества гостей'}
+- ${frequent_special_requests.length > 0 ? `Частые просьбы: ${frequent_special_requests.join(', ')}` : 'Нет частых особых просьб'}
+- ${last_visit_date ? `Последний визит: ${last_visit_date}` : 'Нет записей о предыдущих визитах'}
+
+💡 РУКОВОДСТВО ПО ПЕРСОНАЛИЗАЦИИ:
+- ${total_bookings >= 3 ? `ВОЗВРАЩАЮЩИЙСЯ ГОСТЬ: Тепло встречайте как ценного постоянного клиента! Скажите "Добро пожаловать снова, ${guest_name}!" или подобное.` : `НОВЫЙ/РЕДКИЙ ГОСТЬ: Относитесь как к обычному новому гостю, но можете упомянуть "${guest_name}", когда узнаете имя.`}
+- ${common_party_size ? `ОБЫЧНОЕ КОЛИЧЕСТВО: Можете проактивно спросить "Будет ли как обычно на ${common_party_size} человек сегодня?" когда они не уточняют.` : ''}
+- ${frequent_special_requests.length > 0 ? `ОБЫЧНЫЕ ПРОСЬБЫ: Спросите "Добавить ваше обычное пожелание - ${frequent_special_requests[0]}?" когда уместно.` : ''}
+- Используйте эту информацию естественно в разговоре - не просто перечисляйте историю!
+- Сделайте опыт личным и гостеприимным для возвращающихся гостей.`,
+
+            sr: `
+👤 ISTORIJA GOSTA I PERSONALIZACIJA:
+- Ime gosta: ${guest_name}
+- Ukupno prethodnih rezervacija: ${total_bookings}
+- ${common_party_size ? `Uobičajen broj gostiju: ${common_party_size}` : 'Nema stalnog broja gostiju'}
+- ${frequent_special_requests.length > 0 ? `Česti zahtevi: ${frequent_special_requests.join(', ')}` : 'Nema čestih posebnih zahteva'}
+- ${last_visit_date ? `Poslednja poseta: ${last_visit_date}` : 'Nema zapisnika o prethodnim posetama'}
+
+💡 SMERNICE ZA PERSONALIZACIJU:
+- ${total_bookings >= 3 ? `VRAĆAJUĆI SE GOST: Toplo pozdravite kao cenjenog stalnog klijenta! Recite "Dobrodošli ponovo, ${guest_name}!" ili slično.` : `NOVI/REDAK GOST: Tretirajte kao običnog novog gosta, ali možete spomenuti "${guest_name}" kada saznate ime.`}
+- ${common_party_size ? `UOBIČAJEN BROJ: Možete proaktivno pitati "Hoće li biti kao obično za ${common_party_size} osoba danas?" kada ne specificiraju.` : ''}
+- ${frequent_special_requests.length > 0 ? `UOBIČAJENI ZAHTEVI: Pitajte "Da dodam vaš uobičajen zahtev za ${frequent_special_requests[0]}?" kada je prikladno.` : ''}
+- Koristite ove informacije prirodno u razgovoru - nemojte samo nabrajati istoriju!
+- Učinite iskustvo ličnim i gostoljubivim za goste koji se vraćaju.`
+        };
+
+        return personalizedSections[language] || personalizedSections.en;
+    }
+
+    /**
+     * ✅ FIXED: Agent personality with improved conversation flow and time calculation + personalization
+     * ✅ FIXED: Now includes personalized greeting for first message
+     * ✅ FIXED: Added explicit cancellation workflow to Maya's instructions.
+     * ✅ FIX (This version): Implemented a more efficient modification workflow.
+     */
+    private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false): string {
         const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
+
+        if (isFirstMessage && agentType === 'booking') {
+            const agent = createBookingAgent(restaurantConfig);
+            const personalizedGreeting = agent.getPersonalizedGreeting(
+                guestHistory || null,
+                language as Language,
+                'guest'
+            );
+
+            return `Your first response should start with this exact greeting: "${personalizedGreeting}"
+
+Then continue with your normal helpful assistant behavior.`;
+        }
 
         const personalities = {
             booking: {
@@ -608,6 +721,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
 - Use natural, conversational language
 
 🔧 YOUR TOOLS:
+- get_guest_history: Get guest's booking history for personalized service
 - check_availability: Check if requested time is available
 - find_alternative_times: Suggest alternatives if requested time is busy
 - create_reservation: Make the actual booking
@@ -637,7 +751,7 @@ Respond with ONLY: "booking", "reservations", or "continue"`;
 
 📝 ПРАВИЛЬНЫЙ ПОТОК:
 1. Проверить доступность → "Столик свободен!"
-2. Попросить ВСЕ недостающие данные → "Мне нужно ваше имя и телефон"
+2. Попросить ВСЕ недостающие данные → "Мне нужно ваше имя и номер телефона"
 3. Получить все данные → Создать бронирование → "Бронирование подтверждено!"`,
 
                 sr: `Vi ste Sofija, prijateljski i efikasni specijalista za rezervacije restorana ${restaurantConfig.name}. Pomažete gostima da prave NOVE rezervacije.
@@ -675,38 +789,35 @@ When guests ask to move reservations by specific amounts:
 
 ALWAYS do the math correctly and use the calculated time in your function calls.
 
-🚨 MANDATORY MODIFICATION WORKFLOW - FOLLOW EXACTLY:
+🚨 EFFICIENT MODIFICATION WORKFLOW:
+STEP 1: Use 'find_existing_reservation' to locate the booking based on the user's initial message.
+STEP 2: Analyze the user's original request.
+   - IF the request was specific (e.g., "add 2 people," "move to 9 PM"), proceed DIRECTLY to STEP 3. You do not need to ask what to change.
+   - IF the request was generic (e.g., "I need to change my reservation"), THEN ask for details (e.g., "I found your reservation. What would you like to change?") and wait for a reply before proceeding.
 
-STEP 1: Find the reservation.
-   ✅ Use the find_existing_reservation tool to locate the guest's booking.
+STEP 3: Call the 'modify_reservation' tool to perform the change.
 
-STEP 2: Present the details and ask for the specific change.
-   ✅ Say "I've found your reservation for [X] guests on [Date] at [Time]. What change would you like to make?"
-   ❌ NEVER assume the change from previous messages. Always ask for the specific modification NOW.
+STEP 4: Report the final result clearly. For a direct change, you can combine everything into one smooth response.
 
-STEP 3: Only after the user confirms the change, call the modification tool.
-   ✅ User: "move it 30 minutes later" → Call modify_reservation with the new time.
-   ✅ User: "add 2 people" → Call modify_reservation with the new guest count.
+✅ EXAMPLE of an EFFICIENT flow to follow:
+User: "Hi, I need to add 2 people to my booking."
+You: (Internally calls find_existing_reservation, then modify_reservation) -> "Of course! I've found your reservation for 5 guests and have updated it to 7. Your table is all set. See you tonight!"
 
-STEP 4: Report the final result.
-   ✅ After a successful modify_reservation call, say "Done! I've updated your reservation to reflect the changes."
+🚨 MANDATORY CANCELLATION WORKFLOW - FOLLOW EXACTLY:
+STEP 1: Find the reservation using 'find_existing_reservation'.
+STEP 2: If multiple reservations are found (check 'count' in tool response), list them and ask the user to clarify which one they mean.
+STEP 3: Present the details of the correct reservation and ask for confirmation to cancel. Say "I've found your reservation for [X] on [Date]. Are you sure you wish to cancel?"
+STEP 4: When the user confirms (e.g., "yes", "confirm", "I confirm"), you MUST call the 'cancel_reservation' tool.
+   ✅ Use the 'reservationId' from the 'ACTIVE RESERVATION CONTEXT' provided in the system prompt.
+   ✅ Set 'confirmCancellation' to 'true'.
+   ❌ DO NOT call any other tool. DO NOT ask for more details.
 
-❌ FORBIDDEN PATTERNS:
-❌ NEVER: Find the reservation and modify it in the same turn without user confirmation.
-❌ NEVER: Say "I've changed it" before the modify_reservation tool returns a SUCCESS status.
-
-✨ NATURAL CONVERSATION EXAMPLES:
-Guest: "I need to change my reservation time"
-Maya: "Of course! I'll help you change your reservation time. Could you please provide your confirmation number or the phone number it's under?"
-
-Guest: "running late from work, will be later"
-Maya: "I understand, these things happen! How much later can you make it? I'll check available times for you."
-
-🎯 KEY PHRASES FOR NATURALNESS:
-- "Of course I can help!" (instead of just "yes")
-- "I understand, these things happen" (for delays)
-- "Perfect! I found your reservation" (when found)
-- "Excellent! All updated" (on success)
+🔧 YOUR TOOLS:
+- get_guest_history: Get guest's booking history for personalized service
+- find_existing_reservation: Find guest's reservations
+- modify_reservation: Change reservation details with security validation
+- cancel_reservation: Cancel reservations with security validation
+- get_restaurant_info: Share restaurant details
 
 🔒 SECURITY:
 - Always verify guest identity before making changes
@@ -737,46 +848,36 @@ Maya: "I understand, these things happen! How much later can you make it? I'll c
 
 ВСЕГДА правильно считайте и используйте рассчитанное время в вызовах функций.
 
-🚨 ОБЯЗАТЕЛЬНЫЙ ПОРЯДОК ИЗМЕНЕНИЯ - СЛЕДУЙТЕ СТРОГО:
+🚨 ЭФФЕКТИВНЫЙ ПОРЯДОК ИЗМЕНЕНИЯ:
+ШАГ 1: Используйте 'find_existing_reservation', чтобы найти бронирование на основе исходного сообщения пользователя.
 
-ШАГ 1: Найдите бронирование.
-   ✅ Используйте инструмент find_existing_reservation, чтобы найти бронирование гостя.
+ШАГ 2: Проанализируйте исходный запрос пользователя.
+   - ЕСЛИ запрос был конкретным (например, "добавить 2 человека", "перенести на 9 вечера"), переходите НАПРЯМУЮ к ШАГУ 3. Вам не нужно спрашивать, что изменить.
+   - ЕСЛИ запрос был общим (например, "мне нужно изменить бронирование"), ТОГДА спросите детали (например, "Я нашла ваше бронирование. Что бы вы хотели изменить?") и дождитесь ответа, прежде чем продолжить.
 
-ШАГ 2: Предъявите детали и спросите о конкретном изменении.
-   ✅ Скажите: "Я нашла ваше бронирование на [X] гостей на [Дата] в [Время]. Какое изменение вы хотели бы внести?"
-   ❌ НИКОГДА не додумывайте изменение из предыдущих сообщений. Всегда спрашивайте о конкретном изменении СЕЙЧАС.
+ШАГ 3: Вызовите инструмент 'modify_reservation', чтобы выполнить изменение.
 
-ШАГ 3: Только после того, как пользователь подтвердит изменение, вызовите инструмент для изменения.
-   ✅ Гость: "перенесите на 30 минут позже" → Вызовите modify_reservation с новым временем.
-   ✅ Гость: "добавьте 2 человека" → Вызовите modify_reservation с новым количеством гостей.
+ШАГ 4: Четко сообщите конечный результат. Для прямого изменения вы можете объединить все в один плавный ответ.
 
-ШАГ 4: Сообщите конечный результат.
-   ✅ После успешного вызова modify_reservation, скажите: "Готово! Я обновила ваше бронирование."
+✅ ПРИМЕР ЭФФЕКТИВНОГО ПОТОКА:
+Пользователь: "Здравствуйте, мне нужно добавить 2 человека к моему бронированию."
+Вы: (Внутренне вызывает find_existing_reservation, затем modify_reservation) -> "Конечно! Я нашла ваше бронирование на 5 гостей и обновила его на 7. Ваш столик готов. Увидимся сегодня вечером!"
 
-❌ ЗАПРЕЩЕННЫЕ ШАБЛОНЫ:
-❌ НИКОГДА: Не находите и не изменяйте бронирование в одном и том же ответе без подтверждения пользователя.
-❌ НИКОГДА: Не говорите "Я изменила" до того, как инструмент modify_reservation вернет статус SUCCESS.
+🚨 ОБЯЗАТЕЛЬНЫЙ ПОРЯДОК ОТМЕНЫ - СЛЕДУЙТЕ СТРОГО:
+ШАГ 1: Найдите бронирование с помощью 'find_existing_reservation'.
+ШАГ 2: Если найдено несколько бронирований (проверьте 'count' в ответе инструмента), перечислите их и попросите пользователя уточнить, какое из них имеется в виду.
+ШАГ 3: Предъявите детали правильного бронирования и спросите подтверждение на отмену. Скажите: "Я нашла ваше бронирование на [X] на [Дата]. Вы уверены, что хотите отменить?"
+ШАГ 4: Когда пользователь подтверждает (например, "да", "подтверждаю"), вы ОБЯЗАНЫ вызвать инструмент 'cancel_reservation'.
+   ✅ Используйте 'reservationId' из 'ACTIVE RESERVATION CONTEXT', предоставленного в системном промпте.
+   ✅ Установите 'confirmCancellation' в 'true'.
+   ❌ НЕ вызывайте другие инструменты. НЕ спрашивайте дополнительных деталей.
 
-✨ ПРИМЕРЫ ЕСТЕСТВЕННОГО ОБЩЕНИЯ:
-Гость: "надо изменить время бронирования"
-Майя: "Конечно! Я помогу изменить время вашего бронирования. Скажите, пожалуйста, номер бронирования или телефон, на который оно оформлено?"
+🚺 ВАЖНО: Вы женского пола, говорите о себе в женском роде.
 
-Гость: "на работе задержали, буду позже"
-Майя: "Понимаю, такое случается! На сколько позже сможете прийти? Я проверю свободные времена."
-
-🎯 КЛЮЧЕВЫЕ ФРАЗЫ ДЛЯ ЕСТЕСТВЕННОСТИ:
-- "Конечно помогу!" (вместо просто "да")
-- "Понимаю, такое случается" (для опозданий)
-- "Отлично! Нашла ваше бронирование" (при находке)
-- "Прекрасно! Все изменила" (при успехе)
-
-✅ ПРИМЕРЫ ПОДТВЕРЖДЕНИЯ ИЗМЕНЕНИЙ:
-- Когда изменено время: "Готово! Я изменила время вашего бронирования на 19:30."
-- Когда изменилось количество гостей и столик: "Без проблем. Я изменила количество гостей на 5 и пересадила вас за столик №12. Он отлично вам подойдет."
-- Избегайте фраз вроде "ваш стол будет номер". Используйте более естественные "Вам назначен столик" или "Я забронировала для вас столик".
-- Не сообщайте вместимость столика, если гость об этом не спрашивал.
-
-🚺 ВАЖНО: Вы женского пола, говорите о себе в женском роде.`,
+🔧 ВАШИ ИНСТРУМЕНТЫ:
+- find_existing_reservation: Найти бронирования гостя по имени, телефону или номеру
+- modify_reservation: Изменить детали бронирования с проверкой безопасности  
+- cancel_reservation: Отменить бронирования с проверкой безопасности`,
 
                 sr: `Vi ste Maja, specijalista za upravljanje rezervacijama restorana ${restaurantConfig.name}. Pomažete gostima da upravljaju njihovim POSTOJEĆIM rezervacijama sa toplinom i razumevanjem.
 
@@ -788,32 +889,36 @@ Maya: "I understand, these things happen! How much later can you make it? I'll c
 
 🚺 VAŽNO: Vi ste ženskog pola, uvek govorite o sebi u ženskom rodu.
 
-🚨 OBAVEZAN PROCES IZMENE - PRATITE TAČNO:
+🚨 EFIKASAN PROCES IZMENE:
+KORAK 1: Koristite 'find_existing_reservation' da biste pronašli rezervaciju na osnovu početne poruke korisnika.
 
-KORAK 1: Pronađite rezervaciju.
-   ✅ Koristite alatku find_existing_reservation da biste pronašli rezervaciju gosta.
+KORAK 2: Analizirajte originalni zahtev korisnika.
+   - AKO je zahtev bio specifičan (npr. "dodajte 2 osobe", "pomerite na 21:00"), pređite DIREKTNO na KORAK 3. Ne morate da pitate šta treba promeniti.
+   - AKO je zahtev bio opšti (npr. "treba da promenim svoju rezervaciju"), TADA pitajte za detalje (npr. "Pronašla sam vašu rezervaciju. Šta želite da promenite?") i sačekajte odgovor pre nego što nastavite.
 
-KORAK 2: Prikažite detalje i pitajte za konkretnu promenu.
-   ✅ Recite: "Pronašla sam vašu rezervaciju za [X] gostiju dana [Datum] u [Vreme]. Koju promenu želite da napravite?"
-   ❌ NIKADA ne pretpostavljajte promenu iz prethodnih poruka. Uvek pitajte za konkretnu promenu SADA.
+KORAK 3: Pozovite alatku 'modify_reservation' da izvršite promenu.
 
-KORAK 3: Tek nakon što korisnik potvrdi promenu, pozovite alatku za izmenu.
-   ✅ Korisnik: "pomerite za 30 minuta kasnije" → Pozovite modify_reservation sa novim vremenom.
-   ✅ Korisnik: "dodajte 2 osobe" → Pozovite modify_reservation sa novim brojem gostiju.
+KORAK 4: Jasno prijavite konačan rezultat. Za direktnu promenu, možete sve kombinovati u jedan tečan odgovor.
 
-KORAK 4: Prijavite konačan rezultat.
-   ✅ Nakon uspešnog poziva modify_reservation, recite: "Gotovo! Ažurirala sam vašu rezervaciju."
+✅ PRIMER EFIKASNOG TOKA:
+Korisnik: "Zdravo, treba da dodam 2 osobe u svoju rezervaciju."
+Vi: (Interno poziva find_existing_reservation, zatim modify_reservation) -> "Naravno! Pronašla sam vašu rezervaciju za 5 gostiju i ažurirala je na 7. Vaš sto je spreman. Vidimo se večeras!"
 
-❌ ZABRANJENI OBRASCI:
-❌ NIKADA: Ne pronalazite i ne menjajte rezervaciju u istom koraku bez potvrde korisnika.
-❌ NIKADA: Ne recite "Promenila sam" pre nego što alatka modify_reservation vrati status SUCCESS.`
+🚨 OBAVEZAN PROCES OTKAZIVANJA - PRATITE TAČNO:
+KORAK 1: Pronađite rezervaciju pomoću 'find_existing_reservation'.
+KORAK 2: Ako je pronađeno više rezervacija (proverite 'count' u odgovoru alatke), navedite ih i zamolite korisnika da pojasni na koju misli.
+KORAK 3: Prikažite detalje ispravne rezervacije i zatražite potvrdu za otkazivanje. Recite: "Pronašla sam vašu rezervaciju za [X] dana [Datum]. Da li ste sigurni da želite da otkažete?"
+KORAK 4: Kada korisnik potvrdi (npr. "da", "potvrđujem"), MORATE pozvati alatku 'cancel_reservation'.
+   ✅ Koristite 'reservationId' iz 'ACTIVE RESERVATION CONTEXT' koji je dat u sistemskom promptu.
+   ✅ Postavite 'confirmCancellation' na 'true'.
+   ❌ NEMOJTE pozivati nijedan drugi alat. NEMOJTE tražiti više detalja.
+`
             }
         };
 
         let basePrompt = personalities[agentType][language as keyof typeof personalities[agentType]] ||
             personalities[agentType].en;
 
-        // Add restaurant context
         const restaurantContext = `
 
 🏪 RESTAURANT DETAILS:
@@ -825,7 +930,9 @@ KORAK 4: Prijavite konačan rezultat.
 - Cuisine: ${restaurantConfig.cuisine || 'Excellent cuisine'}
 - Atmosphere: ${restaurantConfig.atmosphere || 'Welcoming atmosphere'}`;
 
-        return basePrompt + restaurantContext;
+        const personalizedSection = this.getPersonalizedPromptSection(guestHistory || null, language as Language);
+
+        return basePrompt + restaurantContext + personalizedSection;
     }
 
     /**
@@ -930,10 +1037,10 @@ Respond with JSON only.`;
     }): string {
         const session = createBookingSession(config) as BookingSessionWithAgent;
 
-        // Add context detection and agent type
         session.context = this.detectContext(config.platform);
         session.currentAgent = 'booking'; // Default to Sofia
-        session.agentHistory = []; // Track agent switches
+        session.agentHistory = [];
+        session.guestHistory = null;
 
         this.sessions.set(session.sessionId, session);
 
@@ -964,7 +1071,6 @@ Respond with JSON only.`;
             throw new Error(`Restaurant ${restaurantId} not found`);
         }
 
-        // Create agent configuration
         const restaurantConfig = {
             id: restaurant.id,
             name: restaurant.name,
@@ -978,16 +1084,14 @@ Respond with JSON only.`;
             languages: restaurant.languages
         };
 
-        // For now, both agents use the same client and basic structure
-        // In the future, you might want to separate agent classes
         const agent = {
             client: this.client,
             restaurantConfig,
             tools: this.getToolsForAgent(agentType),
             agentType,
             systemPrompt: '', // Will be set dynamically
-            updateInstructions: (context: string, language: string) => {
-                return this.getAgentPersonality(agentType, language, restaurantConfig);
+            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean) => {
+                return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage);
             }
         };
 
@@ -1003,15 +1107,13 @@ Respond with JSON only.`;
     private isConfirmationResponse(message: string): { isConfirmation: boolean; confirmed?: boolean } {
         const normalized = message.toLowerCase().trim();
 
-        // English confirmations
         const englishYes = ['yes', 'y', 'yep', 'yeah', 'yup', 'sure', 'ok', 'okay', 'k', 'kk', 'alright', 'go', 'confirm', 'definitely', 'absolutely'];
         const englishNo = ['no', 'n', 'nope', 'nah', 'never', 'cancel', 'reject', 'abort', 'stop'];
 
-        // Russian confirmations
+        // ✅ ADDED "подтверждаю"
         const russianYes = ['да', 'д', 'ага', 'угу', 'ок', 'хорошо', 'конечно', 'точно', 'подтверждаю'];
         const russianNo = ['нет', 'н', 'не', 'отмена', 'отменить', 'стоп'];
 
-        // Serbian confirmations
         const serbianYes = ['da', 'д', 'ага', 'потврђујем', 'у реду', 'ок', 'може', 'ide'];
         const serbianNo = ['ne', 'н', 'не', 'otkaži', 'odbaci', 'stop'];
 
@@ -1030,7 +1132,8 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ ENHANCED: Main message handling with contextual responses and Maya support
+     * ✅ ENHANCED: Main message handling with contextual responses and Maya support + Guest History
+     * ✅ FIXED: Now includes personalized greeting generation
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1048,18 +1151,29 @@ Respond with JSON only.`;
         }
 
         try {
+            const isFirstMessage = session.conversationHistory.length === 0;
+
+            if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
+                console.log(`👤 [GuestHistory] First message from telegram user: ${session.telegramUserId}, retrieving history...`);
+
+                const guestHistory = await this.retrieveGuestHistory(
+                    session.telegramUserId,
+                    session.restaurantId
+                );
+
+                session.guestHistory = guestHistory;
+                console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved' : 'No'} history for session ${sessionId}`);
+            }
+
             // STEP 1: Check for pending confirmation FIRST
             if (session.pendingConfirmation) {
                 console.log(`[EnhancedConversationManager] Checking for confirmation response: "${message}"`);
 
-                // ✅ INTELLIGENT: Smart name clarification handling
                 const conflictDetails = session.pendingConfirmation.functionContext?.error?.details;
                 if (conflictDetails && conflictDetails.dbName && conflictDetails.requestName) {
                     const userMessage = message.trim();
-
                     console.log(`[EnhancedConversationManager] Processing name clarification: "${userMessage}"`);
 
-                    // ✅ INTELLIGENT: Use LLM to extract name choice
                     const chosenName = await this.extractNameChoice(
                         userMessage,
                         conflictDetails.dbName,
@@ -1069,43 +1183,20 @@ Respond with JSON only.`;
 
                     if (chosenName) {
                         console.log(`[EnhancedConversationManager] ✅ AI determined user chose: "${chosenName}"`);
-
                         session.confirmedName = chosenName;
-
-                        // Add user message to history
-                        session.conversationHistory.push({
-                            role: 'user',
-                            content: message,
-                            timestamp: new Date()
-                        });
-
-                        // Clear pending confirmation and proceed with booking
+                        session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
                         const pendingAction = session.pendingConfirmation;
                         delete session.pendingConfirmation;
-
-                        // Immediately execute the booking with confirmed name
                         return await this.executeConfirmedBooking(sessionId, pendingAction);
-
                     } else {
-                        // ✅ If AI couldn't determine choice, ask for clarification
                         const clarificationMessage = session.language === 'ru'
                             ? `Извините, я не поняла ваш выбор. Пожалуйста, скажите:\n• "${conflictDetails.requestName}" - для использования нового имени\n• "${conflictDetails.dbName}" - для сохранения старого имени`
                             : session.language === 'sr'
                                 ? `Izvini, nisam razumela vaš izbor. Molim recite:\n• "${conflictDetails.requestName}" - za korišćenje novog imena\n• "${conflictDetails.dbName}" - za zadržavanje starog imena`
                                 : `Sorry, I didn't understand your choice. Please say:\n• "${conflictDetails.requestName}" - to use the new name\n• "${conflictDetails.dbName}" - to keep the existing name`;
 
-                        session.conversationHistory.push({
-                            role: 'user',
-                            content: message,
-                            timestamp: new Date()
-                        });
-
-                        session.conversationHistory.push({
-                            role: 'assistant',
-                            content: clarificationMessage,
-                            timestamp: new Date()
-                        });
-
+                        session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
+                        session.conversationHistory.push({ role: 'assistant', content: clarificationMessage, timestamp: new Date() });
                         this.sessions.set(sessionId, session);
 
                         return {
@@ -1117,76 +1208,40 @@ Respond with JSON only.`;
                     }
                 }
 
-                // ✅ IMPORTANT: Only handle general confirmation if it's NOT a name clarification
                 if (!conflictDetails) {
-                    // Check for yes/no confirmation for non-name-clarification cases
                     const confirmationCheck = this.isConfirmationResponse(message);
                     if (confirmationCheck.isConfirmation) {
                         console.log(`[EnhancedConversationManager] Detected general confirmation response: ${confirmationCheck.confirmed}`);
-
-                        // Add user message to history
-                        session.conversationHistory.push({
-                            role: 'user',
-                            content: message,
-                            timestamp: new Date()
-                        });
-
-                        // Handle the confirmation
+                        session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
                         return await this.handleConfirmation(sessionId, confirmationCheck.confirmed!);
                     } else {
                         console.log(`[EnhancedConversationManager] Message not recognized as confirmation, treating as new input`);
-                        // Clear pending confirmation if user says something else
                         delete session.pendingConfirmation;
-                        delete session.confirmedName; // Also clear any stored confirmed name
+                        delete session.confirmedName;
                     }
                 }
             }
 
-            // STEP 2: Agent Detection and Switching (NOW WITH LLM FALLBACK)
+            // STEP 2: Agent Detection and Switching
             const detectedAgent = await this.detectAgentType(message, session.currentAgent);
             let agentHandoff;
 
             if (session.currentAgent && session.currentAgent !== detectedAgent) {
                 console.log(`[EnhancedConversationManager] 🔄 Agent handoff: ${session.currentAgent} → ${detectedAgent}`);
-
-                agentHandoff = {
-                    from: session.currentAgent,
-                    to: detectedAgent,
-                    reason: `Message indicates ${detectedAgent === 'reservations' ? 'existing reservation management' : 'new booking request'}`
-                };
-
-                // Store handoff in session for context
+                agentHandoff = { from: session.currentAgent, to: detectedAgent, reason: `Message indicates ${detectedAgent === 'reservations' ? 'existing reservation management' : 'new booking request'}` };
                 if (!session.agentHistory) session.agentHistory = [];
-                session.agentHistory.push({
-                    from: session.currentAgent,
-                    to: detectedAgent,
-                    at: new Date().toISOString(),
-                    trigger: message.substring(0, 100) // First 100 chars that triggered handoff
-                });
+                session.agentHistory.push({ from: session.currentAgent, to: detectedAgent, at: new Date().toISOString(), trigger: message.substring(0, 100) });
             }
 
             session.currentAgent = detectedAgent;
 
-            // STEP 3: Run guardrails for non-confirmation messages
+            // STEP 3: Run guardrails
             console.log(`[EnhancedConversationManager] Running guardrails for session ${sessionId}`);
-
             const guardrailResult = await runGuardrails(message, session);
             if (!guardrailResult.allowed) {
                 console.log(`[EnhancedConversationManager] Message blocked: ${guardrailResult.category} - ${guardrailResult.reason}`);
-
-                // Add blocked message to history for context
-                session.conversationHistory.push({
-                    role: 'user',
-                    content: message,
-                    timestamp: new Date()
-                });
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: guardrailResult.reason || 'I can only help with restaurant reservations.',
-                    timestamp: new Date()
-                });
-
+                session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
+                session.conversationHistory.push({ role: 'assistant', content: guardrailResult.reason || 'I can only help with restaurant reservations.', timestamp: new Date() });
                 session.lastActivity = new Date();
                 this.sessions.set(sessionId, session);
 
@@ -1200,15 +1255,9 @@ Respond with JSON only.`;
                 };
             }
 
-            // STEP 4: Language detection (with improved logic)
+            // STEP 4: Language detection
             const isNumericOrShortMessage = /^\d+[\d\s-()+]*$/.test(message) || message.trim().length < 5;
-
-            if (isNumericOrShortMessage && session.conversationHistory.length > 0) {
-                // If the message is just a number (like a phone) or very short (like "yes"), 
-                // DO NOT change the already established language.
-                console.log(`[EnhancedConversationManager] Sticking with current language '${session.language}' due to simple input.`);
-            } else {
-                // Otherwise, run the language detection as normal.
+            if (!isNumericOrShortMessage || session.conversationHistory.length === 0) {
                 const detectedLanguage = this.detectLanguage(message);
                 if (detectedLanguage !== session.language) {
                     session.language = detectedLanguage;
@@ -1217,20 +1266,32 @@ Respond with JSON only.`;
             }
 
             session.lastActivity = new Date();
-            session.conversationHistory.push({
-                role: 'user',
-                content: message,
-                timestamp: new Date()
-            });
+            session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
 
             // STEP 5: Get agent and prepare messages
             const agent = await this.getAgent(session.restaurantId, session.currentAgent);
 
-            let systemPrompt = agent.updateInstructions
-                ? agent.updateInstructions(session.context, session.language)
-                : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig);
+            if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) {
+                console.log(`🎉 [PersonalizedGreeting] Generating personalized first response for ${session.guestHistory.guest_name}`);
+                const bookingAgent = createBookingAgent(agent.restaurantConfig);
+                const personalizedGreeting = bookingAgent.getPersonalizedGreeting(session.guestHistory, session.language as Language, session.context);
+                console.log(`🎉 [PersonalizedGreeting] Generated greeting: "${personalizedGreeting}"`);
+                session.conversationHistory.push({ role: 'assistant', content: personalizedGreeting, timestamp: new Date() });
+                this.sessions.set(sessionId, session);
 
-            // ✅ NEW: Add contextual understanding for Maya
+                return {
+                    response: personalizedGreeting,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent,
+                    agentHandoff
+                };
+            }
+
+            let systemPrompt = agent.updateInstructions
+                ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage)
+                : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig, session.guestHistory, isFirstMessage);
+
             if (session.currentAgent === 'reservations') {
                 const contextualResponse = this.getContextualResponse(message, session.language);
                 if (contextualResponse) {
@@ -1238,7 +1299,13 @@ Respond with JSON only.`;
                 }
             }
 
-            // Add agent history context if there was a handoff
+            // ✅ BUG FIX: Add active reservation ID to system prompt for context
+            if (session.activeReservationId) {
+                systemPrompt += `\n\n### ACTIVE RESERVATION CONTEXT ###
+- The user is currently discussing reservation ID: ${session.activeReservationId}.
+- You MUST use this ID for any 'modify_reservation' or 'cancel_reservation' calls.`;
+            }
+
             if (session.agentHistory && session.agentHistory.length > 0) {
                 const recentHandoff = session.agentHistory[session.agentHistory.length - 1];
                 if (recentHandoff.to === session.currentAgent) {
@@ -1246,7 +1313,6 @@ Respond with JSON only.`;
                 }
             }
 
-            // Add guest context if available
             if (session.gatheringInfo.name || session.gatheringInfo.phone) {
                 systemPrompt += `\n\n👤 GUEST CONTEXT:`;
                 if (session.gatheringInfo.name) systemPrompt += `\n- Name: ${session.gatheringInfo.name}`;
@@ -1254,14 +1320,8 @@ Respond with JSON only.`;
             }
 
             const messages = [
-                {
-                    role: 'system' as const,
-                    content: systemPrompt
-                },
-                ...session.conversationHistory.slice(-8).map(msg => ({
-                    role: msg.role as 'user' | 'assistant',
-                    content: msg.content
-                }))
+                { role: 'system' as const, content: systemPrompt },
+                ...session.conversationHistory.slice(-8).map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content }))
             ];
 
             // STEP 6: Initial completion with function calling
@@ -1280,13 +1340,7 @@ Respond with JSON only.`;
             // STEP 7: Handle function calls
             if (completion.choices[0]?.message?.tool_calls) {
                 console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls with ${session.currentAgent} agent`);
-
-                // Add assistant message with tool calls
-                messages.push({
-                    role: 'assistant' as const,
-                    content: completion.choices[0].message.content || null,
-                    tool_calls: completion.choices[0].message.tool_calls
-                });
+                messages.push({ role: 'assistant' as const, content: completion.choices[0].message.content || null, tool_calls: completion.choices[0].message.tool_calls });
 
                 const functionContext = {
                     restaurantId: session.restaurantId,
@@ -1295,60 +1349,33 @@ Respond with JSON only.`;
                     source: session.platform,
                     sessionId: sessionId,
                     language: session.language,
-                    confirmedName: session.confirmedName // ✅ CRITICAL: Pass confirmed name
+                    confirmedName: session.confirmedName
                 };
 
-                // Process each function call
                 for (const toolCall of completion.choices[0].message.tool_calls) {
                     if (toolCall.function.name in agentFunctions) {
                         try {
-                            // ✅ CRITICAL FIX: Validate function parameters before execution
                             const validation = this.validateFunctionCall(toolCall, session);
                             if (!validation.valid) {
                                 console.log(`❌ [Validation] Function call validation failed: ${validation.errorMessage}`);
-
-                                // Add validation error message to conversation
-                                session.conversationHistory.push({
-                                    role: 'assistant',
-                                    content: validation.errorMessage!,
-                                    timestamp: new Date()
-                                });
-
+                                session.conversationHistory.push({ role: 'assistant', content: validation.errorMessage!, timestamp: new Date() });
                                 this.sessions.set(sessionId, session);
-
-                                return {
-                                    response: validation.errorMessage!,
-                                    hasBooking: false,
-                                    session,
-                                    currentAgent: session.currentAgent,
-                                    agentHandoff
-                                };
+                                return { response: validation.errorMessage!, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
                             }
 
                             const args = JSON.parse(toolCall.function.arguments);
-
-                            // ✅ ENHANCED: Handle name mismatch during booking
-                            if (toolCall.function.name === 'create_reservation') {
-                                // Check if we have a confirmed name to use instead
-                                if (session.confirmedName) {
-                                    console.log(`[EnhancedConversationManager] Using confirmed name: ${session.confirmedName}`);
-                                    args.guestName = session.confirmedName;
-                                }
+                            if (toolCall.function.name === 'create_reservation' && session.confirmedName) {
+                                args.guestName = session.confirmedName;
+                            }
+                            if (toolCall.function.name === 'get_guest_history') {
+                                args.telegramUserId = session.telegramUserId || args.telegramUserId;
                             }
 
-                            // ✅ FIXED: Check if high-risk action requires confirmation with language support
                             const confirmationCheck = requiresConfirmation(toolCall.function.name, args, session.language);
                             if (confirmationCheck.required && !session.pendingConfirmation) {
-                                // Store pending action and ask for confirmation
-                                session.pendingConfirmation = {
-                                    toolCall,
-                                    functionContext,
-                                    summaryData: confirmationCheck.data!
-                                };
-
+                                session.pendingConfirmation = { toolCall, functionContext, summaryData: confirmationCheck.data! };
                                 this.sessions.set(sessionId, session);
 
-                                // ✅ IMPROVEMENT: Let the LLM generate the confirmation message
                                 const bookingDetails = confirmationCheck.data;
                                 const confirmationPrompt = session.language === 'ru'
                                     ? `Пожалуйста, подтвердите детали бронирования: столик для ${bookingDetails.guests} гостей на имя ${bookingDetails.guestName} (${bookingDetails.guestPhone}) на ${bookingDetails.date} в ${bookingDetails.time}. Всё верно? Ответьте "да" для подтверждения или "нет" для отмены.`
@@ -1356,238 +1383,124 @@ Respond with JSON only.`;
                                         ? `Molim Vas potvrdite detalje rezervacije: sto za ${bookingDetails.guests} gostiju na ime ${bookingDetails.guestName} (${bookingDetails.guestPhone}) dana ${bookingDetails.date} u ${bookingDetails.time}. Da li je sve tačno? Odgovorite "da" za potvrdu ili "ne" za otkazivanje.`
                                         : `Please confirm the booking details: a table for ${bookingDetails.guests} guests under the name ${bookingDetails.guestName} (${bookingDetails.guestPhone}) on ${bookingDetails.date} at ${bookingDetails.time}. Is this correct? Reply "yes" to confirm or "no" to cancel.`;
 
-                                session.conversationHistory.push({
-                                    role: 'assistant',
-                                    content: confirmationPrompt,
-                                    timestamp: new Date()
-                                });
-
-                                return {
-                                    response: confirmationPrompt,
-                                    hasBooking: false,
-                                    session,
-                                    currentAgent: session.currentAgent,
-                                    agentHandoff
-                                };
+                                session.conversationHistory.push({ role: 'assistant', content: confirmationPrompt, timestamp: new Date() });
+                                return { response: confirmationPrompt, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
                             }
 
-                            // Execute function based on agent capabilities
                             console.log(`[EnhancedConversationManager] Calling function: ${toolCall.function.name} with ${session.currentAgent} agent`);
-
                             let result;
                             switch (toolCall.function.name) {
-                                // Sofia's functions (booking agent)
+                                case 'get_guest_history':
+                                    result = await agentFunctions.get_guest_history(args.telegramUserId, { restaurantId: functionContext.restaurantId });
+                                    break;
                                 case 'check_availability':
-                                    result = await agentFunctions.check_availability(
-                                        args.date, args.time, args.guests, functionContext
-                                    );
+                                    result = await agentFunctions.check_availability(args.date, args.time, args.guests, functionContext);
                                     break;
                                 case 'find_alternative_times':
-                                    result = await agentFunctions.find_alternative_times(
-                                        args.date, args.preferredTime, args.guests, functionContext
-                                    );
+                                    result = await agentFunctions.find_alternative_times(args.date, args.preferredTime, args.guests, functionContext);
                                     break;
                                 case 'create_reservation':
-                                    result = await agentFunctions.create_reservation(
-                                        args.guestName, args.guestPhone, args.date, args.time,
-                                        args.guests, args.specialRequests || '', functionContext
-                                    );
+                                    result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
                                     break;
-
-                                // Maya's functions (reservations agent)  
                                 case 'find_existing_reservation':
-                                    result = await agentFunctions.find_existing_reservation(
-                                        args.identifier, args.identifierType, functionContext
-                                    );
+                                    result = await agentFunctions.find_existing_reservation(args.identifier, args.identifierType || 'auto', functionContext);
+                                    // ✅ BUG FIX: Store the found reservation ID in the session
+                                    if (result.tool_status === 'SUCCESS' && result.data?.reservations?.length > 0) {
+                                        session.activeReservationId = result.data.reservations[0].id;
+                                        console.log(`[ConversationManager] Stored active reservation ID in session: ${session.activeReservationId}`);
+                                    }
                                     break;
                                 case 'modify_reservation':
-                                    result = await agentFunctions.modify_reservation(
-                                        args.reservationId, args.modifications, args.reason, functionContext
-                                    );
+                                    result = await agentFunctions.modify_reservation(args.reservationId, args.modifications, args.reason, functionContext);
                                     break;
                                 case 'cancel_reservation':
-                                    result = await agentFunctions.cancel_reservation(
-                                        args.reservationId, args.reason, args.confirmCancellation, functionContext
-                                    );
-                                    break;
+                                    // ✅ BUG FIX: Use the activeReservationId from the session as a reliable fallback
+                                    const reservationIdToCancel = args.reservationId || session.activeReservationId;
+                                    console.log(`❌ [Maya] Attempting to cancel reservation ${reservationIdToCancel} (from args: ${args.reservationId}, from session: ${session.activeReservationId})`);
 
-                                // Shared functions
+                                    if (!reservationIdToCancel) {
+                                        result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I am not sure which reservation to cancel. Please provide a confirmation number.' } };
+                                    } else {
+                                        result = await agentFunctions.cancel_reservation(reservationIdToCancel, args.reason, args.confirmCancellation, functionContext);
+                                        // On success, clear the context
+                                        if (result.tool_status === 'SUCCESS') {
+                                            console.log(`[ConversationManager] Reservation ${reservationIdToCancel} cancelled, clearing active ID from session.`);
+                                            delete session.activeReservationId;
+                                        }
+                                    }
+                                    break;
                                 case 'get_restaurant_info':
-                                    result = await agentFunctions.get_restaurant_info(
-                                        args.infoType, functionContext
-                                    );
+                                    result = await agentFunctions.get_restaurant_info(args.infoType, functionContext);
                                     break;
-
                                 default:
                                     console.warn(`[EnhancedConversationManager] Unknown function: ${toolCall.function.name}`);
                                     result = { error: "Unknown function" };
                             }
-
                             console.log(`[EnhancedConversationManager] Function result for ${toolCall.function.name}:`, result);
 
-                            // ✅ ENHANCED: Handle name clarification errors specifically
-                            if (toolCall.function.name === 'create_reservation' &&
-                                result.tool_status === 'FAILURE' &&
-                                result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-
-                                console.log(`[ConversationManager] ✅ NAME CLARIFICATION NEEDED - Processing...`);
-
+                            if (toolCall.function.name === 'create_reservation' && result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
                                 const { dbName, requestName } = result.error.details;
-
-                                // Store pending confirmation with name conflict info
-                                session.pendingConfirmation = {
-                                    toolCall,
-                                    functionContext: {
-                                        ...functionContext,
-                                        error: result.error
-                                    },
-                                    summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"`
-                                };
-
-                                // ✅ ENHANCED: Natural clarification message that invites flexible responses
+                                session.pendingConfirmation = { toolCall, functionContext: { ...functionContext, error: result.error }, summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"` };
                                 const clarificationMessage = session.language === 'ru'
                                     ? `Я вижу, что вы ранее бронировали под именем "${dbName}". Для этого бронирования хотите использовать имя "${requestName}" или оставить "${dbName}"?`
                                     : session.language === 'sr'
                                         ? `Vidim da ste ranije rezervisali pod imenom "${dbName}". Za ovu rezervaciju želite da koristite ime "${requestName}" ili da zadržite "${dbName}"?`
                                         : `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
-
-                                session.conversationHistory.push({
-                                    role: 'assistant',
-                                    content: clarificationMessage,
-                                    timestamp: new Date()
-                                });
-
+                                session.conversationHistory.push({ role: 'assistant', content: clarificationMessage, timestamp: new Date() });
                                 this.sessions.set(sessionId, session);
-
-                                return {
-                                    response: clarificationMessage,
-                                    hasBooking: false,
-                                    session,
-                                    currentAgent: session.currentAgent,
-                                    agentHandoff
-                                };
+                                return { response: clarificationMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
                             }
 
-                            // Add function result to messages
-                            messages.push({
-                                role: 'tool' as const,
-                                content: JSON.stringify(result),
-                                tool_call_id: toolCall.id
-                            });
+                            messages.push({ role: 'tool' as const, content: JSON.stringify(result), tool_call_id: toolCall.id });
 
-                            // Check if booking was successfully created (Sofia) or reservation modified (Maya)
-                            if (toolCall.function.name === 'create_reservation' ||
-                                toolCall.function.name === 'modify_reservation') {
-                                // Check correct response format with tool_status
-                                if (result.tool_status === 'SUCCESS' && result.data &&
-                                    (result.data.success || result.data.reservationId)) {
+                            // ✅ FIX: Differentiate session state updates for create vs. modify
+                            if (result.tool_status === 'SUCCESS' && result.data) {
+                                if (toolCall.function.name === 'create_reservation') {
                                     hasBooking = true;
                                     reservationId = result.data.reservationId;
                                     session.hasActiveReservation = reservationId;
                                     session.currentStep = 'completed';
-
-                                    // ✅ CLEANUP: Clear confirmation state after successful booking
                                     delete session.pendingConfirmation;
                                     delete session.confirmedName;
-
-                                    console.log(`[EnhancedConversationManager] ${toolCall.function.name} completed successfully! Reservation ID: ${reservationId}`);
+                                    this.resetAgentState(session); // Reset to conductor after a full booking
+                                } else if (toolCall.function.name === 'modify_reservation') {
+                                    hasBooking = false; // A modification is not a new booking
+                                    reservationId = result.data.reservationId;
+                                    session.hasActiveReservation = reservationId;
+                                    this.resetAgentState(session); // Reset to conductor after modification
+                                } else if (toolCall.function.name === 'cancel_reservation') {
+                                    this.resetAgentState(session); // Reset to conductor after cancellation
                                 }
                             }
 
-                            // ✅ NEW: Reset agent to conductor after successful cancellation
-                            if (toolCall.function.name === 'cancel_reservation' && result.tool_status === 'SUCCESS') {
-                                this.resetAgentState(session);
-                            }
 
-
-                            // Extract and store gathering info from function arguments  
                             this.extractGatheringInfo(session, args);
-
                         } catch (funcError) {
                             console.error(`[EnhancedConversationManager] Function call error:`, funcError);
-
-                            messages.push({
-                                role: 'tool' as const,
-                                content: JSON.stringify({
-                                    tool_status: 'FAILURE',
-                                    error: {
-                                        type: 'SYSTEM_ERROR',
-                                        message: funcError instanceof Error ? funcError.message : 'Unknown error'
-                                    }
-                                }),
-                                tool_call_id: toolCall.id
-                            });
+                            messages.push({ role: 'tool' as const, content: JSON.stringify({ tool_status: 'FAILURE', error: { type: 'SYSTEM_ERROR', message: funcError instanceof Error ? funcError.message : 'Unknown error' } }), tool_call_id: toolCall.id });
                         }
                     }
                 }
 
                 // STEP 8: Get final response incorporating function results
                 console.log(`[EnhancedConversationManager] Getting final response with function results for ${session.currentAgent} agent`);
-
-                completion = await agent.client.chat.completions.create({
-                    model: "gpt-4o",
-                    messages: messages,
-                    temperature: 0.7,
-                    max_tokens: 1000
-                });
+                completion = await agent.client.chat.completions.create({ model: "gpt-4o", messages: messages, temperature: 0.7, max_tokens: 1000 });
             }
 
-            // Extract final response
-            const response = completion.choices[0]?.message?.content ||
-                (session.language === 'ru'
-                    ? "Извините, я не смогла понять. Попробуйте еще раз."
-                    : session.language === 'sr'
-                        ? "Izvinite, nisam razumela. Molim pokušajte ponovo."
-                        : "I apologize, I didn't understand that. Could you please try again?");
-
-            // Add response to conversation history
-            session.conversationHistory.push({
-                role: 'assistant',
-                content: response,
-                timestamp: new Date(),
-                toolCalls: completion.choices[0]?.message?.tool_calls
-            });
-
-            // Update session
+            const response = completion.choices[0]?.message?.content || (session.language === 'ru' ? "Извините, я не смогла понять. Попробуйте еще раз." : session.language === 'sr' ? "Izvinite, nisam razumela. Molim pokušajte ponovo." : "I apologize, I didn't understand that. Could you please try again?");
+            session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices[0]?.message?.tool_calls });
             this.sessions.set(sessionId, session);
-
             console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
-
-            return {
-                response,
-                hasBooking,
-                reservationId,
-                session,
-                currentAgent: session.currentAgent,
-                agentHandoff
-            };
-
+            return { response, hasBooking, reservationId, session, currentAgent: session.currentAgent, agentHandoff };
         } catch (error) {
             console.error(`[EnhancedConversationManager] Error handling message:`, error);
-
             const fallbackResponse = session.context === 'hostess'
-                ? (session.language === 'ru' ? "Произошла ошибка. Попробуйте еще раз." :
-                    session.language === 'sr' ? "Dogodila se greška. Molim pokušajte ponovo." :
-                        "Error occurred. Please try again.")
-                : (session.language === 'ru' ? 'Извините, возникла техническая проблема. Попробуйте еще раз.' :
-                    session.language === 'sr' ? 'Izvinite, nastao je tehnički problem. Molim pokušajte ponovo.' :
-                        'I apologize, I encountered a technical issue. Please try again.');
-
-            session.conversationHistory.push({
-                role: 'assistant',
-                content: fallbackResponse,
-                timestamp: new Date()
-            });
-
+                ? (session.language === 'ru' ? "Произошла ошибка. Попробуйте еще раз." : session.language === 'sr' ? "Dogodila se greška. Molim pokušajte ponovo." : "Error occurred. Please try again.")
+                : (session.language === 'ru' ? 'Извините, возникла техническая проблема. Попробуйте еще раз.' : session.language === 'sr' ? 'Izvinite, nastao je tehnički problem. Molim pokušajte ponovo.' : 'I apologize, I encountered a technical issue. Please try again.');
+            session.conversationHistory.push({ role: 'assistant', content: fallbackResponse, timestamp: new Date() });
             session.lastActivity = new Date();
             this.sessions.set(sessionId, session);
-
-            return {
-                response: fallbackResponse,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+            return { response: fallbackResponse, hasBooking: false, session, currentAgent: session.currentAgent };
         }
     }
 
@@ -1602,93 +1515,49 @@ Respond with JSON only.`;
         currentAgent?: AgentType;
     }> {
         const session = this.sessions.get(sessionId)!;
-
         try {
             const { toolCall, functionContext } = pendingAction;
             const args = JSON.parse(toolCall.function.arguments);
 
-            // Use confirmed name
             if (session.confirmedName) {
                 args.guestName = session.confirmedName;
                 functionContext.confirmedName = session.confirmedName;
             }
-
             console.log(`[EnhancedConversationManager] Executing booking with confirmed name: ${session.confirmedName}`);
 
-            const result = await agentFunctions.create_reservation(
-                args.guestName, args.guestPhone, args.date, args.time,
-                args.guests, args.specialRequests || '', functionContext
-            );
-
-            // Clear confirmed name after use
+            const result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
             delete session.confirmedName;
 
-            // Check success
             if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
                 session.hasActiveReservation = result.data.reservationId;
                 session.currentStep = 'completed';
-
-                // ✅ NEW: Reset agent to conductor after successful booking
                 this.resetAgentState(session);
-
                 const successMessage = session.language === 'ru'
                     ? `🎉 Отлично! Ваше бронирование подтверждено. Номер брони: ${result.data.reservationId}`
                     : session.language === 'sr'
                         ? `🎉 Odlično! Vaša rezervacija je potvrđena. Broj rezervacije: ${result.data.reservationId}`
                         : `🎉 Perfect! Your reservation is confirmed. Reservation number: ${result.data.reservationId}`;
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: successMessage,
-                    timestamp: new Date()
-                });
-
+                session.conversationHistory.push({ role: 'assistant', content: successMessage, timestamp: new Date() });
                 this.sessions.set(sessionId, session);
-
-                return {
-                    response: successMessage,
-                    hasBooking: true,
-                    reservationId: result.data.reservationId,
-                    session,
-                    currentAgent: session.currentAgent
-                };
+                return { response: successMessage, hasBooking: true, reservationId: result.data.reservationId, session, currentAgent: session.currentAgent };
             } else {
                 const errorMessage = session.language === 'ru'
                     ? `Извините, не удалось создать бронирование: ${result.error?.message || 'неизвестная ошибка'}`
                     : session.language === 'sr'
                         ? `Izvините, nije moguće kreirati rezervaciju: ${result.error?.message || 'nepoznata greška'}`
                         : `Sorry, I couldn't create the reservation: ${result.error?.message || 'unknown error'}`;
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: errorMessage,
-                    timestamp: new Date()
-                });
-
+                session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
                 this.sessions.set(sessionId, session);
-
-                return {
-                    response: errorMessage,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
+                return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent };
             }
         } catch (error) {
             console.error(`[EnhancedConversationManager] Error executing confirmed booking:`, error);
-
             const errorMessage = session.language === 'ru'
                 ? "Произошла ошибка при создании бронирования."
                 : session.language === 'sr'
                     ? "Dogodila se greška prilikom kreiranja rezervacije."
                     : "An error occurred while creating the reservation.";
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+            return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent };
         }
     }
 
@@ -1709,93 +1578,50 @@ Respond with JSON only.`;
 
         try {
             if (confirmed) {
-                // Execute the pending function call
                 const { toolCall, functionContext } = session.pendingConfirmation;
                 const args = JSON.parse(toolCall.function.arguments);
 
-                // ✅ CRITICAL: Use confirmed name if available
                 if (session.confirmedName) {
-                    console.log(`[EnhancedConversationManager] Using confirmed name for booking: ${session.confirmedName}`);
                     args.guestName = session.confirmedName;
                     functionContext.confirmedName = session.confirmedName;
                 }
-
                 console.log(`[EnhancedConversationManager] Executing confirmed action: ${toolCall.function.name}`);
 
-                // Route to appropriate function based on the pending tool call
                 let result;
                 switch (toolCall.function.name) {
                     case 'create_reservation':
-                        result = await agentFunctions.create_reservation(
-                            args.guestName, args.guestPhone, args.date, args.time,
-                            args.guests, args.specialRequests || '', functionContext
-                        );
+                        result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
                         break;
                     case 'cancel_reservation':
-                        result = await agentFunctions.cancel_reservation(
-                            args.reservationId, args.reason, true, functionContext
-                        );
+                        result = await agentFunctions.cancel_reservation(args.reservationId, args.reason, true, functionContext);
                         break;
                     default:
                         throw new Error(`Unsupported pending confirmation for: ${toolCall.function.name}`);
                 }
 
-                // ✅ CRITICAL FIX: Handle name clarification in confirmation path
                 if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-                    console.log(`[ConversationManager] ✅ NAME CLARIFICATION NEEDED in handleConfirmation`);
-
                     const { dbName, requestName } = result.error.details;
-
-                    // Store pending confirmation with name conflict info
-                    session.pendingConfirmation = {
-                        toolCall,
-                        functionContext: {
-                            ...functionContext,
-                            error: result.error
-                        },
-                        summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"`
-                    };
-
-                    // ✅ ENHANCED: Natural clarification message
+                    session.pendingConfirmation = { toolCall, functionContext: { ...functionContext, error: result.error }, summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"` };
                     const clarificationMessage = session.language === 'ru'
                         ? `Я вижу, что вы ранее бронировали под именем "${dbName}". Для этого бронирования хотите использовать имя "${requestName}" или оставить "${dbName}"?`
                         : session.language === 'sr'
                             ? `Vidim da ste ranije rezervisali pod imenom "${dbName}". Za ovu rezervaciju želite da koristite ime "${requestName}" ili da zadržite "${dbName}"?`
                             : `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
-
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: clarificationMessage,
-                        timestamp: new Date()
-                    });
-
+                    session.conversationHistory.push({ role: 'assistant', content: clarificationMessage, timestamp: new Date() });
                     this.sessions.set(sessionId, session);
-
-                    return {
-                        response: clarificationMessage,
-                        hasBooking: false,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
+                    return { response: clarificationMessage, hasBooking: false, session, currentAgent: session.currentAgent };
                 }
 
-                // Clear pending confirmation and confirmed name
                 delete session.pendingConfirmation;
                 delete session.confirmedName;
 
-                // Check success with new format
-                if (result.tool_status === 'SUCCESS' && result.data &&
-                    (result.data.success || result.data.reservationId)) {
-
+                if (result.tool_status === 'SUCCESS' && result.data && (result.data.success || result.data.reservationId)) {
                     const reservationId = result.data.reservationId;
                     session.hasActiveReservation = reservationId;
                     session.currentStep = 'completed';
-
-                    // ✅ NEW: Reset agent to conductor after successful task
                     this.resetAgentState(session);
 
                     let successMessage;
-
                     if (toolCall.function.name === 'create_reservation') {
                         successMessage = session.language === 'ru'
                             ? `🎉 Отлично! Ваше бронирование подтверждено. Номер брони: ${reservationId}`
@@ -1810,72 +1636,33 @@ Respond with JSON only.`;
                                 : `✅ Your reservation has been successfully cancelled.`;
                     }
 
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: successMessage,
-                        timestamp: new Date()
-                    });
-
+                    session.conversationHistory.push({ role: 'assistant', content: successMessage, timestamp: new Date() });
                     this.sessions.set(sessionId, session);
-
-                    return {
-                        response: successMessage,
-                        hasBooking: toolCall.function.name === 'create_reservation',
-                        reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
+                    return { response: successMessage, hasBooking: toolCall.function.name === 'create_reservation', reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined, session, currentAgent: session.currentAgent };
                 } else {
                     const errorMessage = session.language === 'ru'
                         ? `Извините, не удалось выполнить операцию: ${result.error?.message || 'неизвестная ошибка'}`
                         : session.language === 'sr'
                             ? `Izvините, nije moguće izvršiti operaciju: ${result.error?.message || 'nepoznata greška'}`
                             : `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`;
-
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: errorMessage,
-                        timestamp: new Date()
-                    });
-
+                    session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
                     this.sessions.set(sessionId, session);
-
-                    return {
-                        response: errorMessage,
-                        hasBooking: false,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
+                    return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent };
                 }
             } else {
-                // User declined - clear pending confirmation
                 delete session.pendingConfirmation;
                 delete session.confirmedName;
-
                 const cancelMessage = session.language === 'ru'
                     ? "Хорошо, операция отменена. Чем еще могу помочь?"
                     : session.language === 'sr'
                         ? "U redu, operacija je otkazana. Čime još mogu da pomognem?"
                         : "Okay, operation cancelled. How else can I help you?";
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: cancelMessage,
-                    timestamp: new Date()
-                });
-
+                session.conversationHistory.push({ role: 'assistant', content: cancelMessage, timestamp: new Date() });
                 this.sessions.set(sessionId, session);
-
-                return {
-                    response: cancelMessage,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
+                return { response: cancelMessage, hasBooking: false, session, currentAgent: session.currentAgent };
             }
         } catch (error) {
             console.error(`[EnhancedConversationManager] Confirmation error:`, error);
-
             delete session.pendingConfirmation;
             delete session.confirmedName;
             const errorMessage = session.language === 'ru'
@@ -1883,13 +1670,7 @@ Respond with JSON only.`;
                 : session.language === 'sr'
                     ? "Dogodila se greška prilikom obrade potvrde."
                     : "An error occurred while processing the confirmation.";
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+            return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent };
         }
     }
 
@@ -1910,7 +1691,6 @@ Respond with JSON only.`;
             Object.assign(session.gatheringInfo, updates);
             console.log(`[EnhancedConversationManager] Updated session info:`, updates);
 
-            // ✅ ENHANCED: More detailed completeness checking
             const isComplete = hasCompleteBookingInfo(session);
             const missing = [];
             if (!session.gatheringInfo.date) missing.push('date');
@@ -1934,24 +1714,21 @@ Respond with JSON only.`;
      * Enhanced language detection with Serbian support
      */
     private detectLanguage(message: string): Language {
-        // Cyrillic = Russian or Serbian
         if (/[\u0400-\u04FF]/.test(message)) {
-            // Check for Serbian-specific words in Cyrillic
             const serbianCyrillicWords = ['здраво', 'хвала', 'молим', 'добро', 'како'];
             const lowerText = message.toLowerCase();
             if (serbianCyrillicWords.some(word => lowerText.includes(word))) {
                 return 'sr';
             }
-            return 'ru'; // Default to Russian for Cyrillic
+            return 'ru';
         }
 
-        // Latin script - check for Serbian
         const serbianLatin = ['zdravo', 'hvala', 'molim', 'rezervacija'];
         if (serbianLatin.some(word => message.toLowerCase().includes(word))) {
             return 'sr';
         }
 
-        return 'en'; // Default to English
+        return 'en';
     }
 
     /**
@@ -2000,7 +1777,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * Enhanced session statistics with agent tracking
+     * Enhanced session statistics with agent tracking and guest history
      */
     getStats(): {
         totalSessions: number;
@@ -2008,9 +1785,11 @@ Respond with JSON only.`;
         completedBookings: number;
         sessionsByPlatform: { web: number; telegram: number };
         sessionsByContext: { hostess: number; guest: number };
-        sessionsByAgent: { booking: number; reservations: number };
+        sessionsByAgent: { booking: number; reservations: number; conductor: number; };
         languageDistribution: { en: number; ru: number; sr: number };
         agentHandoffs: number;
+        sessionsWithGuestHistory: number;
+        returningGuests: number;
     } {
         const now = new Date();
         const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -2021,12 +1800,11 @@ Respond with JSON only.`;
         let telegramSessions = 0;
         let hostessSessions = 0;
         let guestSessions = 0;
-        let bookingSessions = 0;
-        let reservationsSessions = 0;
-        let enSessions = 0;
-        let ruSessions = 0;
-        let srSessions = 0;
+        const sessionsByAgent = { booking: 0, reservations: 0, conductor: 0 };
+        const languageDistribution = { en: 0, ru: 0, sr: 0 };
         let agentHandoffs = 0;
+        let sessionsWithGuestHistory = 0;
+        let returningGuests = 0;
 
         for (const session of this.sessions.values()) {
             if (session.lastActivity > oneHourAgo) activeSessions++;
@@ -2035,13 +1813,18 @@ Respond with JSON only.`;
             else telegramSessions++;
             if (session.context === 'hostess') hostessSessions++;
             else guestSessions++;
-            if (session.currentAgent === 'booking') bookingSessions++;
-            else reservationsSessions++;
-            if (session.language === 'en') enSessions++;
-            else if (session.language === 'ru') ruSessions++;
-            else if (session.language === 'sr') srSessions++;
+
+            sessionsByAgent[session.currentAgent] = (sessionsByAgent[session.currentAgent] || 0) + 1;
+            languageDistribution[session.language] = (languageDistribution[session.language] || 0) + 1;
+
             if (session.agentHistory && session.agentHistory.length > 0) {
                 agentHandoffs += session.agentHistory.length;
+            }
+            if (session.guestHistory) {
+                sessionsWithGuestHistory++;
+                if (session.guestHistory.total_bookings >= 2) {
+                    returningGuests++;
+                }
             }
         }
 
@@ -2051,9 +1834,11 @@ Respond with JSON only.`;
             completedBookings,
             sessionsByPlatform: { web: webSessions, telegram: telegramSessions },
             sessionsByContext: { hostess: hostessSessions, guest: guestSessions },
-            sessionsByAgent: { booking: bookingSessions, reservations: reservationsSessions },
-            languageDistribution: { en: enSessions, ru: ruSessions, sr: srSessions },
-            agentHandoffs
+            sessionsByAgent,
+            languageDistribution,
+            agentHandoffs,
+            sessionsWithGuestHistory,
+            returningGuests
         };
     }
 
@@ -2068,7 +1853,7 @@ Respond with JSON only.`;
     }
 }
 
-// Extended session interface with agent and confirmation support
+// Extended session interface with agent, confirmation support, and guest history
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -2080,10 +1865,12 @@ interface BookingSessionWithAgent extends BookingSession {
     pendingConfirmation?: {
         toolCall: any;
         functionContext: any;
-        summary?: string; // Optional original summary
-        summaryData?: any; // New field for structured data
+        summary?: string;
+        summaryData?: any;
     };
     confirmedName?: string;
+    guestHistory?: GuestHistory | null;
+    activeReservationId?: number; // ✅ BUG FIX: Added to track the reservation in context
 }
 
 // Global instance

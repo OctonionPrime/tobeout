@@ -1,6 +1,9 @@
 // server/services/agents/agent-tools.ts
 // ✅ MAYA FIX: Added proper table reassignment logic to prevent capacity bypassing
 // ✅ MAYA FIX: Enhanced time calculation and immediate response logic
+// ✅ NEW: Added get_guest_history tool for personalized interactions
+// ✅ FIXED: Reservation ID tracking for proper cancellation
+// ✅ FIX (This version): Improved identifier auto-detection in find_existing_reservation.
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -93,6 +96,168 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 
     console.log(`[DateFix] ${dbTimestamp} → ${normalized}`);
     return normalized;
+}
+
+// ===== 🆕 NEW: GUEST HISTORY TOOL =====
+
+/**
+ * ✅ NEW: Get guest history for personalized interactions
+ * Analyzes past reservations to provide personalized service
+ */
+export async function get_guest_history(
+    telegramUserId: string,
+    context: { restaurantId: number }
+): Promise<ToolResponse> {
+    const startTime = Date.now();
+    console.log(`👤 [Guest History] Getting history for telegram user: ${telegramUserId} at restaurant ${context.restaurantId}`);
+
+    try {
+        if (!telegramUserId || !context.restaurantId) {
+            return createValidationFailure('Missing required parameters: telegramUserId or restaurantId');
+        }
+
+        // 1. Find the guest by telegram user ID
+        const [guest] = await db
+            .select()
+            .from(guests)
+            .where(eq(guests.telegram_user_id, telegramUserId));
+
+        if (!guest) {
+            console.log(`👤 [Guest History] No guest found for telegram user: ${telegramUserId}`);
+            return createBusinessRuleFailure('Guest not found', 'GUEST_NOT_FOUND');
+        }
+
+        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id})`);
+
+        // 2. Query all reservations for this guest at this restaurant
+        const allReservations = await db
+            .select({
+                id: reservations.id,
+                status: reservations.status,
+                guests: reservations.guests,
+                comments: reservations.comments,
+                reservation_utc: reservations.reservation_utc,
+                createdAt: reservations.createdAt
+            })
+            .from(reservations)
+            .where(and(
+                eq(reservations.guestId, guest.id),
+                eq(reservations.restaurantId, context.restaurantId)
+            ))
+            .orderBy(desc(reservations.reservation_utc));
+
+        console.log(`👤 [Guest History] Found ${allReservations.length} total reservations for guest`);
+
+        if (allReservations.length === 0) {
+            return createSuccessResponse({
+                guest_name: guest.name,
+                total_bookings: 0,
+                total_cancellations: 0,
+                last_visit_date: null,
+                common_party_size: null,
+                frequent_special_requests: []
+            }, {
+                execution_time_ms: Date.now() - startTime
+            });
+        }
+
+        // 3. Analyze reservation data
+        const completedReservations = allReservations.filter(r =>
+            r.status === 'completed' || r.status === 'confirmed'
+        );
+        const cancelledReservations = allReservations.filter(r =>
+            r.status === 'canceled'
+        );
+
+        console.log(`👤 [Guest History] Analysis: ${completedReservations.length} completed, ${cancelledReservations.length} cancelled`);
+
+        // 4. Find most common party size
+        let commonPartySize = null;
+        if (completedReservations.length > 0) {
+            const partySizeCounts = completedReservations.reduce((acc, reservation) => {
+                const size = reservation.guests;
+                acc[size] = (acc[size] || 0) + 1;
+                return acc;
+            }, {} as Record<number, number>);
+
+            const mostCommonSize = Object.entries(partySizeCounts)
+                .sort(([, a], [, b]) => b - a)[0];
+
+            commonPartySize = mostCommonSize ? parseInt(mostCommonSize[0]) : null;
+            console.log(`👤 [Guest History] Most common party size: ${commonPartySize} (from ${JSON.stringify(partySizeCounts)})`);
+        }
+
+        // 5. Find last visit date (most recent completed reservation)
+        let lastVisitDate = null;
+        if (completedReservations.length > 0) {
+            const mostRecentCompleted = completedReservations[0]; // Already sorted by desc date
+            const normalizedDate = normalizeDatabaseTimestamp(mostRecentCompleted.reservation_utc);
+            const reservationDt = DateTime.fromISO(normalizedDate);
+
+            if (reservationDt.isValid) {
+                lastVisitDate = reservationDt.toFormat('yyyy-MM-dd');
+                console.log(`👤 [Guest History] Last visit: ${lastVisitDate}`);
+            }
+        }
+
+        // 6. Analyze frequent special requests
+        const frequentRequests: string[] = [];
+        const requestCounts: Record<string, number> = {};
+
+        completedReservations.forEach(reservation => {
+            if (reservation.comments && reservation.comments.trim()) {
+                const comments = reservation.comments.toLowerCase().trim();
+
+                // Common request patterns to look for
+                const patterns = [
+                    { keywords: ['window', 'окно', 'прозор'], request: 'window seat' },
+                    { keywords: ['quiet', 'тихий', 'тих'], request: 'quiet table' },
+                    { keywords: ['corner', 'угол', 'ćošak'], request: 'corner table' },
+                    { keywords: ['high chair', 'детский', 'dečji'], request: 'high chair' },
+                    { keywords: ['birthday', 'день рождения', 'rođendan'], request: 'birthday celebration' },
+                    { keywords: ['anniversary', 'годовщина', 'godišnjica'], request: 'anniversary' },
+                    { keywords: ['vegetarian', 'вегетарианский', 'vegetarijanski'], request: 'vegetarian options' },
+                    { keywords: ['allergy', 'аллергия', 'alergija'], request: 'allergy considerations' }
+                ];
+
+                patterns.forEach(pattern => {
+                    if (pattern.keywords.some(keyword => comments.includes(keyword))) {
+                        requestCounts[pattern.request] = (requestCounts[pattern.request] || 0) + 1;
+                    }
+                });
+            }
+        });
+
+        // Only include requests that appear in at least 2 reservations or 30% of reservations
+        const minOccurrences = Math.max(2, Math.ceil(completedReservations.length * 0.3));
+        Object.entries(requestCounts).forEach(([request, count]) => {
+            if (count >= minOccurrences) {
+                frequentRequests.push(request);
+            }
+        });
+
+        console.log(`👤 [Guest History] Frequent requests: ${JSON.stringify(frequentRequests)} (from ${JSON.stringify(requestCounts)})`);
+
+        // 7. Return structured response
+        const historyData = {
+            guest_name: guest.name,
+            total_bookings: completedReservations.length,
+            total_cancellations: cancelledReservations.length,
+            last_visit_date: lastVisitDate,
+            common_party_size: commonPartySize,
+            frequent_special_requests: frequentRequests
+        };
+
+        console.log(`👤 [Guest History] Final history data:`, historyData);
+
+        return createSuccessResponse(historyData, {
+            execution_time_ms: Date.now() - startTime
+        });
+
+    } catch (error) {
+        console.error(`❌ [Guest History] Error getting guest history:`, error);
+        return createSystemError('Failed to retrieve guest history due to system error', error);
+    }
 }
 
 /**
@@ -627,10 +792,11 @@ export async function get_restaurant_info(
 
 /**
  * ✅ FIXED: Find existing reservations for a guest using Drizzle ORM with timezone utils
+ * ✅ CRITICAL FIX: Now properly returns reservation details with correct confirmation formatting
  */
 export async function find_existing_reservation(
     identifier: string,
-    identifierType: 'phone' | 'telegram' | 'name' | 'confirmation' = 'phone',
+    identifierType: 'phone' | 'telegram' | 'name' | 'confirmation' | 'auto' = 'auto',
     context: {
         restaurantId: number;
         timezone: string;
@@ -640,20 +806,24 @@ export async function find_existing_reservation(
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (${identifierType})`);
+    console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (Type: ${identifierType})`);
 
     try {
-        // ✅ BUG FIX: Robustly parse the numeric part of the identifier.
-        const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
+        let finalIdentifierType = identifierType;
 
-        if (identifierType === 'phone' && isNaN(numericIdentifier)) {
-            identifierType = 'name';
-            console.log(`[Maya Tool] Identifier "${identifier}" is not a number, switching search type to 'name'`);
-        } else if (identifierType === 'phone') {
-            // Assume numbers are confirmation IDs unless specified otherwise by the LLM
-            identifierType = 'confirmation';
-            console.log(`[Maya Tool] Identifier "${identifier}" is numeric, assuming search type 'confirmation'`);
+        // ✅ FIX: Improved auto-detection logic
+        if (finalIdentifierType === 'auto') {
+            const numericOnly = identifier.replace(/\D/g, '');
+            if (/^\d{1,4}$/.test(numericOnly) && numericOnly.length < 5) {
+                finalIdentifierType = 'confirmation';
+            } else if (/^\d{7,}$/.test(numericOnly)) {
+                finalIdentifierType = 'phone';
+            } else {
+                finalIdentifierType = 'name';
+            }
+            console.log(`[Maya Tool] Auto-detected identifier type as '${finalIdentifierType}' for "${identifier}"`);
         }
+
 
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
         const conditions = [
@@ -662,10 +832,9 @@ export async function find_existing_reservation(
             gt(reservations.reservation_utc, nowUtc)
         ];
 
-        switch (identifierType) {
+        switch (finalIdentifierType) {
             case 'phone':
-                // This case might be less used now but kept for completeness
-                conditions.push(eq(guests.phone, String(numericIdentifier)));
+                conditions.push(eq(guests.phone, identifier));
                 break;
             case 'telegram':
                 if (context.telegramUserId) {
@@ -676,6 +845,7 @@ export async function find_existing_reservation(
                 conditions.push(like(guests.name, `%${identifier}%`));
                 break;
             case 'confirmation':
+                const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
                 if (isNaN(numericIdentifier)) {
                     return createBusinessRuleFailure(`"${identifier}" is not a valid confirmation number. It must be a number.`, 'INVALID_CONFIRMATION');
                 }
@@ -683,7 +853,7 @@ export async function find_existing_reservation(
                 break;
         }
 
-        console.log(`[Maya Tool] Executing Drizzle query with type '${identifierType}'...`);
+        console.log(`[Maya Tool] Executing Drizzle query with type '${finalIdentifierType}'...`);
 
         const results = await db
             .select({
@@ -786,12 +956,23 @@ export async function find_existing_reservation(
             sr: `Pronašao sam ${formattedReservations.length} nadolazećih rezervacija za vas. Evo detalja.`
         };
 
-        return createSuccessResponse({
+        // ✅ CRITICAL FIX: Store reservation details in response data for proper access
+        const responseData = {
             reservations: formattedReservations,
             count: formattedReservations.length,
-            searchedBy: identifierType,
-            message: successMessages[context.language as keyof typeof successMessages] || successMessages.en
-        }, {
+            searchedBy: finalIdentifierType,
+            message: successMessages[context.language as keyof typeof successMessages] || successMessages.en,
+            // ✅ NEW: Add primary reservation for easy access
+            primaryReservation: formattedReservations[0] // Most recent reservation
+        };
+
+        console.log(`🔍 [Maya Tool] Returning reservation data:`, {
+            reservationCount: formattedReservations.length,
+            primaryReservationId: formattedReservations[0]?.id,
+            allReservationIds: formattedReservations.map(r => r.id)
+        });
+
+        return createSuccessResponse(responseData, {
             execution_time_ms: Date.now() - startTime
         });
 
@@ -802,9 +983,10 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ MAYA FIX: Modified reservation with PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
+ * ✅ SECURITY FIX: Enhanced modify_reservation with ownership validation + PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
  * This prevents guests from being assigned to tables that can't accommodate them
  * ✅ NEW: Enhanced with proper time calculation for relative changes
+ * ✅ SECURITY: Added validation to ensure guest can only modify their own reservations
  */
 export async function modify_reservation(
     reservationId: number,
@@ -827,6 +1009,48 @@ export async function modify_reservation(
     console.log(`✏️ [Maya Tool] Modifying reservation ${reservationId}:`, modifications);
 
     try {
+        // ✅ SECURITY ENHANCEMENT: Validate ownership before modification
+        if (context.telegramUserId) {
+            console.log(`🔒 [Security] Validating reservation ownership for telegram user: ${context.telegramUserId}`);
+
+            const [ownershipCheck] = await db
+                .select({
+                    reservationId: reservations.id,
+                    guestId: reservations.guestId,
+                    telegramUserId: guests.telegram_user_id
+                })
+                .from(reservations)
+                .innerJoin(guests, eq(reservations.guestId, guests.id))
+                .where(and(
+                    eq(reservations.id, reservationId),
+                    eq(reservations.restaurantId, context.restaurantId)
+                ));
+
+            if (!ownershipCheck) {
+                return createBusinessRuleFailure(
+                    'Reservation not found. Please provide the correct confirmation number.',
+                    'RESERVATION_NOT_FOUND'
+                );
+            }
+
+            if (ownershipCheck.telegramUserId !== context.telegramUserId) {
+                console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
+
+                const securityMessages = {
+                    en: 'For security, you can only modify reservations linked to your own account. Please provide the confirmation number for the correct booking.',
+                    ru: 'В целях безопасности вы можете изменять только бронирования, связанные с вашим аккаунтом. Пожалуйста, укажите номер подтверждения правильного бронирования.',
+                    sr: 'Zbog bezbednosti, možete menjati samo rezervacije povezane sa vašim nalogom. Molim navedite broj potvrde za ispravnu rezervaciju.'
+                };
+
+                return createBusinessRuleFailure(
+                    securityMessages[context.language as keyof typeof securityMessages] || securityMessages.en,
+                    'UNAUTHORIZED_MODIFICATION'
+                );
+            }
+
+            console.log(`✅ [Security] Ownership validated for reservation ${reservationId}`);
+        }
+
         // 1. Get existing reservation with table info
         const [existingReservation] = await db
             .select({
@@ -1010,9 +1234,9 @@ export async function modify_reservation(
         const updateData: Partial<typeof reservations.$inferInsert> = {};
         const modificationHistory: Array<{ field: string, oldValue: any, newValue: any }> = [];
 
-        if (finalDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd') || 
+        if (finalDate !== reservationUtcDt.setZone(context.timezone).toFormat('yyyy-MM-dd') ||
             finalTime !== reservationUtcDt.setZone(context.timezone).toFormat('HH:mm')) {
-            
+
             const newUtcTime = DateTime.fromISO(`${finalDate}T${finalTime}`, { zone: context.timezone }).toUTC().toISO();
             updateData.reservation_utc = newUtcTime;
 
@@ -1141,7 +1365,7 @@ export async function modify_reservation(
 }
 
 /**
- * ✅ FIXED: Cancel an existing reservation using Drizzle ORM with timezone utils
+ * ✅ SECURITY FIX: Enhanced cancel_reservation with ownership validation
  */
 export async function cancel_reservation(
     reservationId: number,
@@ -1170,6 +1394,48 @@ export async function cancel_reservation(
                 confirmMessages[context.language as keyof typeof confirmMessages] || confirmMessages.en,
                 'CANCELLATION_NOT_CONFIRMED'
             );
+        }
+
+        // ✅ SECURITY ENHANCEMENT: Validate ownership before cancellation
+        if (context.telegramUserId) {
+            console.log(`🔒 [Security] Validating reservation ownership for cancellation by telegram user: ${context.telegramUserId}`);
+
+            const [ownershipCheck] = await db
+                .select({
+                    reservationId: reservations.id,
+                    guestId: reservations.guestId,
+                    telegramUserId: guests.telegram_user_id
+                })
+                .from(reservations)
+                .innerJoin(guests, eq(reservations.guestId, guests.id))
+                .where(and(
+                    eq(reservations.id, reservationId),
+                    eq(reservations.restaurantId, context.restaurantId)
+                ));
+
+            if (!ownershipCheck) {
+                return createBusinessRuleFailure(
+                    'Reservation not found. Please provide the correct confirmation number.',
+                    'RESERVATION_NOT_FOUND'
+                );
+            }
+
+            if (ownershipCheck.telegramUserId !== context.telegramUserId) {
+                console.warn(`🚨 [Security] UNAUTHORIZED CANCELLATION ATTEMPT: Telegram user ${context.telegramUserId} tried to cancel reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
+
+                const securityMessages = {
+                    en: 'For security, you can only cancel reservations linked to your own account. Please provide the confirmation number for the correct booking.',
+                    ru: 'В целях безопасности вы можете отменять только бронирования, связанные с вашим аккаунтом. Пожалуйста, укажите номер подтверждения правильного бронирования.',
+                    sr: 'Zbog bezbednosti, možete otkazati samo rezervacije povezane sa vašim nalogom. Molim navedite broj potvrde za ispravnu rezervaciju.'
+                };
+
+                return createBusinessRuleFailure(
+                    securityMessages[context.language as keyof typeof securityMessages] || securityMessages.en,
+                    'UNAUTHORIZED_CANCELLATION'
+                );
+            }
+
+            console.log(`✅ [Security] Ownership validated for cancellation of reservation ${reservationId}`);
         }
 
         const [existingReservation] = await db
@@ -1251,8 +1517,25 @@ export async function cancel_reservation(
     }
 }
 
-// ✅ ENHANCED: Export agent tools configuration
+// ✅ ENHANCED: Export agent tools configuration with guest history tool
 export const agentTools = [
+    {
+        type: "function" as const,
+        function: {
+            name: "get_guest_history",
+            description: "Get guest's booking history for personalized service. Use this to welcome returning guests and suggest their usual preferences.",
+            parameters: {
+                type: "object",
+                properties: {
+                    telegramUserId: {
+                        type: "string",
+                        description: "Guest's telegram user ID"
+                    }
+                },
+                required: ["telegramUserId"]
+            }
+        }
+    },
     {
         type: "function" as const,
         function: {
@@ -1374,8 +1657,8 @@ export const agentTools = [
                     },
                     identifierType: {
                         type: "string",
-                        enum: ["phone", "telegram", "name", "confirmation"],
-                        description: "Type of identifier being used (auto-detected if not specified)"
+                        enum: ["phone", "telegram", "name", "confirmation", "auto"],
+                        description: "Type of identifier being used. Defaults to 'auto' to let the system intelligently decide."
                     }
                 },
                 required: ["identifier"]
@@ -1386,7 +1669,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. AUTOMATICALLY CALCULATES relative time changes.",
+            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. AUTOMATICALLY CALCULATES relative time changes. SECURITY VALIDATED: Only allows guests to modify their own reservations.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1429,7 +1712,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "cancel_reservation",
-            description: "Cancel an existing reservation. Always ask for confirmation before proceeding.",
+            description: "Cancel an existing reservation. Always ask for confirmation before proceeding. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1453,15 +1736,18 @@ export const agentTools = [
     }
 ];
 
-// ✅ ENHANCED: Export function implementations
+// ✅ ENHANCED: Export function implementations with guest history
 export const agentFunctions = {
+    // ✅ NEW: Guest memory tool
+    get_guest_history,
+
     // Sofia's tools (existing)
     check_availability,
     find_alternative_times,
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (with proper table reassignment + time calculation)
+    // Maya's tools (with proper table reassignment + time calculation + security validation)
     find_existing_reservation,
     modify_reservation,
     cancel_reservation

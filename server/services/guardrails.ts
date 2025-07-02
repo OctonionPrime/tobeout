@@ -1,4 +1,5 @@
 // server/services/guardrails.ts
+// ✅ FIX (This version): Corrected the requiresConfirmation logic for cancellations to prevent redundant prompts.
 
 import OpenAI from 'openai';
 import type { BookingSession } from './agents/booking-agent'; // Assuming BookingSession is exported
@@ -38,7 +39,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
             /^\+\d{1,3}[\s\-]?\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{2,4}$/, // International with spaces/dashes
             /^\(\d{3}\)[\s\-]?\d{3}[\s\-]?\d{4}$/  // US format (555) 123-4567
         ];
-        
+
         if (phonePatterns.some(pattern => pattern.test(userMessage.replace(/[\s\-\(\)]/g, '')))) {
             console.log(`[Guardrails] Pre-approved as a direct answer (phone number): "${userMessage}"`);
             return true;
@@ -48,7 +49,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
     // ✅ ENHANCED: Better name detection 
     if (lastBotMessage.includes('name') || lastBotMessage.includes('имя') || lastBotMessage.includes('зовут')) {
         // A message with letters, possibly some spaces, no numbers, reasonable length
-        if (userMessage.length >= 2 && userMessage.length <= 50 && 
+        if (userMessage.length >= 2 && userMessage.length <= 50 &&
             /^[a-zA-Zа-яёА-ЯЁ\s\-\.\']+$/.test(userMessage)) {
             console.log(`[Guardrails] Pre-approved as a direct answer (name): "${userMessage}"`);
             return true;
@@ -73,7 +74,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
             /(today|tomorrow|tonight|завтра|сегодня)/i,
             /(january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{1,2}/i
         ];
-        
+
         if (datePatterns.some(pattern => pattern.test(userMessage))) {
             console.log(`[Guardrails] Pre-approved as a direct answer (date): "${userMessage}"`);
             return true;
@@ -88,7 +89,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
             /в\s*\d{1,2}[\-:]\d{2}/i,
             /\d{1,2}\s*(вечера|утра|дня)/i
         ];
-        
+
         if (timePatterns.some(pattern => pattern.test(userMessage))) {
             console.log(`[Guardrails] Pre-approved as a direct answer (time): "${userMessage}"`);
             return true;
@@ -115,7 +116,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
  */
 function containsBookingKeywords(message: string): boolean {
     const normalized = message.toLowerCase().trim();
-    
+
     // ✅ ENHANCED: More comprehensive booking keywords
     const bookingKeywords = [
         // English - expanded
@@ -123,14 +124,14 @@ function containsBookingKeywords(message: string): boolean {
         'tonight', 'tomorrow', 'today', 'time', 'available', 'availability', 'booking',
         'seat', 'party', 'guests', 'people', 'dine', 'dining', 'eat', 'meal',
         'cancel', 'change', 'modify', 'reschedule', 'move', 'different time',
-        
+
         // Russian - expanded with variations and common typos
         'столик', 'бронирование', 'забронировать', 'резерв', 'ресторан', 'меню', 'ужин', 'обед',
         'сегодня', 'завтра', 'время', 'доступно', 'свободно', 'бронь', 'столик',
         'гостей', 'человек', 'поесть', 'покушать', 'ужинать', 'обедать',
         'отменить', 'изменить', 'поменять', 'перенести', 'другое время',
         'стол', 'места', 'свободен', 'занят', 'можно', 'нельзя',
-        
+
         // Serbian - expanded
         'sto', 'rezervacija', 'rezervisati', 'restoran', 'meni', 'večera', 'ručak',
         'danas', 'sutra', 'vreme', 'dostupno', 'slobodno', 'rezervacija',
@@ -261,12 +262,12 @@ async function checkSafety(message: string): Promise<GuardrailResult> {
         /you\s+are\s+now.*(different|new|updated)/i,
         /forget.*(everything|all|previous|instructions)/i,
         /override.*(instructions|rules|system)/i,
-        
+
         // Role manipulation
         /pretend.*(you|to\s+be).*(different|human|person)/i,
         /roleplay.*(as|being).*(human|person|customer)/i,
         /imagine.*(you|yourself).*(human|person|different)/i,
-        
+
         // Direct system access attempts
         /show\s+me.*(prompt|instructions|system)/i,
         /what.*(are\s+your|is\s+your).*(instructions|prompt|system)/i,
@@ -285,15 +286,16 @@ async function checkSafety(message: string): Promise<GuardrailResult> {
 }
 
 /**
- * ✅ ENHANCED: High-Risk Action Confirmation with Language Support
+ * ✅ ENHANCED & FIXED: High-Risk Action Confirmation with Language Support
  * Now returns structured data and includes better validation for phone numbers.
+ * The cancellation logic is now conditional to prevent redundant confirmations.
  */
 export function requiresConfirmation(toolName: string, args: any, lang: Language = 'en'): { required: boolean; data?: any; } {
     if (toolName === 'create_reservation') {
         // ✅ ENHANCED: Additional validation before requiring confirmation
         const hasValidPhone = args.guestPhone && args.guestPhone.toString().replace(/[\s\-\(\)]/g, '').length >= 7;
         const hasValidName = args.guestName && args.guestName.toString().trim().length >= 2;
-        
+
         if (!hasValidPhone || !hasValidName) {
             console.log(`[Guardrails] Skipping confirmation due to invalid data - phone: ${hasValidPhone}, name: ${hasValidName}`);
             return { required: false };
@@ -312,9 +314,16 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
             }
         };
     }
-    
-    // ✅ NEW: Also require confirmation for cancellations
+
+    // ✅ CRITICAL FIX: Only require confirmation for cancellations if not already confirmed.
     if (toolName === 'cancel_reservation') {
+        // If the 'confirmCancellation' flag from the tool call is already true, it means
+        // the user has already confirmed in a previous turn. No further confirmation is needed.
+        if (args.confirmCancellation === true) {
+            return { required: false };
+        }
+
+        // If the flag is not set, we need to ask the user to confirm.
         return {
             required: true,
             data: {
@@ -324,7 +333,7 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
             }
         };
     }
-    
+
     return { required: false };
 }
 
@@ -376,7 +385,7 @@ export async function runGuardrails(message: string, session: BookingSession): P
         const containsTime = /\d{1,2}[:]\d{2}|\d{1,2}\s*(pm|am|вечера|утра|дня)/i.test(message);
         const containsNumber = /\d+/.test(message);
         const containsName = /^[a-zA-Zа-яёА-ЯЁ\s\-\.\']{2,30}$/.test(message.trim());
-        
+
         if (containsDate || containsTime || (containsNumber && message.length < 20) || containsName) {
             console.log(`[Guardrails] ✅ ALLOWED - Appears to provide missing booking info`);
             return { allowed: true };
