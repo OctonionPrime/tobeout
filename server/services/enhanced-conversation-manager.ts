@@ -6,6 +6,7 @@
 // ✅ PHONE FIX: Added guest_phone to GuestHistory interface and clear instructions for "same number" handling
 // ✅ RESILIENCE UPGRADE: Added AI Fallback System (Claude → OpenAI GPT-4o-mini)
 // ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
+// ✅ RESERVATION SEARCH ENHANCEMENT: Updated find_existing_reservation function call to support new parameters
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -718,7 +719,7 @@ Respond with ONLY a JSON object:
                     type: "function" as const,
                     function: {
                         name: "find_existing_reservation",
-                        description: "Find guest's existing reservations by phone, name, or confirmation number",
+                        description: "Find guest's reservations across different time periods. Use 'upcoming' for future bookings, 'past' for history, 'all' for complete record. Automatically detects user intent from queries like 'do I have bookings?' (upcoming) vs 'were there any?' (past).",
                         parameters: {
                             type: "object",
                             properties: {
@@ -730,6 +731,19 @@ Respond with ONLY a JSON object:
                                     type: "string",
                                     enum: ["phone", "telegram", "name", "confirmation", "auto"],
                                     description: "Type of identifier being used. Use 'auto' to let the system decide."
+                                },
+                                timeRange: {
+                                    type: "string",
+                                    enum: ["upcoming", "past", "all"],
+                                    description: "Time range to search: 'upcoming' for future reservations (default), 'past' for historical reservations, 'all' for complete history"
+                                },
+                                includeStatus: {
+                                    type: "array",
+                                    items: { 
+                                        type: "string",
+                                        enum: ["created", "confirmed", "completed", "canceled"]
+                                    },
+                                    description: "Reservation statuses to include. Defaults: ['created', 'confirmed'] for upcoming, ['completed', 'canceled'] for past"
                                 }
                             },
                             required: ["identifier"]
@@ -1620,7 +1634,12 @@ Respond with JSON only.`;
                                     result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
                                     break;
                                 case 'find_existing_reservation':
-                                    result = await agentFunctions.find_existing_reservation(args.identifier, args.identifierType || 'auto', functionContext);
+                                    // ✅ RESERVATION SEARCH ENHANCEMENT: Pass new parameters to find_existing_reservation
+                                    result = await agentFunctions.find_existing_reservation(args.identifier, args.identifierType || 'auto', {
+                                        ...functionContext,
+                                        timeRange: args.timeRange,
+                                        includeStatus: args.includeStatus
+                                    });
                                     if (result.tool_status === 'SUCCESS' && result.data?.reservations?.length > 0) {
                                         session.activeReservationId = result.data.reservations[0].id;
                                         console.log(`[ConversationManager] Stored active reservation ID in session: ${session.activeReservationId}`);

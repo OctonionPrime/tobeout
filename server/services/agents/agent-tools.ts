@@ -9,6 +9,7 @@
 // ✅ CRITICAL FIX: Completed modify_reservation and cancel_reservation implementations
 // ✅ AI ENHANCEMENT: Replaced hardcoded special request patterns with AI analysis + fallback
 // ✅ NEW LLM ARCHITECTURE: Claude Haiku (AI Analysis) + OpenAI GPT fallback
+// ✅ RESERVATION SEARCH ENHANCEMENT: Added timeRange and includeStatus parameters to find_existing_reservation
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -22,7 +23,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
-import { eq, and, gt, gte, like, inArray, sql, desc, ne } from 'drizzle-orm';
+import { eq, and, gt, lt, gte, like, inArray, sql, desc, ne } from 'drizzle-orm';
 // ✅ FIX: Use the correct camelCase table names from your schema
 import {
     reservations,
@@ -1056,6 +1057,7 @@ export async function get_restaurant_info(
 // ===== 🆕 MAYA'S RESERVATION MANAGEMENT TOOLS =====
 
 /**
+ * ✅ RESERVATION SEARCH ENHANCEMENT: Find existing reservations with time range and status filtering
  * ✅ FIXED: Find existing reservations for a guest using Drizzle ORM with timezone utils
  * ✅ CRITICAL FIX: Now properly returns reservation details with correct confirmation formatting
  */
@@ -1068,6 +1070,9 @@ export async function find_existing_reservation(
         language: string;
         telegramUserId?: string;
         sessionId?: string;
+        // ✅ NEW PARAMETERS: Enhanced search capabilities
+        timeRange?: 'upcoming' | 'past' | 'all';
+        includeStatus?: string[];
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -1089,12 +1094,54 @@ export async function find_existing_reservation(
             console.log(`[Maya Tool] Auto-detected identifier type as '${finalIdentifierType}' for "${identifier}"`);
         }
 
+        // ✅ ENHANCEMENT: Process new parameters with smart defaults
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
-        const conditions = [
-            eq(reservations.restaurantId, context.restaurantId),
-            inArray(reservations.status, ['created', 'confirmed']),
-            gt(reservations.reservation_utc, nowUtc)
-        ];
+        const timeRange = context.timeRange || 'upcoming';
+        const includeStatus = context.includeStatus || (
+            timeRange === 'past' 
+                ? ['completed', 'canceled'] 
+                : ['created', 'confirmed']
+        );
+
+        // ✅ ENHANCEMENT: Validate includeStatus parameter
+        const validStatuses = ['created', 'confirmed', 'completed', 'canceled'];
+        if (includeStatus.some(status => !validStatuses.includes(status))) {
+            return createValidationFailure('Invalid status in includeStatus array');
+        }
+
+        const conditions = [eq(reservations.restaurantId, context.restaurantId)];
+
+        // Add status filter
+        if (includeStatus.length > 0) {
+            conditions.push(inArray(reservations.status, includeStatus));
+        }
+
+        // ✅ ENHANCEMENT: Add time filter based on range WITH SMART LOGIC
+        switch (timeRange) {
+            case 'upcoming':
+                conditions.push(gt(reservations.reservation_utc, nowUtc));
+                break;
+            case 'past':
+                // ✅ FIX: For 'past' + 'completed'/'canceled' statuses,
+                // user wants to see their booking history, not just time-filtered results
+                const hasCompletedOrCanceled = includeStatus.some(status => 
+                    ['completed', 'canceled'].includes(status)
+                );
+                
+                if (hasCompletedOrCanceled) {
+                    // Show ALL completed/canceled reservations (user's booking history)
+                    console.log(`[Maya Tool] Showing all completed/canceled reservations (booking history mode)`);
+                } else {
+                    // Only apply time filter for other statuses
+                    conditions.push(lt(reservations.reservation_utc, nowUtc));
+                }
+                break;
+            case 'all':
+                // No time filter - search all dates
+                break;
+        }
+
+        console.log(`[Maya Tool] Searching ${timeRange} reservations with status: ${includeStatus.join(', ')}${timeRange === 'past' && includeStatus.some(s => ['completed', 'canceled'].includes(s)) ? ' (history mode)' : ''}`);
 
         switch (finalIdentifierType) {
             case 'phone':
@@ -1149,7 +1196,12 @@ export async function find_existing_reservation(
 
         if (!results || results.length === 0) {
             // ✅ USE TRANSLATION SERVICE
-            const baseMessage = `I couldn't find any upcoming reservations for "${identifier}". Please check the information or try a different way to identify your booking.`;
+            const baseMessage = timeRange === 'past' 
+                ? `I couldn't find any past reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
+                : timeRange === 'upcoming'
+                ? `I couldn't find any upcoming reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
+                : `I couldn't find any reservations for "${identifier}". Please check the information or try a different way to identify your booking.`;
+            
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
@@ -1224,7 +1276,12 @@ export async function find_existing_reservation(
         });
 
         // ✅ USE TRANSLATION SERVICE
-        const baseMessage = `Found ${formattedReservations.length} upcoming reservation(s) for you. Let me show you the details.`;
+        const baseMessage = timeRange === 'past'
+            ? `Found ${formattedReservations.length} past reservation(s) for you. Let me show you the details.`
+            : timeRange === 'upcoming'
+            ? `Found ${formattedReservations.length} upcoming reservation(s) for you. Let me show you the details.`
+            : `Found ${formattedReservations.length} reservation(s) for you. Let me show you the details.`;
+        
         const translatedMessage = await AgentToolTranslationService.translateToolMessage(
             baseMessage,
             context.language as Language,
@@ -1236,6 +1293,8 @@ export async function find_existing_reservation(
             reservations: formattedReservations,
             count: formattedReservations.length,
             searchedBy: finalIdentifierType,
+            timeRange: timeRange,
+            includeStatus: includeStatus,
             message: translatedMessage,
             // ✅ NEW: Add primary reservation for easy access
             primaryReservation: formattedReservations[0] // Most recent reservation
@@ -1243,6 +1302,8 @@ export async function find_existing_reservation(
 
         console.log(`🔍 [Maya Tool] Returning reservation data:`, {
             reservationCount: formattedReservations.length,
+            timeRange: timeRange,
+            statusFilter: includeStatus,
             primaryReservationId: formattedReservations[0]?.id,
             allReservationIds: formattedReservations.map(r => r.id)
         });
@@ -1816,7 +1877,7 @@ export async function cancel_reservation(
     }
 }
 
-// ✅ ENHANCED: Export agent tools configuration with guest history tool
+// ✅ ENHANCED: Export agent tools configuration with guest history tool and enhanced reservation search
 export const agentTools = [
     {
         type: "function" as const,
@@ -1941,12 +2002,12 @@ export const agentTools = [
             }
         }
     },
-    // ===== 🆕 MAYA'S TOOLS =====
+    // ===== 🆕 MAYA'S TOOLS WITH ENHANCED SEARCH =====
     {
         type: "function" as const,
         function: {
             name: "find_existing_reservation",
-            description: "Find guest's existing reservations by phone, name, or confirmation number. Use this when guest wants to modify or view existing bookings.",
+            description: "Find guest's reservations across different time periods. Use 'upcoming' for future bookings, 'past' for history, 'all' for complete record. Automatically detects user intent from queries like 'do I have bookings?' (upcoming) vs 'were there any?' (past).",
             parameters: {
                 type: "object",
                 properties: {
@@ -1958,6 +2019,19 @@ export const agentTools = [
                         type: "string",
                         enum: ["phone", "telegram", "name", "confirmation", "auto"],
                         description: "Type of identifier being used. Defaults to 'auto' to let the system intelligently decide."
+                    },
+                    timeRange: {
+                        type: "string",
+                        enum: ["upcoming", "past", "all"],
+                        description: "Time range to search: 'upcoming' for future reservations (default), 'past' for historical reservations, 'all' for complete history"
+                    },
+                    includeStatus: {
+                        type: "array",
+                        items: { 
+                            type: "string",
+                            enum: ["created", "confirmed", "completed", "canceled"]
+                        },
+                        description: "Reservation statuses to include. Defaults: ['created', 'confirmed'] for upcoming, ['completed', 'canceled'] for past"
                     }
                 },
                 required: ["identifier"]
@@ -2035,7 +2109,7 @@ export const agentTools = [
     }
 ];
 
-// ✅ ENHANCED: Export function implementations with Claude-powered guest history
+// ✅ ENHANCED: Export function implementations with Claude-powered guest history and enhanced reservation search
 export const agentFunctions = {
     // ✅ NEW: Guest memory tool with Claude AI analysis
     get_guest_history,
@@ -2046,7 +2120,7 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (with proper table reassignment + time calculation + security validation)
+    // Maya's tools (with enhanced search + proper table reassignment + time calculation + security validation)
     find_existing_reservation,
     modify_reservation,
     cancel_reservation
