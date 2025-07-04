@@ -5,6 +5,10 @@
 // ✅ NEW: Added get_guest_history tool for personalized interactions
 // ✅ FIXED: Reservation ID tracking for proper cancellation
 // ✅ FIX (This version): Improved identifier auto-detection in find_existing_reservation.
+// ✅ PHONE FIX: Added guest_phone to get_guest_history response
+// ✅ CRITICAL FIX: Completed modify_reservation and cancel_reservation implementations
+// ✅ AI ENHANCEMENT: Replaced hardcoded special request patterns with AI analysis + fallback
+// ✅ NEW LLM ARCHITECTURE: Claude Haiku (AI Analysis) + OpenAI GPT fallback
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -14,6 +18,7 @@ import { DateTime } from 'luxon';
 import { getRestaurantDateTime } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
@@ -67,6 +72,197 @@ Return only the translation, no explanations.`;
             console.error('[AgentToolTranslation] Error:', error);
             return message; // Fallback to original
         }
+    }
+}
+
+/**
+ * ✅ UPDATED: AI Analysis Service with Claude Haiku + OpenAI Fallback
+ */
+class AgentAIAnalysisService {
+    private static openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    private static claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+
+    /**
+     * ✅ AI Abstraction Layer with Claude Haiku Primary + OpenAI Fallback
+     */
+    private static async generateContentWithFallback(prompt: string, agentContext: string): Promise<string> {
+        // --- Primary Model: Claude Haiku ---
+        try {
+            const result = await this.claude.messages.create({
+                model: "claude-3-haiku-20240307", // Fast and cost-effective for analysis tasks
+                max_tokens: 1000,
+                temperature: 0.2,
+                messages: [{ role: 'user', content: prompt }]
+            });
+
+            const response = result.content[0];
+            if (response.type === 'text') {
+                return response.text;
+            }
+            throw new Error("Non-text response from Claude");
+
+        } catch (error: any) {
+            const errorMessage = error.message || 'Unknown error';
+            console.warn(`[AI Fallback] Claude Haiku failed for [${agentContext}]. Reason: ${errorMessage.split('\n')[0]}`);
+
+            // Check for specific errors that warrant a fallback (e.g., rate limits, server errors)
+            if (errorMessage.includes('429') || errorMessage.includes('500') || 
+                errorMessage.includes('503') || errorMessage.includes('timeout') ||
+                errorMessage.includes('rate limit') || errorMessage.includes('quota') ||
+                errorMessage.includes('overloaded')) {
+                
+                console.log(`[AI Fallback] Rate limit or server error detected. Switching to OpenAI GPT model for [${agentContext}].`);
+
+                // --- Secondary Model: OpenAI GPT ---
+                try {
+                    const gptCompletion = await this.openaiClient.chat.completions.create({
+                        model: "gpt-4o-mini",
+                        messages: [{ role: 'user', content: prompt }],
+                        max_tokens: 1000,
+                        temperature: 0.5
+                    });
+                    const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
+                    if (gptResponse) {
+                        console.log(`[AI Fallback] Successfully used OpenAI GPT as a fallback for [${agentContext}].`);
+                        return gptResponse;
+                    }
+                    throw new Error("OpenAI response was empty.");
+                } catch (gptError: any) {
+                    console.error(`[AI Fallback] CRITICAL: Secondary model (OpenAI GPT) also failed for [${agentContext}]. Reason: ${gptError.message}`);
+                    // Return safe default
+                    return JSON.stringify({ patterns: [], reasoning: "AI analysis failed" });
+                }
+            }
+
+            // For other errors, return safe default
+            console.error(`[AI Fallback] Unhandled Claude error for [${agentContext}].`);
+            return JSON.stringify({ patterns: [], reasoning: "AI analysis unavailable" });
+        }
+    }
+
+    /**
+     * ✅ AI-POWERED: Analyze frequent special requests using Claude Haiku + GPT fallback
+     */
+    static async analyzeSpecialRequests(
+        completedReservations: Array<{ comments: string | null }>,
+        guestName: string
+    ): Promise<string[]> {
+        try {
+            // Collect all non-empty comments
+            const allComments = completedReservations
+                .map(r => r.comments?.trim())
+                .filter(Boolean);
+
+            if (allComments.length === 0) {
+                return [];
+            }
+
+            const prompt = `You are analyzing restaurant reservation comments to identify recurring special requests patterns for a returning guest.
+
+GUEST: ${guestName}
+TOTAL RESERVATIONS: ${completedReservations.length}
+COMMENTS TO ANALYZE:
+${allComments.map((comment, i) => `${i + 1}. "${comment}"`).join('\n')}
+
+TASK: Identify recurring patterns/themes that appear in multiple comments. Only include patterns that appear in at least 2 different reservations OR represent 30%+ of total reservations.
+
+EXAMPLES OF PATTERNS TO LOOK FOR:
+- Seating preferences (window, quiet area, corner, specific table, etc.)
+- Accessibility needs (high chair, wheelchair access, ground floor, etc.)  
+- Dietary restrictions/preferences (vegetarian, allergies, kosher, etc.)
+- Special occasions (birthday, anniversary, business dinner, etc.)
+- Service preferences (specific server, timing requests, etc.)
+- Group characteristics (family with kids, elderly guests, romantic dinner, etc.)
+
+ANALYSIS RULES:
+1. Only identify genuine patterns (minimum 2 occurrences or 30% frequency)
+2. Combine similar requests into broader categories
+3. Use clear, actionable language for restaurant staff
+4. Focus on preferences that help improve service
+5. Maximum 5 patterns to keep focused
+
+RESPONSE FORMAT: Return ONLY a valid JSON object:
+{
+  "patterns": ["pattern1", "pattern2", ...],
+  "reasoning": "Brief explanation of analysis"
+}
+
+EXAMPLES:
+{"patterns": ["window seating preference", "vegetarian dietary needs", "birthday celebrations"], "reasoning": "Guest consistently requests window tables, mentions vegetarian options, and celebrates birthdays"}
+
+{"patterns": ["business dinner atmosphere", "early evening timing"], "reasoning": "Guest books for work meetings and prefers earlier time slots"}
+
+If no clear patterns emerge: {"patterns": [], "reasoning": "No recurring patterns found across reservations"}`;
+
+            // ✅ USE CLAUDE HAIKU: AI analysis with fallback system
+            const responseText = await this.generateContentWithFallback(prompt, 'SpecialRequestAnalysis');
+            
+            // Parse the JSON response
+            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            let analysis: { patterns: string[]; reasoning: string };
+            
+            try {
+                analysis = JSON.parse(cleanJson);
+            } catch (parseError) {
+                console.warn('[SpecialRequestAnalysis] Failed to parse AI response, using fallback logic');
+                return this.fallbackKeywordAnalysis(allComments);
+            }
+
+            // Validate and clean the results
+            const validPatterns = Array.isArray(analysis.patterns) 
+                ? analysis.patterns
+                    .filter(p => typeof p === 'string' && p.length > 0 && p.length < 100)
+                    .slice(0, 5) // Max 5 patterns
+                : [];
+
+            console.log(`🤖 [SpecialRequestAnalysis] Claude AI identified ${validPatterns.length} patterns for ${guestName}:`, validPatterns);
+            console.log(`🤖 [SpecialRequestAnalysis] Claude reasoning: ${analysis.reasoning}`);
+            return validPatterns;
+
+        } catch (error) {
+            console.error('[SpecialRequestAnalysis] AI analysis failed:', error);
+            // Fallback to keyword-based analysis
+            return this.fallbackKeywordAnalysis(allComments);
+        }
+    }
+
+    /**
+     * ✅ Fallback keyword analysis (simplified, language-agnostic)
+     */
+    private static fallbackKeywordAnalysis(allComments: string[]): string[] {
+        const requestCounts: Record<string, number> = {};
+        
+        // Simplified patterns - focus on common English keywords only for fallback
+        const patterns = [
+            { keywords: ['window'], request: 'window seating preference' },
+            { keywords: ['quiet'], request: 'quiet table preference' },
+            { keywords: ['corner'], request: 'corner table preference' },
+            { keywords: ['high chair', 'child', 'kid'], request: 'child seating needs' },
+            { keywords: ['birthday'], request: 'birthday celebrations' },
+            { keywords: ['anniversary'], request: 'anniversary celebrations' },
+            { keywords: ['vegetarian', 'vegan'], request: 'vegetarian dietary needs' },
+            { keywords: ['allergy', 'allergic'], request: 'allergy considerations' },
+            { keywords: ['wheelchair', 'accessible'], request: 'accessibility needs' },
+            { keywords: ['business', 'meeting', 'work'], request: 'business dining' }
+        ];
+
+        allComments.forEach(comment => {
+            const lowerComment = comment.toLowerCase();
+            patterns.forEach(pattern => {
+                if (pattern.keywords.some(keyword => lowerComment.includes(keyword))) {
+                    requestCounts[pattern.request] = (requestCounts[pattern.request] || 0) + 1;
+                }
+            });
+        });
+
+        // Only include requests that appear in at least 2 reservations or 30% of comments
+        const minOccurrences = Math.max(2, Math.ceil(allComments.length * 0.3));
+        const frequentRequests = Object.entries(requestCounts)
+            .filter(([, count]) => count >= minOccurrences)
+            .map(([request]) => request);
+
+        console.log(`🔄 [SpecialRequestAnalysis] Fallback analysis found ${frequentRequests.length} patterns`);
+        return frequentRequests;
     }
 }
 
@@ -148,6 +344,8 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 
 /**
  * ✅ NEW: Get guest history for personalized interactions
+ * ✅ PHONE FIX: Now returns guest_phone for "same number" functionality
+ * ✅ AI ENHANCEMENT: Uses Claude Haiku to analyze special request patterns
  * Analyzes past reservations to provide personalized service
  */
 export async function get_guest_history(
@@ -173,7 +371,7 @@ export async function get_guest_history(
             return createBusinessRuleFailure('Guest not found', 'GUEST_NOT_FOUND');
         }
 
-        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id})`);
+        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id}) with phone: ${guest.phone}`);
 
         // 2. Query all reservations for this guest at this restaurant
         const allReservations = await db
@@ -197,6 +395,7 @@ export async function get_guest_history(
         if (allReservations.length === 0) {
             return createSuccessResponse({
                 guest_name: guest.name,
+                guest_phone: guest.phone || '', // ✅ PHONE FIX: Include phone number even for new guests
                 total_bookings: 0,
                 total_cancellations: 0,
                 last_visit_date: null,
@@ -246,47 +445,18 @@ export async function get_guest_history(
             }
         }
 
-        // 6. Analyze frequent special requests
-        const frequentRequests: string[] = [];
-        const requestCounts: Record<string, number> = {};
+        // 6. ✅ CLAUDE AI-POWERED: Analyze frequent special requests
+        const frequentRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
+            completedReservations,
+            guest.name
+        );
 
-        completedReservations.forEach(reservation => {
-            if (reservation.comments && reservation.comments.trim()) {
-                const comments = reservation.comments.toLowerCase().trim();
-
-                // Common request patterns to look for
-                const patterns = [
-                    { keywords: ['window', 'окно', 'прозор', 'ablak', 'fenster', 'finestra', 'ventana', 'fenêtre', 'raam'], request: 'window seat' },
-                    { keywords: ['quiet', 'тихий', 'тих', 'csendes', 'ruhig', 'silencioso', 'tranquille', 'rustig'], request: 'quiet table' },
-                    { keywords: ['corner', 'угол', 'ćošak', 'sarok', 'ecke', 'angolo', 'rincón', 'coin', 'hoek'], request: 'corner table' },
-                    { keywords: ['high chair', 'детский', 'dečji', 'gyerek', 'kinderstuhl', 'seggiolone', 'trona', 'chaise haute', 'kinderstoel'], request: 'high chair' },
-                    { keywords: ['birthday', 'день рождения', 'rođendan', 'születésnap', 'geburtstag', 'compleanno', 'cumpleaños', 'anniversaire', 'verjaardag'], request: 'birthday celebration' },
-                    { keywords: ['anniversary', 'годовщина', 'godišnjica', 'évforduló', 'jubiläum', 'anniversario', 'aniversario', 'anniversaire', 'jubileum'], request: 'anniversary' },
-                    { keywords: ['vegetarian', 'вегетарианский', 'vegetarijanski', 'vegetáriánus', 'vegetarisch', 'vegetariano', 'vegetariano', 'végétarien', 'vegetarisch'], request: 'vegetarian options' },
-                    { keywords: ['allergy', 'аллергия', 'alergija', 'allergia', 'allergie', 'allergia', 'alergia', 'allergie', 'allergie'], request: 'allergy considerations' }
-                ];
-
-                patterns.forEach(pattern => {
-                    if (pattern.keywords.some(keyword => comments.includes(keyword))) {
-                        requestCounts[pattern.request] = (requestCounts[pattern.request] || 0) + 1;
-                    }
-                });
-            }
-        });
-
-        // Only include requests that appear in at least 2 reservations or 30% of reservations
-        const minOccurrences = Math.max(2, Math.ceil(completedReservations.length * 0.3));
-        Object.entries(requestCounts).forEach(([request, count]) => {
-            if (count >= minOccurrences) {
-                frequentRequests.push(request);
-            }
-        });
-
-        console.log(`👤 [Guest History] Frequent requests: ${JSON.stringify(frequentRequests)} (from ${JSON.stringify(requestCounts)})`);
+        console.log(`👤 [Guest History] Claude AI-analyzed frequent requests:`, frequentRequests);
 
         // 7. Return structured response
         const historyData = {
             guest_name: guest.name,
+            guest_phone: guest.phone || '', // ✅ PHONE FIX: Always include phone number
             total_bookings: completedReservations.length,
             total_cancellations: cancelledReservations.length,
             last_visit_date: lastVisitDate,
@@ -1088,10 +1258,11 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ SECURITY FIX: Enhanced modify_reservation with ownership validation + PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
+ * ✅ COMPLETE IMPLEMENTATION: Enhanced modify_reservation with ownership validation + PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
  * This prevents guests from being assigned to tables that can't accommodate them
  * ✅ NEW: Enhanced with proper time calculation for relative changes
  * ✅ SECURITY: Added validation to ensure guest can only modify their own reservations
+ * ✅ CRITICAL FIX: Fixed modification logging to match database schema
  */
 export async function modify_reservation(
     reservationId: number,
@@ -1132,7 +1303,6 @@ export async function modify_reservation(
                 ));
 
             if (!ownershipCheck) {
-                // ✅ USE TRANSLATION SERVICE
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -1149,7 +1319,6 @@ export async function modify_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
 
-                // ✅ USE TRANSLATION SERVICE
                 const baseMessage = 'For security, you can only modify reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -1166,23 +1335,281 @@ export async function modify_reservation(
             console.log(`✅ [Security] Ownership validated for reservation ${reservationId}`);
         }
 
-        // Continue with the rest of the modification logic...
-        // [Rest of the existing modify_reservation implementation would go here]
-        // For brevity, I'm not including the full implementation, but it would include
-        // all the existing logic with translation service calls for error messages
+        // ✅ STEP 1: Get current reservation details
+        const [currentReservation] = await db
+            .select({
+                id: reservations.id,
+                reservation_utc: reservations.reservation_utc,
+                guests: reservations.guests,
+                comments: reservations.comments,
+                status: reservations.status,
+                tableId: reservations.tableId,
+                guestId: reservations.guestId,
+                booking_guest_name: reservations.booking_guest_name
+            })
+            .from(reservations)
+            .where(and(
+                eq(reservations.id, reservationId),
+                eq(reservations.restaurantId, context.restaurantId)
+            ));
 
-        // Example of how error messages would be translated:
-        const baseSuccessMessage = `Perfect! I've successfully updated your reservation with the requested changes.`;
-        const translatedSuccessMessage = await AgentToolTranslationService.translateToolMessage(
-            baseSuccessMessage,
+        if (!currentReservation) {
+            const baseMessage = 'Reservation not found.';
+            const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
+            return createBusinessRuleFailure(translatedMessage, 'RESERVATION_NOT_FOUND');
+        }
+
+        // ✅ NEW: Check if reservation is already canceled
+        if (currentReservation.status === 'canceled') {
+            const baseMessage = 'Cannot modify a canceled reservation. Please create a new booking instead.';
+            const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
+            return createBusinessRuleFailure(translatedMessage, 'RESERVATION_ALREADY_CANCELED');
+        }
+
+        console.log(`📋 [Maya Tool] Current reservation details:`, {
+            id: currentReservation.id,
+            currentGuests: currentReservation.guests,
+            currentTable: currentReservation.tableId,
+            status: currentReservation.status
+        });
+
+        // ✅ STEP 2: Parse current reservation date/time
+        const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
+        const currentReservationDt = DateTime.fromISO(normalizedTimestamp);
+
+        if (!currentReservationDt.isValid) {
+            console.error(`❌ [Maya Tool] Invalid reservation timestamp: ${currentReservation.reservation_utc}`);
+            return createSystemError('Invalid reservation timestamp format');
+        }
+
+        const currentLocalDt = currentReservationDt.setZone(context.timezone);
+        const currentDate = currentLocalDt.toFormat('yyyy-MM-dd');
+        const currentTime = currentLocalDt.toFormat('HH:mm');
+
+        console.log(`📅 [Maya Tool] Current reservation time: ${currentDate} ${currentTime} (${context.timezone})`);
+
+        // ✅ STEP 3: Determine new values (keep current if not changing)
+        const newDate = modifications.newDate || currentDate;
+        const newTime = modifications.newTime || currentTime;
+        const newGuests = modifications.newGuests || currentReservation.guests;
+        const newSpecialRequests = modifications.newSpecialRequests !== undefined
+            ? modifications.newSpecialRequests
+            : currentReservation.comments || '';
+
+        console.log(`🔄 [Maya Tool] Modification plan:`, {
+            date: `${currentDate} → ${newDate}`,
+            time: `${currentTime} → ${newTime}`,
+            guests: `${currentReservation.guests} → ${newGuests}`,
+            requests: `"${currentReservation.comments || ''}" → "${newSpecialRequests}"`
+        });
+
+        // ✅ STEP 4: Check if we need to find a new table (guest count changed)
+        let newTableId = currentReservation.tableId;
+        let availabilityMessage = '';
+
+        if (newGuests !== currentReservation.guests || newDate !== currentDate || newTime !== currentTime) {
+            console.log(`🔍 [Maya Tool] Guest count, date, or time changed - checking availability for ${newGuests} guests on ${newDate} at ${newTime}`);
+
+            // Check availability excluding current reservation
+            const availabilityResult = await check_availability(
+                newDate,
+                newTime,
+                newGuests,
+                {
+                    ...context,
+                    excludeReservationId: reservationId // Exclude current reservation from conflict check
+                }
+            );
+
+            if (availabilityResult.tool_status === 'FAILURE') {
+                console.log(`❌ [Maya Tool] No availability for modification:`, availabilityResult.error?.message);
+
+                // Try to suggest alternatives
+                const baseMessage = `I'm sorry, but I can't change your reservation to ${newGuests} guests on ${newDate} at ${newTime} because no tables are available. ${availabilityResult.error?.message || ''} Would you like me to suggest alternative times?`;
+                const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                    baseMessage,
+                    context.language as Language,
+                    'error'
+                );
+
+                return createBusinessRuleFailure(
+                    translatedMessage,
+                    'NO_AVAILABILITY_FOR_MODIFICATION'
+                );
+            }
+
+            if (availabilityResult.tool_status === 'SUCCESS' && availabilityResult.data) {
+                // Get new table from availability result
+                const newTableName = availabilityResult.data.table;
+
+                // Get table ID from table name
+                const [tableRecord] = await db
+                    .select({ id: tables.id, name: tables.name, maxGuests: tables.maxGuests })
+                    .from(tables)
+                    .where(and(
+                        eq(tables.restaurantId, context.restaurantId),
+                        eq(tables.name, newTableName)
+                    ));
+
+                if (tableRecord) {
+                    newTableId = tableRecord.id;
+                    availabilityMessage = availabilityResult.data.message || '';
+                    console.log(`✅ [Maya Tool] Found suitable table: ${newTableName} (ID: ${newTableId}, capacity: ${tableRecord.maxGuests})`);
+                } else {
+                    console.error(`❌ [Maya Tool] Table not found: ${newTableName}`);
+                    return createSystemError(`Table ${newTableName} not found in database`);
+                }
+            }
+        }
+
+        // ✅ STEP 5: Update the reservation in database
+        console.log(`💾 [Maya Tool] Updating reservation ${reservationId} in database...`);
+
+        // Create new UTC timestamp if date/time changed
+        let newReservationUtc = currentReservation.reservation_utc;
+        if (newDate !== currentDate || newTime !== currentTime) {
+            const newLocalDateTime = DateTime.fromFormat(`${newDate} ${newTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
+            newReservationUtc = newLocalDateTime.toUTC().toISO();
+            console.log(`📅 [Maya Tool] New UTC timestamp: ${newReservationUtc}`);
+        }
+
+        const updateData: any = {
+            guests: newGuests,
+            comments: newSpecialRequests,
+            lastModifiedAt: new Date()
+        };
+
+        if (newReservationUtc !== currentReservation.reservation_utc) {
+            updateData.reservation_utc = newReservationUtc;
+        }
+
+        if (newTableId !== currentReservation.tableId) {
+            updateData.tableId = newTableId;
+        }
+
+        await db
+            .update(reservations)
+            .set(updateData)
+            .where(eq(reservations.id, reservationId));
+
+        // ✅ STEP 6: Log the modification (CORRECTED LOGIC)
+        console.log(`✍️ [Maya Tool] Logging individual modifications...`);
+        const modificationLogs: any[] = [];
+        const modificationDate = new Date();
+
+        // Check for guest count change
+        if (newGuests !== currentReservation.guests) {
+            modificationLogs.push({
+                reservationId: reservationId,
+                modifiedBy: 'guest',
+                fieldChanged: 'guests',
+                oldValue: currentReservation.guests.toString(),
+                newValue: newGuests.toString(),
+                reason: reason,
+                modifiedAt: modificationDate,
+                source: context.telegramUserId ? 'telegram' : 'web'
+            });
+        }
+
+        // Check for date or time change
+        if (newDate !== currentDate || newTime !== currentTime) {
+            modificationLogs.push({
+                reservationId: reservationId,
+                modifiedBy: 'guest',
+                fieldChanged: 'datetime',
+                oldValue: `${currentDate} ${currentTime}`,
+                newValue: `${newDate} ${newTime}`,
+                reason: reason,
+                modifiedAt: modificationDate,
+                source: context.telegramUserId ? 'telegram' : 'web'
+            });
+        }
+
+        // Check for table change
+        if (newTableId !== currentReservation.tableId) {
+            modificationLogs.push({
+                reservationId: reservationId,
+                modifiedBy: 'guest',
+                fieldChanged: 'tableId',
+                oldValue: currentReservation.tableId?.toString() || 'N/A',
+                newValue: newTableId.toString(),
+                reason: 'Table reassigned due to modification',
+                modifiedAt: modificationDate,
+                source: context.telegramUserId ? 'telegram' : 'web'
+            });
+        }
+
+        // Check for special requests change
+        const oldRequests = currentReservation.comments || '';
+        if (newSpecialRequests !== oldRequests) {
+            modificationLogs.push({
+                reservationId: reservationId,
+                modifiedBy: 'guest',
+                fieldChanged: 'special_requests',
+                oldValue: oldRequests,
+                newValue: newSpecialRequests,
+                reason: reason,
+                modifiedAt: modificationDate,
+                source: context.telegramUserId ? 'telegram' : 'web'
+            });
+        }
+
+        // Insert all collected log entries into the database
+        if (modificationLogs.length > 0) {
+            await db.insert(reservationModifications).values(modificationLogs);
+        }
+
+        console.log(`✅ [Maya Tool] Successfully modified reservation ${reservationId} and logged ${modificationLogs.length} changes.`);
+
+        // ✅ STEP 7: Return success response
+        const changes = [];
+        if (newGuests !== currentReservation.guests) {
+            changes.push(`party size changed from ${currentReservation.guests} to ${newGuests}`);
+        }
+        if (newDate !== currentDate) {
+            changes.push(`date changed from ${currentDate} to ${newDate}`);
+        }
+        if (newTime !== currentTime) {
+            changes.push(`time changed from ${currentTime} to ${newTime}`);
+        }
+        if (newTableId !== currentReservation.tableId) {
+            changes.push(`table reassigned`);
+        }
+        if (newSpecialRequests !== (currentReservation.comments || '')) {
+            changes.push(`special requests updated`);
+        }
+
+        const baseMessage = `Perfect! I've successfully updated your reservation. ${changes.join(', ')}. ${availabilityMessage}`;
+        const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+            baseMessage,
             context.language as Language,
             'success'
         );
 
         return createSuccessResponse({
             reservationId: reservationId,
-            message: translatedSuccessMessage,
-            // ... other response data
+            previousValues: {
+                guests: currentReservation.guests,
+                date: currentDate,
+                time: currentTime,
+                tableId: currentReservation.tableId
+            },
+            newValues: {
+                guests: newGuests,
+                date: newDate,
+                time: newTime,
+                tableId: newTableId
+            },
+            changes: changes,
+            message: translatedMessage
         }, {
             execution_time_ms: Date.now() - startTime
         });
@@ -1194,7 +1621,7 @@ export async function modify_reservation(
 }
 
 /**
- * ✅ SECURITY FIX: Enhanced cancel_reservation with ownership validation
+ * ✅ COMPLETE IMPLEMENTATION: Enhanced cancel_reservation with ownership validation and proper database operations
  */
 export async function cancel_reservation(
     reservationId: number,
@@ -1279,9 +1706,90 @@ export async function cancel_reservation(
             console.log(`✅ [Security] Ownership validated for cancellation of reservation ${reservationId}`);
         }
 
-        // Continue with cancellation logic and translate success message
-        // ✅ USE TRANSLATION SERVICE
-        const baseSuccessMessage = `Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!`;
+        // ✅ STEP 1: Get current reservation details before cancellation
+        const [currentReservation] = await db
+            .select({
+                id: reservations.id,
+                reservation_utc: reservations.reservation_utc,
+                guests: reservations.guests,
+                booking_guest_name: reservations.booking_guest_name,
+                comments: reservations.comments,
+                status: reservations.status,
+                tableId: reservations.tableId,
+                guestId: reservations.guestId
+            })
+            .from(reservations)
+            .where(and(
+                eq(reservations.id, reservationId),
+                eq(reservations.restaurantId, context.restaurantId)
+            ));
+
+        if (!currentReservation) {
+            const baseMessage = 'Reservation not found.';
+            const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
+            return createBusinessRuleFailure(translatedMessage, 'RESERVATION_NOT_FOUND');
+        }
+
+        if (currentReservation.status === 'canceled') {
+            const baseMessage = 'This reservation has already been cancelled.';
+            const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
+            return createBusinessRuleFailure(translatedMessage, 'ALREADY_CANCELLED');
+        }
+
+        console.log(`📋 [Maya Tool] Cancelling reservation details:`, {
+            id: currentReservation.id,
+            guests: currentReservation.guests,
+            guestName: currentReservation.booking_guest_name,
+            status: currentReservation.status,
+            tableId: currentReservation.tableId
+        });
+
+        // ✅ STEP 2: Update reservation status to cancelled
+        await db
+            .update(reservations)
+            .set({
+                status: 'canceled',
+                cancelledAt: new Date()
+            })
+            .where(eq(reservations.id, reservationId));
+
+        // ✅ STEP 3: Log the cancellation
+        await db.insert(reservationCancellations).values({
+            reservationId: reservationId,
+            cancelledBy: 'guest',
+            reason: reason,
+            cancellationDate: new Date(),
+            originalReservationData: JSON.stringify({
+                guests: currentReservation.guests,
+                guestName: currentReservation.booking_guest_name,
+                tableId: currentReservation.tableId,
+                originalStatus: currentReservation.status,
+                reservationUtc: currentReservation.reservation_utc
+            })
+        });
+
+        console.log(`✅ [Maya Tool] Successfully cancelled reservation ${reservationId}`);
+
+        // ✅ STEP 4: Calculate refund eligibility (basic logic)
+        const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
+        const reservationDt = DateTime.fromISO(normalizedTimestamp);
+        const now = DateTime.now().setZone(context.timezone);
+        const hoursUntilReservation = reservationDt.diff(now, 'hours').hours;
+        
+        // Simple refund policy: full refund if cancelled more than 24 hours in advance
+        const refundEligible = hoursUntilReservation >= 24;
+        const refundPercentage = hoursUntilReservation >= 24 ? 100 : hoursUntilReservation >= 2 ? 50 : 0;
+
+        // ✅ STEP 5: Return success response
+        const baseSuccessMessage = `Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!${refundEligible ? ' You are eligible for a full refund.' : refundPercentage > 0 ? ` You are eligible for a ${refundPercentage}% refund.` : ''}`;
         const translatedSuccessMessage = await AgentToolTranslationService.translateToolMessage(
             baseSuccessMessage,
             context.language as Language,
@@ -1290,10 +1798,14 @@ export async function cancel_reservation(
 
         return createSuccessResponse({
             reservationId: reservationId,
+            previousStatus: currentReservation.status,
+            newStatus: 'canceled',
             reason: reason,
             message: translatedSuccessMessage,
             cancelledAt: new Date().toISOString(),
-            refundEligible: true // This would be calculated based on actual cancellation policy
+            refundEligible: refundEligible,
+            refundPercentage: refundPercentage,
+            hoursUntilReservation: Math.round(hoursUntilReservation * 10) / 10
         }, {
             execution_time_ms: Date.now() - startTime
         });
@@ -1523,9 +2035,9 @@ export const agentTools = [
     }
 ];
 
-// ✅ ENHANCED: Export function implementations with guest history
+// ✅ ENHANCED: Export function implementations with Claude-powered guest history
 export const agentFunctions = {
-    // ✅ NEW: Guest memory tool
+    // ✅ NEW: Guest memory tool with Claude AI analysis
     get_guest_history,
 
     // Sofia's tools (existing)
