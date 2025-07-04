@@ -7,6 +7,7 @@
 // ✅ RESILIENCE UPGRADE: Added AI Fallback System (Claude → OpenAI GPT-4o-mini)
 // ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
 // ✅ RESERVATION SEARCH ENHANCEMENT: Updated find_existing_reservation function call to support new parameters
+// ✅ CRITICAL FIX: Session contamination prevention - clears booking data for new requests while preserving guest identity
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -403,6 +404,34 @@ Respond with ONLY a JSON object.
     }
 
     /**
+     * ✅ CRITICAL FIX: Reset session contamination for new booking requests while preserving guest identity
+     */
+    private resetSessionContamination(session: BookingSessionWithAgent, reason: string) {
+        const preservedGuestName = session.guestHistory?.guest_name;
+        const preservedGuestPhone = session.guestHistory?.guest_phone;
+        
+        // Clear ONLY booking contamination, preserve guest identity
+        session.gatheringInfo = {
+            date: undefined,
+            time: undefined, 
+            guests: undefined,
+            comments: undefined,
+            // Clear name/phone so system asks again, but can auto-fill from history
+            name: undefined,
+            phone: undefined
+        };
+        
+        console.log(`[SessionReset] Cleared booking contamination for new request (${reason}), preserved guest: ${preservedGuestName}`);
+        
+        // Clear any pending confirmations from previous booking
+        delete session.pendingConfirmation;
+        delete session.confirmedName;
+        delete session.activeReservationId;
+        
+        console.log(`[SessionReset] Cleared pending states and active reservation ID`);
+    }
+
+    /**
      * Automatically retrieve guest history for personalized interactions
      */
     private async retrieveGuestHistory(
@@ -498,6 +527,7 @@ Respond with ONLY a JSON object.
         agentToUse: AgentType;
         reasoning: string;
         intervention?: string;
+        isNewBookingRequest?: boolean; // ✅ NEW: Flag for session contamination detection
     }> {
         try {
             const recentHistory = session.conversationHistory
@@ -538,7 +568,15 @@ ${recentHistory}
 
 ## CRITICAL ANALYSIS RULES:
 
-### RULE 1: TASK CONTINUITY (HIGHEST PRIORITY)
+### RULE 1: DETECT NEW BOOKING REQUESTS (HIGH PRIORITY)
+Look for explicit indicators of NEW booking requests:
+- "book again", "new reservation", "make another booking", "another table"
+- "забронировать снова", "новое бронирование", "еще одну бронь", "еще забронировать"
+- "book another", "second booking", "additional reservation"
+
+If detected, use Sofia (booking) agent and flag as NEW BOOKING REQUEST.
+
+### RULE 2: TASK CONTINUITY (HIGHEST PRIORITY)
 If current agent is Sofia/Maya and they're MID-TASK, KEEP the current agent unless user EXPLICITLY starts a completely new task.
 
 **Sofia mid-task indicators:**
@@ -551,21 +589,17 @@ If current agent is Sofia/Maya and they're MID-TASK, KEEP the current agent unle
 - User confirming cancellation/modification
 - Active reservation ID exists
 
-### RULE 2: EXPLICIT NEW TASK DETECTION
-Switch to Sofia ONLY if user says:
-- "book again", "new reservation", "make another booking"
-- "забронировать снова", "новое бронирование", "еще одну бронь"
-
+### RULE 3: EXPLICIT EXISTING RESERVATION TASKS
 Switch to Maya ONLY if user explicitly mentions:
 - "change my existing", "cancel my booking", "modify reservation"
 - "изменить мое", "отменить бронь", "поменять существующее"
 
-### RULE 3: AMBIGUOUS TIME REQUESTS
+### RULE 4: AMBIGUOUS TIME REQUESTS
 If user mentions time changes ("earlier", "later", "different time") consider context:
 - If Sofia is gathering NEW booking info → STAY with Sofia (they're clarifying their preferred time)
 - If Maya found existing reservations → Use Maya (they want to modify existing)
 
-### RULE 4: CONDUCTOR RESET
+### RULE 5: CONDUCTOR RESET
 Use "conductor" ONLY after successful task completion (booking created, cancellation confirmed).
 
 Respond with ONLY a JSON object:
@@ -573,7 +607,8 @@ Respond with ONLY a JSON object:
 {
   "reasoning": "Brief explanation of your decision based on the rules and context",
   "agentToUse": "booking" | "reservations" | "conductor",
-  "intervention": null | "Message if user seems stuck and needs clarification"
+  "intervention": null | "Message if user seems stuck and needs clarification",
+  "isNewBookingRequest": true/false
 }`;
 
             // ✅ USE CLAUDE SONNET 4: Strategic decision-making with fallback
@@ -585,13 +620,15 @@ Respond with ONLY a JSON object:
             console.log(`🧠 [Overseer-Claude] Decision for "${userMessage}":`, {
                 currentAgent: session.currentAgent,
                 decision: decision.agentToUse,
-                reasoning: decision.reasoning
+                reasoning: decision.reasoning,
+                isNewBookingRequest: decision.isNewBookingRequest
             });
 
             return {
                 agentToUse: decision.agentToUse,
                 reasoning: decision.reasoning,
-                intervention: decision.intervention
+                intervention: decision.intervention,
+                isNewBookingRequest: decision.isNewBookingRequest || false
             };
 
         } catch (error) {
@@ -602,12 +639,14 @@ Respond with ONLY a JSON object:
                 return {
                     agentToUse: session.currentAgent,
                     reasoning: 'Fallback due to Overseer error - keeping current agent',
+                    isNewBookingRequest: false
                 };
             }
             
             return {
                 agentToUse: 'booking',
                 reasoning: 'Fallback to Sofia due to Overseer error',
+                isNewBookingRequest: false
             };
         }
     }
@@ -1445,6 +1484,15 @@ Respond with JSON only.`;
                     trigger: message.substring(0, 100),
                     overseerReasoning: overseerDecision.reasoning
                 });
+            }
+
+            // ✅ CRITICAL FIX: Reset session contamination for new booking requests
+            if (overseerDecision.isNewBookingRequest && 
+                overseerDecision.agentToUse === 'booking' && 
+                agentHandoff?.from !== 'booking') {
+                
+                this.resetSessionContamination(session, overseerDecision.reasoning);
+                console.log(`[SessionReset] NEW BOOKING REQUEST detected - cleared session contamination while preserving guest identity`);
             }
 
             session.currentAgent = detectedAgent;
