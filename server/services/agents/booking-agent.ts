@@ -234,19 +234,18 @@ export function createBookingAgent(restaurantConfig: {
         return `
 🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
 
-STEP 1: After successful check_availability:
-   ✅ Say "Great! The table is available" or "Perfect! Table X is available"
-   ✅ IMMEDIATELY ask for missing information if you don't have it
-   ❌ NEVER proceed to booking without ALL 5 required pieces
-
-STEP 2: You MUST collect ALL 5 REQUIRED ITEMS before create_reservation:
-   1️⃣ Date
-   2️⃣ Time  
+STEP 1: GATHER ALL REQUIRED INFORMATION FIRST:
+   1️⃣ Date (must be explicit: "2025-07-19")
+   2️⃣ Time (must be explicit: "20:00" - NEVER assume!)
    3️⃣ Number of guests
-   4️⃣ Guest name ← CRITICAL! Never skip this!
-   5️⃣ Guest phone number ← CRITICAL! Never skip this!
+   4️⃣ Guest name
+   5️⃣ Guest phone number
 
-STEP 3: Only after you have ALL 5 items, call create_reservation
+❌ CRITICAL: NEVER call check_availability without EXPLICIT time!
+❌ NEVER assume time from date (e.g., "19 июля" ≠ "19:00")
+
+STEP 2: Only after ALL 5 items → call check_availability
+STEP 3: If available → call create_reservation
 STEP 4: Only after successful create_reservation, say "confirmed!"
 
 🚫 FORBIDDEN PATTERNS:
