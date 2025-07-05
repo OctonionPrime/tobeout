@@ -1,15 +1,9 @@
 // server/services/agents/agent-tools.ts
-// ✅ LANGUAGE ENHANCEMENT: Added Translation Service integration for tool response messages
-// ✅ MAYA FIX: Added proper table reassignment logic to prevent capacity bypassing
-// ✅ MAYA FIX: Enhanced time calculation and immediate response logic
-// ✅ NEW: Added get_guest_history tool for personalized interactions
-// ✅ FIXED: Reservation ID tracking for proper cancellation
-// ✅ FIX (This version): Improved identifier auto-detection in find_existing_reservation.
-// ✅ PHONE FIX: Added guest_phone to get_guest_history response
-// ✅ CRITICAL FIX: Completed modify_reservation and cancel_reservation implementations
-// ✅ AI ENHANCEMENT: Replaced hardcoded special request patterns with AI analysis + fallback
-// ✅ NEW LLM ARCHITECTURE: Claude Haiku (AI Analysis) + OpenAI GPT fallback
-// ✅ RESERVATION SEARCH ENHANCEMENT: Added timeRange and includeStatus parameters to find_existing_reservation
+// ✅ CRITICAL FIXES APPLIED:
+// 1. Enhanced AI analysis to avoid generic "meal requests"
+// 2. Added translation of frequent special requests before use
+// 3. Improved AI prompts to be more specific
+// 4. Fixed get_guest_history to return translated requests
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -34,7 +28,7 @@ import {
 } from '@shared/schema';
 
 /**
- * ✅ NEW: Translation Service for Agent Tool Messages
+ * ✅ CRITICAL FIX: Translation Service for Agent Tool Messages
  */
 class AgentToolTranslationService {
     private static client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -77,7 +71,7 @@ Return only the translation, no explanations.`;
 }
 
 /**
- * ✅ UPDATED: AI Analysis Service with Claude Haiku + OpenAI Fallback
+ * ✅ CRITICAL FIX: Enhanced AI Analysis Service with much better prompts and no generic patterns
  */
 class AgentAIAnalysisService {
     private static openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -142,7 +136,7 @@ class AgentAIAnalysisService {
     }
 
     /**
-     * ✅ AI-POWERED: Analyze frequent special requests using Claude Haiku + GPT fallback
+     * ✅ CRITICAL FIX: Much improved AI prompt to avoid generic "meal requests"
      */
     static async analyzeSpecialRequests(
         completedReservations: Array<{ comments: string | null }>,
@@ -158,42 +152,46 @@ class AgentAIAnalysisService {
                 return [];
             }
 
-            const prompt = `You are analyzing restaurant reservation comments to identify recurring special requests patterns for a returning guest.
+            const prompt = `You are analyzing restaurant reservation comments to identify SPECIFIC recurring special requests patterns for a returning guest.
 
 GUEST: ${guestName}
 TOTAL RESERVATIONS: ${completedReservations.length}
 COMMENTS TO ANALYZE:
 ${allComments.map((comment, i) => `${i + 1}. "${comment}"`).join('\n')}
 
-TASK: Identify recurring patterns/themes that appear in multiple comments. Only include patterns that appear in at least 2 different reservations OR represent 30%+ of total reservations.
+CRITICAL RULES FOR ANALYSIS:
+1. ❌ IGNORE generic/obvious patterns like "meal requests", "dinner", "food", "dining" - these are USELESS for personalization
+2. ❌ IGNORE single-word generic requests like "meal", "food", "table", "reservation"
+3. ✅ ONLY identify SPECIFIC, ACTIONABLE patterns that help restaurant staff provide better service
+4. ✅ Must appear in at least 2 different reservations OR represent 30%+ of total reservations
+5. ✅ Focus on things that would genuinely be useful for restaurant staff to know in advance
 
-EXAMPLES OF PATTERNS TO LOOK FOR:
-- Seating preferences (window, quiet area, corner, specific table, etc.)
-- Accessibility needs (high chair, wheelchair access, ground floor, etc.)  
-- Dietary restrictions/preferences (vegetarian, allergies, kosher, etc.)
-- Special occasions (birthday, anniversary, business dinner, etc.)
-- Service preferences (specific server, timing requests, etc.)
-- Group characteristics (family with kids, elderly guests, romantic dinner, etc.)
+EXAMPLES OF GOOD PATTERNS TO IDENTIFY:
+- "window table preferred" (seating preference)
+- "vegetarian options needed" (dietary requirement) 
+- "high chair required" (family needs)
+- "quiet corner table" (ambiance preference)
+- "celebrates anniversaries here" (special occasions)
+- "prefers early dinner timing" (timing preference)
+- "requests birthday decorations" (celebration pattern)
+- "likes wine pairing suggestions" (service preference)
 
-ANALYSIS RULES:
-1. Only identify genuine patterns (minimum 2 occurrences or 30% frequency)
-2. Combine similar requests into broader categories
-3. Use clear, actionable language for restaurant staff
-4. Focus on preferences that help improve service
-5. Maximum 5 patterns to keep focused
+EXAMPLES OF BAD PATTERNS TO REJECT:
+❌ "meal requests" (too generic and useless)
+❌ "wants to eat" (obvious and useless)
+❌ "dinner reservation" (redundant)
+❌ "table booking" (meaningless)
+❌ "restaurant visit" (useless)
+❌ "food" (generic)
+❌ "meal" (generic)
 
 RESPONSE FORMAT: Return ONLY a valid JSON object:
 {
-  "patterns": ["pattern1", "pattern2", ...],
-  "reasoning": "Brief explanation of analysis"
+  "patterns": ["specific pattern 1", "specific pattern 2"],
+  "reasoning": "Brief explanation focusing on why these patterns are useful for staff"
 }
 
-EXAMPLES:
-{"patterns": ["window seating preference", "vegetarian dietary needs", "birthday celebrations"], "reasoning": "Guest consistently requests window tables, mentions vegetarian options, and celebrates birthdays"}
-
-{"patterns": ["business dinner atmosphere", "early evening timing"], "reasoning": "Guest books for work meetings and prefers earlier time slots"}
-
-If no clear patterns emerge: {"patterns": [], "reasoning": "No recurring patterns found across reservations"}`;
+If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "No actionable recurring patterns found"}`;
 
             // ✅ USE CLAUDE HAIKU: AI analysis with fallback system
             const responseText = await this.generateContentWithFallback(prompt, 'SpecialRequestAnalysis');
@@ -213,11 +211,12 @@ If no clear patterns emerge: {"patterns": [], "reasoning": "No recurring pattern
             const validPatterns = Array.isArray(analysis.patterns) 
                 ? analysis.patterns
                     .filter(p => typeof p === 'string' && p.length > 0 && p.length < 100)
-                    .slice(0, 5) // Max 5 patterns
+                    .filter(p => !this.isGenericPattern(p)) // ✅ CRITICAL: Filter out generic patterns
+                    .slice(0, 3) // Max 3 patterns to keep focused
                 : [];
 
-            console.log(`🤖 [SpecialRequestAnalysis] Claude AI identified ${validPatterns.length} patterns for ${guestName}:`, validPatterns);
-            console.log(`🤖 [SpecialRequestAnalysis] Claude reasoning: ${analysis.reasoning}`);
+            console.log(`🤖 [SpecialRequestAnalysis] Enhanced AI identified ${validPatterns.length} useful patterns for ${guestName}:`, validPatterns);
+            console.log(`🤖 [SpecialRequestAnalysis] AI reasoning: ${analysis.reasoning}`);
             return validPatterns;
 
         } catch (error) {
@@ -228,23 +227,50 @@ If no clear patterns emerge: {"patterns": [], "reasoning": "No recurring pattern
     }
 
     /**
-     * ✅ Fallback keyword analysis (simplified, language-agnostic)
+     * ✅ CRITICAL FIX: Filter out generic/useless patterns
+     */
+    private static isGenericPattern(pattern: string): boolean {
+        const genericTerms = [
+            'meal', 'food', 'dinner', 'lunch', 'breakfast', 'dining', 'eat', 'restaurant',
+            'table', 'booking', 'reservation', 'visit', 'request', 'service', 'general',
+            'requests', 'needs', 'wants', 'order', 'orders'
+        ];
+        
+        const lowerPattern = pattern.toLowerCase();
+        
+        // Reject if it's just a generic term or contains mostly generic terms
+        if (genericTerms.some(term => lowerPattern === term)) {
+            return true;
+        }
+        
+        // Reject patterns that are too short and generic
+        if (lowerPattern.length < 15 && genericTerms.some(term => lowerPattern.includes(term))) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * ✅ Enhanced fallback keyword analysis with better patterns
      */
     private static fallbackKeywordAnalysis(allComments: string[]): string[] {
         const requestCounts: Record<string, number> = {};
         
-        // Simplified patterns - focus on common English keywords only for fallback
+        // Much more specific patterns focused on actionable preferences
         const patterns = [
-            { keywords: ['window'], request: 'window seating preference' },
-            { keywords: ['quiet'], request: 'quiet table preference' },
-            { keywords: ['corner'], request: 'corner table preference' },
-            { keywords: ['high chair', 'child', 'kid'], request: 'child seating needs' },
-            { keywords: ['birthday'], request: 'birthday celebrations' },
-            { keywords: ['anniversary'], request: 'anniversary celebrations' },
-            { keywords: ['vegetarian', 'vegan'], request: 'vegetarian dietary needs' },
-            { keywords: ['allergy', 'allergic'], request: 'allergy considerations' },
-            { keywords: ['wheelchair', 'accessible'], request: 'accessibility needs' },
-            { keywords: ['business', 'meeting', 'work'], request: 'business dining' }
+            { keywords: ['window', 'окно', 'prozor'], request: 'window seating preference' },
+            { keywords: ['quiet', 'тихо', 'mirno', 'csendes'], request: 'quiet table preference' },
+            { keywords: ['corner', 'угол', 'ćošak', 'sarok'], request: 'corner table preference' },
+            { keywords: ['high chair', 'детск', 'deca', 'gyerek'], request: 'family dining needs' },
+            { keywords: ['birthday', 'день рождения', 'rođendan', 'születés'], request: 'birthday celebrations' },
+            { keywords: ['anniversary', 'годовщина', 'obljetnica', 'évforduló'], request: 'anniversary celebrations' },
+            { keywords: ['vegetarian', 'vegan', 'вегетар', 'vegetáriánus'], request: 'vegetarian dietary needs' },
+            { keywords: ['allergy', 'allergic', 'аллерг', 'allergiás'], request: 'allergy considerations' },
+            { keywords: ['wheelchair', 'accessible', 'инвалид', 'akadálymentes'], request: 'accessibility needs' },
+            { keywords: ['business', 'meeting', 'work', 'деловой', 'üzleti'], request: 'business dining atmosphere' },
+            { keywords: ['wine', 'вино', 'vino', 'bor'], request: 'wine service preferences' },
+            { keywords: ['early', 'рано', 'rano', 'korai'], request: 'early dining preference' }
         ];
 
         allComments.forEach(comment => {
@@ -262,7 +288,7 @@ If no clear patterns emerge: {"patterns": [], "reasoning": "No recurring pattern
             .filter(([, count]) => count >= minOccurrences)
             .map(([request]) => request);
 
-        console.log(`🔄 [SpecialRequestAnalysis] Fallback analysis found ${frequentRequests.length} patterns`);
+        console.log(`🔄 [SpecialRequestAnalysis] Fallback analysis found ${frequentRequests.length} useful patterns`);
         return frequentRequests;
     }
 }
@@ -344,14 +370,11 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 // ===== 🆕 NEW: GUEST HISTORY TOOL =====
 
 /**
- * ✅ NEW: Get guest history for personalized interactions
- * ✅ PHONE FIX: Now returns guest_phone for "same number" functionality
- * ✅ AI ENHANCEMENT: Uses Claude Haiku to analyze special request patterns
- * Analyzes past reservations to provide personalized service
+ * ✅ CRITICAL FIX: Get guest history with TRANSLATED frequent requests
  */
 export async function get_guest_history(
     telegramUserId: string,
-    context: { restaurantId: number }
+    context: { restaurantId: number; language?: string }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`👤 [Guest History] Getting history for telegram user: ${telegramUserId} at restaurant ${context.restaurantId}`);
@@ -396,7 +419,7 @@ export async function get_guest_history(
         if (allReservations.length === 0) {
             return createSuccessResponse({
                 guest_name: guest.name,
-                guest_phone: guest.phone || '', // ✅ PHONE FIX: Include phone number even for new guests
+                guest_phone: guest.phone || '',
                 total_bookings: 0,
                 total_cancellations: 0,
                 last_visit_date: null,
@@ -446,26 +469,38 @@ export async function get_guest_history(
             }
         }
 
-        // 6. ✅ CLAUDE AI-POWERED: Analyze frequent special requests
-        const frequentRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
+        // 6. ✅ CRITICAL FIX: Enhanced AI-powered analysis that avoids generic patterns
+        const englishRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
             completedReservations,
             guest.name
         );
 
-        console.log(`👤 [Guest History] Claude AI-analyzed frequent requests:`, frequentRequests);
+        console.log(`👤 [Guest History] Enhanced AI-analyzed frequent requests (English):`, englishRequests);
 
-        // 7. Return structured response
+        // 7. ✅ CRITICAL FIX: Translate the requests to target language
+        let translatedRequests = englishRequests;
+        if (context.language && context.language !== 'en' && englishRequests.length > 0) {
+            console.log(`👤 [Guest History] Translating requests to ${context.language}...`);
+            translatedRequests = await Promise.all(
+                englishRequests.map(request => 
+                    AgentToolTranslationService.translateToolMessage(request, context.language as Language)
+                )
+            );
+            console.log(`👤 [Guest History] Translated requests:`, translatedRequests);
+        }
+
+        // 8. Return structured response with translated frequent requests
         const historyData = {
             guest_name: guest.name,
-            guest_phone: guest.phone || '', // ✅ PHONE FIX: Always include phone number
+            guest_phone: guest.phone || '',
             total_bookings: completedReservations.length,
             total_cancellations: cancelledReservations.length,
             last_visit_date: lastVisitDate,
             common_party_size: commonPartySize,
-            frequent_special_requests: frequentRequests
+            frequent_special_requests: translatedRequests // ✅ Now properly translated
         };
 
-        console.log(`👤 [Guest History] Final history data:`, historyData);
+        console.log(`👤 [Guest History] Final history data with translations:`, historyData);
 
         return createSuccessResponse(historyData, {
             execution_time_ms: Date.now() - startTime
@@ -591,7 +626,7 @@ export async function check_availability(
 
             if (suggestedAlternatives.length > 0) {
                 // ✅ USE TRANSLATION SERVICE
-                const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would you like me to check that option?`;
+                const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would that work?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
@@ -2109,9 +2144,9 @@ export const agentTools = [
     }
 ];
 
-// ✅ ENHANCED: Export function implementations with Claude-powered guest history and enhanced reservation search
+// ✅ CRITICAL FIX: Export function implementations with enhanced AI analysis and translation support
 export const agentFunctions = {
-    // ✅ NEW: Guest memory tool with Claude AI analysis
+    // ✅ CRITICAL FIX: Guest memory tool with enhanced AI analysis and translation support
     get_guest_history,
 
     // Sofia's tools (existing)

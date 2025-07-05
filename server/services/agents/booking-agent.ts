@@ -1,10 +1,9 @@
 // server/services/agents/booking-agent.ts
-// ✅ LANGUAGE ENHANCEMENT: Simplified agent personalities to work with all languages
-// ✅ FIX (This version): Implemented more natural greetings and questions.
-// ✅ FIXED: Sofia workflow to prevent misleading confirmation questions
-// ✅ NEW: Added guest history personalization support
-// ✅ FIXED: Personalized greeting generation function
-// ✅ FIX (This version): Added stricter modification workflow for Maya and explicit rules for relative date interpretation.
+// ✅ CRITICAL FIXES APPLIED:
+// 1. Fixed redundant "usual party size" questions
+// 2. Added conversation context awareness
+// 3. Improved greeting variations to avoid repetition
+// 4. Enhanced system prompts to use translated frequent requests
 
 import OpenAI from 'openai';
 import type { Language } from '../enhanced-conversation-manager';
@@ -30,13 +29,25 @@ interface GuestHistory {
 }
 
 /**
- * ✅ CRITICAL FIX: Generate personalized greeting based on guest history
- * This function creates personalized greetings for returning guests
+ * ✅ CRITICAL FIX: Enhanced conversation context interface
+ */
+interface ConversationContext {
+    isReturnVisit: boolean;
+    hasAskedPartySize: boolean;
+    bookingNumber: number; // 1st, 2nd booking in session
+    isSubsequentBooking: boolean;
+    sessionTurnCount: number;
+    lastQuestions: string[]; // Track last few questions to avoid repetition
+}
+
+/**
+ * ✅ CRITICAL FIX: Enhanced personalized greeting generation with context awareness
  */
 function generatePersonalizedGreeting(
     guestHistory: GuestHistory | null,
     language: Language,
-    context: 'hostess' | 'guest'
+    context: 'hostess' | 'guest',
+    conversationContext?: ConversationContext
 ): string {
     // Get current date context
     const getCurrentRestaurantContext = () => {
@@ -63,6 +74,43 @@ function generatePersonalizedGreeting(
     };
 
     const dateContext = getCurrentRestaurantContext();
+
+    // ✅ CRITICAL FIX: Handle subsequent bookings differently
+    if (conversationContext?.isSubsequentBooking) {
+        if (!guestHistory || guestHistory.total_bookings === 0) {
+            // Simple greeting for subsequent booking by new guest
+            const subsequentGreetings = {
+                en: `Perfect! I can help you with another reservation. What date and time would you like?`,
+                ru: `Отлично! Помогу вам с ещё одной бронью. На какую дату и время?`,
+                sr: `Odlično! Mogu da vam pomognem sa još jednom rezervacijom. Koji datum i vreme želite?`,
+                hu: `Tökéletes! Segíthetek egy másik foglalással. Milyen dátumra és időpontra?`,
+                de: `Perfekt! Ich kann Ihnen bei einer weiteren Reservierung helfen. Welches Datum und welche Uhrzeit hätten Sie gern?`,
+                fr: `Parfait! Je peux vous aider avec une autre réservation. Quelle date et quelle heure souhaitez-vous?`,
+                es: `¡Perfecto! Puedo ayudarte con otra reserva. ¿Qué fecha y hora te gustaría?`,
+                it: `Perfetto! Posso aiutarti con un'altra prenotazione. Che data e ora vorresti?`,
+                pt: `Perfeito! Posso ajudá-lo com outra reserva. Que data e hora gostaria?`,
+                nl: `Perfect! Ik kan je helpen met nog een reservering. Welke datum en tijd zou je willen?`,
+                auto: `Perfect! I can help you with another reservation. What date and time would you like?`
+            };
+            return subsequentGreetings[language] || subsequentGreetings.en;
+        } else {
+            // Subsequent booking for returning guest - be more conversational
+            const subsequentGreetings = {
+                en: `Of course! I'd be happy to help with another reservation. When would you like to dine again?`,
+                ru: `Конечно! Буду рада помочь с ещё одной бронью. Когда хотели бы снова поужинать?`,
+                sr: `Naravno! Rado ću vam pomoći sa još jednom rezervacijom. Kada biste želeli da večerate ponovo?`,
+                hu: `Természetesen! Szívesen segítek egy másik foglalással. Mikor szeretnél újra vacsorázni?`,
+                de: `Natürlich! Gerne helfe ich Ihnen bei einer weiteren Reservierung. Wann möchten Sie wieder speisen?`,
+                fr: `Bien sûr! Je serais ravie de vous aider avec une autre réservation. Quand aimeriez-vous dîner à nouveau?`,
+                es: `¡Por supuesto! Estaré encantada de ayudarte con otra reserva. ¿Cuándo te gustaría cenar de nuevo?`,
+                it: `Certo! Sarò felice di aiutarti con un'altra prenotazione. Quando vorresti cenare di nuovo?`,
+                pt: `Claro! Ficaria feliz em ajudar com outra reserva. Quando gostaria de jantar novamente?`,
+                nl: `Natuurlijk! Ik help je graag met nog een reservering. Wanneer zou je weer willen dineren?`,
+                auto: `Of course! I'd be happy to help with another reservation. When would you like to dine again?`
+            };
+            return subsequentGreetings[language] || subsequentGreetings.en;
+        }
+    }
 
     if (!guestHistory || guestHistory.total_bookings === 0) {
         // Regular greeting for new guests
@@ -122,21 +170,20 @@ function generatePersonalizedGreeting(
         return greetings[language] || greetings.en;
     } else {
         // Guest context - warm and personal
-        // ✅ FIX: More natural phrasing for the "usual party size" question.
         if (isReturningRegular) {
-            // Very warm greeting for regular customers
+            // ✅ CRITICAL FIX: Improved phrasing for regular customers with OPTIONAL common party size suggestion
             const greetings = {
-                en: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you? ${common_party_size ? `Are we booking for the usual ${common_party_size} people?` : ''}`,
-                ru: `🌟 С возвращением, ${guest_name}! 🎉 Рада вас снова видеть! Чем могу помочь? ${common_party_size ? `Бронируем как обычно, на ${common_party_size} человек?` : ''}`,
-                sr: `🌟 Dobrodošli nazad, ${guest_name}! 🎉 Divno je videti vas ponovo! Kako Vam mogu pomoći? ${common_party_size ? `Da li rezervišemo za uobičajenih ${common_party_size} osoba?` : ''}`,
-                hu: `🌟 Üdvözlöm vissza, ${guest_name}! 🎉 Csodálatos újra látni! Hogyan segíthetek? ${common_party_size ? `A szokásos ${common_party_size} főre foglalunk?` : ''}`,
-                de: `🌟 Willkommen zurück, ${guest_name}! 🎉 Schön, Sie wiederzusehen! Wie kann ich helfen? ${common_party_size ? `Buchen wir für die üblichen ${common_party_size} Personen?` : ''}`,
-                fr: `🌟 Bon retour, ${guest_name}! 🎉 C'est merveilleux de vous revoir! Comment puis-je vous aider? ${common_party_size ? `Réservons-nous pour les ${common_party_size} personnes habituelles?` : ''}`,
-                es: `🌟 ¡Bienvenido de vuelta, ${guest_name}! 🎉 ¡Es maravilloso verte de nuevo! ¿Cómo puedo ayudarte? ${common_party_size ? `¿Reservamos para las ${common_party_size} personas habituales?` : ''}`,
-                it: `🌟 Bentornato, ${guest_name}! 🎉 È meraviglioso rivederti! Come posso aiutarti? ${common_party_size ? `Prenotiamo per le solite ${common_party_size} persone?` : ''}`,
-                pt: `🌟 Bem-vindo de volta, ${guest_name}! 🎉 É maravilhoso vê-lo novamente! Como posso ajudar? ${common_party_size ? `Reservamos para as ${common_party_size} pessoas habituais?` : ''}`,
-                nl: `🌟 Welkom terug, ${guest_name}! 🎉 Het is geweldig om je weer te zien! Hoe kan ik helpen? ${common_party_size ? `Boeken we voor de gebruikelijke ${common_party_size} personen?` : ''}`,
-                auto: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you? ${common_party_size ? `Are we booking for the usual ${common_party_size} people?` : ''}`
+                en: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you today?${common_party_size ? ` Booking for your usual ${common_party_size} people?` : ''}`,
+                ru: `🌟 С возвращением, ${guest_name}! 🎉 Рада вас снова видеть! Чем могу помочь?${common_party_size ? ` Бронируем как обычно, на ${common_party_size} человек?` : ''}`,
+                sr: `🌟 Dobrodošli nazad, ${guest_name}! 🎉 Divno je videti vas ponovo! Kako Vam mogu pomoći?${common_party_size ? ` Da li rezervišemo za uobičajenih ${common_party_size} osoba?` : ''}`,
+                hu: `🌟 Üdvözlöm vissza, ${guest_name}! 🎉 Csodálatos újra látni! Hogyan segíthetek?${common_party_size ? ` A szokásos ${common_party_size} főre foglalunk?` : ''}`,
+                de: `🌟 Willkommen zurück, ${guest_name}! 🎉 Schön, Sie wiederzusehen! Wie kann ich helfen?${common_party_size ? ` Buchen wir für die üblichen ${common_party_size} Personen?` : ''}`,
+                fr: `🌟 Bon retour, ${guest_name}! 🎉 C'est merveilleux de vous revoir! Comment puis-je vous aider?${common_party_size ? ` Réservons-nous pour les ${common_party_size} personnes habituelles?` : ''}`,
+                es: `🌟 ¡Bienvenido de vuelta, ${guest_name}! 🎉 ¡Es maravilloso verte de nuevo! ¿Cómo puedo ayudarte?${common_party_size ? ` ¿Reservamos para las ${common_party_size} personas habituales?` : ''}`,
+                it: `🌟 Bentornato, ${guest_name}! 🎉 È meraviglioso rivederti! Come posso aiutarti?${common_party_size ? ` Prenotiamo per le solite ${common_party_size} persone?` : ''}`,
+                pt: `🌟 Bem-vindo de volta, ${guest_name}! 🎉 É maravilhoso vê-lo novamente! Como posso ajudar?${common_party_size ? ` Reservamos para as ${common_party_size} pessoas habituais?` : ''}`,
+                nl: `🌟 Welkom terug, ${guest_name}! 🎉 Het is geweldig om je weer te zien! Hoe kan ik helpen?${common_party_size ? ` Boeken we voor de gebruikelijke ${common_party_size} personen?` : ''}`,
+                auto: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you today?${common_party_size ? ` Booking for your usual ${common_party_size} people?` : ''}`
             };
             return greetings[language] || greetings.en;
         } else {
@@ -160,11 +207,88 @@ function generatePersonalizedGreeting(
 }
 
 /**
+ * ✅ CRITICAL FIX: Smart question generation that avoids redundancy
+ */
+function generateSmartPartyQuestion(
+    language: Language,
+    hasAskedPartySize: boolean,
+    isSubsequentBooking: boolean,
+    commonPartySize?: number | null,
+    conversationContext?: ConversationContext
+): string {
+    // ✅ CRITICAL FIX: Don't ask if we already asked party size in this conversation
+    if (hasAskedPartySize || conversationContext?.hasAskedPartySize) {
+        // For subsequent bookings or if already asked, be direct and simple
+        const directQuestions = {
+            en: `How many guests?`,
+            ru: `Сколько человек?`,
+            sr: `Koliko osoba?`,
+            hu: `Hány fő?`,
+            de: `Wie viele Personen?`,
+            fr: `Combien de personnes?`,
+            es: `¿Cuántas personas?`,
+            it: `Quante persone?`,
+            pt: `Quantas pessoas?`,
+            nl: `Hoeveel personen?`,
+            auto: `How many guests?`
+        };
+        return directQuestions[language] || directQuestions.en;
+    }
+    
+    if (isSubsequentBooking) {
+        // For subsequent bookings, be direct and simple
+        const directQuestions = {
+            en: `How many guests this time?`,
+            ru: `Сколько человек на этот раз?`,
+            sr: `Koliko osoba ovaj put?`,
+            hu: `Hány fő ezúttal?`,
+            de: `Wie viele Personen diesmal?`,
+            fr: `Combien de personnes cette fois?`,
+            es: `¿Cuántas personas esta vez?`,
+            it: `Quante persone questa volta?`,
+            pt: `Quantas pessoas desta vez?`,
+            nl: `Hoeveel personen deze keer?`,
+            auto: `How many guests this time?`
+        };
+        return directQuestions[language] || directQuestions.en;
+    } else if (commonPartySize) {
+        // First time asking, with history - ONLY suggest if haven't asked yet
+        const suggestiveQuestions = {
+            en: `How many people will be joining you? (Usually ${commonPartySize} for you)`,
+            ru: `Сколько человек будет? (Обычно у вас ${commonPartySize})`,
+            sr: `Koliko osoba će biti? (Obično ${commonPartySize} kod vas)`,
+            hu: `Hányan lesztek? (Általában ${commonPartySize} fő nálad)`,
+            de: `Wie viele Personen werden dabei sein? (Normalerweise ${commonPartySize} bei Ihnen)`,
+            fr: `Combien de personnes seront présentes? (Habituellement ${commonPartySize} pour vous)`,
+            es: `¿Cuántas personas serán? (Normalmente ${commonPartySize} para ti)`,
+            it: `Quante persone saranno? (Di solito ${commonPartySize} per te)`,
+            pt: `Quantas pessoas serão? (Normalmente ${commonPartySize} para você)`,
+            nl: `Hoeveel personen worden het? (Gewoonlijk ${commonPartySize} voor jou)`,
+            auto: `How many people will be joining you? (Usually ${commonPartySize} for you)`
+        };
+        return suggestiveQuestions[language] || suggestiveQuestions.en;
+    } else {
+        // First time asking, no history
+        const standardQuestions = {
+            en: `How many guests will be joining you?`,
+            ru: `Сколько гостей будет с вами?`,
+            sr: `Koliko gostiju će biti sa vama?`,
+            hu: `Hány vendég lesz veled?`,
+            de: `Wie viele Gäste werden Sie begleiten?`,
+            fr: `Combien d'invités vous accompagneront?`,
+            es: `¿Cuántos invitados te acompañarán?`,
+            it: `Quanti ospiti ti accompagneranno?`,
+            pt: `Quantos convidados o acompanharão?`,
+            nl: `Hoeveel gasten gaan met je mee?`,
+            auto: `How many guests will be joining you?`
+        };
+        return standardQuestions[language] || standardQuestions.en;
+    }
+}
+
+/**
  * Creates Sofia - the natural language booking specialist agent
- * ✅ FIXED: Enhanced workflow instructions to prevent confusing confirmation flow
- * ✅ NEW: Added guest history personalization support
- * ✅ FIXED: Personalized greeting generation
- * ✅ LANGUAGE ENHANCEMENT: Language-agnostic system prompts
+ * ✅ CRITICAL FIXES: Enhanced workflow instructions and conversation context awareness
  */
 export function createBookingAgent(restaurantConfig: {
     id: number;
@@ -272,8 +396,8 @@ Instead say: "I need your name and phone number to complete the booking."
 `;
     };
 
-    // ✅ NEW: Generate personalized system prompt section based on guest history
-    const getPersonalizedPromptSection = (guestHistory: GuestHistory | null, language: Language): string => {
+    // ✅ CRITICAL FIX: Generate personalized system prompt section with enhanced special requests handling
+    const getPersonalizedPromptSection = (guestHistory: GuestHistory | null, language: Language, conversationContext?: ConversationContext): string => {
         if (!guestHistory || guestHistory.total_bookings === 0) {
             return '';
         }
@@ -290,18 +414,20 @@ Instead say: "I need your name and phone number to complete the booking."
 
 💡 PERSONALIZATION GUIDELINES:
 - ${total_bookings >= 3 ? `RETURNING GUEST: This is a valued returning customer! Use warm, personal language.` : `INFREQUENT GUEST: Guest has visited before but not frequently.`}
-- ${common_party_size ? `USUAL PARTY SIZE: You can suggest "Booking for ${common_party_size}, like usual?" when they don't specify guest count.` : ''}
-- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Should I add your usual request for ${frequent_special_requests[0]}?" when appropriate during booking.` : ''}
+- ✅ CRITICAL FIX: ${common_party_size ? `USUAL PARTY SIZE: Only suggest "${common_party_size} people" if user hasn't specified AND you haven't asked about party size yet in this conversation. If you already asked about party size, DON'T ask again.` : ''}
+- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Would you like your usual ${frequent_special_requests[0]}?" when appropriate during booking.` : ''}
+- ✅ CONVERSATION RULE: ${conversationContext?.isSubsequentBooking ? 'This is a SUBSEQUENT booking in the same session - be concise and skip repetitive questions.' : 'This is the first booking in the session.'}
+- ✅ CRITICAL: Track what you've already asked to avoid repetition. If you asked about party size, don't ask again.
 - Use this information naturally in conversation - don't just list their history!
 - Make the experience feel personal and welcoming for returning guests.`;
     };
 
     // ✅ ENHANCED: Language-agnostic system prompts that work for all languages
-    const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null) => {
+    const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
 
         const dateContext = getCurrentRestaurantContext();
         const criticalInstructions = getCriticalBookingInstructions();
-        const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage);
+        const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage, conversationContext);
 
         // ✅ LANGUAGE INSTRUCTION (works for all languages)
         const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
@@ -353,6 +479,24 @@ EXAMPLES:
 ALWAYS check tool_status before using data!
 `;
 
+        // ✅ CRITICAL FIX: Enhanced conversation context instructions
+        const conversationInstructions = conversationContext ? `
+📝 CONVERSATION CONTEXT:
+- Session Turn: ${conversationContext.sessionTurnCount || 1}
+- Booking Number: ${conversationContext.bookingNumber || 1} ${conversationContext.isSubsequentBooking ? '(SUBSEQUENT)' : '(FIRST)'}
+- ✅ CRITICAL: Asked Party Size: ${conversationContext.hasAskedPartySize ? 'YES - DO NOT ASK AGAIN' : 'NO - CAN ASK IF NEEDED'}
+
+🎯 CONTEXT-AWARE BEHAVIOR:
+${conversationContext.isSubsequentBooking ? 
+  '- SUBSEQUENT BOOKING: Be concise, skip redundant questions, focus on the new booking details.' :
+  '- FIRST BOOKING: Full greeting and standard workflow.'
+}
+${conversationContext.hasAskedPartySize ? 
+  '- ✅ CRITICAL: Already asked about party size - DON\'T ASK AGAIN unless user explicitly changes topic. Use their previous answer.' :
+  '- Can suggest usual party size if appropriate and haven\'t asked yet.'
+}
+` : '';
+
         if (context === 'hostess') {
             // 🏢 HOSTESS CONTEXT: Staff assistant, efficiency-focused
             return `You are Sofia, the professional booking assistant for ${restaurantConfig.name} staff.
@@ -382,6 +526,8 @@ You help hostesses manage reservations quickly and efficiently. You understand s
 ${criticalInstructions}
 
 ${toolInstructions}
+
+${conversationInstructions}
 
 ${personalizedSection}
 
@@ -436,6 +582,8 @@ ${criticalInstructions}
 
 ${toolInstructions}
 
+${conversationInstructions}
+
 ${personalizedSection}
 
 🤝 GUEST COMMUNICATION STYLE:
@@ -469,10 +617,13 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
         systemPrompt: getSystemPrompt('guest'), // Default to guest context
         tools: agentTools,
         restaurantLanguage,
-        getPersonalizedGreeting: generatePersonalizedGreeting, // ✅ CRITICAL FIX: Export the function
+        getPersonalizedGreeting: (guestHistory: GuestHistory | null, language: Language, context: 'hostess' | 'guest', conversationContext?: ConversationContext) => {
+            return generatePersonalizedGreeting(guestHistory, language, context, conversationContext);
+        },
         getCurrentRestaurantContext,
-        updateInstructions: (context: 'hostess' | 'guest', language: Language = 'en', guestHistory?: GuestHistory | null) => {
-            return getSystemPrompt(context, language, guestHistory);
+        generateSmartPartyQuestion,
+        updateInstructions: (context: 'hostess' | 'guest', language: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
+            return getSystemPrompt(context, language, guestHistory, conversationContext);
         }
     };
 }

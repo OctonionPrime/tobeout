@@ -1,4 +1,5 @@
 // server/services/enhanced-conversation-manager.ts
+// ✅ CRITICAL FIX APPLIED: Added missing personalized greeting logic after guest history retrieval
 // ✅ LANGUAGE ENHANCEMENT: Added Translation Service and Language Detection Agent
 // ✅ OVERSEER IMPLEMENTATION: Intelligent Agent Management with Claude
 // ✅ FIXED: Language consistency throughout conversation flow
@@ -427,8 +428,9 @@ Respond with ONLY a JSON object.
         delete session.pendingConfirmation;
         delete session.confirmedName;
         delete session.activeReservationId;
+        delete session.foundReservations; // ✅ NEW: Clear found reservations list
         
-        console.log(`[SessionReset] Cleared pending states and active reservation ID`);
+        console.log(`[SessionReset] Cleared pending states, active reservation ID, and found reservations`);
     }
 
     /**
@@ -1106,6 +1108,12 @@ ${languageInstruction}
 3. Make requested changes
 4. Confirm all modifications
 
+✅ CRITICAL RESERVATION DISPLAY RULES:
+- When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"
+- NEVER use numbered lists like "1, 2, 3" - always use real IDs "#6, #3, #4"
+- When asking user to choose, say: "Укажите ID брони (например, #6)"
+- If user provides invalid ID, gently ask: "Пожалуйста, укажите ID брони из списка: #6, #3, #4"
+
 💬 STYLE: Understanding, efficient, secure
 
 ${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}`;
@@ -1119,8 +1127,48 @@ Assist guests with their restaurant needs in a professional manner.`;
     }
 
     /**
-     * Intelligent name choice extraction using LLM
+     * ✅ NEW: Extract reservation ID from user message for modification requests
      */
+    private extractReservationIdFromMessage(
+        message: string, 
+        foundReservations: any[]
+    ): { reservationId: number | null; isValidChoice: boolean; suggestion?: string } {
+        if (!foundReservations || foundReservations.length === 0) {
+            return { reservationId: null, isValidChoice: false };
+        }
+
+        const text = message.toLowerCase().trim();
+        const availableIds = foundReservations.map(r => r.id);
+        
+        // Try to extract number that looks like an ID
+        const numberMatches = text.match(/\d+/g);
+        if (numberMatches) {
+            for (const numStr of numberMatches) {
+                const num = parseInt(numStr, 10);
+                if (availableIds.includes(num)) {
+                    return { reservationId: num, isValidChoice: true };
+                }
+            }
+        }
+        
+        // Check for ordinal selection (1st, 2nd, 3rd reservation in list)
+        const ordinalMatches = text.match(/^([123])$/);
+        if (ordinalMatches && foundReservations.length >= parseInt(ordinalMatches[1])) {
+            const index = parseInt(ordinalMatches[1]) - 1;
+            const reservationId = foundReservations[index].id;
+            return { 
+                reservationId, 
+                isValidChoice: true,
+                suggestion: `Понял, вы выбрали бронь #${reservationId}. В следующий раз можете сразу указать ID #${reservationId}.`
+            };
+        }
+
+        return { 
+            reservationId: null, 
+            isValidChoice: false,
+            suggestion: `Пожалуйста, укажите ID брони из списка: ${availableIds.map(id => `#${id}`).join(', ')}`
+        };
+    }
     private async extractNameChoice(
         userMessage: string,
         dbName: string,
@@ -1286,7 +1334,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ ENHANCED: Main message handling with Claude-powered meta-agents and Translation Service
+     * ✅ CRITICAL FIX: Main message handling with missing personalized greeting logic added
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1306,7 +1354,7 @@ Respond with JSON only.`;
         try {
             const isFirstMessage = session.conversationHistory.length === 0;
 
-            // Auto-retrieve guest history for first message
+            // ✅ CRITICAL FIX: Move guest history retrieval to BEFORE personalized greeting check
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
                 console.log(`👤 [GuestHistory] First message from telegram user: ${session.telegramUserId}, retrieving history...`);
 
@@ -1317,6 +1365,75 @@ Respond with JSON only.`;
 
                 session.guestHistory = guestHistory;
                 console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved' : 'No'} history for session ${sessionId}`);
+            }
+
+            // ✅ CRITICAL FIX: NOW check for personalized greeting AFTER history is retrieved
+            if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) {
+                console.log(`🎉 [PersonalizedGreeting] Generating personalized first response for ${session.guestHistory.guest_name}`);
+                
+                // Get agent and language detection
+                const agent = await this.getAgent(session.restaurantId, 'booking');
+                
+                // Quick language detection for first message
+                const langDetection = await this.runLanguageDetectionAgent(message);
+                session.language = langDetection.detectedLanguage;
+                if (langDetection.shouldLock) {
+                    session.languageLocked = true;
+                }
+                
+                const bookingAgent = createBookingAgent(agent.restaurantConfig);
+                const personalizedGreeting = bookingAgent.getPersonalizedGreeting(
+                    session.guestHistory, 
+                    session.language as Language, 
+                    session.context
+                );
+                
+                console.log(`🎉 [PersonalizedGreeting] Generated greeting: "${personalizedGreeting}"`);
+                
+                session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
+                session.conversationHistory.push({ role: 'assistant', content: personalizedGreeting, timestamp: new Date() });
+                this.sessions.set(sessionId, session);
+
+                return {
+                    response: personalizedGreeting,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent
+                };
+            }
+
+            // ✅ CRITICAL FIX: For first message WITHOUT guest history, generate standard greeting  
+            if (isFirstMessage && session.currentAgent === 'booking') {
+                console.log(`🎉 [StandardGreeting] Generating standard greeting for new guest`);
+                
+                const agent = await this.getAgent(session.restaurantId, 'booking');
+                
+                // Quick language detection for first message
+                const langDetection = await this.runLanguageDetectionAgent(message);
+                session.language = langDetection.detectedLanguage;
+                if (langDetection.shouldLock) {
+                    session.languageLocked = true;
+                }
+                
+                const bookingAgent = createBookingAgent(agent.restaurantConfig);
+                const standardGreeting = bookingAgent.getPersonalizedGreeting(
+                    null, 
+                    session.language as Language, 
+                    session.context
+                );
+                
+                console.log(`🎉 [StandardGreeting] Generated greeting: "${standardGreeting}"`);
+                
+                session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
+                session.conversationHistory.push({ role: 'assistant', content: standardGreeting, timestamp: new Date() });
+                this.sessions.set(sessionId, session);
+
+                return {
+                    response: standardGreeting,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent
+                };
             }
 
             // STEP 1: Check for pending confirmation FIRST
@@ -1540,23 +1657,6 @@ Respond with JSON only.`;
             // STEP 5: Get agent and prepare messages
             const agent = await this.getAgent(session.restaurantId, session.currentAgent);
 
-            if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) {
-                console.log(`🎉 [PersonalizedGreeting] Generating personalized first response for ${session.guestHistory.guest_name}`);
-                const bookingAgent = createBookingAgent(agent.restaurantConfig);
-                const personalizedGreeting = bookingAgent.getPersonalizedGreeting(session.guestHistory, session.language as Language, session.context);
-                console.log(`🎉 [PersonalizedGreeting] Generated greeting: "${personalizedGreeting}"`);
-                session.conversationHistory.push({ role: 'assistant', content: personalizedGreeting, timestamp: new Date() });
-                this.sessions.set(sessionId, session);
-
-                return {
-                    response: personalizedGreeting,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent,
-                    agentHandoff
-                };
-            }
-
             let systemPrompt = agent.updateInstructions
                 ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage)
                 : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig, session.guestHistory, isFirstMessage);
@@ -1689,24 +1789,123 @@ Respond with JSON only.`;
                                         includeStatus: args.includeStatus
                                     });
                                     if (result.tool_status === 'SUCCESS' && result.data?.reservations?.length > 0) {
-                                        session.activeReservationId = result.data.reservations[0].id;
-                                        console.log(`[ConversationManager] Stored active reservation ID in session: ${session.activeReservationId}`);
+                                        // ✅ CRITICAL FIX: Store list of found reservations instead of just first one
+                                        session.foundReservations = result.data.reservations;
+                                        console.log(`[ConversationManager] Stored ${result.data.reservations.length} found reservations in session:`, result.data.reservations.map(r => `#${r.id}`));
+                                        
+                                        // Clear activeReservationId since user needs to choose
+                                        delete session.activeReservationId;
                                     }
                                     break;
                                 case 'modify_reservation':
-                                    result = await agentFunctions.modify_reservation(args.reservationId, args.modifications, args.reason, functionContext);
+                                    // ✅ CRITICAL FIX: Handle reservation ID selection properly
+                                    let reservationIdToModify = args.reservationId;
+                                    
+                                    // If no explicit reservationId provided, try to extract from user's message or session
+                                    if (!reservationIdToModify) {
+                                        if (session.foundReservations && session.foundReservations.length > 1) {
+                                            // User needs to choose from multiple reservations
+                                            const extractResult = this.extractReservationIdFromMessage(
+                                                message, 
+                                                session.foundReservations
+                                            );
+                                            
+                                            if (extractResult.isValidChoice && extractResult.reservationId) {
+                                                reservationIdToModify = extractResult.reservationId;
+                                                console.log(`[ReservationSelection] User selected reservation #${reservationIdToModify} from found reservations`);
+                                                
+                                                // Set as active for future operations
+                                                session.activeReservationId = reservationIdToModify;
+                                                
+                                                // If there's a suggestion, add it to response
+                                                if (extractResult.suggestion) {
+                                                    console.log(`[ReservationSelection] Suggestion: ${extractResult.suggestion}`);
+                                                }
+                                            } else {
+                                                // Invalid choice - ask user to specify valid ID
+                                                const availableIds = session.foundReservations.map(r => `#${r.id}`).join(', ');
+                                                const errorMessage = await TranslationService.translateMessage(
+                                                    extractResult.suggestion || `Please specify the reservation ID from the list: ${availableIds}`,
+                                                    session.language,
+                                                    'question'
+                                                );
+                                                
+                                                session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
+                                                this.sessions.set(sessionId, session);
+                                                return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
+                                            }
+                                        } else if (session.foundReservations && session.foundReservations.length === 1) {
+                                            // Only one reservation found, use it
+                                            reservationIdToModify = session.foundReservations[0].id;
+                                            session.activeReservationId = reservationIdToModify;
+                                        } else if (session.activeReservationId) {
+                                            // Use previously selected reservation
+                                            reservationIdToModify = session.activeReservationId;
+                                        }
+                                    }
+                                    
+                                    if (!reservationIdToModify) {
+                                        result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I need to know which reservation to modify. Please provide the reservation ID.' } };
+                                    } else {
+                                        result = await agentFunctions.modify_reservation(reservationIdToModify, args.modifications, args.reason, functionContext);
+                                        if (result.tool_status === 'SUCCESS') {
+                                            session.hasActiveReservation = reservationIdToModify;
+                                            this.resetAgentState(session);
+                                        }
+                                    }
                                     break;
                                 case 'cancel_reservation':
-                                    const reservationIdToCancel = args.reservationId || session.activeReservationId;
-                                    console.log(`❌ [Maya] Attempting to cancel reservation ${reservationIdToCancel} (from args: ${args.reservationId}, from session: ${session.activeReservationId})`);
+                                    // ✅ CRITICAL FIX: Handle reservation ID selection properly for cancellation
+                                    let reservationIdToCancel = args.reservationId;
+                                    
+                                    // If no explicit reservationId provided, try to extract from user's message or session
+                                    if (!reservationIdToCancel) {
+                                        if (session.foundReservations && session.foundReservations.length > 1) {
+                                            // User needs to choose from multiple reservations
+                                            const extractResult = this.extractReservationIdFromMessage(
+                                                message, 
+                                                session.foundReservations
+                                            );
+                                            
+                                            if (extractResult.isValidChoice && extractResult.reservationId) {
+                                                reservationIdToCancel = extractResult.reservationId;
+                                                console.log(`[ReservationSelection] User selected reservation #${reservationIdToCancel} for cancellation`);
+                                                
+                                                // Set as active for this operation
+                                                session.activeReservationId = reservationIdToCancel;
+                                            } else {
+                                                // Invalid choice - ask user to specify valid ID
+                                                const availableIds = session.foundReservations.map(r => `#${r.id}`).join(', ');
+                                                const errorMessage = await TranslationService.translateMessage(
+                                                    extractResult.suggestion || `Please specify the reservation ID to cancel from the list: ${availableIds}`,
+                                                    session.language,
+                                                    'question'
+                                                );
+                                                
+                                                session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
+                                                this.sessions.set(sessionId, session);
+                                                return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
+                                            }
+                                        } else if (session.foundReservations && session.foundReservations.length === 1) {
+                                            // Only one reservation found, use it
+                                            reservationIdToCancel = session.foundReservations[0].id;
+                                            session.activeReservationId = reservationIdToCancel;
+                                        } else if (session.activeReservationId) {
+                                            // Use previously selected reservation
+                                            reservationIdToCancel = session.activeReservationId;
+                                        }
+                                    }
+                                    
+                                    console.log(`❌ [Maya] Attempting to cancel reservation ${reservationIdToCancel} (from args: ${args.reservationId}, extracted/selected: ${reservationIdToCancel})`);
 
                                     if (!reservationIdToCancel) {
-                                        result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I am not sure which reservation to cancel. Please provide a confirmation number.' } };
+                                        result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I need to know which reservation to cancel. Please provide the reservation ID.' } };
                                     } else {
                                         result = await agentFunctions.cancel_reservation(reservationIdToCancel, args.reason, args.confirmCancellation, functionContext);
                                         if (result.tool_status === 'SUCCESS') {
                                             console.log(`[ConversationManager] Reservation ${reservationIdToCancel} cancelled, clearing active ID from session.`);
                                             delete session.activeReservationId;
+                                            delete session.foundReservations; // Clear found reservations after cancellation
                                         }
                                     }
                                     break;
@@ -2224,6 +2423,17 @@ interface BookingSessionWithAgent extends BookingSession {
     confirmedName?: string;
     guestHistory?: GuestHistory | null;
     activeReservationId?: number;
+    foundReservations?: Array<{  // ✅ NEW: Store list of found reservations for user selection
+        id: number;
+        date: string;
+        time: string;
+        guests: number;
+        guestName: string;
+        tableName: string;
+        status: string;
+        canModify: boolean;
+        canCancel: boolean;
+    }>;
     turnCount?: number;
     agentTurnCount?: number;
     
