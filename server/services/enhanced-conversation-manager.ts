@@ -1,5 +1,5 @@
 // server/services/enhanced-conversation-manager.ts
-// ✅ CRITICAL FIX APPLIED: Added missing personalized greeting logic after guest history retrieval
+// ✅ CRITICAL FIX APPLIED: Removed premature greeting logic to allow Overseer to run first
 // ✅ LANGUAGE ENHANCEMENT: Added Translation Service and Language Detection Agent
 // ✅ OVERSEER IMPLEMENTATION: Intelligent Agent Management with Claude
 // ✅ FIXED: Language consistency throughout conversation flow
@@ -1169,6 +1169,7 @@ Assist guests with their restaurant needs in a professional manner.`;
             suggestion: `Пожалуйста, укажите ID брони из списка: ${availableIds.map(id => `#${id}`).join(', ')}`
         };
     }
+
     private async extractNameChoice(
         userMessage: string,
         dbName: string,
@@ -1334,7 +1335,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ CRITICAL FIX: Main message handling with missing personalized greeting logic added
+     * ✅ CRITICAL FIX: Main message handling with corrected logic flow
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1354,7 +1355,7 @@ Respond with JSON only.`;
         try {
             const isFirstMessage = session.conversationHistory.length === 0;
 
-            // ✅ CRITICAL FIX: Move guest history retrieval to BEFORE personalized greeting check
+            // ✅ CRITICAL FIX: Guest history retrieval now happens before any other action on the first message.
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
                 console.log(`👤 [GuestHistory] First message from telegram user: ${session.telegramUserId}, retrieving history...`);
 
@@ -1367,74 +1368,12 @@ Respond with JSON only.`;
                 console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved' : 'No'} history for session ${sessionId}`);
             }
 
-            // ✅ CRITICAL FIX: NOW check for personalized greeting AFTER history is retrieved
-            if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) {
-                console.log(`🎉 [PersonalizedGreeting] Generating personalized first response for ${session.guestHistory.guest_name}`);
-                
-                // Get agent and language detection
-                const agent = await this.getAgent(session.restaurantId, 'booking');
-                
-                // Quick language detection for first message
-                const langDetection = await this.runLanguageDetectionAgent(message);
-                session.language = langDetection.detectedLanguage;
-                if (langDetection.shouldLock) {
-                    session.languageLocked = true;
-                }
-                
-                const bookingAgent = createBookingAgent(agent.restaurantConfig);
-                const personalizedGreeting = bookingAgent.getPersonalizedGreeting(
-                    session.guestHistory, 
-                    session.language as Language, 
-                    session.context
-                );
-                
-                console.log(`🎉 [PersonalizedGreeting] Generated greeting: "${personalizedGreeting}"`);
-                
-                session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
-                session.conversationHistory.push({ role: 'assistant', content: personalizedGreeting, timestamp: new Date() });
-                this.sessions.set(sessionId, session);
-
-                return {
-                    response: personalizedGreeting,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            }
-
-            // ✅ CRITICAL FIX: For first message WITHOUT guest history, generate standard greeting  
-            if (isFirstMessage && session.currentAgent === 'booking') {
-                console.log(`🎉 [StandardGreeting] Generating standard greeting for new guest`);
-                
-                const agent = await this.getAgent(session.restaurantId, 'booking');
-                
-                // Quick language detection for first message
-                const langDetection = await this.runLanguageDetectionAgent(message);
-                session.language = langDetection.detectedLanguage;
-                if (langDetection.shouldLock) {
-                    session.languageLocked = true;
-                }
-                
-                const bookingAgent = createBookingAgent(agent.restaurantConfig);
-                const standardGreeting = bookingAgent.getPersonalizedGreeting(
-                    null, 
-                    session.language as Language, 
-                    session.context
-                );
-                
-                console.log(`🎉 [StandardGreeting] Generated greeting: "${standardGreeting}"`);
-                
-                session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
-                session.conversationHistory.push({ role: 'assistant', content: standardGreeting, timestamp: new Date() });
-                this.sessions.set(sessionId, session);
-
-                return {
-                    response: standardGreeting,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            }
+            // ⛔️ BUGFIX: The following two blocks were causing the premature greeting.
+            // They are now REMOVED to allow the Overseer agent to run first.
+            /*
+            // REMOVED: if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) { ... }
+            // REMOVED: if (isFirstMessage && session.currentAgent === 'booking') { ... }
+            */
 
             // STEP 1: Check for pending confirmation FIRST
             if (session.pendingConfirmation) {
@@ -1494,7 +1433,7 @@ Respond with JSON only.`;
                         };
                     }
                 }
-
+                
                 // ✅ Call the Claude-powered Intelligent Confirmation Agent
                 const confirmationResult = await this.runConfirmationAgent(message, summary, session.language);
 
@@ -2469,3 +2408,4 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
+        
