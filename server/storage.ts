@@ -1,50 +1,56 @@
 //
-// storage.ts (Complete Timezone-Aware Version with UTC Timestamps + Legacy Timeslot System Removed)
-// ✅ PHASE 3: All legacy timeslot code completely removed
+// storage.ts (Complete Enhanced Version with All New Features)
+// ✅ ENHANCED: Complete timezone-aware system with menu management and guest analytics
 // ✅ MAYA FIX: Added excludeReservationId parameter to prevent reservation conflicts during modifications
 //
 
 import {
     users, restaurants, tables, guests, reservations,
     integrationSettings, aiActivities,
+    reservationStatusHistory, menuItems, restaurantMenuCategories, menuSearchLog,
     type User, type InsertUser,
     type Restaurant, type InsertRestaurant,
     type Table, type InsertTable,
     type Guest, type InsertGuest,
     type Reservation, type InsertReservation,
     type AiActivity, type InsertAiActivity,
-    type IntegrationSetting, type InsertIntegrationSetting
+    type IntegrationSetting, type InsertIntegrationSetting,
+    type ReservationStatusHistory, type InsertReservationStatusHistory,
+    type MenuItem, type InsertMenuItem,
+    type RestaurantMenuCategory, type InsertRestaurantMenuCategory,
+    type MenuSearchLog, type InsertMenuSearchLog
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
+import { eq, and, gte, lte, desc, sql, count, or, inArray, gt, ne, notExists, like, ilike } from "drizzle-orm";
 import { DateTime } from 'luxon'; 
 // ✅ PROPER FIX: Use centralized timezone utilities for consistency across the application
 // This ensures all timezone handling follows the same logic and supports all 600+ timezones
 import { getRestaurantDateTime, getRestaurantDateString } from './utils/timezone-utils';
 
 // ✅ TYPE SAFETY FIX: Define valid reservation statuses
-type ReservationStatus = 'confirmed' | 'created' | 'canceled' | 'completed' | 'archived';
+type ReservationStatus = 'confirmed' | 'created' | 'canceled' | 'completed' | 'archived' | 'seated' | 'in_progress' | 'no_show';
 
 export interface IStorage {
-    // User methods
+    // ✅ EXISTING: User methods
     getUser(id: number): Promise<User | undefined>;
     getUserByEmail(email: string): Promise<User | undefined>;
     createUser(user: InsertUser): Promise<User>;
 
-    // Restaurant methods
+    // ✅ EXISTING: Restaurant methods
     getRestaurant(id: number): Promise<Restaurant | undefined>;
     getRestaurantByUserId(userId: number): Promise<Restaurant | undefined>;
+    getAllRestaurants(): Promise<Restaurant[]>; // 🆕 NEW: For cleanup service
     createRestaurant(restaurant: InsertRestaurant): Promise<Restaurant>;
     updateRestaurant(id: number, restaurant: Partial<InsertRestaurant>): Promise<Restaurant>;
 
-    // Table methods
+    // ✅ EXISTING: Table methods
     getTables(restaurantId: number): Promise<Table[]>;
     getTable(id: number): Promise<Table | undefined>;
     createTable(table: InsertTable): Promise<Table>;
     updateTable(id: number, table: Partial<InsertTable>): Promise<Table>;
     deleteTable(id: number): Promise<void>;
 
-    // Guest methods
+    // ✅ EXISTING: Guest methods
     getGuests(restaurantId: number): Promise<Guest[]>;
     getGuest(id: number): Promise<Guest | undefined>;
     getGuestByPhone(phone: string): Promise<Guest | undefined>;
@@ -52,13 +58,13 @@ export interface IStorage {
     createGuest(guest: InsertGuest): Promise<Guest>;
     updateGuest(id: number, guest: Partial<InsertGuest>): Promise<Guest>;
 
-    // Reservation methods - ✅ MAYA FIX: Updated interface
+    // ✅ EXISTING: Reservation methods
     getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
         upcoming?: boolean;
         timezone?: string;
-        excludeReservationId?: number; // 🆕 NEW: Exclude specific reservation from results
+        excludeReservationId?: number;
     }): Promise<any[]>;
     getReservation(id: number): Promise<any | undefined>;
     createReservation(reservation: InsertReservation): Promise<Reservation>;
@@ -75,18 +81,68 @@ export interface IStorage {
         totalGuests: number;
     }>;
 
-    // Integration settings methods
+    // 🆕 NEW: Enhanced reservation status management
+    updateReservationWithHistory(
+        reservationId: number, 
+        updateData: Partial<InsertReservation>,
+        historyData: {
+            changedBy: 'system' | 'staff' | 'guest';
+            changeReason: string;
+            metadata?: any;
+        }
+    ): Promise<Reservation>;
+    getStatusChangeTime(reservationId: number, status: string): Promise<Date | null>;
+    getReservationStatusHistory(reservationId: number): Promise<ReservationStatusHistory[]>;
+
+    // 🆕 NEW: Enhanced guest analytics
+    updateGuestAnalytics(
+        guestId: number,
+        analytics: {
+            visitCompleted?: boolean;
+            noShowOccurred?: boolean;
+            duration?: number;
+            totalSpent?: number;
+        }
+    ): Promise<Guest>;
+    getGuestReservationHistory(guestId: number, restaurantId: number): Promise<any[]>;
+
+    // 🆕 NEW: Menu management system
+    getMenuItems(restaurantId: number, filters?: {
+        category?: string;
+        availableOnly?: boolean;
+        searchQuery?: string;
+        popularOnly?: boolean;
+    }): Promise<any[]>;
+    createMenuItem(data: InsertMenuItem): Promise<MenuItem>;
+    bulkUpdateMenuItems(restaurantId: number, items: any[], action: string): Promise<any[]>;
+    searchMenuItemsByName(restaurantId: number, query: string): Promise<MenuItem[]>;
+    searchMenuItemsByDescription(restaurantId: number, query: string): Promise<MenuItem[]>;
+    searchMenuItemsByDietaryTags(restaurantId: number, query: string): Promise<MenuItem[]>;
+    fuzzySearchMenuItems(restaurantId: number, query: string): Promise<MenuItem[]>;
+    getMenuRecommendations(
+        restaurantId: number,
+        context: {
+            guestPreferences?: string[];
+            priceRange?: { min?: number; max?: number };
+            category?: string;
+            limit?: number;
+        }
+    ): Promise<any[]>;
+    getPopularMenuItems(restaurantId: number, limit?: number): Promise<MenuItem[]>;
+    logMenuSearch(restaurantId: number, query: string, source: string): Promise<MenuSearchLog>;
+
+    // ✅ EXISTING: Integration settings methods
     getIntegrationSettings(restaurantId: number, type: string): Promise<IntegrationSetting | undefined>;
     saveIntegrationSettings(settings: InsertIntegrationSetting): Promise<IntegrationSetting>;
 
-    // AI activities methods
+    // ✅ EXISTING: AI activities methods
     getAiActivities(restaurantId: number, limit?: number): Promise<AiActivity[]>;
     logAiActivity(activity: InsertAiActivity): Promise<AiActivity>;
 
-    // Real-time table availability methods
+    // ✅ EXISTING: Real-time table availability methods
     updateTableStatusFromReservations(tableId: number, restaurantTimezone: string): Promise<void>;
     updateAllTableStatuses(restaurantId: number, restaurantTimezone: string): Promise<void>;
-    getTableAvailability(restaurantId: number, date: string, time: string, excludeReservationId?: number): Promise<Table[]>; // 🆕 MAYA FIX
+    getTableAvailability(restaurantId: number, date: string, time: string, excludeReservationId?: number): Promise<Table[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -119,7 +175,10 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // User methods (unchanged)
+    // ================================
+    // ✅ EXISTING USER METHODS
+    // ================================
+
     async getUser(id: number): Promise<User | undefined> {
         const [user] = await db.select().from(users).where(eq(users.id, id));
         return user;
@@ -135,7 +194,10 @@ export class DatabaseStorage implements IStorage {
         return newUser;
     }
 
-    // Restaurant methods (unchanged)
+    // ================================
+    // ✅ EXISTING + ENHANCED RESTAURANT METHODS
+    // ================================
+
     async getRestaurant(id: number): Promise<Restaurant | undefined> {
         const [restaurant] = await db.select().from(restaurants).where(eq(restaurants.id, id));
         return restaurant;
@@ -144,6 +206,11 @@ export class DatabaseStorage implements IStorage {
     async getRestaurantByUserId(userId: number): Promise<Restaurant | undefined> {
         const [restaurant] = await db.select().from(restaurants).where(eq(restaurants.userId, userId));
         return restaurant;
+    }
+
+    // 🆕 NEW: Get all restaurants for cleanup service
+    async getAllRestaurants(): Promise<Restaurant[]> {
+        return await db.select().from(restaurants);
     }
 
     async createRestaurant(restaurant: InsertRestaurant): Promise<Restaurant> {
@@ -160,7 +227,10 @@ export class DatabaseStorage implements IStorage {
         return updatedRestaurant;
     }
 
-    // Table methods (unchanged)
+    // ================================
+    // ✅ EXISTING TABLE METHODS
+    // ================================
+
     async getTables(restaurantId: number): Promise<Table[]> {
         return db.select().from(tables).where(eq(tables.restaurantId, restaurantId));
     }
@@ -188,7 +258,10 @@ export class DatabaseStorage implements IStorage {
         await db.delete(tables).where(eq(tables.id, id));
     }
 
-    // Guest methods (unchanged)
+    // ================================
+    // ✅ EXISTING GUEST METHODS
+    // ================================
+
     async getGuests(restaurantId: number): Promise<Guest[]> {
         const guestsWithCounts = await db
             .select({
@@ -201,6 +274,14 @@ export class DatabaseStorage implements IStorage {
                 birthday: guests.birthday,
                 tags: guests.tags,
                 comments: guests.comments,
+                visit_count: guests.visit_count,
+                no_show_count: guests.no_show_count,
+                total_spent: guests.total_spent,
+                average_duration: guests.average_duration,
+                preferences: guests.preferences,
+                vip_level: guests.vip_level,
+                last_visit_date: guests.last_visit_date,
+                reputation_score: guests.reputation_score,
                 createdAt: guests.createdAt,
                 reservationCount: count(reservations.id)
             })
@@ -248,13 +329,16 @@ export class DatabaseStorage implements IStorage {
         return updatedGuest;
     }
 
-    // ✅ MAYA FIX: Updated getReservations method with excludeReservationId parameter
+    // ================================
+    // ✅ EXISTING RESERVATION METHODS (with Maya fix)
+    // ================================
+
     async getReservations(restaurantId: number, filters?: {
         date?: string;
         status?: string[];
         upcoming?: boolean;
         timezone?: string;
-        excludeReservationId?: number; // 🆕 NEW: Exclude specific reservation from results
+        excludeReservationId?: number;
     }): Promise<any[]> {
         const whereConditions = [eq(reservations.restaurantId, restaurantId)];
 
@@ -276,7 +360,7 @@ export class DatabaseStorage implements IStorage {
                     and(
                         gte(reservations.reservation_utc, startOfDay),
                         lte(reservations.reservation_utc, endOfDay)
-                    )!  // ✅ Non-null assertion since we validated above
+                    )!
                 );
                 console.log(`📋 [Storage] Filtering by UTC range: ${startOfDay} to ${endOfDay} for restaurant date: ${filters.date}`);
             }
@@ -286,7 +370,7 @@ export class DatabaseStorage implements IStorage {
         if (filters?.status && filters.status.length > 0) {
             // Validate and cast status values to proper type
             const validStatuses = filters.status.filter(status => 
-                ['confirmed', 'created', 'canceled', 'completed', 'archived'].includes(status)
+                ['confirmed', 'created', 'canceled', 'completed', 'archived', 'seated', 'in_progress', 'no_show'].includes(status)
             ) as ReservationStatus[];
             
             if (validStatuses.length > 0) {
@@ -317,7 +401,7 @@ export class DatabaseStorage implements IStorage {
             .innerJoin(guests, eq(reservations.guestId, guests.id))
             .innerJoin(tables, eq(reservations.tableId, tables.id))
             .where(and(...whereConditions))
-            .orderBy(reservations.reservation_utc); // ✅ FIXED: Order by UTC timestamp
+            .orderBy(reservations.reservation_utc);
 
         console.log(`📋 [Storage] Found ${results.length} reservations with ${whereConditions.length} conditions${filters?.excludeReservationId ? ` (excluded reservation ${filters.excludeReservationId})` : ''}`);
 
@@ -352,10 +436,7 @@ export class DatabaseStorage implements IStorage {
     async createReservation(reservation: InsertReservation): Promise<Reservation> {
         const [newReservation] = await db.insert(reservations).values(reservation).returning();
 
-        // ✅ REMOVED: All timeslot-related code from legacy system
-
         if (newReservation.tableId) {
-            // ✅ FIXED: Now need timezone for table status updates
             const restaurant = await this.getRestaurant(newReservation.restaurantId);
             const timezone = restaurant?.timezone || 'Europe/Moscow';
             await this.updateTableStatusFromReservations(newReservation.tableId, timezone);
@@ -363,7 +444,6 @@ export class DatabaseStorage implements IStorage {
         return newReservation;
     }
 
-    // ✅ MAYA FIX: Updated atomic reservation creation with excludeReservationId support
     async createReservationAtomic(
         reservation: InsertReservation,
         expectedSlot: { tableId: number; time: string; duration: number }
@@ -372,11 +452,9 @@ export class DatabaseStorage implements IStorage {
 
         return await db.transaction(async (tx) => {
             try {
-                // ✅ FIXED: Get restaurant for timezone context
                 const restaurant = await this.getRestaurant(reservation.restaurantId);
                 const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
 
-                // ✅ IMPROVED: Robust UTC timestamp parsing
                 let reservationStartUtc: DateTime;
                 try {
                     reservationStartUtc = this.parsePostgresTimestamp(reservation.reservation_utc);
@@ -419,13 +497,11 @@ export class DatabaseStorage implements IStorage {
                     const existingDuration = existing.duration || 120;
                     const existingEndUtc = existingStartUtc.plus({ minutes: existingDuration });
 
-                    // Check for overlap using UTC timestamps
                     const hasOverlap = reservationStartUtc < existingEndUtc && reservationEndUtc > existingStartUtc;
 
                     if (hasOverlap) {
                         console.log(`❌ [AtomicBooking] CONFLICT DETECTED: Table ${expectedSlot.tableId} has existing reservation from ${existingStartUtc.toISO()} to ${existingEndUtc.toISO()} (ID: ${existing.id})`);
 
-                        // Convert back to restaurant timezone for error message
                         const conflictStartLocal = existingStartUtc.setZone(restaurantTimezone).toFormat('HH:mm');
                         const conflictEndLocal = existingEndUtc.setZone(restaurantTimezone).toFormat('HH:mm');
 
@@ -441,9 +517,6 @@ export class DatabaseStorage implements IStorage {
                     .returning();
 
                 console.log(`✅ [AtomicBooking] Created reservation ID ${newReservation.id} for table ${expectedSlot.tableId} with UTC timestamp`);
-
-                // ✅ REMOVED: All timeslot-related code from legacy system
-
                 console.log(`🎉 [AtomicBooking] Atomic reservation creation completed successfully for reservation ID ${newReservation.id}`);
                 return newReservation;
 
@@ -471,10 +544,7 @@ export class DatabaseStorage implements IStorage {
             .where(eq(reservations.id, id))
             .returning();
 
-        // ✅ REMOVED: All timeslot-related code from legacy system
-
         if (updatedReservation.tableId) {
-            // ✅ FIXED: Now need timezone for table status updates
             const restaurant = await this.getRestaurant(updatedReservation.restaurantId);
             const timezone = restaurant?.timezone || 'Europe/Moscow';
             await this.updateTableStatusFromReservations(updatedReservation.tableId, timezone);
@@ -482,7 +552,6 @@ export class DatabaseStorage implements IStorage {
         return updatedReservation;
     }
 
-    // ✅ FIXED: Upcoming reservations with UTC timestamps + TYPE SAFETY
     async getUpcomingReservations(restaurantId: number, restaurantTimezone: string, hours: number = 3): Promise<any[]> {
         const nowUtc = DateTime.now().toUTC();
         const endTimeUtc = nowUtc.plus({ hours });
@@ -501,8 +570,8 @@ export class DatabaseStorage implements IStorage {
             .where(
                 and(
                     eq(reservations.restaurantId, restaurantId),
-                    gte(reservations.reservation_utc, nowUtc.toISO()!),  // ✅ TYPE SAFETY FIX
-                    lte(reservations.reservation_utc, endTimeUtc.toISO()!),  // ✅ TYPE SAFETY FIX
+                    gte(reservations.reservation_utc, nowUtc.toISO()!),
+                    lte(reservations.reservation_utc, endTimeUtc.toISO()!),
                     inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
                 )
             )
@@ -517,19 +586,16 @@ export class DatabaseStorage implements IStorage {
         }));
     }
 
-    // ✅ FIXED: Statistics with UTC timestamps + TYPE SAFETY
     async getReservationStatistics(restaurantId: number, restaurantTimezone: string): Promise<{
         todayReservations: number;
         confirmedReservations: number;
         pendingReservations: number;
         totalGuests: number;
     }> {
-        // Get today's date range in UTC for the restaurant timezone
         const restaurantToday = DateTime.now().setZone(restaurantTimezone);
         const startOfDayUtc = restaurantToday.startOf('day').toUTC().toISO();
         const endOfDayUtc = restaurantToday.endOf('day').toUTC().toISO();
 
-        // ✅ TYPE SAFETY FIX: Add null checks
         if (!startOfDayUtc || !endOfDayUtc) {
             throw new Error('Invalid timezone for statistics calculation');
         }
@@ -599,7 +665,478 @@ export class DatabaseStorage implements IStorage {
         return stats;
     }
 
-    // Integration settings methods (unchanged)
+    // ================================
+    // 🆕 NEW: ENHANCED RESERVATION STATUS MANAGEMENT
+    // ================================
+
+    async updateReservationWithHistory(
+        reservationId: number, 
+        updateData: Partial<InsertReservation>,
+        historyData: {
+            changedBy: 'system' | 'staff' | 'guest';
+            changeReason: string;
+            metadata?: any;
+        }
+    ): Promise<Reservation> {
+        return await db.transaction(async (tx) => {
+            console.log(`🔄 [Storage] Updating reservation ${reservationId} with history tracking`);
+            
+            // Get current reservation state
+            const [currentReservation] = await tx
+                .select()
+                .from(reservations)
+                .where(eq(reservations.id, reservationId));
+                
+            if (!currentReservation) {
+                throw new Error(`Reservation ${reservationId} not found`);
+            }
+            
+            // Track status changes
+            if (updateData.status && updateData.status !== currentReservation.status) {
+                await tx.insert(reservationStatusHistory).values({
+                    reservationId,
+                    fromStatus: currentReservation.status,
+                    toStatus: updateData.status,
+                    changedBy: historyData.changedBy,
+                    changeReason: historyData.changeReason,
+                    metadata: historyData.metadata
+                });
+                
+                console.log(`📝 [Storage] Status change logged: ${currentReservation.status} → ${updateData.status}`);
+            }
+            
+            // Update reservation
+            const [updatedReservation] = await tx
+                .update(reservations)
+                .set({ ...updateData, lastModifiedAt: new Date() })
+                .where(eq(reservations.id, reservationId))
+                .returning();
+                
+            console.log(`✅ [Storage] Reservation ${reservationId} updated successfully`);
+            return updatedReservation;
+        });
+    }
+
+    async getStatusChangeTime(reservationId: number, status: string): Promise<Date | null> {
+        const [statusChange] = await db
+            .select({ timestamp: reservationStatusHistory.timestamp })
+            .from(reservationStatusHistory)
+            .where(
+                and(
+                    eq(reservationStatusHistory.reservationId, reservationId),
+                    eq(reservationStatusHistory.toStatus, status as any)
+                )
+            )
+            .orderBy(desc(reservationStatusHistory.timestamp))
+            .limit(1);
+            
+        return statusChange?.timestamp ? new Date(statusChange.timestamp) : null;
+    }
+
+    async getReservationStatusHistory(reservationId: number): Promise<ReservationStatusHistory[]> {
+        return await db
+            .select()
+            .from(reservationStatusHistory)
+            .where(eq(reservationStatusHistory.reservationId, reservationId))
+            .orderBy(reservationStatusHistory.timestamp);
+    }
+
+    // ================================
+    // 🆕 NEW: ENHANCED GUEST ANALYTICS
+    // ================================
+
+    async updateGuestAnalytics(
+        guestId: number,
+        analytics: {
+            visitCompleted?: boolean;
+            noShowOccurred?: boolean;
+            duration?: number;
+            totalSpent?: number;
+        }
+    ): Promise<Guest> {
+        return await db.transaction(async (tx) => {
+            console.log(`📊 [Storage] Updating guest ${guestId} analytics:`, analytics);
+            
+            const [currentGuest] = await tx
+                .select()
+                .from(guests)
+                .where(eq(guests.id, guestId));
+                
+            if (!currentGuest) {
+                throw new Error(`Guest ${guestId} not found`);
+            }
+            
+            const updates: Partial<InsertGuest> = {
+                last_visit_date: new Date()
+            };
+            
+            if (analytics.visitCompleted) {
+                updates.visit_count = (currentGuest.visit_count || 0) + 1;
+                
+                // Update total spent
+                if (analytics.totalSpent && analytics.totalSpent > 0) {
+                    const currentSpent = parseFloat(currentGuest.total_spent || '0');
+                    updates.total_spent = (currentSpent + analytics.totalSpent).toFixed(2);
+                }
+                
+                // Update average duration
+                if (analytics.duration) {
+                    const currentCount = currentGuest.visit_count || 0;
+                    const currentAvg = currentGuest.average_duration || 120;
+                    const newAvg = Math.round((currentAvg * currentCount + analytics.duration) / (currentCount + 1));
+                    updates.average_duration = newAvg;
+                }
+                
+                // Boost reputation for completed visits
+                updates.reputation_score = Math.min(100, (currentGuest.reputation_score || 100) + 2);
+            }
+            
+            if (analytics.noShowOccurred) {
+                updates.no_show_count = (currentGuest.no_show_count || 0) + 1;
+                
+                // Reduce reputation for no-shows
+                const reputationPenalty = Math.min(15, 5 + (currentGuest.no_show_count || 0) * 2);
+                updates.reputation_score = Math.max(0, (currentGuest.reputation_score || 100) - reputationPenalty);
+            }
+            
+            const [updatedGuest] = await tx
+                .update(guests)
+                .set(updates)
+                .where(eq(guests.id, guestId))
+                .returning();
+                
+            console.log(`✅ [Storage] Guest ${guestId} analytics updated`);
+            return updatedGuest;
+        });
+    }
+
+    async getGuestReservationHistory(guestId: number, restaurantId: number): Promise<any[]> {
+        const results = await db
+            .select({
+                reservation: reservations,
+                table: tables,
+                statusHistory: sql<any[]>`COALESCE(
+                    json_agg(
+                        json_build_object(
+                            'fromStatus', ${reservationStatusHistory.fromStatus},
+                            'toStatus', ${reservationStatusHistory.toStatus},
+                            'changedBy', ${reservationStatusHistory.changedBy},
+                            'changeReason', ${reservationStatusHistory.changeReason},
+                            'timestamp', ${reservationStatusHistory.timestamp}
+                        ) ORDER BY ${reservationStatusHistory.timestamp}
+                    ) FILTER (WHERE ${reservationStatusHistory.id} IS NOT NULL),
+                    '[]'::json
+                )`
+            })
+            .from(reservations)
+            .leftJoin(tables, eq(reservations.tableId, tables.id))
+            .leftJoin(reservationStatusHistory, eq(reservations.id, reservationStatusHistory.reservationId))
+            .where(
+                and(
+                    eq(reservations.guestId, guestId),
+                    eq(reservations.restaurantId, restaurantId)
+                )
+            )
+            .groupBy(reservations.id, tables.id)
+            .orderBy(desc(reservations.reservation_utc))
+            .limit(20);
+            
+        return results;
+    }
+
+    // ================================
+    // 🆕 NEW: MENU MANAGEMENT SYSTEM
+    // ================================
+
+    async getMenuItems(restaurantId: number, filters?: {
+        category?: string;
+        availableOnly?: boolean;
+        searchQuery?: string;
+        popularOnly?: boolean;
+    }): Promise<any[]> {
+        const whereConditions = [eq(menuItems.restaurantId, restaurantId)];
+        
+        if (filters?.category) {
+            // Join with categories to filter by slug
+            const categoryResults = await db
+                .select({ id: restaurantMenuCategories.id })
+                .from(restaurantMenuCategories)
+                .where(
+                    and(
+                        eq(restaurantMenuCategories.restaurantId, restaurantId),
+                        eq(restaurantMenuCategories.slug, filters.category)
+                    )
+                );
+                
+            if (categoryResults.length > 0) {
+                whereConditions.push(eq(menuItems.categoryId, categoryResults[0].id));
+            }
+        }
+        
+        if (filters?.availableOnly) {
+            whereConditions.push(eq(menuItems.isAvailable, true));
+        }
+        
+        if (filters?.popularOnly) {
+            whereConditions.push(eq(menuItems.isPopular, true));
+        }
+        
+        if (filters?.searchQuery) {
+            whereConditions.push(
+                or(
+                    ilike(menuItems.name, `%${filters.searchQuery}%`),
+                    ilike(menuItems.description, `%${filters.searchQuery}%`),
+                    ilike(menuItems.subcategory, `%${filters.searchQuery}%`)
+                )!
+            );
+        }
+        
+        const results = await db
+            .select({
+                item: menuItems,
+                category: restaurantMenuCategories
+            })
+            .from(menuItems)
+            .innerJoin(restaurantMenuCategories, eq(menuItems.categoryId, restaurantMenuCategories.id))
+            .where(and(...whereConditions))
+            .orderBy(restaurantMenuCategories.displayOrder, menuItems.displayOrder);
+            
+        return results.map(r => ({
+            ...r.item,
+            categoryName: r.category.name,
+            categorySlug: r.category.slug
+        }));
+    }
+
+    async createMenuItem(data: InsertMenuItem): Promise<MenuItem> {
+        const [newItem] = await db.insert(menuItems).values(data).returning();
+        return newItem;
+    }
+
+    async bulkUpdateMenuItems(restaurantId: number, items: any[], action: string): Promise<any[]> {
+        return await db.transaction(async (tx) => {
+            const results = [];
+            
+            for (const item of items) {
+                let updateData: Partial<InsertMenuItem> = {};
+                
+                switch (action) {
+                    case 'availability':
+                        updateData.isAvailable = item.isAvailable;
+                        break;
+                    case 'prices':
+                        updateData.price = item.price;
+                        if (item.originalPrice) updateData.originalPrice = item.originalPrice;
+                        break;
+                    case 'categories':
+                        updateData.categoryId = item.categoryId;
+                        break;
+                    default:
+                        throw new Error(`Unknown bulk update action: ${action}`);
+                }
+                
+                const [updated] = await tx
+                    .update(menuItems)
+                    .set({ ...updateData, updatedAt: new Date() })
+                    .where(
+                        and(
+                            eq(menuItems.id, item.id),
+                            eq(menuItems.restaurantId, restaurantId)
+                        )
+                    )
+                    .returning();
+                    
+                results.push(updated);
+            }
+            
+            return results;
+        });
+    }
+
+    async searchMenuItemsByName(restaurantId: number, query: string): Promise<MenuItem[]> {
+        // Try exact match first
+        let results = await db
+            .select()
+            .from(menuItems)
+            .where(
+                and(
+                    eq(menuItems.restaurantId, restaurantId),
+                    eq(menuItems.isAvailable, true),
+                    ilike(menuItems.name, query)
+                )
+            );
+            
+        // If no exact match, try fuzzy
+        if (results.length === 0) {
+            results = await db
+                .select()
+                .from(menuItems)
+                .where(
+                    and(
+                        eq(menuItems.restaurantId, restaurantId),
+                        eq(menuItems.isAvailable, true),
+                        ilike(menuItems.name, `%${query}%`)
+                    )
+                );
+        }
+        
+        return results;
+    }
+
+    async searchMenuItemsByDescription(restaurantId: number, query: string): Promise<MenuItem[]> {
+        return await db
+            .select()
+            .from(menuItems)
+            .where(
+                and(
+                    eq(menuItems.restaurantId, restaurantId),
+                    eq(menuItems.isAvailable, true),
+                    or(
+                        ilike(menuItems.description, `%${query}%`),
+                        ilike(menuItems.shortDescription, `%${query}%`)
+                    )!
+                )
+            );
+    }
+
+    async searchMenuItemsByDietaryTags(restaurantId: number, query: string): Promise<MenuItem[]> {
+        return await db
+            .select()
+            .from(menuItems)
+            .where(
+                and(
+                    eq(menuItems.restaurantId, restaurantId),
+                    eq(menuItems.isAvailable, true),
+                    sql`${menuItems.dietaryTags} && ARRAY[${query}]`
+                )
+            );
+    }
+
+    async fuzzySearchMenuItems(restaurantId: number, query: string): Promise<MenuItem[]> {
+        // Simple fuzzy search - in production you might want to use PostgreSQL's similarity functions
+        const words = query.toLowerCase().split(' ');
+        const searchPattern = words.join('%');
+        
+        return await db
+            .select()
+            .from(menuItems)
+            .where(
+                and(
+                    eq(menuItems.restaurantId, restaurantId),
+                    eq(menuItems.isAvailable, true),
+                    or(
+                        ilike(menuItems.name, `%${searchPattern}%`),
+                        ilike(menuItems.description, `%${searchPattern}%`)
+                    )!
+                )
+            );
+    }
+
+    async getMenuRecommendations(
+        restaurantId: number,
+        context: {
+            guestPreferences?: string[];
+            priceRange?: { min?: number; max?: number };
+            category?: string;
+            limit?: number;
+        }
+    ): Promise<any[]> {
+        const whereConditions = [
+            eq(menuItems.restaurantId, restaurantId),
+            eq(menuItems.isAvailable, true)
+        ];
+        
+        // Filter by category if specified
+        if (context.category) {
+            const categoryResults = await db
+                .select({ id: restaurantMenuCategories.id })
+                .from(restaurantMenuCategories)
+                .where(
+                    and(
+                        eq(restaurantMenuCategories.restaurantId, restaurantId),
+                        eq(restaurantMenuCategories.slug, context.category)
+                    )
+                );
+                
+            if (categoryResults.length > 0) {
+                whereConditions.push(eq(menuItems.categoryId, categoryResults[0].id));
+            }
+        }
+        
+        // Filter by price range
+        if (context.priceRange) {
+            if (context.priceRange.min) {
+                whereConditions.push(gte(menuItems.price, context.priceRange.min.toString()));
+            }
+            if (context.priceRange.max) {
+                whereConditions.push(lte(menuItems.price, context.priceRange.max.toString()));
+            }
+        }
+        
+        let results = await db
+            .select({
+                item: menuItems,
+                category: restaurantMenuCategories
+            })
+            .from(menuItems)
+            .innerJoin(restaurantMenuCategories, eq(menuItems.categoryId, restaurantMenuCategories.id))
+            .where(and(...whereConditions))
+            .orderBy(
+                desc(menuItems.isPopular),
+                desc(menuItems.isNew),
+                menuItems.displayOrder
+            )
+            .limit(context.limit || 6);
+        
+        return results.map(r => ({
+            ...r.item,
+            categoryName: r.category.name,
+            recommendationReason: this.getRecommendationReason(r.item, context.guestPreferences)
+        }));
+    }
+
+    private getRecommendationReason(item: any, guestPreferences?: string[]): string {
+        if (item.isPopular) return "Popular choice";
+        if (item.isNew) return "New addition";
+        if (guestPreferences?.some(pref => 
+            item.dietaryTags?.includes(pref) || 
+            item.subcategory?.toLowerCase().includes(pref.toLowerCase())
+        )) {
+            return "Matches your preferences";
+        }
+        return "Chef's selection";
+    }
+
+    async getPopularMenuItems(restaurantId: number, limit: number = 5): Promise<MenuItem[]> {
+        return await db
+            .select()
+            .from(menuItems)
+            .where(
+                and(
+                    eq(menuItems.restaurantId, restaurantId),
+                    eq(menuItems.isAvailable, true),
+                    eq(menuItems.isPopular, true)
+                )
+            )
+            .orderBy(menuItems.displayOrder)
+            .limit(limit);
+    }
+
+    async logMenuSearch(restaurantId: number, query: string, source: string): Promise<MenuSearchLog> {
+        const [searchLog] = await db.insert(menuSearchLog).values({
+            restaurantId,
+            query,
+            resultsCount: 0, // Will be updated after search
+            source
+        }).returning();
+        
+        return searchLog;
+    }
+
+    // ================================
+    // ✅ EXISTING INTEGRATION SETTINGS METHODS
+    // ================================
+
     async getIntegrationSettings(restaurantId: number, type: string): Promise<IntegrationSetting | undefined> {
         const [settings] = await db
             .select()
@@ -634,7 +1171,10 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // AI activities methods (unchanged)
+    // ================================
+    // ✅ EXISTING AI ACTIVITIES METHODS
+    // ================================
+
     async getAiActivities(restaurantId: number, limit: number = 10): Promise<AiActivity[]> {
         return db
             .select()
@@ -652,15 +1192,16 @@ export class DatabaseStorage implements IStorage {
         return newActivity;
     }
 
-    // ✅ FIXED: Real-time table availability methods now timezone-aware with UTC timestamps
+    // ================================
+    // ✅ EXISTING TABLE AVAILABILITY METHODS (with Maya fix)
+    // ================================
+
     async updateTableStatusFromReservations(tableId: number, restaurantTimezone: string): Promise<void> {
-        // ✅ FIXED: Use restaurant's current time instead of server time
         const nowInRestaurant = DateTime.now().setZone(restaurantTimezone);
         const nowUtc = nowInRestaurant.toUTC();
 
         console.log(`🏢 [Storage] Updating table ${tableId} status using restaurant time converted to UTC: ${nowUtc.toISO()} (${restaurantTimezone})`);
 
-        // ✅ IMPROVED: Check for active reservations using UTC timestamps with proper duration handling
         const activeReservations = await db
             .select()
             .from(reservations)
@@ -712,7 +1253,6 @@ export class DatabaseStorage implements IStorage {
             .where(eq(tables.id, tableId));
     }
 
-    // ✅ FIXED: Now timezone-aware
     async updateAllTableStatuses(restaurantId: number, restaurantTimezone: string): Promise<void> {
         const restaurantTables = await this.getTables(restaurantId);
         for (const table of restaurantTables) {
@@ -720,7 +1260,6 @@ export class DatabaseStorage implements IStorage {
         }
     }
 
-    // ✅ MAYA FIX: Updated table availability with excludeReservationId parameter
     async getTableAvailability(restaurantId: number, date: string, time: string, excludeReservationId?: number): Promise<Table[]> {
         // Get restaurant timezone for conversion
         const restaurant = await this.getRestaurant(restaurantId);
@@ -730,7 +1269,6 @@ export class DatabaseStorage implements IStorage {
         const startOfSlotUtc = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone }).toUTC().toISO();
         const endOfSlotUtc = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone }).plus({ hours: 2 }).toUTC().toISO();
 
-        // ✅ TYPE SAFETY: Null checks
         if (!startOfSlotUtc || !endOfSlotUtc) {
             console.error(`❌ [Storage] Failed to convert date/time to UTC for availability check`);
             return [];
@@ -738,7 +1276,7 @@ export class DatabaseStorage implements IStorage {
 
         console.log(`🏢 [Storage] Checking table availability for UTC range: ${startOfSlotUtc} to ${endOfSlotUtc}${excludeReservationId ? ` (excluding reservation ${excludeReservationId})` : ''}`);
 
-        // ✅ MAYA FIX: Build conflict check conditions with optional exclusion
+        // Build conflict check conditions with optional exclusion
         const conflictConditions = [
             eq(reservations.tableId, tables.id),
             // Check for overlap using UTC timestamps
@@ -747,7 +1285,7 @@ export class DatabaseStorage implements IStorage {
             inArray(reservations.status, ['confirmed', 'created'] as ReservationStatus[])
         ];
 
-        // ✅ MAYA FIX: Add exclusion condition if provided
+        // Add exclusion condition if provided
         if (excludeReservationId) {
             conflictConditions.push(ne(reservations.id, excludeReservationId));
         }
