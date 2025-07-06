@@ -9,6 +9,7 @@
 // ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
 // ✅ RESERVATION SEARCH ENHANCEMENT: Updated find_existing_reservation function call to support new parameters
 // ✅ CRITICAL FIX: Session contamination prevention - clears booking data for new requests while preserving guest identity
+// ✅ BUGFIX: Fixed contextual awareness for special requests and session reset issues
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -521,6 +522,7 @@ Respond with ONLY a JSON object.
 
     /**
      * ✅ UPDATED: THE OVERSEER - Intelligent Agent Decision System using Claude Sonnet 4 with GPT fallback
+     * ✅ BUGFIX: Added rule to prevent misclassifying simple continuations as new booking requests
      */
     private async runOverseer(
         session: BookingSessionWithAgent, 
@@ -577,6 +579,16 @@ Look for explicit indicators of NEW booking requests:
 - "book another", "second booking", "additional reservation"
 
 If detected, use Sofia (booking) agent and flag as NEW BOOKING REQUEST.
+
+### RULE 1.5: HANDLE SIMPLE CONTINUATIONS (CRITICAL BUGFIX)
+**NEVER** flag \`isNewBookingRequest: true\` for simple, short answers like:
+- "yes", "no", "ok", "confirm", "yep", "nope", "agree", "good", "fine"
+- "да", "нет", "хорошо", "подтверждаю", "согласен", "ок"
+- "igen", "nem", "jó", "rendben"
+- "ja", "nein", "gut", "okay"
+- "oui", "non", "bien", "d'accord"
+
+These are continuations of the current task, NOT new requests. \`isNewBookingRequest\` must be \`false\` for them.
 
 ### RULE 2: TASK CONTINUITY (HIGHEST PRIORITY)
 If current agent is Sofia/Maya and they're MID-TASK, KEEP the current agent unless user EXPLICITLY starts a completely new task.
@@ -958,7 +970,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ PHONE FIX: Generate personalized system prompt section based on guest history with phone number instructions
+     * ✅ PHONE FIX + CONTEXTUAL AWARENESS BUGFIX: Generate personalized system prompt section based on guest history with phone number instructions and contextual evaluation of special requests
      */
     private getPersonalizedPromptSection(guestHistory: GuestHistory | null, language: Language): string {
         if (!guestHistory || guestHistory.total_bookings === 0) {
@@ -981,7 +993,7 @@ Respond with ONLY a JSON object:
 💡 PERSONALIZATION GUIDELINES:
 - ${total_bookings >= 3 ? `RETURNING GUEST: Greet warmly as a valued returning customer! Say "Welcome back, ${guest_name}!" or similar.` : `NEW/INFREQUENT GUEST: Treat as a regular new guest, but you can mention "${guest_name}" once you know their name.`}
 - ${common_party_size ? `USUAL PARTY SIZE: You can proactively ask "Will it be for your usual party of ${common_party_size} today?" when they don't specify.` : ''}
-- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Should I add your usual request for ${frequent_special_requests[0]}?" when appropriate.` : ''}
+- **CONTEXTUAL SPECIAL REQUESTS (CRITICAL):** Before suggesting a past request like '${frequent_special_requests.join(', ')}', you MUST analyze the user's current message. If the current context (e.g., "business lunch", "meeting", "деловой обед", "бизнес ланч", "corporate event", "работа") makes the past request inappropriate, DO NOT suggest it. Only suggest a past request if the current booking context is neutral or similar to past bookings.
 - **SAME NAME/PHONE HANDLING**: If the guest says "my name" or "same name", use "${guest_name}" from their history. If they say "same number", "same phone", or "using same number", use "${guest_phone || 'Not available'}" from their history.
 - Use this information naturally in conversation - don't just list their history!
 - Make the experience feel personal and welcoming for returning guests.`,
@@ -998,7 +1010,7 @@ Respond with ONLY a JSON object:
 💡 РУКОВОДСТВО ПО ПЕРСОНАЛИЗАЦИИ:
 - ${total_bookings >= 3 ? `ВОЗВРАЩАЮЩИЙСЯ ГОСТЬ: Тепло встречайте как ценного постоянного клиента! Скажите "Добро пожаловать снова, ${guest_name}!" или подобное.` : `НОВЫЙ/РЕДКИЙ ГОСТЬ: Относитесь как к обычному новому гостю, но можете упомянуть "${guest_name}", когда узнаете имя.`}
 - ${common_party_size ? `ОБЫЧНОЕ КОЛИЧЕСТВО: Можете проактивно спросить "Будет ли как обычно на ${common_party_size} человек сегодня?" когда они не уточняют.` : ''}
-- ${frequent_special_requests.length > 0 ? `ОБЫЧНЫЕ ПРОСЬБЫ: Спросите "Добавить ваше обычное пожелание - ${frequent_special_requests[0]}?" когда уместно.` : ''}
+- **КОНТЕКСТНЫЕ ОСОБЫЕ ПРОСЬБЫ (КРИТИЧНО):** Перед тем как предложить прошлую просьбу вроде '${frequent_special_requests.join(', ')}', вы ДОЛЖНЫ проанализировать текущее сообщение пользователя. Если текущий контекст (например, "бизнес ланч", "деловая встреча", "работа", "корпоратив") делает прошлую просьбу неуместной, НЕ предлагайте её. Предлагайте прошлую просьбу только если текущий контекст бронирования нейтральный или похож на прошлые брони.
 - **ОБРАБОТКА ТОГО ЖЕ ИМЕНИ/ТЕЛЕФОНА**: Если гость говорит "мое имя" или "то же имя", используйте "${guest_name}" из его истории. Если говорит "тот же номер", "тот же телефон" или "использовать тот же номер", используйте "${guest_phone || 'Недоступен'}" из его истории.
 - Используйте эту информацию естественно в разговоре - не просто перечисляйте историю!
 - Сделайте опыт личным и гостеприимным для возвращающихся гостей.`,
@@ -1015,7 +1027,7 @@ Respond with ONLY a JSON object:
 💡 SMERNICE ZA PERSONALIZACIJU:
 - ${total_bookings >= 3 ? `VRAĆAJUĆI SE GOST: Toplo pozdravite kao cenjenog stalnog klijenta! Recite "Dobrodošli ponovo, ${guest_name}!" ili slično.` : `NOVI/REDAK GOST: Tretirajte kao običnog novog gosta, ali možete spomenuti "${guest_name}" kada saznate ime.`}
 - ${common_party_size ? `UOBIČAJEN BROJ: Možete proaktivno pitati "Hoće li biti kao obično za ${common_party_size} osoba danas?" kada ne specificiraju.` : ''}
-- ${frequent_special_requests.length > 0 ? `UOBIČAJENI ZAHTEVI: Pitajte "Da dodam vaš uobičajen zahtev za ${frequent_special_requests[0]}?" kada je prikladno.` : ''}
+- **KONTEKSTUALNI POSEBNI ZAHTEVI (KRITIČNO):** Pre nego što predložite prošli zahtev poput '${frequent_special_requests.join(', ')}', MORATE analizirati trenutnu poruku korisnika. Ako trenutni kontekst (npr. "poslovni ručak", "sastanak", "posao", "korporativni događaj") čini prošli zahtev neodgovarajućim, NE predlažite ga. Predložite prošli zahtev samo ako je trenutni kontekst rezervacije neutralan ili sličan prošlim rezervacijama.
 - **RUKOVANJE ISTIM IMENOM/TELEFONOM**: Ako gost kaže "moje ime" ili "isto ime", koristite "${guest_name}" iz njegove istorije. Ako kaže "isti broj", "isti telefon" ili "koristi isti broj", koristite "${guest_phone || 'Nije dostupno'}" iz njegove istorije.
 - Koristite ove informacije prirodno u razgovoru - nemojte samo nabrajati istoriju!
 - Učinite iskustvo ličnim i gostoljubivim za goste koji se vraćaju.`,
@@ -1032,7 +1044,7 @@ Respond with ONLY a JSON object:
 💡 SZEMÉLYRE SZABÁSI IRÁNYELVEK:
 - ${total_bookings >= 3 ? `VISSZATÉRŐ VENDÉG: Melegesen köszöntse mint értékes állandó ügyfelet! Mondja "Üdvözöljük vissza, ${guest_name}!" vagy hasonlót.` : `ÚJ/RITKA VENDÉG: Kezelje mint egy szokásos új vendéget, de megemlítheti "${guest_name}"-t amikor megismeri a nevét.`}
 - ${common_party_size ? `SZOKÁSOS LÉTSZÁM: Proaktívan kérdezheti "A szokásos ${common_party_size} főre lesz ma?" amikor nem specificálják.` : ''}
-- ${frequent_special_requests.length > 0 ? `SZOKÁSOS KÉRÉSEK: Kérdezze meg "Hozzáadhatom a szokásos kérését: ${frequent_special_requests[0]}?" amikor megfelelő.` : ''}
+- **KONTEXTUÁLIS KÜLÖNLEGES KÉRÉSEK (KRITIKUS):** Mielőtt korábbi kérést javasolna, mint '${frequent_special_requests.join(', ')}', elemezze a felhasználó jelenlegi üzenetét. Ha a jelenlegi kontextus (pl. "üzleti ebéd", "tárgyalás", "munka", "vállalati esemény") a korábbi kérést helytelenné teszi, NE javasolja. Csak akkor javasoljon korábbi kérést, ha a jelenlegi foglalási kontextus semleges vagy hasonló a korábbiakhoz.
 - **UGYANAZ A NÉV/TELEFON KEZELÉSE**: Ha a vendég azt mondja "az én nevem" vagy "ugyanaz a név", használja "${guest_name}"-t a történetéből. Ha azt mondja "ugyanaz a szám", "ugyanaz a telefon" vagy "ugyanazt a számot használom", használja "${guest_phone || 'Nem elérhető'}"-t a történetéből.
 - Használja ezeket az információkat természetesen a beszélgetésben - ne csak sorolja fel a történetet!
 - Tegye a tapasztalatot személyessé és vendégszeretővé a visszatérő vendégek számára.`
@@ -1335,7 +1347,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ CRITICAL FIX: Main message handling with corrected logic flow
+     * ✅ CRITICAL FIX: Main message handling with corrected logic flow and session reset safeguard
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1367,13 +1379,6 @@ Respond with JSON only.`;
                 session.guestHistory = guestHistory;
                 console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved' : 'No'} history for session ${sessionId}`);
             }
-
-            // ⛔️ BUGFIX: The following two blocks were causing the premature greeting.
-            // They are now REMOVED to allow the Overseer agent to run first.
-            /*
-            // REMOVED: if (isFirstMessage && session.currentAgent === 'booking' && session.guestHistory) { ... }
-            // REMOVED: if (isFirstMessage && session.currentAgent === 'booking') { ... }
-            */
 
             // STEP 1: Check for pending confirmation FIRST
             if (session.pendingConfirmation) {
@@ -1462,23 +1467,32 @@ Respond with JSON only.`;
             }
 
             // ✅ STEP 2: CLAUDE-POWERED LANGUAGE DETECTION WITH INTELLIGENCE
-            if (!session.languageLocked || session.conversationHistory.length <= 1) {
+            // ✅ ENHANCED: Always run language detection, but be more conservative after locking
+            const shouldRunDetection = !session.languageLocked || 
+                                     session.conversationHistory.length <= 1 || 
+                                     message.length > 10; // Run detection for substantial messages even if locked
+            
+            if (shouldRunDetection) {
                 const languageDetection = await this.runLanguageDetectionAgent(
                     message,
                     session.conversationHistory,
                     session.language
                 );
                 
-                // Only change language if confidence is high enough or this is first message
-                if (languageDetection.shouldLock || 
-                    (languageDetection.confidence > 0.7 && languageDetection.detectedLanguage !== session.language)) {
+                // Determine if we should change language based on lock status
+                const shouldChangeLanguage = session.languageLocked 
+                    ? (languageDetection.confidence > 0.8 && languageDetection.detectedLanguage !== session.language) // Higher threshold if locked
+                    : (languageDetection.confidence > 0.7 && languageDetection.detectedLanguage !== session.language); // Lower threshold if not locked
+                
+                if (languageDetection.shouldLock || shouldChangeLanguage) {
+                    const wasLocked = session.languageLocked;
                     
-                    console.log(`[LanguageAgent] ${session.languageLocked ? 'Updating' : 'Setting'} language: ${session.language} → ${languageDetection.detectedLanguage} (confidence: ${languageDetection.confidence})`);
+                    console.log(`[LanguageAgent] ${wasLocked ? 'Updating' : 'Setting'} language: ${session.language} → ${languageDetection.detectedLanguage} (confidence: ${languageDetection.confidence})`);
                     console.log(`[LanguageAgent] Reasoning: ${languageDetection.reasoning}`);
                     
                     session.language = languageDetection.detectedLanguage;
                     
-                    if (languageDetection.shouldLock) {
+                    if (languageDetection.shouldLock && !wasLocked) {
                         session.languageLocked = true;
                         session.languageDetectionLog = {
                             detectedAt: new Date().toISOString(),
@@ -1486,6 +1500,9 @@ Respond with JSON only.`;
                             confidence: languageDetection.confidence,
                             reasoning: languageDetection.reasoning
                         };
+                    } else if (wasLocked && shouldChangeLanguage) {
+                        // Log language switch within locked session
+                        console.log(`[LanguageAgent] 🔄 Language switched within locked session due to high confidence (${languageDetection.confidence})`);
                     }
                 } else if (languageDetection.confidence < 0.5) {
                     console.log(`[LanguageAgent] Low confidence (${languageDetection.confidence}), keeping current language: ${session.language}`);
@@ -1542,13 +1559,15 @@ Respond with JSON only.`;
                 });
             }
 
-            // ✅ CRITICAL FIX: Reset session contamination for new booking requests
-            if (overseerDecision.isNewBookingRequest && 
-                overseerDecision.agentToUse === 'booking' && 
-                agentHandoff?.from !== 'booking') {
-                
+            // ✅ BUGFIX SAFEGUARD: Prevent session reset on simple continuation messages, even if Overseer misclassifies.
+            const isSimpleContinuation = /^(да|нет|yes|no|ok|okay|confirm|yep|nope|thanks|спасибо|hvala|ок|k|igen|nem|ja|nein|oui|non|sì|sí|tak|nie|agree|good|everything's?\s*good|fine|sure|alright)$/i.test(message.trim());
+
+            // ✅ CRITICAL FIX: Reset session contamination for genuinely new booking requests only
+            if (overseerDecision.isNewBookingRequest && !isSimpleContinuation) {
                 this.resetSessionContamination(session, overseerDecision.reasoning);
                 console.log(`[SessionReset] NEW BOOKING REQUEST detected - cleared session contamination while preserving guest identity`);
+            } else if (overseerDecision.isNewBookingRequest && isSimpleContinuation) {
+                console.warn(`[SessionReset] ⚠️ Overseer incorrectly flagged a simple continuation ("${message}") as a new booking request. IGNORING the reset flag to prevent data loss.`);
             }
 
             session.currentAgent = detectedAgent;
@@ -2408,4 +2427,4 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
-        
+                        
