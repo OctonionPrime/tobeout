@@ -406,7 +406,7 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ CRITICAL FIX: Reset session contamination for new booking requests while preserving guest identity
+     * ✅ CRITICAL FIX: Reset session contamination for new booking requests while preserving guest identity and clearing conversation state flags
      */
     private resetSessionContamination(session: BookingSessionWithAgent, reason: string) {
         const preservedGuestName = session.guestHistory?.guest_name;
@@ -423,7 +423,15 @@ Respond with ONLY a JSON object.
             phone: undefined
         };
         
+        // ✅ CRITICAL FIX: Reset conversation state flags for new booking to prevent false assumptions
+        session.hasAskedPartySize = false;
+        session.hasAskedDate = false;
+        session.hasAskedTime = false;
+        session.hasAskedName = false;
+        session.hasAskedPhone = false;
+        
         console.log(`[SessionReset] Cleared booking contamination for new request (${reason}), preserved guest: ${preservedGuestName}`);
+        console.log(`[SessionReset] Reset conversation state flags - agent will ask for information fresh`);
         
         // Clear any pending confirmations from previous booking
         delete session.pendingConfirmation;
@@ -1054,9 +1062,9 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ ENHANCED: Language-agnostic agent personality system
+     * ✅ ENHANCED: Language-agnostic agent personality system with conversation context awareness
      */
-    private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false): string {
+    private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false, conversationContext?: any): string {
         const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
 
         // ✅ LANGUAGE INSTRUCTION (works for all languages)
@@ -1065,6 +1073,28 @@ Respond with ONLY a JSON object:
 - You MUST respond in ${language} for ALL messages
 - Maintain warm, professional tone in ${language}
 - If unsure of translation, use simple clear ${language}`;
+
+        // ✅ CRITICAL FIX: Add conversation context awareness section
+        const contextAwarenessSection = conversationContext ? `
+
+🧠 CONVERSATION CONTEXT AWARENESS:
+- Has asked for party size: ${conversationContext.hasAskedPartySize ? 'YES' : 'NO'}
+- Has asked for date: ${conversationContext.hasAskedDate ? 'YES' : 'NO'}  
+- Has asked for time: ${conversationContext.hasAskedTime ? 'YES' : 'NO'}
+- Has asked for name: ${conversationContext.hasAskedName ? 'YES' : 'NO'}
+- Has asked for phone: ${conversationContext.hasAskedPhone ? 'YES' : 'NO'}
+- Current gathering info: ${JSON.stringify(conversationContext.gatheringInfo)}
+- Session turn count: ${conversationContext.sessionTurnCount}
+- Is return visit: ${conversationContext.isReturnVisit ? 'YES' : 'NO'}
+
+⚠️ CRITICAL: DO NOT ask for information you have already requested in this conversation!
+- If hasAskedPartySize is YES, do NOT ask "how many guests?" again
+- If hasAskedDate is YES, do NOT ask "what date?" again  
+- If hasAskedTime is YES, do NOT ask "what time?" again
+- If hasAskedName is YES, do NOT ask "what's your name?" again
+- If hasAskedPhone is YES, do NOT ask "what's your phone?" again
+
+✅ Instead, use the information already provided or acknowledge it naturally.` : '';
 
         if (isFirstMessage && agentType === 'booking') {
             const agent = createBookingAgent(restaurantConfig);
@@ -1077,6 +1107,7 @@ Respond with ONLY a JSON object:
             return `Your first response should start with this exact greeting: "${personalizedGreeting}"
 
 ${languageInstruction}
+${contextAwarenessSection}
 
 Then continue with your normal helpful assistant behavior.`;
         }
@@ -1099,6 +1130,8 @@ ${languageInstruction}
 - Timezone: ${restaurantConfig.timezone}
 
 💬 STYLE: Warm, efficient, step-by-step guidance
+
+${contextAwarenessSection}
 
 ${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}`;
         }
@@ -1128,12 +1161,15 @@ ${languageInstruction}
 
 💬 STYLE: Understanding, efficient, secure
 
+${contextAwarenessSection}
+
 ${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}`;
         }
 
         return `You are a helpful restaurant assistant.
 
 ${languageInstruction}
+${contextAwarenessSection}
 
 Assist guests with their restaurant needs in a professional manner.`;
     }
@@ -1335,8 +1371,8 @@ Respond with JSON only.`;
             tools: this.getToolsForAgent(agentType),
             agentType,
             systemPrompt: '',
-            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean) => {
-                return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage);
+            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+                return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage, conversationContext);
             }
         };
 
@@ -1615,8 +1651,32 @@ Respond with JSON only.`;
             // STEP 5: Get agent and prepare messages
             const agent = await this.getAgent(session.restaurantId, session.currentAgent);
 
+            // ✅ CRITICAL FIX: Properly construct and pass the full conversation context to prevent repetitive questions
+            const conversationContext = {
+                isReturnVisit: !!session.guestHistory && session.guestHistory.total_bookings > 0,
+                hasAskedPartySize: !!session.hasAskedPartySize,
+                hasAskedDate: !!session.hasAskedDate,
+                hasAskedTime: !!session.hasAskedTime,
+                hasAskedName: !!session.hasAskedName,
+                hasAskedPhone: !!session.hasAskedPhone,
+                bookingNumber: (session.agentHistory?.filter(h => h.to === 'booking').length || 0) + 1,
+                isSubsequentBooking: (session.turnCount || 0) > 1 && !!overseerDecision.isNewBookingRequest,
+                sessionTurnCount: session.turnCount || 1,
+                gatheringInfo: session.gatheringInfo, // Include current gathering state
+                lastQuestions: [] // Can be enhanced further to track question history
+            };
+
+            console.log(`[ConversationManager] Context state:`, {
+                hasAskedPartySize: conversationContext.hasAskedPartySize,
+                hasAskedDate: conversationContext.hasAskedDate,
+                hasAskedTime: conversationContext.hasAskedTime,
+                hasAskedName: conversationContext.hasAskedName,
+                hasAskedPhone: conversationContext.hasAskedPhone,
+                isReturnVisit: conversationContext.isReturnVisit
+            });
+
             let systemPrompt = agent.updateInstructions
-                ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage)
+                ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage, conversationContext) // ✅ CRITICAL FIX: Pass the context object
                 : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig, session.guestHistory, isFirstMessage);
 
             if (session.currentAgent === 'reservations') {
@@ -1734,6 +1794,54 @@ Respond with JSON only.`;
                                     result = await agentFunctions.check_availability(args.date, args.time, args.guests, functionContext);
                                     break;
                                 case 'find_alternative_times':
+                                    // ✅ DEFENSIVE VALIDATION: Ensure preferredTime is not undefined
+                                    if (!args.preferredTime || args.preferredTime.trim() === '') {
+                                        console.error('[ConversationManager] find_alternative_times called without preferredTime, attempting to extract from conversation history');
+
+                                        // Try to extract the time from the last failed check_availability call
+                                        let extractedTime: string | null = null;
+
+                                        // Look through recent conversation history for check_availability calls
+                                        const recentMessages = session.conversationHistory.slice(-10); // Last 10 messages
+                                        for (let i = recentMessages.length - 1; i >= 0; i--) {
+                                            const msg = recentMessages[i];
+                                            if (msg.toolCalls) {
+                                                for (const toolCall of msg.toolCalls) {
+                                                    if (toolCall.function?.name === 'check_availability') {
+                                                        try {
+                                                            const checkArgs = JSON.parse(toolCall.function.arguments);
+                                                            if (checkArgs.time) {
+                                                                extractedTime = checkArgs.time;
+                                                                console.log(`[ConversationManager] ✅ Extracted preferredTime from conversation history: ${extractedTime}`);
+                                                                break;
+                                                            }
+                                                        } catch (parseError) {
+                                                            console.warn('[ConversationManager] Failed to parse check_availability arguments:', parseError);
+                                                        }
+                                                    }
+                                                }
+                                                if (extractedTime) break;
+                                            }
+                                        }
+
+                                        if (extractedTime) {
+                                            args.preferredTime = extractedTime;
+                                            console.log(`[ConversationManager] 🔧 Auto-fixed preferredTime: ${extractedTime}`);
+                                        } else {
+                                            // If we can't extract the time, return a validation error
+                                            result = {
+                                                tool_status: 'FAILURE',
+                                                error: {
+                                                    type: 'VALIDATION_ERROR',
+                                                    message: 'Cannot find alternative times without a reference time. Please specify what time you were originally looking for.',
+                                                    code: 'MISSING_PREFERRED_TIME'
+                                                }
+                                            };
+                                            console.error('[ConversationManager] ❌ Could not extract preferredTime from conversation history');
+                                            break;
+                                        }
+                                    }
+
                                     result = await agentFunctions.find_alternative_times(args.date, args.preferredTime, args.guests, functionContext);
                                     break;
                                 case 'create_reservation':
@@ -2151,16 +2259,53 @@ Respond with JSON only.`;
     }
 
     /**
-     * Extract gathering info from function arguments with better validation
+     * ✅ CRITICAL FIX: Extract gathering info from function arguments with state tracking for conversation context awareness
      */
     private extractGatheringInfo(session: BookingSessionWithAgent, args: any) {
         const updates: Partial<BookingSession['gatheringInfo']> = {};
 
-        if (args.date) updates.date = args.date;
-        if (args.time) updates.time = args.time;
-        if (args.guests) updates.guests = args.guests;
-        if (args.guestName) updates.name = args.guestName;
-        if (args.guestPhone) updates.phone = args.guestPhone;
+        // ✅ CRITICAL FIX: Set state flags when information is successfully gathered
+        if (args.date) {
+            updates.date = args.date;
+            if (!session.hasAskedDate) {
+                session.hasAskedDate = true;
+                console.log(`[ConversationManager] Date (${args.date}) received. Flag 'hasAskedDate' set to true.`);
+            }
+        }
+        
+        if (args.time) {
+            updates.time = args.time;
+            if (!session.hasAskedTime) {
+                session.hasAskedTime = true;
+                console.log(`[ConversationManager] Time (${args.time}) received. Flag 'hasAskedTime' set to true.`);
+            }
+        }
+        
+        // ✅ CRITICAL FIX: Set the state flag when guest count is successfully gathered
+        if (args.guests) {
+            updates.guests = args.guests;
+            if (!session.hasAskedPartySize) {
+                session.hasAskedPartySize = true;
+                console.log(`[ConversationManager] Party size (${args.guests}) received. Flag 'hasAskedPartySize' set to true.`);
+            }
+        }
+        
+        if (args.guestName) {
+            updates.name = args.guestName;
+            if (!session.hasAskedName) {
+                session.hasAskedName = true;
+                console.log(`[ConversationManager] Guest name (${args.guestName}) received. Flag 'hasAskedName' set to true.`);
+            }
+        }
+        
+        if (args.guestPhone) {
+            updates.phone = args.guestPhone;
+            if (!session.hasAskedPhone) {
+                session.hasAskedPhone = true;
+                console.log(`[ConversationManager] Phone (${args.guestPhone}) received. Flag 'hasAskedPhone' set to true.`);
+            }
+        }
+        
         if (args.specialRequests) updates.comments = args.specialRequests;
 
         if (Object.keys(updates).length > 0) {
@@ -2362,7 +2507,7 @@ Respond with JSON only.`;
     }
 }
 
-// ✅ UPDATED: Extended session interface with language detection features, phone number support, and Claude meta-agent tracking
+// ✅ UPDATED: Extended session interface with language detection features, phone number support, Claude meta-agent tracking, and conversation context tracking
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -2403,6 +2548,13 @@ interface BookingSessionWithAgent extends BookingSession {
         confidence: number;
         reasoning: string;
     };
+    
+    // ✅ CRITICAL FIX: Add conversation context tracking for state management
+    hasAskedPartySize?: boolean;
+    hasAskedDate?: boolean;
+    hasAskedTime?: boolean;
+    hasAskedName?: boolean;
+    hasAskedPhone?: boolean;
     
     // ✅ NEW: Claude meta-agent tracking (optional for monitoring)
     claudeMetaAgentLog?: Array<{

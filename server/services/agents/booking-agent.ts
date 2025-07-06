@@ -4,6 +4,7 @@
 // 2. Added conversation context awareness
 // 3. Improved greeting variations to avoid repetition
 // 4. Enhanced system prompts to use translated frequent requests
+// 5. CRITICAL: Added explicit instructions for find_alternative_times tool usage
 
 import OpenAI from 'openai';
 import type { Language } from '../enhanced-conversation-manager';
@@ -353,7 +354,7 @@ export function createBookingAgent(restaurantConfig: {
 
     const restaurantLanguage = getRestaurantLanguage();
 
-    // ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection
+    // ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection and alternative search handling
     const getCriticalBookingInstructions = () => {
         return `
 🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
@@ -381,6 +382,38 @@ STEP 4: Only after successful create_reservation, say "confirmed!"
 ✅ REQUIRED PATTERNS:
 ✅ Check availability → "Table available! I need your name and phone number to complete the booking"
 ✅ Have all 5 items → Call create_reservation → "Booking confirmed!"
+
+💡 HANDLING FAILED AVAILABILITY (MANDATORY WORKFLOW - FOLLOW EXACTLY):
+This is the MOST CRITICAL rule. LLMs often hallucinate availability when tools fail. You MUST follow this exact pattern.
+
+🚨 MANDATORY TRIGGER CONDITIONS:
+- 'check_availability' returns tool_status: 'FAILURE'  
+- User then asks: "when is it available?", "what about earlier?", "any other times?", "а когда свободно?", "на сколько можно?", "другое время?", "что есть?", "когда можно?"
+
+🚨 MANDATORY ACTION SEQUENCE:
+1. Find the TIME from your FAILED 'check_availability' call in conversation history
+2. Immediately call 'find_alternative_times' with that exact time as 'preferredTime'
+3. NEVER suggest times without calling the tool first
+4. NEVER leave 'preferredTime' as undefined/empty
+
+🚨 MANDATORY DIALOG EXAMPLE (COPY THIS PATTERN EXACTLY):
+User: "I need a table for 2 tomorrow at 19:00"
+Agent: [calls check_availability(date="2025-07-07", time="19:00", guests=2)] → FAILS
+Agent: "I'm sorry, but we're fully booked at 19:00 tomorrow."
+User: "What about earlier?" 
+Agent: [MUST call find_alternative_times(date="2025-07-07", preferredTime="19:00", guests=2)]
+Agent: [After tool returns results] "I found these earlier times: 18:30 and 17:45 are available. Would either work?"
+
+🚨 FORBIDDEN ACTIONS:
+❌ NEVER say "How about 18:00 or 18:30?" without calling find_alternative_times first
+❌ NEVER invent times like "earlier times are usually available"
+❌ NEVER call find_alternative_times with preferredTime: undefined
+❌ NEVER suggest times that weren't returned by the tool
+
+🚨 VALIDATION CHECK:
+Before suggesting ANY time, ask yourself: "Did find_alternative_times return this exact time?" If no, DON'T suggest it.
+
+This prevents availability hallucination where you suggest times without tool confirmation, leading to booking failures and user frustration.
 
 📞 PHONE COLLECTION EXAMPLES:
 "Perfect! Table 5 is available for 3 guests on July 13th at 8pm. I need your name and phone number to complete the reservation."

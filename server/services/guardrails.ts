@@ -1,6 +1,8 @@
 // server/services/guardrails.ts
-// ✅ LANGUAGE ENHANCEMENT: Added Translation Service integration for error messages
-// ✅ FIX (This version): Corrected the requiresConfirmation logic for cancellations to prevent redundant prompts.
+// ✅ CRITICAL FIXES APPLIED:
+// 1. Disabled redundant confirmation for create_reservation
+// 2. Enhanced language support and translation services
+// 3. Improved relevance checking and safety measures
 
 import OpenAI from 'openai';
 import type { BookingSession } from './agents/booking-agent';
@@ -393,43 +395,23 @@ async function checkSafety(message: string, language: Language = 'en'): Promise<
 
 /**
  * ✅ ENHANCED & FIXED: High-Risk Action Confirmation with Language Support
- * Now returns structured data and includes better validation for phone numbers.
- * The cancellation logic is now conditional to prevent redundant confirmations.
+ * The reservation creation confirmation has been removed for a smoother UX.
  */
 export function requiresConfirmation(toolName: string, args: any, lang: Language = 'en'): { required: boolean; data?: any; } {
     if (toolName === 'create_reservation') {
-        // ✅ ENHANCED: Additional validation before requiring confirmation
-        const hasValidPhone = args.guestPhone && args.guestPhone.toString().replace(/[\s\-\(\)]/g, '').length >= 7;
-        const hasValidName = args.guestName && args.guestName.toString().trim().length >= 2;
-
-        if (!hasValidPhone || !hasValidName) {
-            console.log(`[Guardrails] Skipping confirmation due to invalid data - phone: ${hasValidPhone}, name: ${hasValidName}`);
-            return { required: false };
-        }
-
-        // ✅ Return the raw data for the LLM to format naturally
-        return {
-            required: true,
-            data: {
-                guestName: args.guestName,
-                guestPhone: args.guestPhone,
-                guests: args.guests,
-                date: args.date,
-                time: args.time,
-                specialRequests: args.specialRequests || ''
-            }
-        };
+        // ✅ CRITICAL UX FIX: Removed mandatory confirmation for creating a reservation.
+        // The agent is already instructed to gather all information first.
+        // Forcing another confirmation step is redundant and unnatural for the user.
+        console.log(`[Guardrails] Skipping confirmation for create_reservation for a smoother user experience.`);
+        return { required: false };
     }
 
     // ✅ CRITICAL FIX: Only require confirmation for cancellations if not already confirmed.
     if (toolName === 'cancel_reservation') {
-        // If the 'confirmCancellation' flag from the tool call is already true, it means
-        // the user has already confirmed in a previous turn. No further confirmation is needed.
         if (args.confirmCancellation === true) {
             return { required: false };
         }
 
-        // If the flag is not set, we need to ask the user to confirm.
         return {
             required: true,
             data: {
