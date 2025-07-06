@@ -24,7 +24,7 @@ import {
 // ✅ FIXED: Import both functions from availability service
 import { getAvailableTimeSlots, isTableAvailableAtTimeSlot } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
-import { getPopularRestaurantTimezones } from "./utils/timezone-utils";
+import { getPopularRestaurantTimezones, getRestaurantOperatingStatus } from "./utils/timezone-utils";
 import { eq, and, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { DateTime } from 'luxon';
 
@@ -291,6 +291,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ NEW: Restaurant Operating Status (Phase 3 Enhancement)
+    app.get("/api/restaurants/:id/status", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const restaurantId = parseInt(req.params.id);
+            if (restaurant.id !== restaurantId) {
+                return res.status(403).json({ message: "Access denied" });
+            }
+
+            const operatingStatus = getRestaurantOperatingStatus(
+                restaurant.timezone,
+                restaurant.openingTime || '10:00:00',
+                restaurant.closingTime || '22:00:00'
+            );
+
+            res.json({
+                restaurantId: restaurant.id,
+                restaurantName: restaurant.name,
+                timezone: restaurant.timezone,
+                ...operatingStatus,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Restaurant Status] Error:', error);
+            next(error);
+        }
+    });
+
     app.get("/api/timezones", isAuthenticated, async (req, res, next) => {
         try {
             const timezones = getPopularRestaurantTimezones();
@@ -426,6 +459,118 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: "Validation failed", errors: error.errors });
             }
+            next(error);
+        }
+    });
+
+    // ✅ NEW: Enhanced Guest Analytics (Phase 3)
+    app.get("/api/guests/:id/analytics", isAuthenticated, async (req, res, next) => {
+        try {
+            const guestId = parseInt(req.params.id);
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const guest = await storage.getGuest(guestId);
+            if (!guest) {
+                return res.status(404).json({ message: "Guest not found" });
+            }
+
+            const reservationHistory = await storage.getGuestReservationHistory(guestId, restaurant.id);
+            
+            // Calculate additional analytics
+            const completedVisits = reservationHistory.filter(r => r.reservation.status === 'completed');
+            const completionRate = reservationHistory.length > 0 ? 
+                Math.round((completedVisits.length / reservationHistory.length) * 100) : 100;
+
+            // Calculate loyalty status
+            const getLoyaltyStatus = (guest: any): string => {
+                const visits = guest.visit_count || 0;
+                const reputationScore = guest.reputation_score || 100;
+                
+                if (visits >= 20 && reputationScore >= 95) return 'VIP';
+                if (visits >= 10 && reputationScore >= 90) return 'Frequent';
+                if (visits >= 5 && reputationScore >= 85) return 'Regular';
+                if (reputationScore < 70) return 'Watch List';
+                return 'New';
+            };
+
+            // Analyze preferred times
+            const analyzePreferredTimes = (reservations: any[]): string[] => {
+                const timeSlots = reservations.map(r => {
+                    const dateTime = DateTime.fromISO(r.reservation.reservation_utc);
+                    const hour = dateTime.hour;
+                    if (hour < 12) return 'morning';
+                    if (hour < 17) return 'afternoon';
+                    if (hour < 21) return 'evening';
+                    return 'late';
+                });
+                
+                const counts = timeSlots.reduce((acc, slot) => {
+                    acc[slot] = (acc[slot] || 0) + 1;
+                    return acc;
+                }, {} as Record<string, number>);
+                
+                return Object.entries(counts)
+                    .sort(([,a], [,b]) => b - a)
+                    .slice(0, 2)
+                    .map(([slot]) => slot);
+            };
+            
+            const analytics = {
+                guest: {
+                    ...guest,
+                    loyaltyStatus: getLoyaltyStatus(guest)
+                },
+                visitCount: guest.visit_count || 0,
+                noShowCount: guest.no_show_count || 0,
+                reputationScore: guest.reputation_score || 100,
+                vipLevel: guest.vip_level || 0,
+                completionRate,
+                averageSpending: guest.total_spent && guest.visit_count ? 
+                    (parseFloat(guest.total_spent) / guest.visit_count).toFixed(2) : '0.00',
+                totalSpent: guest.total_spent || '0.00',
+                lastVisit: guest.last_visit_date,
+                averageDuration: guest.average_duration || null,
+                preferences: guest.preferences || {},
+                preferredTimes: analyzePreferredTimes(reservationHistory),
+                recentReservations: reservationHistory.slice(0, 5).map(r => ({
+                    id: r.reservation.id,
+                    date: r.reservation.reservation_utc,
+                    status: r.reservation.status,
+                    guests: r.reservation.guests,
+                    table: r.table?.name,
+                    totalAmount: r.reservation.totalAmount,
+                    feedback: r.reservation.staffNotes
+                })),
+                statistics: {
+                    totalReservations: reservationHistory.length,
+                    completedReservations: completedVisits.length,
+                    cancelledReservations: reservationHistory.filter(r => r.reservation.status === 'canceled').length,
+                    noShowReservations: reservationHistory.filter(r => r.reservation.status === 'no_show').length
+                },
+                recommendations: {
+                    approach: (() => {
+                        const visits = guest.visit_count || 0;
+                        const reputation = guest.reputation_score || 100;
+                        
+                        if (visits >= 10) return "VIP treatment - recognize their loyalty and offer premium service";
+                        if (visits >= 5) return "Regular guest - personalized service based on their history";
+                        if (reputation < 80) return "Handle with care - previous issues noted, ensure exceptional service";
+                        return "Standard professional service - build positive relationship";
+                    })(),
+                    notes: `${guest.visit_count || 0} visits, ${guest.reputation_score || 100}% reputation score`
+                }
+            };
+
+            console.log(`✅ [Guest Analytics] Retrieved analytics for guest ${guestId}: ${analytics.visitCount} visits, ${analytics.reputationScore}% reputation`);
+
+            res.json(analytics);
+        } catch (error) {
+            console.error('[Guest Analytics] Error:', error);
             next(error);
         }
     });
@@ -1102,6 +1247,524 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // ✅ NEW: PHASE 3 - ENHANCED RESERVATION STATUS MANAGEMENT
+    
+    // Seat guests - transition from confirmed to seated
+    app.post("/api/reservations/:id/seat", isAuthenticated, async (req, res, next) => {
+        try {
+            const { tableNotes, staffMember } = req.body;
+            const reservationId = parseInt(req.params.id);
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+            
+            // Validate current status
+            const reservation = await storage.getReservation(reservationId);
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Reservation not found" });
+            }
+            
+            if (!['confirmed', 'created'].includes(reservation.reservation.status)) {
+                return res.status(400).json({ 
+                    message: `Cannot seat guests - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be seated.` 
+                });
+            }
+
+            // Update status with history tracking
+            await storage.updateReservationWithHistory(reservationId, {
+                status: 'seated',
+                staffNotes: tableNotes
+            }, {
+                changedBy: 'staff',
+                changeReason: 'Manual seating by staff',
+                metadata: { staffMember: staffMember || user.name }
+            });
+
+            // Update table status if there's a table assigned
+            if (reservation.reservation.tableId) {
+                await storage.updateTable(reservation.reservation.tableId, { 
+                    status: 'occupied' 
+                });
+                
+                // Invalidate table cache
+                CacheInvalidation.onTableChange(restaurant.id);
+            }
+
+            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || user.name}`);
+
+            res.json({ 
+                success: true, 
+                message: "Guests have been seated successfully",
+                reservationId,
+                newStatus: 'seated',
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Reservation Status] Error seating guests:', error);
+            next(error);
+        }
+    });
+
+    // Complete visit - transition from seated/in_progress to completed
+    app.post("/api/reservations/:id/complete", isAuthenticated, async (req, res, next) => {
+        try {
+            const { feedback, totalAmount, staffMember } = req.body;
+            const reservationId = parseInt(req.params.id);
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+            
+            const reservation = await storage.getReservation(reservationId);
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Reservation not found" });
+            }
+
+            if (!['seated', 'in_progress'].includes(reservation.reservation.status)) {
+                return res.status(400).json({ 
+                    message: `Cannot complete visit - reservation status is ${reservation.reservation.status}. Only seated or in-progress reservations can be completed.` 
+                });
+            }
+
+            // Calculate visit duration
+            const seatedTime = await storage.getStatusChangeTime(reservationId, 'seated');
+            const duration = seatedTime ? 
+                Math.round((Date.now() - seatedTime.getTime()) / 60000) : 
+                reservation.reservation.duration;
+
+            // Update reservation
+            await storage.updateReservationWithHistory(reservationId, {
+                status: 'completed',
+                totalAmount: totalAmount ? parseFloat(totalAmount) : null,
+                staffNotes: feedback
+            }, {
+                changedBy: 'staff',
+                changeReason: 'Visit completed by staff',
+                metadata: { 
+                    staffMember: staffMember || user.name, 
+                    actualDuration: duration,
+                    totalAmount: totalAmount ? parseFloat(totalAmount) : null
+                }
+            });
+
+            // Update guest analytics
+            await storage.updateGuestAnalytics(reservation.reservation.guestId, {
+                visitCompleted: true,
+                duration,
+                totalSpent: totalAmount ? parseFloat(totalAmount) : 0
+            });
+
+            // Free up table
+            if (reservation.reservation.tableId) {
+                await storage.updateTable(reservation.reservation.tableId, { 
+                    status: 'free' 
+                });
+                
+                // Invalidate table cache
+                CacheInvalidation.onTableChange(restaurant.id);
+            }
+
+            console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0}`);
+
+            res.json({ 
+                success: true, 
+                message: "Visit completed successfully",
+                reservationId,
+                newStatus: 'completed',
+                duration,
+                totalAmount: totalAmount ? parseFloat(totalAmount) : null,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Reservation Status] Error completing visit:', error);
+            next(error);
+        }
+    });
+
+    // Mark as no-show
+    app.post("/api/reservations/:id/no-show", isAuthenticated, async (req, res, next) => {
+        try {
+            const { reason, staffMember } = req.body;
+            const reservationId = parseInt(req.params.id);
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+            
+            const reservation = await storage.getReservation(reservationId);
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Reservation not found" });
+            }
+
+            if (!['confirmed', 'created'].includes(reservation.reservation.status)) {
+                return res.status(400).json({ 
+                    message: `Cannot mark as no-show - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be marked as no-show.` 
+                });
+            }
+
+            await storage.updateReservationWithHistory(reservationId, {
+                status: 'no_show',
+                staffNotes: reason
+            }, {
+                changedBy: 'staff',
+                changeReason: 'Marked as no-show by staff',
+                metadata: { 
+                    staffMember: staffMember || user.name, 
+                    reason: reason || 'No reason provided'
+                }
+            });
+
+            // Update guest analytics (negative impact)
+            await storage.updateGuestAnalytics(reservation.reservation.guestId, {
+                noShowOccurred: true
+            });
+
+            // Free up table
+            if (reservation.reservation.tableId) {
+                await storage.updateTable(reservation.reservation.tableId, { 
+                    status: 'free' 
+                });
+                
+                // Invalidate table cache
+                CacheInvalidation.onTableChange(restaurant.id);
+            }
+
+            console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'}`);
+
+            res.json({ 
+                success: true, 
+                message: "Reservation marked as no-show",
+                reservationId,
+                newStatus: 'no_show',
+                reason: reason || 'No reason provided',
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Reservation Status] Error marking no-show:', error);
+            next(error);
+        }
+    });
+
+    // Get reservation status history
+    app.get("/api/reservations/:id/history", isAuthenticated, async (req, res, next) => {
+        try {
+            const reservationId = parseInt(req.params.id);
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+            
+            // Verify reservation belongs to this restaurant
+            const reservation = await storage.getReservation(reservationId);
+            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Reservation not found" });
+            }
+            
+            const history = await storage.getReservationStatusHistory(reservationId);
+            
+            console.log(`📋 [Reservation History] Retrieved ${history.length} status changes for reservation ${reservationId}`);
+            
+            res.json({
+                reservationId,
+                history: history.map(entry => ({
+                    id: entry.id,
+                    fromStatus: entry.fromStatus,
+                    toStatus: entry.toStatus,
+                    changedBy: entry.changedBy,
+                    changeReason: entry.changeReason,
+                    timestamp: entry.timestamp,
+                    metadata: entry.metadata
+                })),
+                totalChanges: history.length
+            });
+        } catch (error) {
+            console.error('[Reservation History] Error:', error);
+            next(error);
+        }
+    });
+
+    // ✅ NEW: PHASE 3 - MENU MANAGEMENT SYSTEM
+
+    // Get menu items with advanced filtering
+    app.get("/api/menu-items", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const { category, available, search, popular, limit } = req.query;
+            
+            const filters = {
+                category: category as string,
+                availableOnly: available === 'true',
+                searchQuery: search as string,
+                popularOnly: popular === 'true',
+                limit: limit ? parseInt(limit as string) : undefined
+            };
+
+            console.log(`🍽️ [Menu Items] Fetching menu items for restaurant ${restaurant.id} with filters:`, filters);
+
+            const menuItems = await storage.getMenuItems(restaurant.id, filters);
+            
+            // Group by category for better UI organization
+            const groupedItems = menuItems.reduce((acc, item) => {
+                const cat = item.category || 'other';
+                if (!acc[cat]) acc[cat] = [];
+                acc[cat].push(item);
+                return acc;
+            }, {} as Record<string, any[]>);
+
+            // Calculate summary statistics
+            const stats = {
+                totalItems: menuItems.length,
+                availableItems: menuItems.filter(item => item.isAvailable).length,
+                popularItems: menuItems.filter(item => item.isPopular).length,
+                newItems: menuItems.filter(item => item.isNew).length,
+                categoriesCount: Object.keys(groupedItems).length
+            };
+
+            console.log(`✅ [Menu Items] Retrieved ${menuItems.length} items across ${Object.keys(groupedItems).length} categories`);
+
+            res.json({
+                items: menuItems,
+                groupedItems,
+                categories: Object.keys(groupedItems),
+                stats,
+                filters: filters,
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Menu Items] Error fetching items:', error);
+            next(error);
+        }
+    });
+
+    // Create new menu item
+    app.post("/api/menu-items", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            // Basic validation schema for menu items
+            const menuItemSchema = z.object({
+                name: z.string().min(1, "Name is required"),
+                description: z.string().optional(),
+                price: z.string().or(z.number()).transform(val => String(val)),
+                category: z.string().min(1, "Category is required"),
+                allergens: z.array(z.string()).optional(),
+                dietaryTags: z.array(z.string()).optional(),
+                isAvailable: z.boolean().default(true),
+                isPopular: z.boolean().default(false),
+                isNew: z.boolean().default(false),
+                preparationTime: z.number().optional(),
+                spicyLevel: z.number().min(0).max(5).default(0)
+            });
+
+            const validatedData = menuItemSchema.parse({
+                ...req.body,
+                restaurantId: restaurant.id
+            });
+
+            const newItem = await storage.createMenuItem({
+                ...validatedData,
+                restaurantId: restaurant.id
+            });
+            
+            // Invalidate menu cache
+            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            
+            console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${newItem.category}) - $${newItem.price}`);
+
+            res.status(201).json({
+                ...newItem,
+                message: "Menu item created successfully"
+            });
+        } catch (error: any) {
+            console.error('[Menu Items] Error creating item:', error);
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ 
+                    message: "Validation failed", 
+                    errors: error.errors 
+                });
+            }
+            next(error);
+        }
+    });
+
+    // Update menu item
+    app.patch("/api/menu-items/:id", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const itemId = parseInt(req.params.id);
+            
+            // Verify the item belongs to this restaurant
+            const existingItem = await storage.getMenuItem(itemId);
+            if (!existingItem || existingItem.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Menu item not found" });
+            }
+
+            const updatedItem = await storage.updateMenuItem(itemId, req.body);
+            
+            // Invalidate menu cache
+            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            
+            console.log(`✅ [Menu Items] Updated item ${itemId}: ${updatedItem.name}`);
+
+            res.json({
+                ...updatedItem,
+                message: "Menu item updated successfully"
+            });
+        } catch (error) {
+            console.error('[Menu Items] Error updating item:', error);
+            next(error);
+        }
+    });
+
+    // Delete menu item
+    app.delete("/api/menu-items/:id", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const itemId = parseInt(req.params.id);
+            
+            // Verify the item belongs to this restaurant
+            const existingItem = await storage.getMenuItem(itemId);
+            if (!existingItem || existingItem.restaurantId !== restaurant.id) {
+                return res.status(404).json({ message: "Menu item not found" });
+            }
+
+            await storage.deleteMenuItem(itemId);
+            
+            // Invalidate menu cache
+            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            
+            console.log(`🗑️ [Menu Items] Deleted item ${itemId}: ${existingItem.name}`);
+
+            res.json({ 
+                success: true, 
+                message: "Menu item deleted successfully",
+                deletedItem: { id: itemId, name: existingItem.name }
+            });
+        } catch (error) {
+            console.error('[Menu Items] Error deleting item:', error);
+            next(error);
+        }
+    });
+
+    // Bulk update menu items
+    app.put("/api/menu-items/bulk", isAuthenticated, async (req, res, next) => {
+        try {
+            const { items, action } = req.body; // action: 'availability', 'prices', 'categories'
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            if (!items || !Array.isArray(items) || items.length === 0) {
+                return res.status(400).json({ message: "Items array is required and must not be empty" });
+            }
+
+            if (!action || !['availability', 'prices', 'categories', 'delete'].includes(action)) {
+                return res.status(400).json({ message: "Valid action is required: availability, prices, categories, or delete" });
+            }
+
+            console.log(`🔄 [Menu Items] Bulk ${action} update for ${items.length} items in restaurant ${restaurant.id}`);
+
+            const results = await storage.bulkUpdateMenuItems(restaurant.id, items, action);
+            
+            // Invalidate cache
+            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            
+            console.log(`✅ [Menu Items] Bulk ${action} completed: ${results.length} items processed`);
+            
+            res.json({ 
+                success: true, 
+                action,
+                updatedCount: results.length,
+                items: results,
+                message: `Bulk ${action} update completed successfully`
+            });
+        } catch (error) {
+            console.error('[Menu Items] Error in bulk update:', error);
+            next(error);
+        }
+    });
+
+    // Search menu items (enhanced search)
+    app.get("/api/menu-items/search", isAuthenticated, async (req, res, next) => {
+        try {
+            const user = req.user as any;
+            const restaurant = await storage.getRestaurantByUserId(user.id);
+            if (!restaurant) {
+                return res.status(404).json({ message: "Restaurant not found" });
+            }
+
+            const { q: query, category, dietary, priceMin, priceMax } = req.query;
+            
+            if (!query || typeof query !== 'string') {
+                return res.status(400).json({ message: "Search query is required" });
+            }
+
+            console.log(`🔍 [Menu Search] Searching for "${query}" in restaurant ${restaurant.id}`);
+
+            // Enhanced search with multiple strategies
+            const searchResults = await storage.searchMenuItems(restaurant.id, {
+                query: query as string,
+                category: category as string,
+                dietaryRestrictions: dietary ? (dietary as string).split(',') : undefined,
+                priceRange: {
+                    min: priceMin ? parseFloat(priceMin as string) : undefined,
+                    max: priceMax ? parseFloat(priceMax as string) : undefined
+                }
+            });
+
+            // Log search for analytics
+            await storage.logMenuSearch(restaurant.id, query as string, 'staff_search');
+
+            console.log(`✅ [Menu Search] Found ${searchResults.length} results for "${query}"`);
+
+            res.json({
+                query,
+                results: searchResults,
+                resultCount: searchResults.length,
+                searchFilters: {
+                    category,
+                    dietary,
+                    priceRange: { min: priceMin, max: priceMax }
+                },
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[Menu Search] Error:', error);
+            next(error);
+        }
+    });
+
     // Dashboard data
     app.get("/api/dashboard/stats", isAuthenticated, async (req, res, next) => {
         try {
@@ -1304,7 +1967,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             try {
                 const agent = await getAgentForRestaurant(restaurant.id);
                 const context = platform === 'web' ? 'hostess' : 'guest';
-                restaurantGreeting = agent.getRestaurantGreeting(context);
+                restaurantGreeting = agent.getPersonalizedGreeting(null, language, context);
+
             } catch (error) {
                 console.error('[API] Error generating restaurant greeting:', error);
                 // Fallback greeting
