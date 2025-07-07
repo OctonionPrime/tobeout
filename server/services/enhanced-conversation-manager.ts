@@ -1,15 +1,6 @@
 // server/services/enhanced-conversation-manager.ts
-// ✅ CRITICAL FIX APPLIED: Removed premature greeting logic to allow Overseer to run first
-// ✅ LANGUAGE ENHANCEMENT: Added Translation Service and Language Detection Agent
-// ✅ OVERSEER IMPLEMENTATION: Intelligent Agent Management with Claude
-// ✅ FIXED: Language consistency throughout conversation flow
-// ✅ NEW: Intelligent Confirmation Agent for natural confirmation handling
-// ✅ PHONE FIX: Added guest_phone to GuestHistory interface and clear instructions for "same number" handling
-// ✅ RESILIENCE UPGRADE: Added AI Fallback System (Claude → OpenAI GPT-4o-mini)
-// ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
-// ✅ RESERVATION SEARCH ENHANCEMENT: Updated find_existing_reservation function call to support new parameters
-// ✅ CRITICAL FIX: Session contamination prevention - clears booking data for new requests while preserving guest identity
-// ✅ BUGFIX: Fixed contextual awareness for special requests and session reset issues
+// ✅ PHASE 1 FIX: Enhanced Conversation Manager with Smart Context Preservation
+// Fixes state management after successful modifications to prevent context loss
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -20,9 +11,9 @@ import { runGuardrails, requiresConfirmation, type GuardrailResult } from './gua
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
 
-// ✅ EXPANDED: Support for 10+ languages as per plan
+// ✅ APOLLO: Updated AgentType to include availability agent
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
-export type AgentType = 'booking' | 'reservations' | 'conductor';
+export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability'; // ✅ Added 'availability'
 
 /**
  * ✅ NEW: Translation Service Class for consistent language handling
@@ -68,6 +59,132 @@ Return only the translation, no explanations.`;
 }
 
 /**
+ * ✅ PHASE 1 FIX: Smart Context Preservation Functions
+ */
+function preserveReservationContext(
+    session: BookingSessionWithAgent, 
+    reservationId: number, 
+    operationType: 'modification' | 'cancellation' | 'creation'
+): void {
+    const expiryTime = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    
+    if (!session.recentlyModifiedReservations) {
+        session.recentlyModifiedReservations = [];
+    }
+    
+    // Remove old entries for same reservation
+    session.recentlyModifiedReservations = session.recentlyModifiedReservations
+        .filter(r => r.reservationId !== reservationId);
+    
+    // Add new context
+    session.recentlyModifiedReservations.unshift({
+        reservationId,
+        lastModifiedAt: new Date(),
+        contextExpiresAt: expiryTime,
+        operationType,
+        userReference: undefined // Will be set by resolution logic
+    });
+    
+    // Keep only last 3 reservations
+    session.recentlyModifiedReservations = session.recentlyModifiedReservations.slice(0, 3);
+    
+    console.log(`[ContextManager] Preserved context for reservation ${reservationId} until ${expiryTime.toISOString()}`);
+}
+
+function cleanExpiredContext(session: BookingSessionWithAgent): void {
+    if (!session.recentlyModifiedReservations) return;
+    
+    const now = new Date();
+    const beforeCount = session.recentlyModifiedReservations.length;
+    
+    session.recentlyModifiedReservations = session.recentlyModifiedReservations
+        .filter(r => r.contextExpiresAt > now);
+    
+    const afterCount = session.recentlyModifiedReservations.length;
+    
+    if (beforeCount > afterCount) {
+        console.log(`[ContextManager] Cleaned ${beforeCount - afterCount} expired context entries`);
+    }
+}
+
+/**
+ * ✅ PHASE 1 FIX: Enhanced Reservation ID Resolution with Context Awareness
+ */
+function resolveReservationFromContext(
+    userMessage: string,
+    session: BookingSessionWithAgent,
+    providedId?: number
+): {
+    resolvedId: number | null;
+    confidence: 'high' | 'medium' | 'low';
+    method: string;
+    shouldAskForClarification: boolean;
+} {
+    
+    // Clean expired context first
+    cleanExpiredContext(session);
+    
+    // 1. If explicit ID provided and valid, use it
+    if (providedId) {
+        if (session.foundReservations?.some(r => r.id === providedId)) {
+            return {
+                resolvedId: providedId,
+                confidence: 'high',
+                method: 'explicit_id_validated',
+                shouldAskForClarification: false
+            };
+        }
+    }
+    
+    // 2. Check for recent modifications (high confidence)
+    if (session.recentlyModifiedReservations?.length > 0) {
+        const recentReservation = session.recentlyModifiedReservations[0];
+        if (recentReservation.contextExpiresAt > new Date()) {
+            // Check for contextual references
+            const contextualPhrases = ['эту бронь', 'this booking', 'it', 'её', 'эту', 'this one', 'that one'];
+            const userMessageLower = userMessage.toLowerCase();
+            
+            if (contextualPhrases.some(phrase => userMessageLower.includes(phrase))) {
+                return {
+                    resolvedId: recentReservation.reservationId,
+                    confidence: 'high',
+                    method: 'recent_modification_context',
+                    shouldAskForClarification: false
+                };
+            }
+        }
+    }
+    
+    // 3. Check active reservation (medium confidence)
+    if (session.activeReservationId) {
+        return {
+            resolvedId: session.activeReservationId,
+            confidence: 'medium',
+            method: 'active_session_reservation',
+            shouldAskForClarification: false
+        };
+    }
+    
+    // 4. Single found reservation (medium confidence)
+    if (session.foundReservations?.length === 1) {
+        return {
+            resolvedId: session.foundReservations[0].id,
+            confidence: 'medium',
+            method: 'single_found_reservation',
+            shouldAskForClarification: false
+        };
+    }
+    
+    // 5. Multiple reservations - need clarification
+    return {
+        resolvedId: null,
+        confidence: 'low',
+        method: 'ambiguous_context',
+        shouldAskForClarification: true
+    };
+}
+
+/**
  * ✅ PHONE FIX: Updated Guest history interface to include phone number
  */
 interface GuestHistory {
@@ -82,7 +199,7 @@ interface GuestHistory {
 }
 
 /**
- * Enhanced conversation manager with Claude-powered meta-agents and Translation Service
+ * Enhanced conversation manager with Claude-powered meta-agents and Apollo Availability Agent
  * ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
  */
 export class EnhancedConversationManager {
@@ -104,13 +221,13 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with Claude-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + OpenAI GPT fallback');
+        console.log('[EnhancedConversationManager] Initialized with Claude-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + OpenAI GPT fallback');
     }
 
     /**
-     * ✅ NEW: AI Abstraction Layer with Claude Primary + OpenAI Fallback
+     * ✅ ENHANCED: AI Abstraction Layer with Claude Primary + Smart OpenAI Fallbacks
      * This method attempts to generate content using Claude (Sonnet for Overseer, Haiku for others).
-     * If it fails, it silently logs the issue and falls back to OpenAI GPT.
+     * If it fails, it falls back to appropriate OpenAI models based on the task complexity.
      * @param prompt The prompt to send to the AI model.
      * @param agentContext A string identifier for logging purposes (e.g., 'Overseer').
      * @param modelType 'sonnet' for complex reasoning (Overseer), 'haiku' for fast decisions (Language/Confirmation)
@@ -150,45 +267,97 @@ export class EnhancedConversationManager {
             if (errorMessage.includes('429') || errorMessage.includes('500') || 
                 errorMessage.includes('503') || errorMessage.includes('timeout') ||
                 errorMessage.includes('rate limit') || errorMessage.includes('quota') ||
-                errorMessage.includes('overloaded')) {
+                errorMessage.includes('overloaded') || errorMessage.includes('401') ||
+                errorMessage.includes('403') || errorMessage.includes('network')) {
                 
-                console.log(`[AI Fallback] Rate limit or server error detected. Switching to OpenAI GPT model for [${agentContext}].`);
+                console.log(`[AI Fallback] Error detected, switching to OpenAI model for [${agentContext}].`);
 
-                // --- Secondary Model: OpenAI GPT ---
+                // --- Enhanced Fallback: Choose appropriate OpenAI model based on task complexity ---
                 try {
+                    // For Overseer (complex strategic decisions): Use GPT-4o for maximum capability
+                    // For Language/Confirmation (simple tasks): Use GPT-4o-mini for cost efficiency
+                    const fallbackModel = modelType === 'sonnet' ? "gpt-4o" : "gpt-4o-mini";
+                    const fallbackMaxTokens = modelType === 'sonnet' ? 1000 : 500;
+                    const fallbackTemperature = modelType === 'sonnet' ? 0.2 : 0.1; // Lower temp for simple tasks
+                    
+                    console.log(`[AI Fallback] Using ${fallbackModel} for ${agentContext} (${modelType} equivalent)`);
+
                     const gptCompletion = await this.openaiClient.chat.completions.create({
-                        model: "gpt-4o-mini", // Cost-effective and reliable for structured tasks
+                        model: fallbackModel,
                         messages: [{ role: 'user', content: prompt }],
-                        max_tokens: 1000,
-                        temperature: 0.5
+                        max_tokens: fallbackMaxTokens,
+                        temperature: fallbackTemperature
                     });
+                    
                     const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
                     if (gptResponse) {
-                        console.log(`[AI Fallback] Successfully used OpenAI GPT as a fallback for [${agentContext}].`);
+                        console.log(`[AI Fallback] ✅ Successfully used ${fallbackModel} as fallback for [${agentContext}].`);
                         return gptResponse;
                     }
                     throw new Error("OpenAI response was empty.");
+                    
                 } catch (gptError: any) {
-                    console.error(`[AI Fallback] CRITICAL: Secondary model (OpenAI GPT) also failed for [${agentContext}]. Reason: ${gptError.message}`);
-                    // If both models fail, return a safe, hardcoded JSON response to prevent crashes
-                    return JSON.stringify({
-                        reasoning: "Fallback due to critical AI system failure.",
-                        agentToUse: "booking", // Default safe agent
-                        confirmationStatus: "unclear", // Default safe status
-                        detectedLanguage: "en", // Default safe language
-                        confidence: 0.1,
-                        shouldLock: false
-                    });
+                    console.error(`[AI Fallback] Primary OpenAI model failed for [${agentContext}]. Trying final fallback...`);
+                    
+                    // --- Final Fallback: Try most compatible OpenAI model ---
+                    try {
+                        const finalCompletion = await this.openaiClient.chat.completions.create({
+                            model: "gpt-3.5-turbo", // Most widely available and compatible
+                            messages: [{ role: 'user', content: prompt }],
+                            max_tokens: 800,
+                            temperature: 0.3
+                        });
+                        
+                        const finalResponse = finalCompletion.choices[0]?.message?.content?.trim();
+                        if (finalResponse) {
+                            console.log(`[AI Fallback] ✅ Final fallback (GPT-3.5-turbo) succeeded for [${agentContext}].`);
+                            return finalResponse;
+                        }
+                        throw new Error("Final fallback response was empty.");
+                        
+                    } catch (finalError: any) {
+                        console.error(`[AI Fallback] CRITICAL: All AI models failed for [${agentContext}]. Using safe defaults.`);
+                        
+                        // Return contextually appropriate safe defaults
+                        if (agentContext === 'Overseer') {
+                            return JSON.stringify({
+                                reasoning: "AI system unavailable - maintaining current agent for safety",
+                                agentToUse: "booking", // Safe default: always go to booking agent
+                                isNewBookingRequest: false
+                            });
+                        } else if (agentContext === 'LanguageAgent') {
+                            return JSON.stringify({
+                                detectedLanguage: "en", // Safe default language
+                                confidence: 0.1,
+                                reasoning: "AI system unavailable - defaulting to English",
+                                shouldLock: false
+                            });
+                        } else if (agentContext === 'ConfirmationAgent') {
+                            return JSON.stringify({
+                                confirmationStatus: "unclear", // Safe default: ask for clarification
+                                reasoning: "AI system unavailable - unable to determine confirmation status"
+                            });
+                        }
+                        
+                        // Generic fallback
+                        return JSON.stringify({
+                            reasoning: "AI system temporarily unavailable",
+                            agentToUse: "booking",
+                            confirmationStatus: "unclear",
+                            detectedLanguage: "en",
+                            confidence: 0.1,
+                            shouldLock: false
+                        });
+                    }
                 }
             }
 
-            // For other errors (e.g., client-side validation), we might not want to fallback.
-            // We'll return a safe default here as well.
-            console.error(`[AI Fallback] Unhandled Claude error for [${agentContext}]. Both models may have failed or the error was not a fallback condition.`);
+            // For non-retryable errors (e.g., malformed requests), return safe defaults
+            console.error(`[AI Fallback] Non-retryable error for [${agentContext}]: ${errorMessage}`);
             return JSON.stringify({
-                reasoning: "Fallback due to non-retryable AI system error.",
+                reasoning: "Request error - using safe defaults",
                 agentToUse: "booking",
-                confirmationStatus: "unclear",
+                confirmationStatus: "unclear", 
                 detectedLanguage: "en",
                 confidence: 0.1,
                 shouldLock: false
@@ -438,8 +607,9 @@ Respond with ONLY a JSON object.
         delete session.confirmedName;
         delete session.activeReservationId;
         delete session.foundReservations; // ✅ NEW: Clear found reservations list
+        delete session.availabilityFailureContext; // ✅ APOLLO: Clear failure context
         
-        console.log(`[SessionReset] Cleared pending states, active reservation ID, and found reservations`);
+        console.log(`[SessionReset] Cleared pending states, active reservation ID, found reservations, and Apollo failure context`);
     }
 
     /**
@@ -529,7 +699,74 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ UPDATED: THE OVERSEER - Intelligent Agent Decision System using Claude Sonnet 4 with GPT fallback
+     * ✅ APOLLO: Detect recent availability failure in conversation history
+     */
+    private detectRecentAvailabilityFailure(session: BookingSessionWithAgent): {
+        hasFailure: boolean;
+        failedDate?: string;
+        failedTime?: string;
+        failedGuests?: number;
+        failureReason?: string;
+    } {
+        console.log(`🔍 [Apollo] Scanning conversation history for recent availability failures...`);
+        
+        // Look through recent conversation history for failed availability checks
+        const recentMessages = session.conversationHistory.slice(-10); // Check last 10 messages
+        
+        for (let i = recentMessages.length - 1; i >= 0; i--) {
+            const msg = recentMessages[i];
+            
+            if (msg.toolCalls) {
+                for (const toolCall of msg.toolCalls) {
+                    if (toolCall.function?.name === 'check_availability' || 
+                        toolCall.function?.name === 'modify_reservation') {
+                        
+                        try {
+                            const args = JSON.parse(toolCall.function.arguments);
+                            
+                            // Look for the response to this tool call in the next message
+                            const nextMessage = recentMessages[i + 1];
+                            if (nextMessage && nextMessage.role === 'assistant') {
+                                // Check if the response contains failure indicators
+                                const response = nextMessage.content.toLowerCase();
+                                
+                                if (response.includes('no availability') || 
+                                    response.includes('not available') ||
+                                    response.includes('fully booked') ||
+                                    response.includes('нет мест') ||
+                                    response.includes('не доступно') ||
+                                    response.includes('занято')) {
+                                    
+                                    console.log(`🔍 [Apollo] Found availability failure:`, {
+                                        tool: toolCall.function.name,
+                                        date: args.date,
+                                        time: args.time || args.newTime,
+                                        guests: args.guests || args.newGuests
+                                    });
+                                    
+                                    return {
+                                        hasFailure: true,
+                                        failedDate: args.date,
+                                        failedTime: args.time || args.newTime,
+                                        failedGuests: args.guests || args.newGuests,
+                                        failureReason: 'No availability for requested time'
+                                    };
+                                }
+                            }
+                        } catch (parseError) {
+                            console.warn(`[Apollo] Failed to parse tool call arguments:`, parseError);
+                        }
+                    }
+                }
+            }
+        }
+        
+        console.log(`🔍 [Apollo] No recent availability failures found`);
+        return { hasFailure: false };
+    }
+
+    /**
+     * ✅ APOLLO: Enhanced Overseer with availability failure detection - THE OVERSEER - Intelligent Agent Decision System using Claude Sonnet 4 with GPT fallback
      * ✅ BUGFIX: Added rule to prevent misclassifying simple continuations as new booking requests
      */
     private async runOverseer(
@@ -557,11 +794,15 @@ Respond with ONLY a JSON object.
                 hasGuestHistory: !!session.guestHistory
             };
 
+            // ✅ APOLLO: Check for availability failure first
+            const availabilityFailure = this.detectRecentAvailabilityFailure(session);
+
             const prompt = `You are the master "Overseer" for a restaurant booking system. Analyze the conversation and decide which agent should handle the user's request.
 
 ## AGENT ROLES:
 - **Sofia (booking):** Handles ONLY NEW reservations. Use for availability checks, creating new bookings.
 - **Maya (reservations):** Handles ONLY EXISTING reservations. Use for modifications, cancellations, checking status.
+- **Apollo (availability):** SPECIALIST agent that ONLY finds alternative times when a booking fails.
 - **Conductor (conductor):** Neutral state after task completion.
 
 ## SESSION STATE:
@@ -578,7 +819,23 @@ ${recentHistory}
 ## USER'S LATEST MESSAGE:
 "${userMessage}"
 
+## AVAILABILITY FAILURE CONTEXT:
+${availabilityFailure.hasFailure ? `
+🚨 CRITICAL: Recent availability failure detected:
+- Failed Date: ${availabilityFailure.failedDate}
+- Failed Time: ${availabilityFailure.failedTime}
+- Failed Guests: ${availabilityFailure.failedGuests}
+- Reason: ${availabilityFailure.failureReason}
+` : 'No recent availability failures detected.'}
+
 ## CRITICAL ANALYSIS RULES:
+
+### RULE 0: AVAILABILITY FAILURE HANDOFF (HIGHEST PRIORITY)
+- Check for recent tool call that failed with "NO_AVAILABILITY" or "NO_AVAILABILITY_FOR_MODIFICATION"
+- IF such a failure exists AND user's current message is asking for alternatives:
+  * "what time is free?", "any alternatives?", "а когда можно?", "когда свободно?", "другое время?"
+  * "earlier", "later", "different time", "раньше", "позже"
+- THEN you MUST hand off to 'availability' agent. This is your most important recovery rule.
 
 ### RULE 1: DETECT NEW BOOKING REQUESTS (HIGH PRIORITY)
 Look for explicit indicators of NEW booking requests:
@@ -620,6 +877,7 @@ Switch to Maya ONLY if user explicitly mentions:
 If user mentions time changes ("earlier", "later", "different time") consider context:
 - If Sofia is gathering NEW booking info → STAY with Sofia (they're clarifying their preferred time)
 - If Maya found existing reservations → Use Maya (they want to modify existing)
+- If there was a recent availability failure → Use Apollo (they want alternatives)
 
 ### RULE 5: CONDUCTOR RESET
 Use "conductor" ONLY after successful task completion (booking created, cancellation confirmed).
@@ -628,7 +886,7 @@ Respond with ONLY a JSON object:
 
 {
   "reasoning": "Brief explanation of your decision based on the rules and context",
-  "agentToUse": "booking" | "reservations" | "conductor",
+  "agentToUse": "booking" | "reservations" | "conductor" | "availability",
   "intervention": null | "Message if user seems stuck and needs clarification",
   "isNewBookingRequest": true/false
 }`;
@@ -643,8 +901,21 @@ Respond with ONLY a JSON object:
                 currentAgent: session.currentAgent,
                 decision: decision.agentToUse,
                 reasoning: decision.reasoning,
-                isNewBookingRequest: decision.isNewBookingRequest
+                isNewBookingRequest: decision.isNewBookingRequest,
+                availabilityFailureDetected: availabilityFailure.hasFailure
             });
+
+            // ✅ APOLLO: Store availability failure context if Apollo is chosen
+            if (decision.agentToUse === 'availability' && availabilityFailure.hasFailure) {
+                session.availabilityFailureContext = {
+                    originalDate: availabilityFailure.failedDate!,
+                    originalTime: availabilityFailure.failedTime!,
+                    originalGuests: availabilityFailure.failedGuests!,
+                    failureReason: availabilityFailure.failureReason!,
+                    detectedAt: new Date().toISOString()
+                };
+                console.log(`🚀 [Apollo] Stored failure context:`, session.availabilityFailureContext);
+            }
 
             return {
                 agentToUse: decision.agentToUse,
@@ -730,9 +1001,11 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * Get tools for specific agent type
+     * ✅ APOLLO: Get tools for specific agent type with Apollo support
      */
     private getToolsForAgent(agentType: AgentType) {
+        console.log(`🛠️ [AgentLoader] Loading tools for ${agentType} agent`);
+        
         const baseTools = [
             {
                 type: "function" as const,
@@ -771,6 +1044,63 @@ Respond with ONLY a JSON object:
                 }
             }
         };
+
+        // ✅ APOLLO: Specialist availability agent tools
+        if (agentType === 'availability') {
+            console.log("🛠️ [AgentLoader] Loading tools for specialist Availability Agent (Apollo)");
+            return [
+                {
+                    type: "function" as const,
+                    function: {
+                        name: "find_alternative_times",
+                        description: "Finds alternative available time slots around a user's preferred time. This is the primary tool for this agent.",
+                        parameters: {
+                            type: "object",
+                            properties: {
+                                date: {
+                                    type: "string",
+                                    description: "Date in yyyy-MM-dd format"
+                                },
+                                preferredTime: {
+                                    type: "string", 
+                                    description: "Preferred time in HH:MM format from the failed booking attempt"
+                                },
+                                guests: {
+                                    type: "number",
+                                    description: "Number of guests"
+                                }
+                            },
+                            required: ["date", "preferredTime", "guests"]
+                        }
+                    }
+                },
+                {
+                    type: "function" as const,
+                    function: {
+                        name: "check_availability",
+                        description: "Quickly confirms if a single time chosen by the user from the suggested alternatives is still available.",
+                        parameters: {
+                            type: "object",
+                            properties: {
+                                date: {
+                                    type: "string",
+                                    description: "Date in yyyy-MM-dd format"
+                                },
+                                time: {
+                                    type: "string",
+                                    description: "Time in HH:MM format"
+                                },
+                                guests: {
+                                    type: "number",
+                                    description: "Number of guests"
+                                }
+                            },
+                            required: ["date", "time", "guests"]
+                        }
+                    }
+                }
+            ];
+        }
 
         if (agentType === 'reservations') {
             return [
@@ -883,6 +1213,7 @@ Respond with ONLY a JSON object:
             ];
         }
 
+        // Default: booking agent tools (Sofia)
         return [
             ...baseTools,
             guestHistoryTool,
@@ -978,7 +1309,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ PHONE FIX + CONTEXTUAL AWARENESS BUGFIX: Generate personalized system prompt section based on guest history with phone number instructions and contextual evaluation of special requests
+     * ✅ PHONE FIX + CONTEXTUAL AWARENESS BUGFIX: Generate personalized system prompt section based on guest history with phone number instructions and contextual evaluation of special requests + Apollo system prompt
      */
     private getPersonalizedPromptSection(guestHistory: GuestHistory | null, language: Language): string {
         if (!guestHistory || guestHistory.total_bookings === 0) {
@@ -1062,7 +1393,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ ENHANCED: Language-agnostic agent personality system with conversation context awareness
+     * ✅ 🚨 APOLLO: Enhanced agent personality system with Apollo specialist prompt
      */
     private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false, conversationContext?: any): string {
         const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
@@ -1095,6 +1426,40 @@ Respond with ONLY a JSON object:
 - If hasAskedPhone is YES, do NOT ask "what's your phone?" again
 
 ✅ Instead, use the information already provided or acknowledge it naturally.` : '';
+
+        // ✅ APOLLO: Specialist Availability Agent personality
+        if (agentType === 'availability') {
+            return `You are Apollo, a specialist Availability Agent. Your only job is to help a user find an alternative time after their first choice was unavailable.
+
+${languageInstruction}
+
+🎯 YOUR MANDATORY WORKFLOW:
+1. The user's previous attempt to book or modify a reservation has FAILED due to no availability.
+2. Your first action MUST be to call the 'find_alternative_times' tool. Use the details (date, time, guests) from the previously failed attempt.
+3. Clearly present the available times that the tool returns. Do not suggest any times not returned by the tool.
+4. Once the user chooses a time, your job is complete. End your response with a clear signal like "Great, I'll hand you back to finalize that."
+
+❌ FORBIDDEN ACTIONS:
+- Do not ask for the user's name, phone, or any other personal details.
+- Do not call any tools other than 'find_alternative_times' and 'check_availability'.
+- Do not try to complete the booking yourself.
+- NEVER suggest times that weren't returned by the find_alternative_times tool.
+- NEVER hallucinate availability - only use tool results.
+
+✅ REQUIRED PATTERN:
+1. Immediately call find_alternative_times with the failed booking parameters
+2. Present the alternatives clearly: "I found these available times: 18:30, 19:15, 20:00"
+3. When user selects one, confirm and hand back: "Perfect! 19:15 works. I'll hand you back to complete the booking."
+
+🏪 RESTAURANT INFO:
+- Name: ${restaurantConfig.name}
+- Current Date: ${currentTime.toFormat('yyyy-MM-dd')}
+- Timezone: ${restaurantConfig.timezone}
+
+${contextAwarenessSection}
+
+This focused approach prevents availability hallucination and ensures accurate alternative suggestions.`;
+        }
 
         if (isFirstMessage && agentType === 'booking') {
             const agent = createBookingAgent(restaurantConfig);
@@ -1137,6 +1502,44 @@ ${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}
         }
 
         if (agentType === 'reservations') {
+            // ✅ PHASE 1 FIX: Enhanced Maya system prompt with critical action rules
+            const CRITICAL_ACTION_RULES = `
+🚨 ABSOLUTE EXECUTION RULE - NO EXCEPTIONS:
+
+WHEN YOU HAVE: Reservation ID + Modification Details
+THEN YOU MUST: IMMEDIATELY call modify_reservation tool in the SAME response
+NEVER SAY: "I will do X" or "Let me do X" - DO IT IMMEDIATELY
+
+EXECUTION PATTERN (MANDATORY):
+✅ User: "move to 21:20"
+✅ Maya: [SILENT tool call: modify_reservation] → "✅ Done! Changed to 21:20"
+
+FORBIDDEN PATTERN (WILL BE PENALIZED):
+❌ User: "move to 21:20"
+❌ Maya: "I found your booking, now I'll change it" [NO TOOL CALL]
+❌ User: "получилось?" [FORCED because Maya failed]
+❌ Maya: [finally calls tool] - THIS IS A CRITICAL FAILURE
+
+IMPLEMENTATION RULES:
+1. Tool calls are SILENT - user doesn't see the function call syntax
+2. User only sees the RESULT of the tool call
+3. If you have enough information, ACT immediately
+4. The pattern "I found your booking at X time, now I'll change it to Y" is STRICTLY FORBIDDEN
+
+CONTEXT AWARENESS:
+- If session.activeReservationId exists, USE IT immediately
+- If you just found a reservation, USE IT immediately  
+- If user provides new time/date/guests, MODIFY immediately
+- NO intermediate confirmations for simple changes
+
+EXAMPLES OF IMMEDIATE ACTION:
+User: "можно на 21:20?"
+Maya: [calls modify_reservation(activeId, {newTime: "21:20"})] → "✅ Готово! Перенесла на 21:20"
+
+User: "add one person"  
+Maya: [calls modify_reservation(activeId, {newGuests: currentGuests+1})] → "✅ Updated to 5 guests"
+`;
+
             return `You are Maya, the reservation management specialist for ${restaurantConfig.name}.
 
 ${languageInstruction}
@@ -1152,6 +1555,13 @@ ${languageInstruction}
 2. Verify it belongs to the guest  
 3. Make requested changes
 4. Confirm all modifications
+
+${CRITICAL_ACTION_RULES}
+
+🚨 CRITICAL CONTEXT RULE:
+    - IF you have already found a reservation and the user provides new details (like a new time or guest count).
+    - THEN your next action MUST be to call \`check_availability\` or \`modify_reservation\`.
+    - DO NOT call \`find_existing_reservation\` again. This is a critical failure.
 
 ✅ CRITICAL RESERVATION DISPLAY RULES:
 - When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"
@@ -1383,7 +1793,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ CRITICAL FIX: Main message handling with corrected logic flow and session reset safeguard
+     * ✅ PHASE 1 FIX: Main message handling with smart context preservation
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1545,7 +1955,7 @@ Respond with JSON only.`;
                 }
             }
 
-            // STEP 3: CLAUDE-POWERED OVERSEER AGENT DECISION
+            // STEP 3: CLAUDE-POWERED OVERSEER AGENT DECISION (includes Apollo detection)
             const overseerDecision = await this.runOverseer(session, message);
             
             if (overseerDecision.intervention) {
@@ -1593,6 +2003,11 @@ Respond with JSON only.`;
                     trigger: message.substring(0, 100),
                     overseerReasoning: overseerDecision.reasoning
                 });
+
+                // ✅ APOLLO: Special handling for handoff to availability agent
+                if (detectedAgent === 'availability') {
+                    console.log(`🚀 [Apollo] Handoff to availability agent detected`);
+                }
             }
 
             // ✅ BUGFIX SAFEGUARD: Prevent session reset on simple continuation messages, even if Overseer misclassifies.
@@ -1679,11 +2094,33 @@ Respond with JSON only.`;
                 ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage, conversationContext) // ✅ CRITICAL FIX: Pass the context object
                 : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig, session.guestHistory, isFirstMessage);
 
+            // ✅ FIX: Inject a state-driven command to prevent looping.
+            if (session.activeReservationId && session.currentAgent === 'reservations') {
+                console.log(`[State Override] Injecting critical modification instruction for active reservation #${session.activeReservationId}`);
+
+                // ✅ START: SIMPLIFIED OVERRIDE INSTRUCTIONS
+                systemPrompt += `\n\n### 🚨 CRITICAL ACTION REQUIRED 🚨 ###
+                - You are currently modifying reservation ID: ${session.activeReservationId}.
+                - The user has just provided new information for the modification.
+                - Your immediate and ONLY next step is to call the 'modify_reservation' tool with the reservation ID and the new details.
+                - 🚷 FORBIDDEN ACTION: DO NOT call 'find_existing_reservation' again.
+                - 🚷 FORBIDDEN ACTION: DO NOT call 'check_availability'. The 'modify_reservation' tool does this for you.`;
+                // ✅ END: SIMPLIFIED OVERRIDE INSTRUCTIONS
+            }
+
             if (session.currentAgent === 'reservations') {
                 const contextualResponse = this.getContextualResponse(message, session.language);
                 if (contextualResponse) {
                     systemPrompt += `\n\n🔄 CONTEXTUAL RESPONSE: Start your response with: "${contextualResponse}"`;
                 }
+            }
+
+            // ✅ APOLLO: Add availability failure context to system prompt
+            if (session.currentAgent === 'availability' && session.availabilityFailureContext) {
+                systemPrompt += `\n\n🚨 AVAILABILITY FAILURE CONTEXT:
+- Original failed request: ${session.availabilityFailureContext.originalDate} at ${session.availabilityFailureContext.originalTime} for ${session.availabilityFailureContext.originalGuests} guests
+- You MUST immediately call find_alternative_times with these exact parameters
+- Do not ask the user for clarification - they already provided this information`;
             }
 
             if (session.activeReservationId) {
@@ -1723,7 +2160,7 @@ Respond with JSON only.`;
             let hasBooking = false;
             let reservationId: number | undefined;
 
-            // STEP 7: Handle function calls
+            // STEP 7: Handle function calls (including Apollo's specialized calls)
             if (completion.choices[0]?.message?.tool_calls) {
                 console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls with ${session.currentAgent} agent`);
                 messages.push({ role: 'assistant' as const, content: completion.choices[0].message.content || null, tool_calls: completion.choices[0].message.tool_calls });
@@ -1758,6 +2195,23 @@ Respond with JSON only.`;
                             }
 
                             const args = JSON.parse(toolCall.function.arguments);
+                            
+                            // ✅ APOLLO: Auto-populate failure context for find_alternative_times
+                            if (toolCall.function.name === 'find_alternative_times' && 
+                                session.currentAgent === 'availability' && 
+                                session.availabilityFailureContext) {
+                                
+                                args.date = args.date || session.availabilityFailureContext.originalDate;
+                                args.preferredTime = args.preferredTime || session.availabilityFailureContext.originalTime;
+                                args.guests = args.guests || session.availabilityFailureContext.originalGuests;
+                                
+                                console.log(`🚀 [Apollo] Auto-populated failure context:`, {
+                                    date: args.date,
+                                    preferredTime: args.preferredTime,
+                                    guests: args.guests
+                                });
+                            }
+
                             if (toolCall.function.name === 'create_reservation' && session.confirmedName) {
                                 args.guestName = session.confirmedName;
                             }
@@ -1794,55 +2248,66 @@ Respond with JSON only.`;
                                     result = await agentFunctions.check_availability(args.date, args.time, args.guests, functionContext);
                                     break;
                                 case 'find_alternative_times':
-                                    // ✅ DEFENSIVE VALIDATION: Ensure preferredTime is not undefined
+                                    // ✅ APOLLO: Enhanced validation for Apollo's primary tool
                                     if (!args.preferredTime || args.preferredTime.trim() === '') {
-                                        console.error('[ConversationManager] find_alternative_times called without preferredTime, attempting to extract from conversation history');
+                                        console.error('[Apollo] find_alternative_times called without preferredTime');
+                                        
+                                        if (session.availabilityFailureContext) {
+                                            args.preferredTime = session.availabilityFailureContext.originalTime;
+                                            console.log(`🚀 [Apollo] Auto-fixed preferredTime from failure context: ${args.preferredTime}`);
+                                        } else {
+                                            // Try to extract the time from the last failed check_availability call
+                                            let extractedTime: string | null = null;
 
-                                        // Try to extract the time from the last failed check_availability call
-                                        let extractedTime: string | null = null;
-
-                                        // Look through recent conversation history for check_availability calls
-                                        const recentMessages = session.conversationHistory.slice(-10); // Last 10 messages
-                                        for (let i = recentMessages.length - 1; i >= 0; i--) {
-                                            const msg = recentMessages[i];
-                                            if (msg.toolCalls) {
-                                                for (const toolCall of msg.toolCalls) {
-                                                    if (toolCall.function?.name === 'check_availability') {
-                                                        try {
-                                                            const checkArgs = JSON.parse(toolCall.function.arguments);
-                                                            if (checkArgs.time) {
-                                                                extractedTime = checkArgs.time;
-                                                                console.log(`[ConversationManager] ✅ Extracted preferredTime from conversation history: ${extractedTime}`);
-                                                                break;
+                                            // Look through recent conversation history for check_availability calls
+                                            const recentMessages = session.conversationHistory.slice(-10); // Last 10 messages
+                                            for (let i = recentMessages.length - 1; i >= 0; i--) {
+                                                const msg = recentMessages[i];
+                                                if (msg.toolCalls) {
+                                                    for (const toolCall of msg.toolCalls) {
+                                                        if (toolCall.function?.name === 'check_availability') {
+                                                            try {
+                                                                const checkArgs = JSON.parse(toolCall.function.arguments);
+                                                                if (checkArgs.time) {
+                                                                    extractedTime = checkArgs.time;
+                                                                    console.log(`[Apollo] ✅ Extracted preferredTime from conversation history: ${extractedTime}`);
+                                                                    break;
+                                                                }
+                                                            } catch (parseError) {
+                                                                console.warn('[Apollo] Failed to parse check_availability arguments:', parseError);
                                                             }
-                                                        } catch (parseError) {
-                                                            console.warn('[ConversationManager] Failed to parse check_availability arguments:', parseError);
                                                         }
                                                     }
+                                                    if (extractedTime) break;
                                                 }
-                                                if (extractedTime) break;
                                             }
-                                        }
 
-                                        if (extractedTime) {
-                                            args.preferredTime = extractedTime;
-                                            console.log(`[ConversationManager] 🔧 Auto-fixed preferredTime: ${extractedTime}`);
-                                        } else {
-                                            // If we can't extract the time, return a validation error
-                                            result = {
-                                                tool_status: 'FAILURE',
-                                                error: {
-                                                    type: 'VALIDATION_ERROR',
-                                                    message: 'Cannot find alternative times without a reference time. Please specify what time you were originally looking for.',
-                                                    code: 'MISSING_PREFERRED_TIME'
-                                                }
-                                            };
-                                            console.error('[ConversationManager] ❌ Could not extract preferredTime from conversation history');
-                                            break;
+                                            if (extractedTime) {
+                                                args.preferredTime = extractedTime;
+                                                console.log(`[Apollo] 🔧 Auto-fixed preferredTime: ${extractedTime}`);
+                                            } else {
+                                                // If we can't extract the time, return a validation error
+                                                result = {
+                                                    tool_status: 'FAILURE',
+                                                    error: {
+                                                        type: 'VALIDATION_ERROR',
+                                                        message: 'Cannot find alternative times without a reference time. Please specify what time you were originally looking for.',
+                                                        code: 'MISSING_PREFERRED_TIME'
+                                                    }
+                                                };
+                                                console.error('[Apollo] ❌ Could not extract preferredTime from conversation history');
+                                                break;
+                                            }
                                         }
                                     }
 
                                     result = await agentFunctions.find_alternative_times(args.date, args.preferredTime, args.guests, functionContext);
+                                    
+                                    // ✅ APOLLO: Clear failure context after successful alternative search
+                                    if (result.tool_status === 'SUCCESS' && session.currentAgent === 'availability') {
+                                        console.log(`🚀 [Apollo] Successfully found alternatives, clearing failure context`);
+                                        delete session.availabilityFailureContext;
+                                    }
                                     break;
                                 case 'create_reservation':
                                     result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
@@ -1855,69 +2320,72 @@ Respond with JSON only.`;
                                         includeStatus: args.includeStatus
                                     });
                                     if (result.tool_status === 'SUCCESS' && result.data?.reservations?.length > 0) {
-                                        // ✅ CRITICAL FIX: Store list of found reservations instead of just first one
                                         session.foundReservations = result.data.reservations;
                                         console.log(`[ConversationManager] Stored ${result.data.reservations.length} found reservations in session:`, result.data.reservations.map(r => `#${r.id}`));
-                                        
-                                        // Clear activeReservationId since user needs to choose
-                                        delete session.activeReservationId;
+
+                                        if (result.data.reservations.length === 1) {
+                                            // ✅ CRITICAL FIX: If only one reservation is found, set it as active immediately.
+                                            // This ensures the next turn's system prompt has the context needed to prevent looping.
+                                            session.activeReservationId = result.data.reservations[0].id;
+                                            console.log(`[ConversationManager] Auto-selected active reservation #${session.activeReservationId} as it was the only result.`);
+                                        } else {
+                                            // If multiple reservations are found, clear the active one to force the user to choose.
+                                            delete session.activeReservationId;
+                                            console.log(`[ConversationManager] Multiple reservations found. Waiting for user selection. Cleared active reservation ID.`);
+                                        }
                                     }
                                     break;
                                 case 'modify_reservation':
-                                    // ✅ CRITICAL FIX: Handle reservation ID selection properly
+                                    // ✅ PHASE 1 FIX: Enhanced reservation ID resolution with context awareness
                                     let reservationIdToModify = args.reservationId;
-                                    
-                                    // If no explicit reservationId provided, try to extract from user's message or session
-                                    if (!reservationIdToModify) {
-                                        if (session.foundReservations && session.foundReservations.length > 1) {
-                                            // User needs to choose from multiple reservations
-                                            const extractResult = this.extractReservationIdFromMessage(
-                                                message, 
-                                                session.foundReservations
-                                            );
-                                            
-                                            if (extractResult.isValidChoice && extractResult.reservationId) {
-                                                reservationIdToModify = extractResult.reservationId;
-                                                console.log(`[ReservationSelection] User selected reservation #${reservationIdToModify} from found reservations`);
-                                                
-                                                // Set as active for future operations
-                                                session.activeReservationId = reservationIdToModify;
-                                                
-                                                // If there's a suggestion, add it to response
-                                                if (extractResult.suggestion) {
-                                                    console.log(`[ReservationSelection] Suggestion: ${extractResult.suggestion}`);
-                                                }
-                                            } else {
-                                                // Invalid choice - ask user to specify valid ID
-                                                const availableIds = session.foundReservations.map(r => `#${r.id}`).join(', ');
-                                                const errorMessage = await TranslationService.translateMessage(
-                                                    extractResult.suggestion || `Please specify the reservation ID from the list: ${availableIds}`,
-                                                    session.language,
-                                                    'question'
-                                                );
-                                                
-                                                session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
-                                                this.sessions.set(sessionId, session);
-                                                return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
-                                            }
-                                        } else if (session.foundReservations && session.foundReservations.length === 1) {
-                                            // Only one reservation found, use it
-                                            reservationIdToModify = session.foundReservations[0].id;
-                                            session.activeReservationId = reservationIdToModify;
-                                        } else if (session.activeReservationId) {
-                                            // Use previously selected reservation
-                                            reservationIdToModify = session.activeReservationId;
-                                        }
+
+                                    // ✅ PHASE 1 FIX: Use smart context resolution
+                                    const resolution = resolveReservationFromContext(
+                                        message,
+                                        session,
+                                        reservationIdToModify
+                                    );
+
+                                    if (resolution.shouldAskForClarification) {
+                                        const availableIds = session.foundReservations?.map(r => `#${r.id}`) || [];
+                                        const errorMessage = await TranslationService.translateMessage(
+                                            `I need to know which reservation to modify. Available reservations: ${availableIds.join(', ')}. Please specify the reservation number.`,
+                                            session.language,
+                                            'question'
+                                        );
+                                        
+                                        session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
+                                        this.sessions.set(sessionId, session);
+                                        return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
                                     }
+
+                                    if (!resolution.resolvedId) {
+                                        const errorMessage = await TranslationService.translateMessage(
+                                            "I need the reservation number to make changes. Please provide your confirmation number.",
+                                            session.language,
+                                            'error'
+                                        );
+                                        
+                                        session.conversationHistory.push({ role: 'assistant', content: errorMessage, timestamp: new Date() });
+                                        this.sessions.set(sessionId, session);
+                                        return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
+                                    }
+
+                                    reservationIdToModify = resolution.resolvedId;
+                                    console.log(`[SmartContext] Resolved reservation ID: ${reservationIdToModify} (method: ${resolution.method}, confidence: ${resolution.confidence})`);
+
+                                    result = await agentFunctions.modify_reservation(reservationIdToModify, args.modifications, args.reason, {
+                                        ...functionContext,
+                                        userMessage: message,
+                                        session: session
+                                    });
                                     
-                                    if (!reservationIdToModify) {
-                                        result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I need to know which reservation to modify. Please provide the reservation ID.' } };
-                                    } else {
-                                        result = await agentFunctions.modify_reservation(reservationIdToModify, args.modifications, args.reason, functionContext);
-                                        if (result.tool_status === 'SUCCESS') {
-                                            session.hasActiveReservation = reservationIdToModify;
-                                            this.resetAgentState(session);
-                                        }
+                                    if (result.tool_status === 'SUCCESS') {
+                                        console.log(`[ContextManager] Modification successful. Preserving context instead of clearing.`);
+                                        // ✅ PHASE 1 FIX: Preserve context instead of clearing
+                                        preserveReservationContext(session, reservationIdToModify, 'modification');
+                                        // Keep Maya active for potential follow-up modifications
+                                        console.log(`[ContextManager] Keeping Maya active for potential follow-ups`);
                                     }
                                     break;
                                 case 'cancel_reservation':
@@ -1972,6 +2440,7 @@ Respond with JSON only.`;
                                             console.log(`[ConversationManager] Reservation ${reservationIdToCancel} cancelled, clearing active ID from session.`);
                                             delete session.activeReservationId;
                                             delete session.foundReservations; // Clear found reservations after cancellation
+                                            this.resetAgentState(session); // Add this line
                                         }
                                     }
                                     break;
@@ -2016,9 +2485,18 @@ Respond with JSON only.`;
                                     hasBooking = false;
                                     reservationId = result.data.reservationId;
                                     session.hasActiveReservation = reservationId;
-                                    this.resetAgentState(session);
+                                    // ✅ PHASE 1 FIX: Don't reset agent state immediately for modifications
+                                    // this.resetAgentState(session); // REMOVED - let context preservation handle this
                                 } else if (toolCall.function.name === 'cancel_reservation') {
                                     this.resetAgentState(session);
+                                }
+                                
+                                // ✅ APOLLO: Detect when Apollo completes its task
+                                if (session.currentAgent === 'availability' && 
+                                    toolCall.function.name === 'find_alternative_times' &&
+                                    result.data.alternatives && result.data.alternatives.length > 0) {
+                                    console.log(`🚀 [Apollo] Task completed - found ${result.data.alternatives.length} alternatives`);
+                                    // Apollo will signal completion in its response, then Overseer will handle handoff back to Sofia/Maya
                                 }
                             }
 
@@ -2043,7 +2521,18 @@ Respond with JSON only.`;
 
             session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices[0]?.message?.tool_calls });
             this.sessions.set(sessionId, session);
+            
             console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
+            
+            // ✅ APOLLO: Detect Apollo completion signal and prepare for handoff
+            if (session.currentAgent === 'availability' && 
+                (response.toLowerCase().includes('hand you back') || 
+                 response.toLowerCase().includes('передаю обратно') ||
+                 response.toLowerCase().includes('вернуться к'))) {
+                console.log(`🚀 [Apollo] Detected completion signal - ready for handoff back to primary agent`);
+                // Next user message will trigger Overseer to route back to appropriate agent
+            }
+            
             return { response, hasBooking, reservationId, session, currentAgent: session.currentAgent, agentHandoff };
         } catch (error) {
             console.error(`[EnhancedConversationManager] Error handling message:`, error);
@@ -2379,7 +2868,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * Enhanced session statistics with agent tracking and guest history + Overseer metrics + AI Fallback tracking
+     * ✅ APOLLO: Enhanced session statistics with agent tracking and guest history + Overseer metrics + AI Fallback tracking + Apollo metrics
      */
     getStats(): {
         totalSessions: number;
@@ -2387,7 +2876,7 @@ Respond with JSON only.`;
         completedBookings: number;
         sessionsByPlatform: { web: number; telegram: number };
         sessionsByContext: { hostess: number; guest: number };
-        sessionsByAgent: { booking: number; reservations: number; conductor: number; };
+        sessionsByAgent: { booking: number; reservations: number; conductor: number; availability: number }; // ✅ APOLLO: Added availability
         languageDistribution: { en: number; ru: number; sr: number; hu: number; de: number; fr: number; es: number; it: number; pt: number; nl: number };
         agentHandoffs: number;
         sessionsWithGuestHistory: number;
@@ -2398,6 +2887,12 @@ Respond with JSON only.`;
             totalDetections: number;
             lockedSessions: number;
             avgConfidence: number;
+        };
+        apolloStats: { // ✅ APOLLO: New metrics
+            totalActivations: number;
+            successfulAlternativeFinds: number;
+            avgAlternativesFound: number;
+            mostCommonFailureReasons: string[];
         };
         claudeMetaAgentStats: {
             overseerUsage: number;
@@ -2415,7 +2910,7 @@ Respond with JSON only.`;
         let telegramSessions = 0;
         let hostessSessions = 0;
         let guestSessions = 0;
-        const sessionsByAgent = { booking: 0, reservations: 0, conductor: 0 };
+        const sessionsByAgent = { booking: 0, reservations: 0, conductor: 0, availability: 0 }; // ✅ APOLLO: Added availability
         const languageDistribution = { en: 0, ru: 0, sr: 0, hu: 0, de: 0, fr: 0, es: 0, it: 0, pt: 0, nl: 0 };
         let agentHandoffs = 0;
         let sessionsWithGuestHistory = 0;
@@ -2427,6 +2922,12 @@ Respond with JSON only.`;
         let totalLanguageDetections = 0;
         let lockedSessions = 0;
         let totalConfidence = 0;
+
+        // ✅ APOLLO: New metrics
+        let apolloActivations = 0;
+        let apolloSuccesses = 0;
+        let totalAlternatives = 0;
+        const failureReasons: string[] = [];
 
         for (const session of this.sessions.values()) {
             if (session.lastActivity > oneHourAgo) activeSessions++;
@@ -2442,6 +2943,9 @@ Respond with JSON only.`;
             if (session.agentHistory && session.agentHistory.length > 0) {
                 agentHandoffs += session.agentHistory.length;
                 overseerDecisions += session.agentHistory.filter(h => h.overseerReasoning).length;
+                
+                // ✅ APOLLO: Track Apollo activations
+                apolloActivations += session.agentHistory.filter(h => h.to === 'availability').length;
             }
             if (session.guestHistory) {
                 sessionsWithGuestHistory++;
@@ -2461,10 +2965,19 @@ Respond with JSON only.`;
             if (session.languageLocked) {
                 lockedSessions++;
             }
+
+            // ✅ APOLLO: Track failure reasons
+            if (session.availabilityFailureContext) {
+                failureReasons.push(session.availabilityFailureContext.failureReason);
+            }
         }
 
         const avgTurnsPerSession = this.sessions.size > 0 ? Math.round((totalTurns / this.sessions.size) * 10) / 10 : 0;
         const avgConfidence = totalLanguageDetections > 0 ? Math.round((totalConfidence / totalLanguageDetections) * 100) / 100 : 0;
+
+        // ✅ APOLLO: Calculate Apollo metrics
+        const avgAlternativesFound = apolloActivations > 0 ? Math.round((totalAlternatives / apolloActivations) * 10) / 10 : 0;
+        const mostCommonFailureReasons = [...new Set(failureReasons)].slice(0, 3);
 
         // ✅ NEW: Claude meta-agent stats (would be tracked in a real implementation)
         const claudeMetaAgentStats = {
@@ -2492,6 +3005,12 @@ Respond with JSON only.`;
                 lockedSessions,
                 avgConfidence
             },
+            apolloStats: { // ✅ APOLLO: New metrics
+                totalActivations: apolloActivations,
+                successfulAlternativeFinds: apolloSuccesses,
+                avgAlternativesFound,
+                mostCommonFailureReasons
+            },
             claudeMetaAgentStats
         };
     }
@@ -2503,11 +3022,11 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with Claude-powered meta-agents');
+        console.log('[EnhancedConversationManager] Shutdown completed with Claude-powered meta-agents including Apollo Availability Agent');
     }
 }
 
-// ✅ UPDATED: Extended session interface with language detection features, phone number support, Claude meta-agent tracking, and conversation context tracking
+// ✅ PHASE 1 FIX: Extended session interface with smart context preservation
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -2556,6 +3075,33 @@ interface BookingSessionWithAgent extends BookingSession {
     hasAskedName?: boolean;
     hasAskedPhone?: boolean;
     
+    // ✅ APOLLO: Availability failure context
+    availabilityFailureContext?: {
+        originalDate: string;
+        originalTime: string;
+        originalGuests: number;
+        failureReason: string;
+        detectedAt: string;
+    };
+    
+    // ✅ PHASE 1 FIX: Smart context preservation
+    recentlyModifiedReservations?: Array<{
+        reservationId: number;
+        lastModifiedAt: Date;
+        contextExpiresAt: Date;
+        operationType: 'modification' | 'cancellation' | 'creation';
+        userReference?: string; // Store "эту бронь", "this booking"
+    }>;
+    
+    // ✅ PHASE 1 FIX: Current operation context with disambiguation
+    currentOperationContext?: {
+        type: 'modification' | 'cancellation' | 'lookup';
+        targetReservationId?: number;
+        lastUserReference?: string;
+        confidenceLevel: 'high' | 'medium' | 'low';
+        contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
+    };
+    
     // ✅ NEW: Claude meta-agent tracking (optional for monitoring)
     claudeMetaAgentLog?: Array<{
         timestamp: string;
@@ -2579,4 +3125,3 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
-                        

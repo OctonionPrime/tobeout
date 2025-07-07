@@ -1,9 +1,9 @@
 // server/services/agents/agent-tools.ts
-// ✅ CRITICAL FIXES APPLIED:
-// 1. Enhanced AI analysis to avoid generic "meal requests"
-// 2. Added translation of frequent special requests before use
-// 3. Improved AI prompts to be more specific
-// 4. Fixed get_guest_history to return translated requests
+// ✅ PHASE 1 FIXES APPLIED:
+// 1. Enhanced modify_reservation with smart context resolution
+// 2. Optional reservationId parameter with context awareness
+// 3. Integration with context preservation system
+// 4. Removed state cleanup logic that was causing context loss
 
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -26,6 +26,39 @@ import {
     reservationModifications,
     reservationCancellations
 } from '@shared/schema';
+
+/**
+ * ✅ PHASE 1 FIX: Extended session interface for context resolution
+ */
+interface BookingSessionWithAgent {
+    telegramUserId?: string;
+    activeReservationId?: number;
+    foundReservations?: Array<{
+        id: number;
+        date: string;
+        time: string;
+        guests: number;
+        guestName: string;
+        tableName: string;
+        status: string;
+        canModify: boolean;
+        canCancel: boolean;
+    }>;
+    recentlyModifiedReservations?: Array<{
+        reservationId: number;
+        lastModifiedAt: Date;
+        contextExpiresAt: Date;
+        operationType: 'modification' | 'cancellation' | 'creation';
+        userReference?: string;
+    }>;
+    currentOperationContext?: {
+        type: 'modification' | 'cancellation' | 'lookup';
+        targetReservationId?: number;
+        lastUserReference?: string;
+        confidenceLevel: 'high' | 'medium' | 'low';
+        contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
+    };
+}
 
 /**
  * ✅ CRITICAL FIX: Translation Service for Agent Tool Messages
@@ -78,7 +111,7 @@ class AgentAIAnalysisService {
     private static claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
     /**
-     * ✅ AI Abstraction Layer with Claude Haiku Primary + OpenAI Fallback
+     * ✅ ENHANCED: AI Abstraction Layer with Robust OpenAI Fallbacks (matching conversation manager)
      */
     private static async generateContentWithFallback(prompt: string, agentContext: string): Promise<string> {
         // --- Primary Model: Claude Haiku ---
@@ -92,6 +125,7 @@ class AgentAIAnalysisService {
 
             const response = result.content[0];
             if (response.type === 'text') {
+                console.log(`[AI Primary] Claude Haiku succeeded for [${agentContext}]`);
                 return response.text;
             }
             throw new Error("Non-text response from Claude");
@@ -100,39 +134,85 @@ class AgentAIAnalysisService {
             const errorMessage = error.message || 'Unknown error';
             console.warn(`[AI Fallback] Claude Haiku failed for [${agentContext}]. Reason: ${errorMessage.split('\n')[0]}`);
 
-            // Check for specific errors that warrant a fallback (e.g., rate limits, server errors)
-            if (errorMessage.includes('429') || errorMessage.includes('500') || 
-                errorMessage.includes('503') || errorMessage.includes('timeout') ||
-                errorMessage.includes('rate limit') || errorMessage.includes('quota') ||
-                errorMessage.includes('overloaded')) {
-                
-                console.log(`[AI Fallback] Rate limit or server error detected. Switching to OpenAI GPT model for [${agentContext}].`);
-
-                // --- Secondary Model: OpenAI GPT ---
-                try {
-                    const gptCompletion = await this.openaiClient.chat.completions.create({
-                        model: "gpt-4o-mini",
-                        messages: [{ role: 'user', content: prompt }],
-                        max_tokens: 1000,
-                        temperature: 0.5
-                    });
-                    const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
-                    if (gptResponse) {
-                        console.log(`[AI Fallback] Successfully used OpenAI GPT as a fallback for [${agentContext}].`);
-                        return gptResponse;
-                    }
-                    throw new Error("OpenAI response was empty.");
-                } catch (gptError: any) {
-                    console.error(`[AI Fallback] CRITICAL: Secondary model (OpenAI GPT) also failed for [${agentContext}]. Reason: ${gptError.message}`);
-                    // Return safe default
-                    return JSON.stringify({ patterns: [], reasoning: "AI analysis failed" });
-                }
-            }
-
-            // For other errors, return safe default
-            console.error(`[AI Fallback] Unhandled Claude error for [${agentContext}].`);
-            return JSON.stringify({ patterns: [], reasoning: "AI analysis unavailable" });
+            // ✅ ENHANCED: Always attempt OpenAI fallback for critical analysis components
+            return await this.openAIFallbackWithRetries(prompt, agentContext, errorMessage);
         }
+    }
+
+    /**
+     * ✅ NEW: Enhanced OpenAI Fallback System with Multiple Model Options and Retries
+     */
+    private static async openAIFallbackWithRetries(
+        prompt: string,
+        agentContext: string,
+        claudeError: string
+    ): Promise<string> {
+        // Define fallback models in order of preference for analysis tasks
+        const fallbackModels = ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'];
+
+        for (let i = 0; i < fallbackModels.length; i++) {
+            const model = fallbackModels[i];
+            
+            try {
+                console.log(`[AI Fallback] Attempting OpenAI ${model} (attempt ${i + 1}/${fallbackModels.length}) for [${agentContext}]`);
+                
+                const maxTokens = 1000;
+                const temperature = model === 'gpt-3.5-turbo' ? 0.3 : 0.4; // Lower temp for less capable models
+                
+                const gptCompletion = await this.openaiClient.chat.completions.create({
+                    model: model,
+                    messages: [{ role: 'user', content: prompt }],
+                    max_tokens: maxTokens,
+                    temperature: temperature,
+                    timeout: 30000 // 30 second timeout
+                });
+                
+                const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
+                if (gptResponse && gptResponse.length > 10) { // Basic content validation
+                    console.log(`[AI Fallback] ✅ Successfully used OpenAI ${model} as fallback for [${agentContext}]`);
+                    return gptResponse;
+                }
+                
+                throw new Error(`Empty or invalid response from ${model}`);
+                
+            } catch (gptError: any) {
+                const gptErrorMessage = gptError.message || 'Unknown error';
+                console.warn(`[AI Fallback] OpenAI ${model} failed for [${agentContext}]: ${gptErrorMessage.split('\n')[0]}`);
+                
+                // If this was the last model, we'll fall through to the safe default
+                if (i === fallbackModels.length - 1) {
+                    console.error(`[AI Fallback] 🚨 CRITICAL: All AI models failed for [${agentContext}]. Claude: ${claudeError}, Final OpenAI: ${gptErrorMessage}`);
+                }
+                
+                // Continue to next model
+                continue;
+            }
+        }
+        
+        // ✅ ENHANCED: Context-aware safe defaults for analysis
+        return this.generateAnalysisSafeDefault(agentContext);
+    }
+
+    /**
+     * ✅ NEW: Generate context-aware safe defaults for analysis when all AI models fail
+     */
+    private static generateAnalysisSafeDefault(agentContext: string): string {
+        console.warn(`[AI Fallback] Using safe default for [${agentContext}]`);
+        
+        if (agentContext === 'SpecialRequestAnalysis') {
+            return JSON.stringify({
+                patterns: [],
+                reasoning: "AI analysis temporarily unavailable - no recurring patterns identified"
+            });
+        }
+        
+        // Generic fallback for other analysis contexts
+        return JSON.stringify({
+            patterns: [],
+            reasoning: "AI analysis system temporarily unavailable",
+            confidence: 0.0,
+            fallback: true
+        });
     }
 
     /**
@@ -340,6 +420,99 @@ const createBusinessRuleFailure = (message: string, code?: string): ToolResponse
 
 const createSystemError = (message: string, originalError?: any): ToolResponse =>
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
+
+/**
+ * ✅ PHASE 1 FIX: Smart Context Preservation and Resolution Functions
+ */
+function cleanExpiredContext(session: BookingSessionWithAgent): void {
+    if (!session.recentlyModifiedReservations) return;
+    
+    const now = new Date();
+    const beforeCount = session.recentlyModifiedReservations.length;
+    
+    session.recentlyModifiedReservations = session.recentlyModifiedReservations
+        .filter(r => r.contextExpiresAt > now);
+    
+    const afterCount = session.recentlyModifiedReservations.length;
+    
+    if (beforeCount > afterCount) {
+        console.log(`[ContextManager] Cleaned ${beforeCount - afterCount} expired context entries`);
+    }
+}
+
+function resolveReservationFromContext(
+    userMessage: string,
+    session: BookingSessionWithAgent,
+    providedId?: number
+): {
+    resolvedId: number | null;
+    confidence: 'high' | 'medium' | 'low';
+    method: string;
+    shouldAskForClarification: boolean;
+} {
+    
+    // Clean expired context first
+    cleanExpiredContext(session);
+    
+    // 1. If explicit ID provided and valid, use it
+    if (providedId) {
+        if (session.foundReservations?.some(r => r.id === providedId)) {
+            return {
+                resolvedId: providedId,
+                confidence: 'high',
+                method: 'explicit_id_validated',
+                shouldAskForClarification: false
+            };
+        }
+    }
+    
+    // 2. Check for recent modifications (high confidence)
+    if (session.recentlyModifiedReservations?.length > 0) {
+        const recentReservation = session.recentlyModifiedReservations[0];
+        if (recentReservation.contextExpiresAt > new Date()) {
+            // Check for contextual references
+            const contextualPhrases = ['эту бронь', 'this booking', 'it', 'её', 'эту', 'this one', 'that one'];
+            const userMessageLower = userMessage.toLowerCase();
+            
+            if (contextualPhrases.some(phrase => userMessageLower.includes(phrase))) {
+                return {
+                    resolvedId: recentReservation.reservationId,
+                    confidence: 'high',
+                    method: 'recent_modification_context',
+                    shouldAskForClarification: false
+                };
+            }
+        }
+    }
+    
+    // 3. Check active reservation (medium confidence)
+    if (session.activeReservationId) {
+        return {
+            resolvedId: session.activeReservationId,
+            confidence: 'medium',
+            method: 'active_session_reservation',
+            shouldAskForClarification: false
+        };
+    }
+    
+    // 4. Single found reservation (medium confidence)
+    if (session.foundReservations?.length === 1) {
+        return {
+            resolvedId: session.foundReservations[0].id,
+            confidence: 'medium',
+            method: 'single_found_reservation',
+            shouldAskForClarification: false
+        };
+    }
+    
+    // 5. Multiple reservations - need clarification
+    return {
+        resolvedId: null,
+        confidence: 'low',
+        method: 'ambiguous_context',
+        shouldAskForClarification: true
+    };
+}
 
 /**
  * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
@@ -660,16 +833,21 @@ export async function check_availability(
 }
 
 /**
- * ✅ ENHANCED: Find alternative time slots around ANY preferred time
+ * ✅ BUG FIX: Find alternative time slots around ANY preferred time with excludeReservationId support
  */
 export async function find_alternative_times(
     date: string,
     preferredTime: string,
     guests: number,
-    context: { restaurantId: number; timezone: string; language: string }
+    context: { 
+        restaurantId: number; 
+        timezone: string; 
+        language: string;
+        excludeReservationId?: number; // ✅ CRITICAL BUG FIX: Added excludeReservationId parameter
+    }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests`);
+    console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
         if (!date || !preferredTime || !guests || !context.restaurantId) {
@@ -694,7 +872,7 @@ export async function find_alternative_times(
             return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
         }
 
-        console.log(`✅ [Agent Tool] Validation passed for alternatives around exact time: ${timeFormatted}...`);
+        console.log(`✅ [Agent Tool] Validation passed for alternatives around exact time: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
@@ -705,7 +883,8 @@ export async function find_alternative_times(
                 exactTimeOnly: false,
                 maxResults: 8,
                 timezone: context.timezone,
-                allowCombinations: true
+                allowCombinations: true,
+                excludeReservationId: context.excludeReservationId // ✅ CRITICAL BUG FIX: Pass excludeReservationId to availability service
             }
         );
 
@@ -732,7 +911,7 @@ export async function find_alternative_times(
 
         const executionTime = Date.now() - startTime;
 
-        console.log(`✅ [Agent Tool] Found ${alternatives.length} alternatives around ${preferredTime}`);
+        console.log(`✅ [Agent Tool] Found ${alternatives.length} alternatives around ${preferredTime}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
         if (alternatives.length > 0) {
             return createSuccessResponse({
@@ -747,7 +926,7 @@ export async function find_alternative_times(
             });
         } else {
             // ✅ USE TRANSLATION SERVICE
-            const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}`;
+            const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
@@ -1354,14 +1533,11 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ COMPLETE IMPLEMENTATION: Enhanced modify_reservation with ownership validation + PROPER TABLE REASSIGNMENT LOGIC + TIME CALCULATION
- * This prevents guests from being assigned to tables that can't accommodate them
- * ✅ NEW: Enhanced with proper time calculation for relative changes
- * ✅ SECURITY: Added validation to ensure guest can only modify their own reservations
- * ✅ CRITICAL FIX: Fixed modification logging to match database schema
+ * ✅ PHASE 1 FIX: Enhanced modify_reservation with smart context resolution
+ * This is the CRITICAL function that was causing the context loss problem
  */
 export async function modify_reservation(
-    reservationId: number,
+    reservationIdHint: number | undefined, // ✅ PHASE 1 FIX: Made optional
     modifications: {
         newDate?: string;
         newTime?: string;
@@ -1375,12 +1551,65 @@ export async function modify_reservation(
         language: string;
         telegramUserId?: string;
         sessionId?: string;
+        // ✅ PHASE 1 FIX: Added new context parameters
+        userMessage?: string;
+        session?: BookingSessionWithAgent;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`✏️ [Maya Tool] Modifying reservation ${reservationId}:`, modifications);
+    console.log(`✏️ [Maya Tool] Modifying reservation ${reservationIdHint || 'TBD'}:`, modifications);
 
     try {
+        // ✅ PHASE 1 FIX: Smart reservation ID resolution with context awareness
+        let targetReservationId: number;
+        
+        if (context.session && context.userMessage) {
+            console.log(`[SmartContext] Using context resolution for reservation ID...`);
+            
+            const resolution = resolveReservationFromContext(
+                context.userMessage,
+                context.session,
+                reservationIdHint
+            );
+
+            if (resolution.shouldAskForClarification) {
+                const availableIds = context.session.foundReservations?.map(r => `#${r.id}`) || [];
+                const errorMessage = await AgentToolTranslationService.translateToolMessage(
+                    `I need to know which reservation to modify. Available reservations: ${availableIds.join(', ')}. Please specify the reservation number.`,
+                    context.language as Language,
+                    'question'
+                );
+                
+                return createBusinessRuleFailure(
+                    errorMessage,
+                    'RESERVATION_ID_REQUIRED'
+                );
+            }
+
+            if (!resolution.resolvedId) {
+                const errorMessage = await AgentToolTranslationService.translateToolMessage(
+                    "I need the reservation number to make changes. Please provide your confirmation number.",
+                    context.language as Language,
+                    'error'
+                );
+                
+                return createBusinessRuleFailure(
+                    errorMessage,
+                    'RESERVATION_ID_REQUIRED'
+                );
+            }
+
+            targetReservationId = resolution.resolvedId;
+            console.log(`[SmartContext] Resolved reservation ID: ${targetReservationId} (method: ${resolution.method}, confidence: ${resolution.confidence})`);
+        } else {
+            // Fallback to traditional approach if no context
+            if (!reservationIdHint) {
+                return createValidationFailure('Reservation ID is required when context resolution is not available');
+            }
+            targetReservationId = reservationIdHint;
+            console.log(`[SmartContext] Using provided reservation ID: ${targetReservationId} (no context available)`);
+        }
+
         // ✅ SECURITY ENHANCEMENT: Validate ownership before modification
         if (context.telegramUserId) {
             console.log(`🔒 [Security] Validating reservation ownership for telegram user: ${context.telegramUserId}`);
@@ -1394,7 +1623,7 @@ export async function modify_reservation(
                 .from(reservations)
                 .innerJoin(guests, eq(reservations.guestId, guests.id))
                 .where(and(
-                    eq(reservations.id, reservationId),
+                    eq(reservations.id, targetReservationId),
                     eq(reservations.restaurantId, context.restaurantId)
                 ));
 
@@ -1413,7 +1642,7 @@ export async function modify_reservation(
             }
 
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
-                console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
+                console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${targetReservationId} owned by ${ownershipCheck.telegramUserId}`);
 
                 const baseMessage = 'For security, you can only modify reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
@@ -1428,7 +1657,7 @@ export async function modify_reservation(
                 );
             }
 
-            console.log(`✅ [Security] Ownership validated for reservation ${reservationId}`);
+            console.log(`✅ [Security] Ownership validated for reservation ${targetReservationId}`);
         }
 
         // ✅ STEP 1: Get current reservation details
@@ -1445,7 +1674,7 @@ export async function modify_reservation(
             })
             .from(reservations)
             .where(and(
-                eq(reservations.id, reservationId),
+                eq(reservations.id, targetReservationId),
                 eq(reservations.restaurantId, context.restaurantId)
             ));
 
@@ -1521,7 +1750,7 @@ export async function modify_reservation(
                 newGuests,
                 {
                     ...context,
-                    excludeReservationId: reservationId // Exclude current reservation from conflict check
+                    excludeReservationId: targetReservationId // Exclude current reservation from conflict check
                 }
             );
 
@@ -1567,7 +1796,7 @@ export async function modify_reservation(
         }
 
         // ✅ STEP 5: Update the reservation in database
-        console.log(`💾 [Maya Tool] Updating reservation ${reservationId} in database...`);
+        console.log(`💾 [Maya Tool] Updating reservation ${targetReservationId} in database...`);
 
         // Create new UTC timestamp if date/time changed
         let newReservationUtc = currentReservation.reservation_utc;
@@ -1594,7 +1823,7 @@ export async function modify_reservation(
         await db
             .update(reservations)
             .set(updateData)
-            .where(eq(reservations.id, reservationId));
+            .where(eq(reservations.id, targetReservationId));
 
         // ✅ STEP 6: Log the modification (CORRECTED LOGIC)
         console.log(`✍️ [Maya Tool] Logging individual modifications...`);
@@ -1604,7 +1833,7 @@ export async function modify_reservation(
         // Check for guest count change
         if (newGuests !== currentReservation.guests) {
             modificationLogs.push({
-                reservationId: reservationId,
+                reservationId: targetReservationId,
                 modifiedBy: 'guest',
                 fieldChanged: 'guests',
                 oldValue: currentReservation.guests.toString(),
@@ -1618,7 +1847,7 @@ export async function modify_reservation(
         // Check for date or time change
         if (newDate !== currentDate || newTime !== currentTime) {
             modificationLogs.push({
-                reservationId: reservationId,
+                reservationId: targetReservationId,
                 modifiedBy: 'guest',
                 fieldChanged: 'datetime',
                 oldValue: `${currentDate} ${currentTime}`,
@@ -1632,7 +1861,7 @@ export async function modify_reservation(
         // Check for table change
         if (newTableId !== currentReservation.tableId) {
             modificationLogs.push({
-                reservationId: reservationId,
+                reservationId: targetReservationId,
                 modifiedBy: 'guest',
                 fieldChanged: 'tableId',
                 oldValue: currentReservation.tableId?.toString() || 'N/A',
@@ -1647,7 +1876,7 @@ export async function modify_reservation(
         const oldRequests = currentReservation.comments || '';
         if (newSpecialRequests !== oldRequests) {
             modificationLogs.push({
-                reservationId: reservationId,
+                reservationId: targetReservationId,
                 modifiedBy: 'guest',
                 fieldChanged: 'special_requests',
                 oldValue: oldRequests,
@@ -1663,9 +1892,9 @@ export async function modify_reservation(
             await db.insert(reservationModifications).values(modificationLogs);
         }
 
-        console.log(`✅ [Maya Tool] Successfully modified reservation ${reservationId} and logged ${modificationLogs.length} changes.`);
+        console.log(`✅ [Maya Tool] Successfully modified reservation ${targetReservationId} and logged ${modificationLogs.length} changes.`);
 
-        // ✅ STEP 7: Return success response
+        // ✅ STEP 7: Return success response (NO STATE CLEANUP - this was the bug!)
         const changes = [];
         if (newGuests !== currentReservation.guests) {
             changes.push(`party size changed from ${currentReservation.guests} to ${newGuests}`);
@@ -1690,8 +1919,9 @@ export async function modify_reservation(
             'success'
         );
 
+        // ✅ PHASE 1 FIX: Return success with reservation ID for context preservation
         return createSuccessResponse({
-            reservationId: reservationId,
+            reservationId: targetReservationId, // ✅ CRITICAL: Include reservation ID for context preservation
             previousValues: {
                 guests: currentReservation.guests,
                 date: currentDate,
@@ -2077,13 +2307,13 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "Modify details of an existing reservation (time, date, party size, special requests). AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. AUTOMATICALLY CALCULATES relative time changes. SECURITY VALIDATED: Only allows guests to modify their own reservations.",
+            description: "✅ PHASE 1 FIX: Modify details of an existing reservation with smart context resolution. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
             parameters: {
                 type: "object",
                 properties: {
                     reservationId: {
                         type: "number",
-                        description: "ID of the reservation to modify"
+                        description: "✅ PHASE 1 FIX: ID of the reservation to modify (now OPTIONAL - can be resolved from context)"
                     },
                     modifications: {
                         type: "object",
@@ -2112,7 +2342,7 @@ export const agentTools = [
                         default: "Guest requested change"
                     }
                 },
-                required: ["reservationId", "modifications"]
+                required: ["modifications"]
             }
         }
     },
@@ -2144,7 +2374,7 @@ export const agentTools = [
     }
 ];
 
-// ✅ CRITICAL FIX: Export function implementations with enhanced AI analysis and translation support
+// ✅ PHASE 1 FIX: Export function implementations with enhanced context resolution
 export const agentFunctions = {
     // ✅ CRITICAL FIX: Guest memory tool with enhanced AI analysis and translation support
     get_guest_history,
@@ -2155,8 +2385,8 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // Maya's tools (with enhanced search + proper table reassignment + time calculation + security validation)
+    // ✅ PHASE 1 FIX: Maya's tools with smart context resolution and state preservation
     find_existing_reservation,
-    modify_reservation,
+    modify_reservation, // ✅ Now supports optional reservationId with context resolution
     cancel_reservation
 };

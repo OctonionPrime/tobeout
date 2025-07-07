@@ -1,26 +1,133 @@
 // server/services/agents/booking-agent.ts
-// ✅ CRITICAL FIXES APPLIED:
-// 1. Fixed redundant "usual party size" questions
-// 2. Added conversation context awareness
-// 3. Improved greeting variations to avoid repetition
-// 4. Enhanced system prompts to use translated frequent requests
-// 5. CRITICAL: Added explicit instructions for find_alternative_times tool usage
+// ✅ PHASE 1 INTEGRATION COMPLETE:
+// 1. Added Claude primary + OpenAI fallback system (matching other files)
+// 2. Unified translation service pattern
+// 3. Enhanced Maya integration with context preservation
+// 4. Improved system prompts with immediate action rules
 
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import type { Language } from '../enhanced-conversation-manager';
 import { agentTools } from './agent-tools';
 import { DateTime } from 'luxon';
 
-// Initialize OpenAI client
-const client = new OpenAI({
+// ✅ PHASE 1 FIX: Initialize both AI clients for fallback system
+const openaiClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
+
+const claude = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY!
+});
+
+/**
+ * ✅ PHASE 1 FIX: Unified Translation Service (matching other files)
+ */
+class UnifiedTranslationService {
+    private static cache = new Map<string, { translation: string, timestamp: number }>();
+    private static CACHE_TTL = 60 * 60 * 1000; // 1 hour
+    
+    static async translate(
+        text: string,
+        targetLanguage: Language,
+        context: 'greeting' | 'error' | 'info' | 'question' = 'info'
+    ): Promise<string> {
+        if (targetLanguage === 'en' || targetLanguage === 'auto') return text;
+        
+        // Check cache first
+        const cacheKey = `${text}:${targetLanguage}:${context}`;
+        const cached = this.cache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+            return cached.translation;
+        }
+        
+        try {
+            const translation = await this.translateWithFallback(text, targetLanguage, context);
+            
+            // Cache the result
+            this.cache.set(cacheKey, { translation, timestamp: Date.now() });
+            
+            return translation;
+        } catch (error) {
+            console.error('[UnifiedTranslation] Error:', error);
+            return text; // Fallback to original
+        }
+    }
+    
+    /**
+     * ✅ PHASE 1 FIX: AI abstraction layer with Claude primary + OpenAI fallback
+     */
+    private static async translateWithFallback(
+        text: string,
+        targetLanguage: Language,
+        context: string
+    ): Promise<string> {
+        const languageNames: Record<Language, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+        
+        const prompt = `Translate this restaurant ${context} message to ${languageNames[targetLanguage]}:
+
+"${text}"
+
+Keep the same tone and professional style.
+Return only the translation, no explanations.`;
+
+        // ✅ PRIMARY: Claude Haiku for fast translation
+        try {
+            const result = await claude.messages.create({
+                model: "claude-3-haiku-20240307",
+                max_tokens: 300,
+                temperature: 0.2,
+                messages: [{ role: 'user', content: prompt }]
+            });
+
+            const response = result.content[0];
+            if (response.type === 'text') {
+                return response.text;
+            }
+            throw new Error("Non-text response from Claude");
+
+        } catch (claudeError: any) {
+            console.warn(`[Translation] Claude failed, using OpenAI fallback: ${claudeError.message}`);
+
+            // ✅ FALLBACK: OpenAI
+            try {
+                const completion = await openaiClient.chat.completions.create({
+                    model: "gpt-4o-mini",
+                    messages: [{ role: 'user', content: prompt }],
+                    max_tokens: 300,
+                    temperature: 0.2
+                });
+                
+                return completion.choices[0]?.message?.content?.trim() || text;
+                
+            } catch (openaiError: any) {
+                console.error(`[Translation] Both Claude and OpenAI failed: ${openaiError.message}`);
+                return text; // Final fallback to original
+            }
+        }
+    }
+    
+    // Clean expired cache entries periodically
+    static cleanCache(): void {
+        const now = Date.now();
+        for (const [key, value] of this.cache.entries()) {
+            if (now - value.timestamp > this.CACHE_TTL) {
+                this.cache.delete(key);
+            }
+        }
+    }
+}
 
 /**
  * ✅ NEW: Guest history interface for personalized interactions
  */
 interface GuestHistory {
     guest_name: string;
+    guest_phone: string; // ✅ PHASE 1 FIX: Include phone
     total_bookings: number;
     total_cancellations: number;
     last_visit_date: string | null;
@@ -289,7 +396,7 @@ function generateSmartPartyQuestion(
 
 /**
  * Creates Sofia - the natural language booking specialist agent
- * ✅ CRITICAL FIXES: Enhanced workflow instructions and conversation context awareness
+ * ✅ PHASE 1 INTEGRATION: Enhanced with context preservation awareness and unified translation
  */
 export function createBookingAgent(restaurantConfig: {
     id: number;
@@ -435,11 +542,12 @@ Instead say: "I need your name and phone number to complete the booking."
             return '';
         }
 
-        const { guest_name, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
+        const { guest_name, guest_phone, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
 
         return `
 👤 GUEST HISTORY & PERSONALIZATION:
 - Guest Name: ${guest_name}
+- Guest Phone: ${guest_phone || 'Not available'}
 - Total Previous Bookings: ${total_bookings}
 - ${common_party_size ? `Common Party Size: ${common_party_size}` : 'No common party size pattern'}
 - ${frequent_special_requests.length > 0 ? `Frequent Requests: ${frequent_special_requests.join(', ')}` : 'No frequent special requests'}
@@ -451,8 +559,53 @@ Instead say: "I need your name and phone number to complete the booking."
 - ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Would you like your usual ${frequent_special_requests[0]}?" when appropriate during booking.` : ''}
 - ✅ CONVERSATION RULE: ${conversationContext?.isSubsequentBooking ? 'This is a SUBSEQUENT booking in the same session - be concise and skip repetitive questions.' : 'This is the first booking in the session.'}
 - ✅ CRITICAL: Track what you've already asked to avoid repetition. If you asked about party size, don't ask again.
+- **SAME NAME/PHONE HANDLING**: If the guest says "my name" or "same name", use "${guest_name}" from their history. If they say "same number", "same phone", or "using same number", use "${guest_phone || 'Not available'}" from their history.
 - Use this information naturally in conversation - don't just list their history!
 - Make the experience feel personal and welcoming for returning guests.`;
+    };
+
+    // ✅ PHASE 1 FIX: Enhanced Maya modification execution with immediate action for clear requests
+    const getMayaModificationExecutionRules = () => {
+        return `
+🚨 CRITICAL MODIFICATION EXECUTION RULES (MAYA AGENT)
+Your primary goal is to execute user requests with minimal conversation. When a user wants to modify a booking, you must act, not just talk.
+
+RULE 1: IMMEDIATE ACTION AFTER FINDING A BOOKING
+- **IF** you have just successfully found a reservation (e.g., using 'find_existing_reservation').
+- **AND** the user then provides new details to change (e.g., "move to 19:10", "add one person", "move 10 minutes later").
+- **THEN** your IMMEDIATE next action is to call the 'modify_reservation' tool.
+- **DO NOT** talk to the user first. **DO NOT** ask for confirmation. **DO NOT** say "I will check...". CALL THE 'modify_reservation' TOOL. This is not optional. The tool will handle checking availability internally.
+
+RULE 2: CONTEXT-AWARE RESERVATION ID RESOLUTION
+- **IF** user provides a contextual reference like "эту бронь", "this booking", "it", "её", "эту":
+- **THEN** use the most recently modified reservation from session context
+- **DO NOT** ask for clarification if context is clear from recent operations
+
+RULE 3: TIME CALCULATION (If necessary)
+- **IF** the user requests a relative time change (e.g., "10 minutes later", "half an hour earlier").
+- **STEP 1:** Get the current time from the reservation details you just found.
+- **STEP 2:** Calculate the new absolute time (e.g., if current is 19:00 and user says "10 minutes later", you calculate \`newTime: "19:10"\`).
+- **STEP 3:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
+
+--- EXAMPLE OF CORRECT, SILENT TOOL USE ---
+User: "на 10 минут перенести?" (move it by 10 minutes?)
+Maya: [Asks for booking identifier.]
+User: "бронь 2"
+Maya: [Calls find_existing_reservation(identifier="2"). The tool returns booking #2, which is at 19:00.]
+Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10) and then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
+Maya: [The tool returns SUCCESS. Now, and only now, you respond to the user.] "✅ Done! I've moved your reservation to 19:10."
+
+--- FORBIDDEN BEHAVIOR ---
+❌ NEVER say "I will move it..." or "Let me confirm..." and then stop. This is a failure.
+❌ The user's prompt ("и?") was required because you failed to follow this rule. Your goal is to never require that prompt again.
+❌ NEVER call 'check_availability' directly for a modification. Use 'modify_reservation'.
+
+--- TIME CALCULATION HELPERS (This part is unchanged) ---
+- "15 минут попозже" = current time + 15 minutes
+- "на полчаса раньше" = current time - 30 minutes
+- "на час позже" = current time + 60 minutes
+- "change to 8pm" = newTime: "20:00"
+`;
     };
 
     // ✅ ENHANCED: Language-agnostic system prompts that work for all languages
@@ -644,12 +797,86 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
         }
     };
 
+    // ✅ PHASE 1 FIX: Enhanced system prompt for Maya agent with modification execution rules
+    const getMayaSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
+        const dateContext = getCurrentRestaurantContext();
+        const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage, conversationContext);
+        const mayaModificationRules = getMayaModificationExecutionRules();
+
+        // ✅ LANGUAGE INSTRUCTION (works for all languages)
+        const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
+- User's language: ${userLanguage}
+- You MUST respond in ${userLanguage} for ALL messages
+- Maintain warm, professional tone in ${userLanguage}
+- If unsure of translation, use simple clear ${userLanguage}`;
+
+        const conversationInstructions = conversationContext ? `
+📝 CONVERSATION CONTEXT:
+- Session Turn: ${conversationContext.sessionTurnCount || 1}
+- Booking Number: ${conversationContext.bookingNumber || 1} ${conversationContext.isSubsequentBooking ? '(SUBSEQUENT)' : '(FIRST)'}
+- ✅ CRITICAL: Asked Party Size: ${conversationContext.hasAskedPartySize ? 'YES - DO NOT ASK AGAIN' : 'NO - CAN ASK IF NEEDED'}
+
+🎯 CONTEXT-AWARE BEHAVIOR:
+${conversationContext.isSubsequentBooking ? 
+  '- SUBSEQUENT BOOKING: Be concise, skip redundant questions, focus on the new booking details.' :
+  '- FIRST BOOKING: Full greeting and standard workflow.'
+}
+${conversationContext.hasAskedPartySize ? 
+  '- ✅ CRITICAL: Already asked about party size - DON\'T ASK AGAIN unless user explicitly changes topic. Use their previous answer.' :
+  '- Can suggest usual party size if appropriate and haven\'t asked yet.'
+}
+` : '';
+
+        return `You are Maya, the reservation management specialist for ${restaurantConfig.name}.
+
+${languageInstruction}
+
+🎯 YOUR ROLE:
+- Help guests with EXISTING reservations
+- Find, modify, or cancel existing bookings
+- Always verify guest identity first
+- Be understanding and helpful with changes
+
+🔍 WORKFLOW:
+1. Find existing reservation first
+2. Verify it belongs to the guest  
+3. Make requested changes
+4. Confirm all modifications
+
+${mayaModificationRules}
+
+🚨 CRITICAL CONTEXT RULE:
+When calling 'modify_reservation', if the user's message is a simple confirmation (e.g., "yes", "ok", "да", "давай так") and does NOT contain a number, you MUST OMIT the 'reservationId' argument in your tool call. The system will automatically use the reservation ID from the current session context. This prevents errors.
+
+✅ CRITICAL RESERVATION DISPLAY RULES:
+- When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"
+- NEVER use numbered lists like "1, 2, 3" - always use real IDs "#6, #3, #4"
+- When asking user to choose, say: "Укажите ID брони (например, #6)"
+- If user provides invalid ID, gently ask: "Пожалуйста, укажите ID брони из списка: #6, #3, #4"
+
+📅 CURRENT DATE CONTEXT (CRITICAL):
+- TODAY is ${dateContext.currentDate} (${dateContext.dayOfWeek})
+- TOMORROW is ${dateContext.tomorrowDate}
+- Current time: ${dateContext.currentTime} in ${dateContext.timezone}
+- When guests say "today", use: ${dateContext.currentDate}
+- When guests say "tomorrow", use: ${dateContext.tomorrowDate}
+- ALWAYS use YYYY-MM-DD format for dates
+
+💬 STYLE: Understanding, efficient, secure
+
+${conversationInstructions}
+
+${personalizedSection}`;
+    };
+
     return {
-        client,
+        client: openaiClient, // Main conversations still use OpenAI for compatibility
+        claude, // ✅ PHASE 1 FIX: Add Claude client for fallback system
         restaurantConfig,
         systemPrompt: getSystemPrompt('guest'), // Default to guest context
         tools: agentTools,
         restaurantLanguage,
+        // ✅ PHASE 1 FIX: Enhanced methods with unified translation support
         getPersonalizedGreeting: (guestHistory: GuestHistory | null, language: Language, context: 'hostess' | 'guest', conversationContext?: ConversationContext) => {
             return generatePersonalizedGreeting(guestHistory, language, context, conversationContext);
         },
@@ -657,7 +884,13 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
         generateSmartPartyQuestion,
         updateInstructions: (context: 'hostess' | 'guest', language: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
             return getSystemPrompt(context, language, guestHistory, conversationContext);
-        }
+        },
+        // ✅ PHASE 1 FIX: Add Maya-specific system prompt method
+        updateMayaInstructions: (context: 'hostess' | 'guest', language: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
+            return getMayaSystemPrompt(context, language, guestHistory, conversationContext);
+        },
+        // ✅ PHASE 1 FIX: Add unified translation service access
+        translate: UnifiedTranslationService.translate
     };
 }
 
