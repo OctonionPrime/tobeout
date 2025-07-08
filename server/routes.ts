@@ -16,22 +16,17 @@ import session from "express-session";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import ConnectPgSimple from 'connect-pg-simple';
-import { initializeTelegramBot } from "./services/telegram";
+import { initializeTelegramBot } from "./integration/telegram";
 import {
     createReservation,
     cancelReservation,
 } from "./services/booking";
-// ✅ FIXED: Import both functions from availability service
 import { getAvailableTimeSlots, isTableAvailableAtTimeSlot } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
 import { getPopularRestaurantTimezones, getRestaurantOperatingStatus } from "./utils/timezone-utils";
 import { eq, and, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { DateTime } from 'luxon';
-
-// ✅ NEW IMPORT: Sofia AI Enhanced Conversation Manager
-import { enhancedConversationManager } from "./services/enhanced-conversation-manager";
-// ✅ NEW IMPORT: Booking Agent for Restaurant Greeting
-import { createBookingAgent } from "./services/agents/booking-agent";
+import { serviceContainer } from './services/service-container';
 
 // ✅ DYNAMIC: PostgreSQL timestamp parser that handles both formats
 function parsePostgresTimestamp(timestamp: string): DateTime {
@@ -1922,27 +1917,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // ✅ NEW: SOFIA AI CHAT ENDPOINTS (Enhanced)
     // ===========================================
 
-    // ✅ NEW: Helper function to get agent for restaurant greeting
-    const getAgentForRestaurant = async (restaurantId: number) => {
-        const restaurant = await storage.getRestaurant(restaurantId);
-        if (!restaurant) {
-            throw new Error(`Restaurant ${restaurantId} not found`);
-        }
-
-        return createBookingAgent({
-            id: restaurant.id,
-            name: restaurant.name,
-            timezone: restaurant.timezone || 'Europe/Moscow',
-            openingTime: restaurant.openingTime || '09:00:00',
-            closingTime: restaurant.closingTime || '23:00:00',
-            maxGuests: restaurant.maxGuests || 12,
-            cuisine: restaurant.cuisine,
-            atmosphere: restaurant.atmosphere,
-            country: restaurant.country,
-            languages: restaurant.languages
-        });
-    };
-
     // Create new chat session
     app.post("/api/chat/session", isAuthenticated, async (req, res, next) => {
         try {
@@ -1955,25 +1929,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const { platform = 'web', language = 'en' } = req.body;
 
-            const sessionId = enhancedConversationManager.createSession({
+            const sessionId = serviceContainer.conversationManager.createSession({
                 restaurantId: restaurant.id,
                 platform,
                 language,
                 webSessionId: req.sessionID
             });
 
-            // ✅ NEW: Get restaurant greeting based on restaurant language/country
-            let restaurantGreeting: string;
-            try {
-                const agent = await getAgentForRestaurant(restaurant.id);
-                const context = platform === 'web' ? 'hostess' : 'guest';
-                restaurantGreeting = agent.getPersonalizedGreeting(null, language, context);
-
-            } catch (error) {
-                console.error('[API] Error generating restaurant greeting:', error);
-                // Fallback greeting
-                restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
-            }
+            // ✅ FIXED: Use a direct, reliable greeting since the agent is now managed by the service container
+            const restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
 
             console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${restaurant.id} with greeting in ${restaurant.languages?.[0] || 'en'}`);
 
@@ -2004,7 +1968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Validate session exists
-            const session = enhancedConversationManager.getSession(sessionId);
+            const session = serviceContainer.conversationManager.getSession(sessionId);
             if (!session) {
                 return res.status(404).json({ 
                     message: "Session not found. Please create a new session." 
@@ -2014,7 +1978,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`[API] Processing Sofia message for session ${sessionId}: "${message.substring(0, 50)}..."`);
 
             // Handle message with Sofia AI
-            const result = await enhancedConversationManager.handleMessage(sessionId, message);
+            const result = await serviceContainer.conversationManager.handleMessage(sessionId, message);
 
             // Log AI activity if booking was created
             if (result.hasBooking && result.reservationId) {
@@ -2067,7 +2031,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     app.get("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
         try {
             const { sessionId } = req.params;
-            const session = enhancedConversationManager.getSession(sessionId);
+            const session = serviceContainer.conversationManager.getSession(sessionId);
 
             if (!session) {
                 return res.status(404).json({ message: "Session not found" });
@@ -2110,7 +2074,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(404).json({ message: "Restaurant not found" });
             }
 
-            const stats = enhancedConversationManager.getStats();
+            const stats = serviceContainer.conversationManager.getStats();
 
             res.json({
                 restaurantId: restaurant.id,
@@ -2128,7 +2092,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     app.delete("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
         try {
             const { sessionId } = req.params;
-            const success = enhancedConversationManager.endSession(sessionId);
+            const success = serviceContainer.conversationManager.endSession(sessionId);
 
             if (!success) {
                 return res.status(404).json({ message: "Session not found" });
