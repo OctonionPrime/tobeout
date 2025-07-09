@@ -1,9 +1,15 @@
 // server/services/agents/tools/reservation.tools.ts
-// ✅ PHASE 5: Reservation management tools extracted from agent-tools.ts
+// ✅ FIXED: Reservation management tools with timezone utilities integration
 // SOURCE: agent-tools.ts reservation functions (lines ~850-950, ~1000-1200, ~1250-1350)
 
 import { DateTime } from 'luxon';
-import { getRestaurantDateTime } from '../../../utils/timezone-utils';
+import { 
+    getRestaurantDateTime,
+    parseReservationDateTime,
+    validateBookingDateTime,
+    isValidTimezone,
+    getRestaurantOperatingStatus
+} from '../../../utils/timezone-utils';
 import type { Language } from '../core/agent.types';
 import OpenAI from 'openai';
 
@@ -260,33 +266,6 @@ function resolveReservationFromContext(
     };
 }
 
-/**
- * Normalize database timestamp for luxon parsing
- * SOURCE: agent-tools.ts normalizeDatabaseTimestamp function
- */
-function normalizeDatabaseTimestamp(dbTimestamp: string): string {
-    if (!dbTimestamp) return '';
-
-    let normalized = dbTimestamp.replace(' ', 'T');
-
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
-        normalized += ':00';
-    }
-
-    if (normalized.endsWith('+00')) {
-        normalized = normalized.replace('+00', '+00:00');
-    } else if (normalized.endsWith('-00')) {
-        normalized = normalized.replace('-00', '-00:00');
-    }
-
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
-        normalized += '+00:00';
-    }
-
-    console.log(`[DateFix] ${dbTimestamp} → ${normalized}`);
-    return normalized;
-}
-
 // ===== RESERVATION MANAGEMENT TOOLS =====
 
 /**
@@ -296,10 +275,17 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 export async function find_existing_reservation(
     identifier: string,
     identifierType: 'phone' | 'telegram' | 'name' | 'confirmation' | 'auto' = 'auto',
+    timeRange: 'upcoming' | 'past' | 'all' = 'upcoming',
     context: ReservationToolContext
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Reservation Tool] Finding reservations for: "${identifier}" (Type: ${identifierType})`);
+
+    // ✅ ADD: Timezone validation
+    if (!isValidTimezone(context.timezone)) {
+        console.warn(`[Reservation Tool] Invalid timezone: ${context.timezone}, falling back to Belgrade`);
+        context.timezone = 'Europe/Belgrade';
+    }
 
     try {
         let finalIdentifierType = identifierType;
@@ -319,7 +305,6 @@ export async function find_existing_reservation(
 
         // ✅ ENHANCEMENT: Process new parameters with smart defaults
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
-        const timeRange = context.timeRange || 'upcoming';
         const includeStatus = context.includeStatus || (
             timeRange === 'past' 
                 ? ['completed', 'canceled'] 
@@ -438,11 +423,11 @@ export async function find_existing_reservation(
         }
 
         const formattedReservations = results.map((r: any) => {
-            const normalizedDateString = normalizeDatabaseTimestamp(r.reservation_utc);
-            const reservationUtcDt = DateTime.fromISO(normalizedDateString);
+            // ✅ FIXED: Use timezone utilities instead of manual parsing
+            const reservationDt = parseReservationDateTime(r.reservation_utc, context.timezone);
 
-            if (!reservationUtcDt.isValid) {
-                console.error(`[Reservation Tool] Invalid date format: ${r.reservation_utc} → ${normalizedDateString}`);
+            if (!reservationDt.isValid) {
+                console.error(`[Reservation Tool] Invalid date format: ${r.reservation_utc}`);
                 return {
                     id: r.id,
                     confirmationNumber: r.id,
@@ -464,26 +449,24 @@ export async function find_existing_reservation(
             }
 
             const nowUtcDt = getRestaurantDateTime(context.timezone).toUTC();
-            const hoursUntilReservation = reservationUtcDt.diff(nowUtcDt, 'hours').hours;
+            const hoursUntilReservation = reservationDt.diff(nowUtcDt, 'hours').hours;
 
             console.log(`[Reservation Tool] DIAGNOSTICS FOR RESERVATION #${r.id}:`);
             console.log(`  - Original DB Date: ${r.reservation_utc}`);
-            console.log(`  - Normalized Date:  ${normalizedDateString}`);
-            console.log(`  - Parsed DateTime:  ${reservationUtcDt.toISO()}`);
+            console.log(`  - Parsed DateTime:  ${reservationDt.toISO()}`);
             console.log(`  - Current UTC:      ${nowUtcDt.toISO()}`);
             console.log(`  - Hours Until:      ${hoursUntilReservation}`);
             console.log(`  - Table ID:         ${r.table_id}`);
             console.log(`  - Table Capacity:   ${r.table_capacity}`);
 
-            const localDateTime = reservationUtcDt.setZone(context.timezone);
             const canModify = hoursUntilReservation >= 4;
             const canCancel = hoursUntilReservation >= 2;
 
             return {
                 id: r.id,
                 confirmationNumber: r.id,
-                date: localDateTime.toFormat('yyyy-MM-dd'),
-                time: localDateTime.toFormat('HH:mm'),
+                date: reservationDt.toFormat('yyyy-MM-dd'),
+                time: reservationDt.toFormat('HH:mm'),
                 guests: r.guests,
                 guestName: r.booking_guest_name || r.guest_name || 'Unknown Guest',
                 guestPhone: r.guest_phone || '',
@@ -542,7 +525,7 @@ export async function find_existing_reservation(
 }
 
 /**
- * Enhanced modify_reservation with smart context resolution
+ * Enhanced modify_reservation with smart context resolution and timezone validation
  * SOURCE: agent-tools.ts modify_reservation function (lines ~1000-1200)
  */
 export async function modify_reservation(
@@ -558,6 +541,12 @@ export async function modify_reservation(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`✏️ [Reservation Tool] Modifying reservation ${reservationIdHint || 'TBD'}:`, modifications);
+
+    // ✅ ADD: Timezone validation
+    if (!isValidTimezone(context.timezone)) {
+        console.warn(`[Reservation Tool] Invalid timezone: ${context.timezone}, falling back to Belgrade`);
+        context.timezone = 'Europe/Belgrade';
+    }
 
     try {
         // ✅ PHASE 1 FIX: Smart reservation ID resolution with context awareness
@@ -706,18 +695,16 @@ export async function modify_reservation(
             status: currentReservation.status
         });
 
-        // ✅ STEP 2: Parse current reservation date/time
-        const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
-        const currentReservationDt = DateTime.fromISO(normalizedTimestamp);
+        // ✅ STEP 2: Parse current reservation date/time using timezone utilities
+        const currentReservationDt = parseReservationDateTime(currentReservation.reservation_utc, context.timezone);
 
         if (!currentReservationDt.isValid) {
             console.error(`❌ [Reservation Tool] Invalid reservation timestamp: ${currentReservation.reservation_utc}`);
             return createSystemError('Invalid reservation timestamp format');
         }
 
-        const currentLocalDt = currentReservationDt.setZone(context.timezone);
-        const currentDate = currentLocalDt.toFormat('yyyy-MM-dd');
-        const currentTime = currentLocalDt.toFormat('HH:mm');
+        const currentDate = currentReservationDt.toFormat('yyyy-MM-dd');
+        const currentTime = currentReservationDt.toFormat('HH:mm');
 
         console.log(`📅 [Reservation Tool] Current reservation time: ${currentDate} ${currentTime} (${context.timezone})`);
 
@@ -959,6 +946,12 @@ export async function cancel_reservation(
     const startTime = Date.now();
     console.log(`❌ [Reservation Tool] Cancelling reservation ${reservationId}, confirmed: ${confirmCancellation}`);
 
+    // ✅ ADD: Timezone validation
+    if (!isValidTimezone(context.timezone)) {
+        console.warn(`[Reservation Tool] Invalid timezone: ${context.timezone}, falling back to Belgrade`);
+        context.timezone = 'Europe/Belgrade';
+    }
+
     try {
         if (!confirmCancellation) {
             // ✅ USE TRANSLATION SERVICE
@@ -1099,9 +1092,8 @@ export async function cancel_reservation(
 
         console.log(`✅ [Reservation Tool] Successfully cancelled reservation ${reservationId}`);
 
-        // ✅ STEP 4: Calculate refund eligibility (basic logic)
-        const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
-        const reservationDt = DateTime.fromISO(normalizedTimestamp);
+        // ✅ STEP 4: Calculate refund eligibility (basic logic) using timezone utilities
+        const reservationDt = parseReservationDateTime(currentReservation.reservation_utc, context.timezone);
         const now = DateTime.now().setZone(context.timezone);
         const hoursUntilReservation = reservationDt.diff(now, 'hours').hours;
         
@@ -1185,13 +1177,13 @@ export const reservationToolDefinitions = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "✅ PHASE 1 FIX: Modify details of an existing reservation with smart context resolution. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
+            description: "✅ FIXED: Modify details of an existing reservation with smart context resolution and timezone validation. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
             parameters: {
                 type: "object",
                 properties: {
                     reservationId: {
                         type: "number",
-                        description: "✅ PHASE 1 FIX: ID of the reservation to modify (now OPTIONAL - can be resolved from context)"
+                        description: "✅ FIXED: ID of the reservation to modify (now OPTIONAL - can be resolved from context)"
                     },
                     modifications: {
                         type: "object",
@@ -1228,7 +1220,7 @@ export const reservationToolDefinitions = [
         type: "function" as const,
         function: {
             name: "cancel_reservation",
-            description: "Cancel an existing reservation. Always ask for confirmation before proceeding. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
+            description: "Cancel an existing reservation with timezone-aware refund calculations. Always ask for confirmation before proceeding. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
             parameters: {
                 type: "object",
                 properties: {

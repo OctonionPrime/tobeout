@@ -1,9 +1,14 @@
 // server/services/agents/prompts/system-prompts/maya.prompts.ts
-// ✅ PHASE 6: Maya's prompts extracted from maya.agent.ts and enhanced-conversation-manager.ts
-// SOURCE: maya.agent.ts getSystemPrompt method
-// SOURCE: enhanced-conversation-manager.ts Maya logic (lines ~750-850)
+// ✅ FIXED: Integrated timezone utilities and enhanced Maya's reservation management prompts
 
 import type { Language, GuestHistory, RestaurantConfig, ConversationContext } from '../../core/agent.types';
+import { 
+    getRestaurantTimeContext, 
+    isRestaurantOpen, 
+    getRestaurantOperatingStatus,
+    isOvernightOperation,
+    formatTimeForRestaurant 
+} from '../../../utils/timezone-utils';
 
 // ===== PROMPT TEMPLATE INTERFACES =====
 export interface MayaPromptContext {
@@ -13,13 +18,7 @@ export interface MayaPromptContext {
     guestHistory?: GuestHistory | null;
     isFirstMessage: boolean;
     conversationContext?: ConversationContext;
-    dateContext: {
-        currentDate: string;
-        tomorrowDate: string;
-        currentTime: string;
-        dayOfWeek: string;
-        timezone: string;
-    };
+    // ✅ FIXED: No longer need manual dateContext - using timezone utilities
 }
 
 // ===== CORE MAYA PROMPTS =====
@@ -38,13 +37,40 @@ export class MayaPrompts {
     }
 
     /**
-     * Critical modification execution rules - Maya's core logic
+     * ✅ ENHANCED: Critical modification execution rules with timezone awareness
      * SOURCE: maya.agent.ts getMayaModificationExecutionRules method
      */
-    static getMayaModificationExecutionRules(): string {
+    static getMayaModificationExecutionRules(restaurantConfig?: RestaurantConfig): string {
+        // ✅ NEW: Restaurant operating status context for modifications
+        let operatingStatusContext = '';
+        if (restaurantConfig) {
+            const timezone = restaurantConfig.timezone || 'Europe/Belgrade';
+            const operatingStatus = getRestaurantOperatingStatus(
+                timezone,
+                restaurantConfig.openingTime,
+                restaurantConfig.closingTime
+            );
+            
+            const isOvernight = isOvernightOperation(
+                restaurantConfig.openingTime,
+                restaurantConfig.closingTime
+            );
+
+            operatingStatusContext = `
+🕐 RESTAURANT OPERATING STATUS FOR MODIFICATIONS:
+- Current Status: ${operatingStatus.isOpen ? '🟢 OPEN' : '🔴 CLOSED'}
+- ${isOvernight ? '🌙 OVERNIGHT OPERATION: Validate cross-day modifications carefully' : '📅 STANDARD HOURS: Same-day operation'}
+- Operating Hours: ${restaurantConfig.openingTime} - ${restaurantConfig.closingTime}
+- ✅ CRITICAL: Validate all time modifications against restaurant operating hours
+- ✅ NEW: Check if modification crosses midnight for overnight operations
+`;
+        }
+
         return `
 🚨 CRITICAL MODIFICATION EXECUTION RULES (MAYA AGENT)
 Your primary goal is to execute user requests with minimal conversation. When a user wants to modify a booking, you must act, not just talk.
+
+${operatingStatusContext}
 
 RULE 1: IMMEDIATE ACTION AFTER FINDING A BOOKING
 - **IF** you have just successfully found a reservation (e.g., using 'find_existing_reservation').
@@ -57,30 +83,34 @@ RULE 2: CONTEXT-AWARE RESERVATION ID RESOLUTION
 - **THEN** use the most recently modified reservation from session context
 - **DO NOT** ask for clarification if context is clear from recent operations
 
-RULE 3: TIME CALCULATION (If necessary)
+RULE 3: TIME CALCULATION WITH TIMEZONE AWARENESS (Enhanced)
 - **IF** the user requests a relative time change (e.g., "10 minutes later", "half an hour earlier").
 - **STEP 1:** Get the current time from the reservation details you just found.
 - **STEP 2:** Calculate the new absolute time (e.g., if current is 19:00 and user says "10 minutes later", you calculate \`newTime: "19:10"\`).
-- **STEP 3:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
+- **✅ NEW STEP 3:** Validate the new time against restaurant operating hours
+- **✅ NEW STEP 4:** For overnight operations, check if modification crosses midnight
+- **STEP 5:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
 
 --- EXAMPLE OF CORRECT, SILENT TOOL USE ---
 User: "на 10 минут перенести?" (move it by 10 minutes?)
 Maya: [Asks for booking identifier.]
 User: "бронь 2"
 Maya: [Calls find_existing_reservation(identifier="2"). The tool returns booking #2, which is at 19:00.]
-Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10) and then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
+Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10), validate against operating hours, then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
 Maya: [The tool returns SUCCESS. Now, and only now, you respond to the user.] "✅ Done! I've moved your reservation to 19:10."
 
 --- FORBIDDEN BEHAVIOR ---
 ❌ NEVER say "I will move it..." or "Let me confirm..." and then stop. This is a failure.
 ❌ The user's prompt ("и?") was required because you failed to follow this rule. Your goal is to never require that prompt again.
 ❌ NEVER call 'check_availability' directly for a modification. Use 'modify_reservation'.
+❌ NEVER modify to times outside restaurant operating hours without warning
 
---- TIME CALCULATION HELPERS (This part is unchanged) ---
-- "15 минут попозже" = current time + 15 minutes
-- "на полчаса раньше" = current time - 30 minutes
-- "на час позже" = current time + 60 minutes
-- "change to 8pm" = newTime: "20:00"
+--- TIME CALCULATION HELPERS (Enhanced with Validation) ---
+- "15 минут попозже" = current time + 15 minutes → validate against closing time
+- "на полчаса раньше" = current time - 30 minutes → validate against opening time
+- "на час позже" = current time + 60 minutes → validate against closing time
+- "change to 8pm" = newTime: "20:00" → validate against operating hours
+- ✅ NEW: For overnight operations, handle cross-midnight calculations correctly
 `;
     }
 
@@ -104,7 +134,8 @@ When calling 'modify_reservation', if the user's message is a simple confirmatio
 - When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"
 - NEVER use numbered lists like "1, 2, 3" - always use real IDs "#6, #3, #4"
 - When asking user to choose, say: "Укажите ID брони (например, #6)"
-- If user provides invalid ID, gently ask: "Пожалуйста, укажите ID брони из списка: #6, #3, #4"`;
+- If user provides invalid ID, gently ask: "Пожалуйста, укажите ID брони из списка: #6, #3, #4"
+- ✅ NEW: Include operating status for reservations outside current operating hours`;
     }
 
     /**
@@ -159,12 +190,48 @@ ${conversationContext.isSubsequentBooking ?
     }
 
     /**
-     * Main system prompt template for Maya
+     * ✅ FIXED: Generate timezone-aware date context using utilities
+     */
+    static getDateTimeContext(restaurantConfig: RestaurantConfig): string {
+        // ✅ NEW: Use timezone utilities instead of manual date generation
+        const timezone = restaurantConfig.timezone || 'Europe/Belgrade';
+        const dateContext = getRestaurantTimeContext(timezone);
+        
+        // ✅ NEW: Check if restaurant operates overnight
+        const isOvernight = isOvernightOperation(
+            restaurantConfig.openingTime,
+            restaurantConfig.closingTime
+        );
+
+        // ✅ NEW: Get current operating status
+        const operatingStatus = getRestaurantOperatingStatus(
+            timezone,
+            restaurantConfig.openingTime,
+            restaurantConfig.closingTime
+        );
+
+        return `
+📅 CURRENT DATE CONTEXT (CRITICAL):
+- TODAY is ${dateContext.currentDate} (${dateContext.dayOfWeek})
+- TOMORROW is ${dateContext.tomorrowDate}
+- Current time: ${dateContext.currentTime} in ${dateContext.timezone}
+- Restaurant Status: ${operatingStatus.isOpen ? '🟢 OPEN' : '🔴 CLOSED'}
+- ${isOvernight ? '🌙 OVERNIGHT OPERATION: Handle cross-day modifications carefully' : '📅 STANDARD HOURS: Same-day operation'}
+- When guests say "today", use: ${dateContext.currentDate}
+- When guests say "tomorrow", use: ${dateContext.tomorrowDate}
+- ✅ FIXED: ALWAYS use YYYY-MM-DD format for dates
+- NEVER use dates from 2023 or other years - only current dates!
+- ✅ NEW: All modifications must respect restaurant operating hours (${restaurantConfig.openingTime} - ${restaurantConfig.closingTime})
+`;
+    }
+
+    /**
+     * ✅ ENHANCED: Main system prompt template for Maya with timezone awareness
      * SOURCE: maya.agent.ts getSystemPrompt method
      */
     static getSystemPrompt(context: MayaPromptContext): string {
         const languageInstruction = this.getLanguageInstruction(context.userLanguage);
-        const mayaModificationRules = this.getMayaModificationExecutionRules();
+        const mayaModificationRules = this.getMayaModificationExecutionRules(context.restaurant);
         const criticalContextRule = this.getCriticalContextRule();
         const reservationDisplayRules = this.getCriticalReservationDisplayRules();
         const personalizedSection = this.getPersonalizedPromptSection(
@@ -173,6 +240,8 @@ ${conversationContext.isSubsequentBooking ?
             context.conversationContext
         );
         const conversationInstructions = this.getConversationInstructions(context.conversationContext);
+        // ✅ NEW: Use timezone utilities for date context
+        const dateTimeContext = this.getDateTimeContext(context.restaurant);
 
         return `You are Maya, the reservation management specialist for ${context.restaurant.name}.
 
@@ -183,12 +252,22 @@ ${languageInstruction}
 - Find, modify, or cancel existing bookings
 - Always verify guest identity first
 - Be understanding and helpful with changes
+- ✅ NEW: Validate all modifications against restaurant operating hours
 
 🔍 WORKFLOW:
 1. Find existing reservation first
 2. Verify it belongs to the guest  
-3. Make requested changes
+3. Make requested changes (validate against operating hours)
 4. Confirm all modifications
+
+🏪 RESTAURANT DETAILS:
+- Name: ${context.restaurant.name}
+- Hours: ${context.restaurant.openingTime} - ${context.restaurant.closingTime}
+- Timezone: ${context.restaurant.timezone}
+- ✅ NEW: Operating Status: ${isRestaurantOpen(context.restaurant.timezone, context.restaurant.openingTime, context.restaurant.closingTime) ? '🟢 Currently Open' : '🔴 Currently Closed'}
+- ✅ NEW: Overnight Operation: ${isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime) ? 'Yes - Handle cross-day reservations' : 'No - Same-day only'}
+
+${dateTimeContext}
 
 ${mayaModificationRules}
 
@@ -196,15 +275,9 @@ ${criticalContextRule}
 
 ${reservationDisplayRules}
 
-📅 CURRENT DATE CONTEXT (CRITICAL):
-- TODAY is ${context.dateContext.currentDate} (${context.dateContext.dayOfWeek})
-- TOMORROW is ${context.dateContext.tomorrowDate}
-- Current time: ${context.dateContext.currentTime} in ${context.dateContext.timezone}
-- When guests say "today", use: ${context.dateContext.currentDate}
-- When guests say "tomorrow", use: ${context.dateContext.tomorrowDate}
-- ALWAYS use YYYY-MM-DD format for dates
-
 💬 STYLE: Understanding, efficient, secure
+- ✅ NEW: Alert guests if modifications would be outside operating hours
+- ✅ NEW: For overnight operations, clearly explain cross-day scheduling
 
 ${conversationInstructions}
 
@@ -304,78 +377,87 @@ What works best for you?`
     }
 
     /**
-     * Modification confirmation templates
+     * ✅ ENHANCED: Modification confirmation templates with timezone formatting
      * SOURCE: maya.agent.ts modification workflow
      */
     static getModificationConfirmation(
         language: Language,
         oldValues: any,
-        newValues: any
+        newValues: any,
+        timezone?: string
     ): string {
+        // ✅ NEW: Format times properly using timezone utilities if available
+        const formatTime = (time: string) => {
+            if (timezone) {
+                return formatTimeForRestaurant(time, timezone, language, false);
+            }
+            return time;
+        };
+
         const templates = {
             en: `Perfect! I've updated your reservation:
 ${oldValues.date !== newValues.date ? `• Date: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Time: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Time: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Guests: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Your reservation is all set! 🎉`,
             ru: `Отлично! Я обновил вашу бронь:
 ${oldValues.date !== newValues.date ? `• Дата: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Время: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Время: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Гостей: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Ваша бронь готова! 🎉`,
             sr: `Savršeno! Ažurirao sam vašu rezervaciju:
 ${oldValues.date !== newValues.date ? `• Datum: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Vreme: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Vreme: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Gosti: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Vaša rezervacija je spremna! 🎉`,
             hu: `Tökéletes! Frissítettem a foglalását:
 ${oldValues.date !== newValues.date ? `• Dátum: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Idő: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Idő: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Vendégek: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 A foglalás kész! 🎉`,
             de: `Perfekt! Ich habe Ihre Reservierung aktualisiert:
 ${oldValues.date !== newValues.date ? `• Datum: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Zeit: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Zeit: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Gäste: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Ihre Reservierung ist bereit! 🎉`,
             fr: `Parfait! J'ai mis à jour votre réservation:
 ${oldValues.date !== newValues.date ? `• Date: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Heure: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Heure: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Invités: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Votre réservation est prête! 🎉`,
             es: `¡Perfecto! He actualizado su reserva:
 ${oldValues.date !== newValues.date ? `• Fecha: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Hora: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Hora: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Invitados: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 ¡Su reserva está lista! 🎉`,
             it: `Perfetto! Ho aggiornato la sua prenotazione:
 ${oldValues.date !== newValues.date ? `• Data: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Ora: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Ora: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Ospiti: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 La sua prenotazione è pronta! 🎉`,
             pt: `Perfeito! Atualizei sua reserva:
 ${oldValues.date !== newValues.date ? `• Data: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Hora: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Hora: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Convidados: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Sua reserva está pronta! 🎉`,
             nl: `Perfect! Ik heb uw reservering bijgewerkt:
 ${oldValues.date !== newValues.date ? `• Datum: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Tijd: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Tijd: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Gasten: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Uw reservering is klaar! 🎉`,
             auto: `Perfect! I've updated your reservation:
 ${oldValues.date !== newValues.date ? `• Date: ${oldValues.date} → ${newValues.date}` : ''}
-${oldValues.time !== newValues.time ? `• Time: ${oldValues.time} → ${newValues.time}` : ''}
+${oldValues.time !== newValues.time ? `• Time: ${formatTime(oldValues.time)} → ${formatTime(newValues.time)}` : ''}
 ${oldValues.guests !== newValues.guests ? `• Guests: ${oldValues.guests} → ${newValues.guests}` : ''}
 
 Your reservation is all set! 🎉`
@@ -480,10 +562,14 @@ export class MayaEmpathyResponses {
 export class MayaTimeCalculations {
     
     /**
-     * Calculate relative time changes for modifications
+     * ✅ ENHANCED: Calculate relative time changes with operating hours validation
      * SOURCE: maya.agent.ts calculateRelativeTime method
      */
-    static calculateRelativeTime(currentTime: string, relativeChange: string): string | null {
+    static calculateRelativeTime(
+        currentTime: string, 
+        relativeChange: string, 
+        restaurantConfig?: RestaurantConfig
+    ): string | null {
         try {
             const [hours, minutes] = currentTime.split(':').map(Number);
             const currentMinutes = hours * 60 + minutes;
@@ -508,8 +594,32 @@ export class MayaTimeCalculations {
             const newHours = Math.floor(newMinutes / 60);
             const newMins = newMinutes % 60;
 
-            // Validate time range (assume restaurant hours 10:00 - 23:00)
-            if (newHours < 10 || newHours > 23) return null;
+            // ✅ NEW: Enhanced validation using restaurant config
+            if (restaurantConfig) {
+                const [openHour, openMin] = restaurantConfig.openingTime.split(':').map(Number);
+                const [closeHour, closeMin] = restaurantConfig.closingTime.split(':').map(Number);
+                
+                const openMinutes = openHour * 60 + openMin;
+                const closeMinutes = closeHour * 60 + closeMin;
+                
+                // Handle overnight operations
+                const isOvernight = isOvernightOperation(restaurantConfig.openingTime, restaurantConfig.closingTime);
+                
+                if (isOvernight) {
+                    // For overnight operations, validate differently
+                    if (newMinutes < openMinutes && newMinutes > closeMinutes) {
+                        return null; // Time is during closed hours
+                    }
+                } else {
+                    // Standard operation hours
+                    if (newMinutes < openMinutes || newMinutes > closeMinutes) {
+                        return null; // Outside operating hours
+                    }
+                }
+            } else {
+                // Fallback validation (assume restaurant hours 10:00 - 23:00)
+                if (newHours < 10 || newHours > 23) return null;
+            }
 
             return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')}`;
         } catch (error) {
@@ -519,13 +629,17 @@ export class MayaTimeCalculations {
     }
 
     /**
-     * Parse time modification requests
+     * ✅ ENHANCED: Parse time modification requests with operating hours awareness
      * SOURCE: maya.agent.ts modification parsing logic
      */
-    static parseTimeModificationRequest(userMessage: string): {
+    static parseTimeModificationRequest(
+        userMessage: string, 
+        restaurantConfig?: RestaurantConfig
+    ): {
         type: 'absolute' | 'relative' | 'none';
         value?: string;
         originalRequest: string;
+        withinOperatingHours?: boolean;
     } {
         const msg = userMessage.toLowerCase();
         
@@ -540,10 +654,20 @@ export class MayaTimeCalculations {
                 if (hours < 12) hours += 12;
             }
             
+            const newTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+            
+            // ✅ NEW: Check if time is within operating hours
+            let withinOperatingHours = true;
+            if (restaurantConfig) {
+                const timezone = restaurantConfig.timezone || 'Europe/Belgrade';
+                withinOperatingHours = isRestaurantOpen(timezone, restaurantConfig.openingTime, restaurantConfig.closingTime);
+            }
+            
             return {
                 type: 'absolute',
-                value: `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`,
-                originalRequest: userMessage
+                value: newTime,
+                originalRequest: userMessage,
+                withinOperatingHours
             };
         }
         
@@ -558,7 +682,8 @@ export class MayaTimeCalculations {
             return {
                 type: 'relative',
                 value: userMessage,
-                originalRequest: userMessage
+                originalRequest: userMessage,
+                withinOperatingHours: true // Will be validated during calculation
             };
         }
         

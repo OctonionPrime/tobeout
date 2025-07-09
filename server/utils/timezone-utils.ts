@@ -9,10 +9,11 @@
  * ✅ PERFORMANCE: Cached timezone data for speed
  * ✅ UI-FRIENDLY: Searchable labels with offsets and city names
  * ✅ OVERNIGHT OPERATIONS: Support for restaurants that close after midnight
+ * ✅ RESERVATION PARSING: Database timestamp normalization and validation
  */
 
 import { DateTime } from 'luxon';
-import type { Language } from '../services/enhanced-conversation-manager';
+import type { Language } from '../services/agents/core/agent.types';
 
 // ================================
 // CORE TIMEZONE INTERFACES
@@ -30,6 +31,14 @@ export interface TimezoneOption {
 export interface TimezoneGroup {
     region: string;
     timezones: TimezoneOption[];
+}
+
+export interface TimeValidationResult {
+    isValid: boolean;
+    reason?: string;
+    isWithinHours: boolean;
+    isOvernightOperation?: boolean;
+    suggestedTime?: string;
 }
 
 // ================================
@@ -106,6 +115,8 @@ export function getRestaurantOperatingStatus(
     nextOpeningTime?: Date;
     minutesUntilClose?: number;
     minutesUntilOpen?: number;
+    status: string;
+    message: string;
 } {
     const isOvernight = isOvernightOperation(openingTime, closingTime);
     const isOpen = isRestaurantOpenOvernight(restaurantTimezone, openingTime, closingTime);
@@ -160,13 +171,163 @@ export function getRestaurantOperatingStatus(
         }
     }
     
+    const status = isOpen ? 'open' : 'closed';
+    const message = isOpen 
+        ? `Restaurant is currently open${minutesUntilClose ? ` (closes in ${Math.round(minutesUntilClose / 60)} hours)` : ''}`
+        : `Restaurant is currently closed${minutesUntilOpen ? ` (opens in ${Math.round(minutesUntilOpen / 60)} hours)` : ''}`;
+    
     return {
         isOpen,
         isOvernightOperation: isOvernight,
         nextOpeningTime,
         minutesUntilClose,
-        minutesUntilOpen
+        minutesUntilOpen,
+        status,
+        message
     };
+}
+
+// ================================
+// CRITICAL MISSING FUNCTIONS - RESERVATION SUPPORT
+// ================================
+
+/**
+ * ✅ CRITICAL: Parse database timestamp and convert to restaurant timezone
+ * Replaces manual normalization in reservation.tools.ts
+ */
+export function parseReservationDateTime(
+    dbTimestamp: string, 
+    timezone: string
+): DateTime {
+    // Handle various database timestamp formats
+    let normalized = dbTimestamp.replace(' ', 'T');
+    
+    // Ensure proper time format (add seconds if missing)
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(normalized)) {
+        normalized += ':00';
+    }
+    
+    // Add UTC timezone if no timezone info present
+    if (!normalized.includes('+') && !normalized.includes('Z')) {
+        normalized += '+00:00';
+    }
+    
+    try {
+        return DateTime.fromISO(normalized).setZone(timezone);
+    } catch (error) {
+        console.warn(`[TimezoneUtils] Failed to parse reservation timestamp: ${dbTimestamp}`, error);
+        // Fallback to current time in restaurant timezone
+        return DateTime.now().setZone(timezone);
+    }
+}
+
+/**
+ * ✅ CRITICAL: Comprehensive booking time validation
+ * Used by all agents and booking tools for time validation
+ */
+export function validateBookingDateTime(
+    date: string,
+    time: string,
+    timezone: string,
+    openingTime: string,
+    closingTime: string
+): TimeValidationResult {
+    // Validate timezone first
+    if (!isValidTimezone(timezone)) {
+        return { 
+            isValid: false, 
+            reason: 'Invalid restaurant timezone', 
+            isWithinHours: false 
+        };
+    }
+    
+    // Parse and validate date/time format
+    const bookingDateTime = DateTime.fromFormat(`${date} ${time}`, 'yyyy-MM-dd HH:mm', { zone: timezone });
+    if (!bookingDateTime.isValid) {
+        return { 
+            isValid: false, 
+            reason: 'Invalid date/time format', 
+            isWithinHours: false 
+        };
+    }
+    
+    // Check if booking is in the past
+    const now = getRestaurantDateTime(timezone);
+    if (bookingDateTime < now) {
+        return {
+            isValid: false,
+            reason: 'Booking time cannot be in the past',
+            isWithinHours: false,
+            suggestedTime: now.plus({ hours: 1 }).toFormat('HH:mm')
+        };
+    }
+    
+    // Get operating status and validate against restaurant hours
+    const operatingStatus = getRestaurantOperatingStatus(timezone, openingTime, closingTime);
+    const bookingTime = bookingDateTime.toFormat('HH:mm');
+    
+    // For overnight operations, use special validation
+    if (operatingStatus.isOvernightOperation) {
+        const openingMinutes = parseTimeToMinutes(openingTime);
+        const closingMinutes = parseTimeToMinutes(closingTime);
+        const bookingMinutes = bookingDateTime.hour * 60 + bookingDateTime.minute;
+        
+        const isWithinHours = openingMinutes !== null && closingMinutes !== null && 
+            (bookingMinutes >= openingMinutes || bookingMinutes < closingMinutes);
+        
+        return {
+            isValid: true,
+            isWithinHours,
+            isOvernightOperation: true,
+            reason: isWithinHours ? undefined : `Restaurant operates ${openingTime}-${closingTime} (overnight)`
+        };
+    }
+    
+    // Standard operation validation
+    const isWithinHours = isRestaurantOpen(timezone, openingTime, closingTime);
+    
+    return {
+        isValid: true,
+        isWithinHours,
+        isOvernightOperation: false,
+        reason: isWithinHours ? undefined : `Restaurant operates ${openingTime}-${closingTime}`
+    };
+}
+
+/**
+ * ✅ BONUS: Format reservation time for display with timezone awareness
+ * Replaces manual formatting throughout codebase
+ */
+export function formatReservationTime(
+    utcTimestamp: string,
+    timezone: string,
+    language: Language = 'en',
+    format: 'time' | 'date' | 'datetime' | 'date-long' = 'datetime'
+): string {
+    try {
+        const reservationDt = parseReservationDateTime(utcTimestamp, timezone);
+        
+        switch (format) {
+            case 'time':
+                return formatTimeForRestaurant(reservationDt.toFormat('HH:mm'), timezone, language);
+            case 'date':
+                return reservationDt.toFormat('yyyy-MM-dd');
+            case 'date-long':
+                return language === 'ru' 
+                    ? reservationDt.setLocale('ru').toFormat('d MMMM yyyy')
+                    : reservationDt.toFormat('MMMM d, yyyy');
+            case 'datetime':
+            default:
+                const formattedTime = formatTimeForRestaurant(reservationDt.toFormat('HH:mm'), timezone, language);
+                const formattedDate = language === 'ru'
+                    ? reservationDt.setLocale('ru').toFormat('d MMMM')
+                    : reservationDt.toFormat('MMMM d');
+                return `${formattedDate} ${language === 'ru' ? 'в' : 'at'} ${formattedTime}`;
+        }
+    } catch (error) {
+        console.warn(`[TimezoneUtils] Failed to format reservation time: ${utcTimestamp}`, error);
+        return utcTimestamp; // Fallback to original
+    }
 }
 
 // ================================
@@ -348,6 +509,7 @@ export function getRestaurantTimeContext(restaurantTimezone: string) {
 
     return {
         currentTime: now.toJSDate(),
+        currentDate: now.toISODate() || '',
         todayDate: now.toISODate() || '',
         tomorrowDate: now.plus({ days: 1 }).toISODate() || '',
         timezone: restaurantTimezone,

@@ -1,17 +1,56 @@
-// server/services/ai/providers/ai-provider.interface.ts
-// ✅ FIXED: Complete AI provider interface with all utilities
+// server/services/ai/ai-provider.interface.ts
+// AI provider interface with function calling support
 
 import type { AIOptions, ModelInfo } from '../../agents/core/agent.types';
 
-// ===== CORE INTERFACES =====
+// ===== CORE AI PROVIDER INTERFACE =====
 export interface AIProvider {
     generateCompletion(prompt: string, options?: AIOptions): Promise<string>;
     generateStructuredResponse<T>(prompt: string, schema: any, options?: AIOptions): Promise<T>;
+    generateWithFunctions(
+        prompt: string, 
+        tools: FunctionDefinition[], 
+        options?: AIOptions
+    ): Promise<FunctionCallingResponse>;
     isAvailable(): Promise<boolean>;
     getModelInfo(): ModelInfo;
     getProviderName(): string;
 }
 
+// ===== FUNCTION CALLING INTERFACES =====
+export interface FunctionDefinition {
+    type: "function";
+    function: {
+        name: string;
+        description: string;
+        parameters: {
+            type: "object";
+            properties: Record<string, any>;
+            required: string[];
+        };
+    };
+}
+
+export interface FunctionCall {
+    id: string;
+    function: {
+        name: string;
+        arguments: string;
+    };
+}
+
+export interface FunctionCallingResponse {
+    content: string | null;
+    functionCalls: FunctionCall[];
+    model?: string;
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+    };
+}
+
+// ===== FALLBACK CHAIN INTERFACE =====
 export interface AIFallbackChain {
     primary: AIProvider;
     fallbacks: AIProvider[];
@@ -27,7 +66,7 @@ export interface AIProviderFactory {
     createFallbackChain(primary: AIProvider, fallbacks: AIProvider[]): AIFallbackChain;
 }
 
-// ===== CONFIGURATION INTERFACES =====
+// ===== PROVIDER CONFIGURATIONS =====
 export interface ClaudeConfig {
     apiKey: string;
     models: {
@@ -84,7 +123,7 @@ export interface AIError extends Error {
     originalError?: any;
 }
 
-// ===== CONTEXT AND STRATEGY INTERFACES =====
+// ===== CONTEXT AND STRATEGY =====
 export type AIUsageContext = 
     | 'overseer' 
     | 'language-detection' 
@@ -104,14 +143,13 @@ export interface ProviderSelectionStrategy {
 // ===== UTILITY FUNCTIONS =====
 
 /**
- * ✅ FIXED: Categorize AI errors for proper handling
+ * Categorize AI errors for proper handling
  */
 export function categorizeAIError(error: any, provider: string): AIError {
     const message = error.message || error.toString();
     let errorType: AIError['errorType'] = 'SYSTEM_ERROR';
     let retryable = false;
 
-    // Categorize based on error message
     if (message.includes('429') || message.includes('rate limit')) {
         errorType = 'RATE_LIMIT';
         retryable = true;
@@ -139,7 +177,7 @@ export function categorizeAIError(error: any, provider: string): AIError {
 }
 
 /**
- * ✅ FIXED: Check if error should trigger retry
+ * Check if error should trigger retry
  */
 export function isRetryableError(error: any): boolean {
     if (error.retryable !== undefined) {
@@ -158,7 +196,7 @@ export function isRetryableError(error: any): boolean {
 }
 
 /**
- * ✅ FIXED: Generate safe default responses when AI fails
+ * Generate safe default responses when AI fails
  */
 export function generateSafeDefault(context: AIUsageContext): string {
     const defaults = {
@@ -242,5 +280,4 @@ export const CONTEXT_MODEL_MAPPING: Record<AIUsageContext, { preferred: string; 
     'guardrails': { preferred: 'haiku', fallback: 'gpt-4o-mini' }
 };
 
-// ===== EXPORTS =====
 export default AIProvider;

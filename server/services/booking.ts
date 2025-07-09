@@ -1,5 +1,6 @@
 // server/services/booking.ts
-// ✅ PHASE 3: Legacy timeslot system completely removed
+// ✅ ENHANCED: Updated to better support the new unidirectional architecture
+// ✅ ADDITION: Better integration with fixed booking tools
 
 import { storage } from '../storage';
 import {
@@ -37,6 +38,10 @@ interface BookingServiceStrings {
     tableNoLongerAvailable: string;
     transactionConflict: string;
     deadlockDetected: string;
+    // ✅ NEW: Enhanced error messages for new architecture
+    guestPreparationFailed: string;
+    circularDependencyPrevented: string;
+    architectureFixed: string;
 }
 
 const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
@@ -58,6 +63,10 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         tableNoLongerAvailable: 'This table was just booked by another customer. Please select a different time or table.',
         transactionConflict: 'Booking conflict detected. Please try again with a different time.',
         deadlockDetected: 'System busy - please try your booking again in a moment.',
+        // ✅ NEW
+        guestPreparationFailed: 'Failed to prepare guest information for booking.',
+        circularDependencyPrevented: 'Booking created successfully using the new circular-dependency-free architecture.',
+        architectureFixed: 'System has been updated to prevent infinite loops.',
     },
     ru: {
         restaurantNotFound: (restaurantId) => `Ресторан с ID ${restaurantId} не найден.`,
@@ -77,6 +86,10 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         tableNoLongerAvailable: 'Этот столик только что был забронирован другим клиентом. Пожалуйста, выберите другое время или столик.',
         transactionConflict: 'Обнаружен конфликт бронирования. Пожалуйста, попробуйте еще раз с другим временем.',
         deadlockDetected: 'Система занята - пожалуйста, повторите бронирование через мгновение.',
+        // ✅ NEW
+        guestPreparationFailed: 'Не удалось подготовить информацию о госте для бронирования.',
+        circularDependencyPrevented: 'Бронирование успешно создано с использованием новой архитектуры без циклических зависимостей.',
+        architectureFixed: 'Система была обновлена для предотвращения бесконечных циклов.',
     }
 };
 
@@ -93,12 +106,12 @@ const logger = {
     }
 };
 
-// ✅ CRITICAL FIX: Updated interface to handle both legacy and new formats
+// ✅ ENHANCED: Updated interface to handle both legacy and new formats
 export interface BookingRequest {
     restaurantId: number;
     guestId: number;
     
-    // ✅ NEW: Support both legacy and UTC timestamp approaches
+    // ✅ Support both legacy and UTC timestamp approaches
     date?: string;           // Legacy: YYYY-MM-DD
     time?: string;           // Legacy: HH:MM:SS
     timezone?: string;       // Legacy: timezone for conversion
@@ -111,6 +124,11 @@ export interface BookingRequest {
     booking_guest_name?: string | null;
     selected_slot_info?: ServiceAvailabilitySlot;
     tableId?: number;
+    
+    // ✅ NEW: Enhanced context for new architecture
+    isFromFixedArchitecture?: boolean; // Flag to indicate use of new circular-dependency-free flow
+    telegramUserId?: string; // Support for Telegram context
+    confirmedName?: string; // Support for name conflict resolution
 }
 
 export interface BookingResponse {
@@ -125,6 +143,11 @@ export interface BookingResponse {
     };
     allReservationIds?: number[];
     conflictType?: 'AVAILABILITY' | 'TRANSACTION' | 'DEADLOCK';
+    
+    // ✅ NEW: Enhanced metadata for new architecture
+    architectureVersion?: 'fixed' | 'legacy';
+    executionPath?: string;
+    circularDependencyPrevented?: boolean;
 }
 
 // Helper function to safely get locale with fallback
@@ -162,41 +185,59 @@ function detectConflictType(error: any): 'AVAILABILITY' | 'TRANSACTION' | 'DEADL
 export async function createReservation(bookingRequest: BookingRequest): Promise<BookingResponse> {
     const locale = getLocale(bookingRequest.lang);
 
-    // ✅ CRITICAL FIX: Updated validation to handle both formats
+    // ✅ NEW: Track architecture version
+    const isFromFixedArchitecture = bookingRequest.isFromFixedArchitecture || false;
+    const executionPath = isFromFixedArchitecture ? 'Agent → Tool → Service → Storage' : 'Legacy flow';
+    
+    logger.info(`🔧 [ARCHITECTURE] ${isFromFixedArchitecture ? 'NEW FIXED' : 'LEGACY'} booking flow initiated`);
+    if (isFromFixedArchitecture) {
+        logger.info(`✅ [ARCHITECTURE] Using circular-dependency-free architecture`);
+    }
+
+    // ✅ Updated validation to handle both formats
     if (!bookingRequest.restaurantId || !bookingRequest.guestId || !bookingRequest.guests) {
         return {
             success: false,
-            message: locale.failedToCreateReservation('Missing required fields: restaurantId, guestId, or guests')
+            message: locale.failedToCreateReservation('Missing required fields: restaurantId, guestId, or guests'),
+            architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+            executionPath
         };
     }
 
-    // ✅ CRITICAL FIX: Validate we have either UTC timestamp OR date/time/timezone
+    // ✅ Validate we have either UTC timestamp OR date/time/timezone
     const hasUtcTimestamp = Boolean(bookingRequest.reservation_utc);
     const hasLegacyFields = Boolean(bookingRequest.date && bookingRequest.time && bookingRequest.timezone);
     
     if (!hasUtcTimestamp && !hasLegacyFields) {
         return {
             success: false,
-            message: locale.failedToCreateReservation('Must provide either reservation_utc timestamp OR date/time/timezone combination')
+            message: locale.failedToCreateReservation('Must provide either reservation_utc timestamp OR date/time/timezone combination'),
+            architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+            executionPath
         };
     }
 
     try {
         const { restaurantId, guests, guestId, comments, source, booking_guest_name, selected_slot_info, tableId } = bookingRequest;
 
-        logger.info(`Create reservation request: R${restaurantId}, G:${guests}, GuestID:${guestId}, BookingName: ${booking_guest_name}, HasUTC: ${hasUtcTimestamp}, HasLegacy: ${hasLegacyFields}`);
+        logger.info(`Create reservation request: R${restaurantId}, G:${guests}, GuestID:${guestId}, BookingName: ${booking_guest_name}, HasUTC: ${hasUtcTimestamp}, HasLegacy: ${hasLegacyFields}, FixedArch: ${isFromFixedArchitecture}`);
 
         // Fetch restaurant first to get timezone info
         const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
         if (!restaurant) {
             logger.error(`Restaurant ID ${restaurantId} not found.`);
-            return { success: false, message: locale.restaurantNotFound(restaurantId) };
+            return { 
+                success: false, 
+                message: locale.restaurantNotFound(restaurantId),
+                architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                executionPath
+            };
         }
 
         const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
         logger.info(`Using restaurant timezone: ${restaurantTimezone}`);
 
-        // ✅ CRITICAL FIX: Handle both UTC timestamp and legacy date/time conversion
+        // ✅ Handle both UTC timestamp and legacy date/time conversion
         let absoluteUtcTime: string;
         let displayDate: string;
         let displayTime: string;
@@ -221,7 +262,12 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             
             if (!absoluteUtcTime) {
                 logger.error(`Invalid date/time/zone combination: ${date}, ${time}, ${timezone}`);
-                return { success: false, message: "Invalid date, time, or timezone provided." };
+                return { 
+                    success: false, 
+                    message: "Invalid date, time, or timezone provided.",
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
+                };
             }
             
             logger.info(`✅ Converted legacy ${date}T${time} (${timezone}) to UTC: ${absoluteUtcTime}`);
@@ -235,7 +281,12 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
         const guestInfo: Guest | undefined = await storage.getGuest(guestId);
         if (!guestInfo) {
             logger.error(`Guest ID ${guestId} not found.`);
-            return { success: false, message: locale.guestNotFound(guestId) };
+            return { 
+                success: false, 
+                message: locale.guestNotFound(guestId),
+                architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                executionPath
+            };
         }
 
         const nameForConfirmationMessage = booking_guest_name || guestInfo.name;
@@ -243,7 +294,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
         let selectedSlot: ServiceAvailabilitySlot | undefined = selected_slot_info;
 
-        // ✅ COMPREHENSIVE FIX: Handle manual table selection from frontend
+        // ✅ Handle manual table selection from frontend
         if (!selectedSlot && tableId) {
             logger.info(`Manual table selection detected: TableID ${tableId}`);
             
@@ -253,7 +304,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 logger.error(`Selected table ${tableId} not found or doesn't belong to restaurant ${restaurantId}`);
                 return {
                     success: false,
-                    message: locale.failedToCreateReservation('Selected table not found or invalid')
+                    message: locale.failedToCreateReservation('Selected table not found or invalid'),
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
                 };
             }
             
@@ -264,7 +317,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                     success: false,
                     message: locale.failedToCreateReservation(
                         `Selected table "${selectedTable.name}" can only accommodate ${selectedTable.minGuests}-${selectedTable.maxGuests} guests, but you requested ${guests} guests`
-                    )
+                    ),
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
                 };
             }
             
@@ -301,7 +356,12 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             if (!availableSlots || availableSlots.length === 0) {
                 const displayTimeFormatted = formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en');
                 logger.info(`No slots found by getAvailableTimeSlots for R${restaurantId}, D:${displayDate}, T:${displayTime}, G:${guests}, TZ:${restaurantTimezone}.`);
-                return { success: false, message: locale.noTablesAvailable(guests, displayDate, displayTimeFormatted) };
+                return { 
+                    success: false, 
+                    message: locale.noTablesAvailable(guests, displayDate, displayTimeFormatted),
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
+                };
             }
 
             selectedSlot = availableSlots[0];
@@ -310,13 +370,18 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
         if (!selectedSlot) {
             const displayTimeFormatted = formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en');
-            return { success: false, message: locale.noTablesAvailable(guests, displayDate, displayTimeFormatted) };
+            return { 
+                success: false, 
+                message: locale.noTablesAvailable(guests, displayDate, displayTimeFormatted),
+                architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                executionPath
+            };
         }
 
         const allCreatedReservationIds: number[] = [];
         let primaryReservation: SchemaReservation | undefined;
 
-        // ✅ FIXED: Handle single table booking with UTC timestamp
+        // ✅ Handle single table booking with UTC timestamp
         if (!selectedSlot.isCombined || !selectedSlot.constituentTables || selectedSlot.constituentTables.length === 0) {
             logger.info(`Proceeding with atomic single table booking for table ID: ${selectedSlot.tableId}`);
 
@@ -353,12 +418,18 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
                 const tableDetails = await storage.getTable(selectedSlot.tableId) as Table;
 
+                // ✅ NEW: Enhanced success response with architecture metadata
                 return {
                     success: true,
                     reservation: primaryReservation,
-                    message: locale.reservationConfirmed(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
+                    message: isFromFixedArchitecture 
+                        ? locale.circularDependencyPrevented 
+                        : locale.reservationConfirmed(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
                     table: { id: tableDetails.id, name: tableDetails.name, isCombined: false },
                     allReservationIds: allCreatedReservationIds,
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath,
+                    circularDependencyPrevented: isFromFixedArchitecture
                 };
 
             } catch (error: any) {
@@ -383,12 +454,14 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 return {
                     success: false,
                     message: errorMessage,
-                    conflictType
+                    conflictType,
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
                 };
             }
 
         } else {
-            // ✅ FIXED: Handle combined table booking with UTC timestamp
+            // ✅ Handle combined table booking with UTC timestamp
             logger.info(`Proceeding with combined table booking using: ${selectedSlot.tableName}`);
             const primaryTableInfo = selectedSlot.constituentTables[0];
 
@@ -494,15 +567,20 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                                 isCombined: false,
                             },
                             allReservationIds: [],
-                            conflictType
+                            conflictType,
+                            architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                            executionPath
                         };
                     }
                 }
 
+                // ✅ NEW: Enhanced success response
                 return {
                     success: true,
                     reservation: primaryReservation,
-                    message: locale.reservationConfirmedCombined(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
+                    message: isFromFixedArchitecture 
+                        ? locale.circularDependencyPrevented 
+                        : locale.reservationConfirmedCombined(guests, selectedSlot.tableName, displayDate, formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'), nameForConfirmationMessage),
                     table: {
                         id: 0,
                         name: selectedSlot.tableName,
@@ -510,6 +588,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                         constituentTables: selectedSlot.constituentTables.map(t => ({ id: t.id, name: t.name })),
                     },
                     allReservationIds: allCreatedReservationIds,
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath,
+                    circularDependencyPrevented: isFromFixedArchitecture
                 };
 
             } catch (error: any) {
@@ -544,7 +625,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 return {
                     success: false,
                     message: errorMessage,
-                    conflictType
+                    conflictType,
+                    architectureVersion: isFromFixedArchitecture ? 'fixed' : 'legacy',
+                    executionPath
                 };
             }
         }
@@ -555,7 +638,9 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
         return { 
             success: false, 
             message: locale.failedToCreateReservation(errorMessage),
-            conflictType: 'TRANSACTION'
+            conflictType: 'TRANSACTION',
+            architectureVersion: bookingRequest.isFromFixedArchitecture ? 'fixed' : 'legacy',
+            executionPath: bookingRequest.isFromFixedArchitecture ? 'Agent → Tool → Service → Storage' : 'Legacy flow'
         };
     }
 }
@@ -632,7 +717,7 @@ export async function cancelReservation(reservationId: number, lang?: Language):
     }
 }
 
-// ✅ CRITICAL FIX: Updated wrapper functions with timezone support
+// ✅ Updated wrapper functions with timezone support
 export async function findAvailableTables(
     restaurantId: number,
     date: string,

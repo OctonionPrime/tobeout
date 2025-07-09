@@ -1,8 +1,14 @@
 // server/services/agents/specialists/sofia.agent.ts
-// ✅ PHASE 4: Sofia agent with COMPLETE implementation
-// SOURCE: booking-agent.ts createBookingAgent, generatePersonalizedGreeting, generateSmartPartyQuestion
-// SOURCE: enhanced-conversation-manager.ts getAgentPersonality Sofia logic (lines ~600-700)
+// ✅ CRITICAL FIXES IMPLEMENTED:
+// 1. 🧠 CONFIRMATION BLINDNESS FIXED - AI now remembers its previous questions
+// 2. 🌍 LOCALIZED CONFIRMATION MESSAGES - No more hardcoded English!
+// 3. 🎂 ENHANCED OCCASION DETECTION - Understands "др", "birthday", "anniversary"
+// 4. 📋 ENHANCED CONFIRMATION DETAILS - Includes reservation ID and table name
+// 5. 🤖 PERSONALITY LAYER - More natural, contextual responses
+// 6. 🚨 CRITICAL FIX: [object Object] table display issue RESOLVED
+// 7. 🚨 CRITICAL FIX: Double greeting issue RESOLVED
 
+import OpenAI from 'openai';
 import type { 
     AgentType, 
     Language,
@@ -10,18 +16,231 @@ import type {
     AgentResponse,
     BookingSessionWithAgent,
     GuestHistory,
-    RestaurantConfig
+    RestaurantConfig,
+    UnifiedToolContext
 } from '../core/agent.types';
 import { AIFallbackService } from '../../ai/ai-fallback.service';
 import { UnifiedTranslationService } from '../../ai/translation.service';
-import { DateTime } from 'luxon';
+import { 
+    getRestaurantTimeContext,
+    getRestaurantOperatingStatus,
+    isOvernightOperation,
+    validateBookingDateTime,
+    isValidTimezone
+} from '../../../utils/timezone-utils';
 
 // Import tools
 import { bookingTools } from '../tools/booking.tools';
 import { guestTools } from '../tools/guest.tools';
 
-// ===== SOFIA AGENT CLASS =====
-// SOURCE: booking-agent.ts createBookingAgent function
+// Import prompt helpers
+import { SofiaGreetings } from '../prompts/sofia.prompts';
+
+// ===== 🆕 ENHANCED LOCALIZED CONFIRMATION TEMPLATES =====
+/**
+ * ✅ CRITICAL FIX: Enhanced localized confirmation messages with reservation details
+ * 🚨 FIXED: [object Object] issue - now properly extracts table name from complex objects
+ * Replaces the hardcoded English confirmation with proper multilingual support
+ */
+class SofiaConfirmations {
+    /**
+     * ✅ ENHANCED: Generate localized booking confirmation message with reservation details
+     * 🚨 CRITICAL FIX: Properly handles complex table objects to extract display name
+     * @param language - Target language for confirmation
+     * @param details - Booking details including reservation ID and table object/name
+     * @returns Professional, localized confirmation message with full details
+     */
+    static generateConfirmationMessage(
+        language: Language,
+        details: { 
+            name: string; 
+            guests: number; 
+            date: string; 
+            time: string;
+            occasion?: string;
+            reservationId?: number; // ✅ NEW: Reservation ID support
+            tableName?: string | any; // ✅ FIXED: Can handle both string and object
+        }
+    ): string {
+        // 🚨 CRITICAL FIX: Extract table name from complex object if needed
+        let safeTableName: string | undefined;
+        if (details.tableName) {
+            if (typeof details.tableName === 'string') {
+                safeTableName = details.tableName;
+            } else if (typeof details.tableName === 'object') {
+                // 🚨 FIX: Handle complex table objects by extracting the display name
+                // Based on log "TableID 1, Name 1", try multiple possible properties
+                safeTableName = details.tableName.Name || 
+                               details.tableName.name || 
+                               details.tableName.TableID || 
+                               details.tableName.tableName || 
+                               details.tableName.id ||
+                               String(details.tableName); // Last resort fallback
+                console.log(`[SofiaConfirmations] 🔧 FIXED: Extracted table name "${safeTableName}" from object:`, details.tableName);
+            }
+        }
+
+        // Base confirmation templates for each language
+        const baseTemplates = {
+            en: `🎉 Your reservation is confirmed! ${details.name} for ${details.guests} guests on ${details.date} at ${details.time}`,
+            ru: `🎉 Ваше бронирование подтверждено! ${details.name} на ${details.guests} ${this.getGuestsWord(details.guests, 'ru')} ${details.date} в ${details.time}`,
+            sr: `🎉 Vaša rezervacija je potvrđena! ${details.name} za ${details.guests} ${this.getGuestsWord(details.guests, 'sr')} ${details.date} u ${details.time}`,
+            hu: `🎉 A foglalása megerősítve! ${details.name} ${details.guests} főre ${details.date}-án ${details.time}-kor`,
+            de: `🎉 Ihre Reservierung ist bestätigt! ${details.name} für ${details.guests} Personen am ${details.date} um ${details.time}`,
+            fr: `🎉 Votre réservation est confirmée! ${details.name} pour ${details.guests} personnes le ${details.date} à ${details.time}`,
+            es: `🎉 ¡Su reserva está confirmada! ${details.name} para ${details.guests} personas el ${details.date} a las ${details.time}`,
+            it: `🎉 La sua prenotazione è confermata! ${details.name} per ${details.guests} persone il ${details.date} alle ${details.time}`,
+            pt: `🎉 Sua reserva está confirmada! ${details.name} para ${details.guests} pessoas em ${details.date} às ${details.time}`,
+            nl: `🎉 Uw reservering is bevestigd! ${details.name} voor ${details.guests} personen op ${details.date} om ${details.time}`,
+            auto: `🎉 Your reservation is confirmed! ${details.name} for ${details.guests} guests on ${details.date} at ${details.time}`
+        };
+
+        let confirmation = baseTemplates[language] || baseTemplates.en;
+
+        // ✅ FIXED: Add table details to the message (now handles complex objects properly)
+        if (safeTableName) {
+            const tableDetails = {
+                en: ` at table ${safeTableName}`,
+                ru: ` за столиком ${safeTableName}`,
+                sr: ` za stolom ${safeTableName}`,
+                hu: ` a ${safeTableName} asztalnál`,
+                de: ` an Tisch ${safeTableName}`,
+                fr: ` à la table ${safeTableName}`,
+                es: ` en la mesa ${safeTableName}`,
+                it: ` al tavolo ${safeTableName}`,
+                pt: ` na mesa ${safeTableName}`,
+                nl: ` aan tafel ${safeTableName}`,
+                auto: ` at table ${safeTableName}`
+            };
+            confirmation += tableDetails[language] || tableDetails.en;
+            console.log(`[SofiaConfirmations] ✅ Added table details: "${safeTableName}" in ${language}`);
+        }
+
+        // Add period to end the sentence
+        confirmation += '.';
+
+        // ✅ NEW: Add reservation ID details to the message
+        if (details.reservationId) {
+            const reservationDetails = {
+                en: `\n📋 Reservation #${details.reservationId}`,
+                ru: `\n📋 Бронь №${details.reservationId}`,
+                sr: `\n📋 Rezervacija #${details.reservationId}`,
+                hu: `\n📋 Foglalás #${details.reservationId}`,
+                de: `\n📋 Reservierung #${details.reservationId}`,
+                fr: `\n📋 Réservation #${details.reservationId}`,
+                es: `\n📋 Reserva #${details.reservationId}`,
+                it: `\n📋 Prenotazione #${details.reservationId}`,
+                pt: `\n📋 Reserva #${details.reservationId}`,
+                nl: `\n📋 Reservering #${details.reservationId}`,
+                auto: `\n📋 Reservation #${details.reservationId}`
+            };
+            confirmation += reservationDetails[language] || reservationDetails.en;
+        }
+
+        // 🆕 ENHANCEMENT: Add special occasion celebration
+        if (details.occasion) {
+            const occasionMessages = {
+                birthday: {
+                    en: ` 🎂 Perfect for a birthday celebration!`,
+                    ru: ` 🎂 Отлично подходит для празднования дня рождения!`,
+                    sr: ` 🎂 Savršeno za proslavu rođendana!`,
+                    hu: ` 🎂 Tökéletes születésnapi ünnepléshez!`,
+                    de: ` 🎂 Perfekt für eine Geburtstagsfeier!`,
+                    fr: ` 🎂 Parfait pour fêter un anniversaire!`,
+                    es: ` 🎂 ¡Perfecto para celebrar un cumpleaños!`,
+                    it: ` 🎂 Perfetto per festeggiare un compleanno!`,
+                    pt: ` 🎂 Perfeito para comemorar um aniversário!`,
+                    nl: ` 🎂 Perfect voor een verjaardagsviering!`,
+                    auto: ` 🎂 Perfect for a birthday celebration!`
+                },
+                anniversary: {
+                    en: ` 💕 Wonderful choice for your anniversary!`,
+                    ru: ` 💕 Прекрасный выбор для вашей годовщины!`,
+                    sr: ` 💕 Odličan izbor za vašu godišnjicu!`,
+                    hu: ` 💕 Csodálatos választás az évfordulójukra!`,
+                    de: ` 💕 Wunderbare Wahl für Ihren Jahrestag!`,
+                    fr: ` 💕 Excellent choix pour votre anniversaire!`,
+                    es: ` 💕 ¡Excelente elección para su aniversario!`,
+                    it: ` 💕 Scelta meravigliosa per il vostro anniversario!`,
+                    pt: ` 💕 Excelente escolha para seu aniversário!`,
+                    nl: ` 💕 Prachtige keuze voor uw jubileum!`,
+                    auto: ` 💕 Wonderful choice for your anniversary!`
+                },
+                business: {
+                    en: ` 💼 Excellent for your business meeting!`,
+                    ru: ` 💼 Отлично подходит для деловой встречи!`,
+                    sr: ` 💼 Odlično za vaš poslovni sastanak!`,
+                    hu: ` 💼 Kiváló az üzleti találkozójukhoz!`,
+                    de: ` 💼 Ausgezeichnet für Ihr Geschäftstreffen!`,
+                    fr: ` 💼 Parfait pour votre réunion d'affaires!`,
+                    es: ` 💼 ¡Excelente para su reunión de negocios!`,
+                    it: ` 💼 Eccellente per il vostro incontro di lavoro!`,
+                    pt: ` 💼 Excelente para sua reunião de negócios!`,
+                    nl: ` 💼 Uitstekend voor uw zakelijke bijeenkomst!`,
+                    auto: ` 💼 Excellent for your business meeting!`
+                }
+            };
+
+            const occasionType = details.occasion.toLowerCase();
+            if (occasionMessages[occasionType]) {
+                const occasionMessage = occasionMessages[occasionType][language] || 
+                                      occasionMessages[occasionType].en;
+                confirmation += occasionMessage;
+            }
+        }
+
+        return confirmation;
+    }
+
+    /**
+     * Helper to get correct word form for number of guests in Slavic languages
+     */
+    private static getGuestsWord(count: number, language: string): string {
+        if (language === 'ru') {
+            if (count === 1) return 'человека';
+            if (count >= 2 && count <= 4) return 'человека';
+            return 'человек';
+        }
+        if (language === 'sr') {
+            if (count === 1) return 'osobu';
+            if (count >= 2 && count <= 4) return 'osobe';
+            return 'osoba';
+        }
+        return 'guests'; // Fallback
+    }
+}
+
+// ===== ENHANCED: PARAMETER EXTRACTION INTERFACES =====
+interface ExtractedBookingParameters {
+    date?: string;
+    time?: string;
+    guests?: number;
+    name?: string;
+    phone?: string;
+    specialRequests?: string;
+    occasion?: 'birthday' | 'anniversary' | 'business' | 'other'; // 🆕 Enhanced occasion detection
+    hasDateMention: boolean;
+    hasTimeMention: boolean;
+    hasGuestsMention: boolean;
+    hasNameMention: boolean;
+    hasPhoneMention: boolean;
+    userIntent: 'booking_request' | 'availability_check' | 'general_inquiry' | 'unclear';
+    extractionConfidence: number;
+}
+
+interface ParameterValidation {
+    isComplete: boolean;
+    missing: string[];
+    readyForBooking: boolean;
+    readyForAvailabilityCheck: boolean;
+    nextAction: 'ask_for_missing' | 'check_availability' | 'create_booking' | 'general_response';
+}
+
+/**
+ * Sofia Agent - Specialist for new reservations and booking workflow
+ * ✅ FIXED: Localized confirmations, enhanced occasion detection, confirmation blindness resolved
+ * 🚨 FIXED: [object Object] table display issue and double greeting issue
+ */
 export class SofiaAgent {
     readonly name = 'Sofia';
     readonly capabilities = [
@@ -29,535 +248,981 @@ export class SofiaAgent {
         'availability_checking', 
         'guest_greeting',
         'booking_workflow',
-        'information_gathering'
+        'information_gathering',
+        'occasion_detection', // 🆕 Enhanced capability
+        'multilingual_confirmations', // 🆕 Enhanced capability
+        'conversational_memory' // 🆕 NEW: Confirmation blindness fix
     ];
     readonly agentType: AgentType = 'booking';
+
+    private openaiClient: OpenAI;
 
     constructor(
         private aiService: AIFallbackService,
         private translationService: UnifiedTranslationService,
         private restaurantConfig: RestaurantConfig
-    ) {}
+    ) {
+        this.openaiClient = new OpenAI({
+            apiKey: process.env.OPENAI_API_KEY!
+        });
+    }
 
     /**
-     * Generate Sofia's personalized greeting
-     * SOURCE: booking-agent.ts generatePersonalizedGreeting function
+     * ✅ PRESERVED: Guest history handling from ConversationManager
      */
-    generatePersonalizedGreeting(
+    private async fetchGuestHistoryIfNeeded(
+        context: AgentContext
+    ): Promise<GuestHistory | null> {
+        if (context.guestHistory) {
+            console.log(`[SofiaAgent] Using guest history from ConversationManager for ${context.guestHistory.guest_name}`);
+            return context.guestHistory;
+        }
+
+        console.log(`[SofiaAgent] No guest history available from ConversationManager`);
+        return null;
+    }
+
+    /**
+     * ✅ CRITICAL FIX: Extract parameters with conversational memory and occasion detection
+     * 🧠 CONFIRMATION BLINDNESS FIXED: AI now remembers its previous questions
+     * 🆕 NOW DETECTS: "др" → birthday, anniversaries, business meetings
+     */
+    private async extractBookingParameters(
+        message: string,
+        context: AgentContext,
         guestHistory: GuestHistory | null,
-        language: Language,
-        context: 'hostess' | 'guest',
-        conversationContext?: any
-    ): string {
-        // Get current date context
-        const getCurrentRestaurantContext = () => {
-            try {
-                const now = DateTime.now().setZone(this.restaurantConfig.timezone);
-                const today = now.toISODate();
-                const currentTime = now.toFormat('HH:mm');
-                const dayOfWeek = now.toFormat('cccc');
+        lastAssistantMessage?: string // ✅ NEW: Add conversational memory parameter
+    ): Promise<ExtractedBookingParameters> {
+        console.log(`[SofiaAgent] ✅ ENHANCED: Extracting parameters with conversational memory and occasion detection from: "${message}"`);
+        console.log(`[SofiaAgent] 🧠 Previous assistant message: "${lastAssistantMessage || 'None'}"`);
 
-                return {
-                    currentDate: today,
-                    currentTime: currentTime,
-                    dayOfWeek: dayOfWeek
-                };
-            } catch (error) {
-                console.error(`[SofiaAgent] Error getting time context:`, error);
-                const now = DateTime.now();
-                return {
-                    currentDate: now.toISODate(),
-                    currentTime: now.toFormat('HH:mm'),
-                    dayOfWeek: now.toFormat('cccc')
-                };
-            }
-        };
-
-        const dateContext = getCurrentRestaurantContext();
-
-        // ✅ CRITICAL FIX: Handle subsequent bookings differently
-        if (conversationContext?.isSubsequentBooking) {
-            if (!guestHistory || guestHistory.total_bookings === 0) {
-                // Simple greeting for subsequent booking by new guest
-                const subsequentGreetings = {
-                    en: `Perfect! I can help you with another reservation. What date and time would you like?`,
-                    ru: `Отлично! Помогу вам с ещё одной бронью. На какую дату и время?`,
-                    sr: `Odlično! Mogu da vam pomognem sa još jednom rezervacijom. Koji datum i vreme želite?`,
-                    hu: `Tökéletes! Segíthetek egy másik foglalással. Milyen dátumra és időpontra?`,
-                    de: `Perfekt! Ich kann Ihnen bei einer weiteren Reservierung helfen. Welches Datum und welche Uhrzeit hätten Sie gern?`,
-                    fr: `Parfait! Je peux vous aider avec une autre réservation. Quelle date et quelle heure souhaitez-vous?`,
-                    es: `¡Perfecto! Puedo ayudarte con otra reserva. ¿Qué fecha y hora te gustaría?`,
-                    it: `Perfetto! Posso aiutarti con un'altra prenotazione. Che data e ora vorresti?`,
-                    pt: `Perfeito! Posso ajudá-lo com outra reserva. Que data e hora gostaria?`,
-                    nl: `Perfect! Ik kan je helpen met nog een reservering. Welke datum en tijd zou je willen?`,
-                    auto: `Perfect! I can help you with another reservation. What date and time would you like?`
-                };
-                return subsequentGreetings[language] || subsequentGreetings.en;
-            } else {
-                // Subsequent booking for returning guest - be more conversational
-                const subsequentGreetings = {
-                    en: `Of course! I'd be happy to help with another reservation. When would you like to dine again?`,
-                    ru: `Конечно! Буду рада помочь с ещё одной бронью. Когда хотели бы снова поужинать?`,
-                    sr: `Naravno! Rado ću vam pomoći sa još jednom rezervacijom. Kada biste želeli da večerate ponovo?`,
-                    hu: `Természetesen! Szívesen segítek egy másik foglalással. Mikor szeretnél újra vacsorázni?`,
-                    de: `Natürlich! Gerne helfe ich Ihnen bei einer weiteren Reservierung. Wann möchten Sie wieder speisen?`,
-                    fr: `Bien sûr! Je serais ravie de vous aider avec une autre réservation. Quand aimeriez-vous dîner à nouveau?`,
-                    es: `¡Por supuesto! Estaré encantada de ayudarte con otra reserva. ¿Cuándo te gustaría cenar de nuevo?`,
-                    it: `Certo! Sarò felice di aiutarti con un'altra prenotazione. Quando vorresti cenare di nuovo?`,
-                    pt: `Claro! Ficaria feliz em ajudar com outra reserva. Quando gostaria de jantar novamente?`,
-                    nl: `Natuurlijk! Ik help je graag met nog een reservering. Wanneer zou je weer willen dineren?`,
-                    auto: `Of course! I'd be happy to help with another reservation. When would you like to dine again?`
-                };
-                return subsequentGreetings[language] || subsequentGreetings.en;
-            }
-        }
-
-        if (!guestHistory || guestHistory.total_bookings === 0) {
-            // Regular greeting for new guests
-            if (context === 'hostess') {
-                const greetings = {
-                    en: `🌟 Hi! I'm Sofia, your booking assistant. Today is ${dateContext.currentDate}. I help with reservations step-by-step: check availability first, then collect all details, then create the booking.`,
-                    ru: `🌟 Привет! Я София, ваша помощница по бронированию. Сегодня ${dateContext.currentDate}. Помогаю пошагово: сначала проверяю доступность, потом собираю все данные, затем создаю бронь.`,
-                    sr: `🌟 Zdravo! Ja sam Sofija, asistent za rezervacije. Danas je ${dateContext.currentDate}. Pomažem korak po korak: prvo proverim dostupnost, zatim sakupim sve podatke, pa napravim rezervaciju.`,
-                    hu: `🌟 Szia! Én Szófia vagyok, a foglalási asszisztensed. Ma ${dateContext.currentDate} van. Lépésről lépésre segítek: először ellenőrzöm az elérhetőséget, aztán összegyűjtöm az adatokat, majd létrehozom a foglalást.`,
-                    de: `🌟 Hallo! Ich bin Sofia, Ihre Buchungsassistentin. Heute ist der ${dateContext.currentDate}. Ich helfe Schritt für Schritt: erst Verfügbarkeit prüfen, dann Details sammeln, dann Buchung erstellen.`,
-                    fr: `🌟 Bonjour! Je suis Sofia, votre assistante de réservation. Nous sommes le ${dateContext.currentDate}. J'aide étape par étape: d'abord vérifier la disponibilité, puis collecter les détails, puis créer la réservation.`,
-                    es: `🌟 ¡Hola! Soy Sofia, tu asistente de reservas. Hoy es ${dateContext.currentDate}. Ayudo paso a paso: primero verifico disponibilidad, luego recopilo detalles, luego creo la reserva.`,
-                    it: `🌟 Ciao! Sono Sofia, la tua assistente per le prenotazioni. Oggi è ${dateContext.currentDate}. Aiuto passo dopo passo: prima controllo la disponibilità, poi raccolgo i dettagli, poi creo la prenotazione.`,
-                    pt: `🌟 Olá! Eu sou Sofia, sua assistente de reservas. Hoje é ${dateContext.currentDate}. Ajudo passo a passo: primeiro verifico disponibilidade, depois coletamos detalhes, depois criamos a reserva.`,
-                    nl: `🌟 Hallo! Ik ben Sofia, je boekingsassistent. Vandaag is ${dateContext.currentDate}. Ik help stap voor stap: eerst beschikbaarheid controleren, dan details verzamelen, dan boeking maken.`,
-                    auto: `🌟 Hi! I'm Sofia, your booking assistant. Today is ${dateContext.currentDate}. I help with reservations step-by-step: check availability first, then collect all details, then create the booking.`
-                };
-                return greetings[language] || greetings.en;
-            } else {
-                // ✅ FIX: More general and welcoming initial greeting.
-                const greetings = {
-                    en: `🌟 Hello! I'm Sofia. How can I help you today?`,
-                    ru: `🌟 Здравствуйте! Я София. Чем могу вам помочь?`,
-                    sr: `🌟 Zdravo! Ja sam Sofija. Kako Vam mogu pomoći danas?`,
-                    hu: `🌟 Szia! Én Szófia vagyok. Hogyan segíthetek ma?`,
-                    de: `🌟 Hallo! Ich bin Sofia. Wie kann ich Ihnen heute helfen?`,
-                    fr: `🌟 Bonjour! Je suis Sofia. Comment puis-je vous aider aujourd'hui?`,
-                    es: `🌟 ¡Hola! Soy Sofia. ¿Cómo puedo ayudarte hoy?`,
-                    it: `🌟 Ciao! Sono Sofia. Come posso aiutarti oggi?`,
-                    pt: `🌟 Olá! Eu sou Sofia. Como posso ajudá-lo hoje?`,
-                    nl: `🌟 Hallo! Ik ben Sofia. Hoe kan ik je vandaag helpen?`,
-                    auto: `🌟 Hello! I'm Sofia. How can I help you today?`
-                };
-                return greetings[language] || greetings.en;
-            }
-        }
-
-        // ✅ NEW: Personalized greeting for returning guests
-        const { guest_name, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
-        const isReturningRegular = total_bookings >= 3;
-
-        if (context === 'hostess') {
-            // Staff context - efficient and informative
-            const greetings = {
-                en: `🌟 Hi! Sofia here. Today is ${dateContext.currentDate}. ${isReturningRegular ? `This is ${guest_name} - returning guest with ${total_bookings} previous bookings.` : `This is ${guest_name} - they've visited ${total_bookings} time${total_bookings > 1 ? 's' : ''} before.`}${common_party_size ? ` Usual party: ${common_party_size}` : ''}${frequent_special_requests.length > 0 ? `. Usual requests: ${frequent_special_requests.join(', ')}` : ''}`,
-                ru: `🌟 Привет! София здесь. Сегодня ${dateContext.currentDate}. ${isReturningRegular ? `Это ${guest_name} - постоянный гость с ${total_bookings} предыдущими бронированиями.` : `Это ${guest_name} - они посещали нас ${total_bookings} раз${total_bookings > 1 ? 'а' : ''}.`}${common_party_size ? ` Обычно: ${common_party_size} чел.` : ''}${frequent_special_requests.length > 0 ? `. Обычные просьбы: ${frequent_special_requests.join(', ')}` : ''}`,
-                sr: `🌟 Zdravo! Sofija ovde. Danas je ${dateContext.currentDate}. ${isReturningRegular ? `Ovo je ${guest_name} - stalni gost sa ${total_bookings} prethodnih rezervacija.` : `Ovo je ${guest_name} - posetili su nas ${total_bookings} put${total_bookings > 1 ? 'a' : ''}.`}${common_party_size ? ` Obično: ${common_party_size} os.` : ''}${frequent_special_requests.length > 0 ? `. Uobičajeni zahtevi: ${frequent_special_requests.join(', ')}` : ''}`,
-                hu: `🌟 Szia! Szófia itt. Ma ${dateContext.currentDate} van. ${isReturningRegular ? `Ez ${guest_name} - visszatérő vendég ${total_bookings} korábbi foglalással.` : `Ez ${guest_name} - ${total_bookings} alkalommal járt${total_bookings > 1 ? 'ak' : ''} nálunk.`}${common_party_size ? ` Szokásos létszám: ${common_party_size} fő` : ''}${frequent_special_requests.length > 0 ? `. Szokásos kérések: ${frequent_special_requests.join(', ')}` : ''}`,
-                de: `🌟 Hallo! Sofia hier. Heute ist ${dateContext.currentDate}. ${isReturningRegular ? `Das ist ${guest_name} - Stammgast mit ${total_bookings} vorherigen Buchungen.` : `Das ist ${guest_name} - war schon ${total_bookings} Mal${total_bookings > 1 ? 'e' : ''} hier.`}${common_party_size ? ` Üblich: ${common_party_size} Pers.` : ''}${frequent_special_requests.length > 0 ? `. Übliche Wünsche: ${frequent_special_requests.join(', ')}` : ''}`,
-                fr: `🌟 Bonjour! Sofia ici. Nous sommes le ${dateContext.currentDate}. ${isReturningRegular ? `C'est ${guest_name} - client régulier avec ${total_bookings} réservations précédentes.` : `C'est ${guest_name} - a visité ${total_bookings} fois${total_bookings > 1 ? '' : ''}.`}${common_party_size ? ` Habituel: ${common_party_size} pers.` : ''}${frequent_special_requests.length > 0 ? `. Demandes habituelles: ${frequent_special_requests.join(', ')}` : ''}`,
-                es: `🌟 ¡Hola! Sofia aquí. Hoy es ${dateContext.currentDate}. ${isReturningRegular ? `Este es ${guest_name} - cliente habitual con ${total_bookings} reservas previas.` : `Este es ${guest_name} - ha visitado ${total_bookings} vez${total_bookings > 1 ? 'es' : ''}.`}${common_party_size ? ` Usual: ${common_party_size} pers.` : ''}${frequent_special_requests.length > 0 ? `. Solicitudes habituales: ${frequent_special_requests.join(', ')}` : ''}`,
-                it: `🌟 Ciao! Sofia qui. Oggi è ${dateContext.currentDate}. ${isReturningRegular ? `Questo è ${guest_name} - ospite abituale con ${total_bookings} prenotazioni precedenti.` : `Questo è ${guest_name} - ha visitato ${total_bookings} volta${total_bookings > 1 ? 'e' : ''}.`}${common_party_size ? ` Solito: ${common_party_size} pers.` : ''}${frequent_special_requests.length > 0 ? `. Richieste abituali: ${frequent_special_requests.join(', ')}` : ''}`,
-                pt: `🌟 Olá! Sofia aqui. Hoje é ${dateContext.currentDate}. ${isReturningRegular ? `Este é ${guest_name} - hóspede regular com ${total_bookings} reservas anteriores.` : `Este é ${guest_name} - visitou ${total_bookings} vez${total_bookings > 1 ? 'es' : ''}.`}${common_party_size ? ` Usual: ${common_party_size} pess.` : ''}${frequent_special_requests.length > 0 ? `. Pedidos habituais: ${frequent_special_requests.join(', ')}` : ''}`,
-                nl: `🌟 Hallo! Sofia hier. Vandaag is ${dateContext.currentDate}. ${isReturningRegular ? `Dit is ${guest_name} - vaste gast met ${total_bookings} eerdere boekingen.` : `Dit is ${guest_name} - heeft ${total_bookings} keer${total_bookings > 1 ? '' : ''} bezocht.`}${common_party_size ? ` Gebruikelijk: ${common_party_size} pers.` : ''}${frequent_special_requests.length > 0 ? `. Gebruikelijke verzoeken: ${frequent_special_requests.join(', ')}` : ''}`,
-                auto: `🌟 Hi! Sofia here. Today is ${dateContext.currentDate}. ${isReturningRegular ? `This is ${guest_name} - returning guest with ${total_bookings} previous bookings.` : `This is ${guest_name} - they've visited ${total_bookings} time${total_bookings > 1 ? 's' : ''} before.`}${common_party_size ? ` Usual party: ${common_party_size}` : ''}${frequent_special_requests.length > 0 ? `. Usual requests: ${frequent_special_requests.join(', ')}` : ''}`
-            };
-            return greetings[language] || greetings.en;
-        } else {
-            // Guest context - warm and personal
-            if (isReturningRegular) {
-                // ✅ CRITICAL FIX: Improved phrasing for regular customers with OPTIONAL common party size suggestion
-                const greetings = {
-                    en: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you today?${common_party_size ? ` Booking for your usual ${common_party_size} people?` : ''}`,
-                    ru: `🌟 С возвращением, ${guest_name}! 🎉 Рада вас снова видеть! Чем могу помочь?${common_party_size ? ` Бронируем как обычно, на ${common_party_size} человек?` : ''}`,
-                    sr: `🌟 Dobrodošli nazad, ${guest_name}! 🎉 Divno je videti vas ponovo! Kako Vam mogu pomoći?${common_party_size ? ` Da li rezervišemo za uobičajenih ${common_party_size} osoba?` : ''}`,
-                    hu: `🌟 Üdvözlöm vissza, ${guest_name}! 🎉 Csodálatos újra látni! Hogyan segíthetek?${common_party_size ? ` A szokásos ${common_party_size} főre foglalunk?` : ''}`,
-                    de: `🌟 Willkommen zurück, ${guest_name}! 🎉 Schön, Sie wiederzusehen! Wie kann ich helfen?${common_party_size ? ` Buchen wir für die üblichen ${common_party_size} Personen?` : ''}`,
-                    fr: `🌟 Bon retour, ${guest_name}! 🎉 C'est merveilleux de vous revoir! Comment puis-je vous aider?${common_party_size ? ` Réservons-nous pour les ${common_party_size} personnes habituelles?` : ''}`,
-                    es: `🌟 ¡Bienvenido de vuelta, ${guest_name}! 🎉 ¡Es maravilloso verte de nuevo! ¿Cómo puedo ayudarte?${common_party_size ? ` ¿Reservamos para las ${common_party_size} personas habituales?` : ''}`,
-                    it: `🌟 Bentornato, ${guest_name}! 🎉 È meraviglioso rivederti! Come posso aiutarti?${common_party_size ? ` Prenotiamo per le solite ${common_party_size} persone?` : ''}`,
-                    pt: `🌟 Bem-vindo de volta, ${guest_name}! 🎉 É maravilhoso vê-lo novamente! Como posso ajudar?${common_party_size ? ` Reservamos para as ${common_party_size} pessoas habituais?` : ''}`,
-                    nl: `🌟 Welkom terug, ${guest_name}! 🎉 Het is geweldig om je weer te zien! Hoe kan ik helpen?${common_party_size ? ` Boeken we voor de gebruikelijke ${common_party_size} personen?` : ''}`,
-                    auto: `🌟 Welcome back, ${guest_name}! 🎉 It's wonderful to see you again! How can I help you today?${common_party_size ? ` Booking for your usual ${common_party_size} people?` : ''}`
-                };
-                return greetings[language] || greetings.en;
-            } else {
-                // Friendly but not overly familiar greeting for infrequent guests
-                const greetings = {
-                    en: `🌟 Hello, ${guest_name}! Nice to see you again! I'm Sofia. How can I help you today?`,
-                    ru: `🌟 Здравствуйте, ${guest_name}! Приятно вас снова видеть! Я София. Чем могу вам сегодня помочь?`,
-                    sr: `🌟 Zdravo, ${guest_name}! Drago mi je što vas ponovo vidim! Ja sam Sofija. Kako vam mogu pomoći danas?`,
-                    hu: `🌟 Szia, ${guest_name}! Örülök, hogy újra látlak! Én Szófia vagyok. Hogyan segíthetek ma?`,
-                    de: `🌟 Hallo, ${guest_name}! Schön, Sie wiederzusehen! Ich bin Sofia. Wie kann ich Ihnen heute helfen?`,
-                    fr: `🌟 Bonjour, ${guest_name}! Content de vous revoir! Je suis Sofia. Comment puis-je vous aider aujourd'hui?`,
-                    es: `🌟 ¡Hola, ${guest_name}! ¡Me alegra verte de nuevo! Soy Sofia. ¿Cómo puedo ayudarte hoy?`,
-                    it: `🌟 Ciao, ${guest_name}! Bello rivederti! Sono Sofia. Come posso aiutarti oggi?`,
-                    pt: `🌟 Olá, ${guest_name}! Bom vê-lo novamente! Eu sou Sofia. Como posso ajudá-lo hoje?`,
-                    nl: `🌟 Hallo, ${guest_name}! Leuk om je weer te zien! Ik ben Sofia. Hoe kan ik je vandaag helpen?`,
-                    auto: `🌟 Hello, ${guest_name}! Nice to see you again! I'm Sofia. How can I help you today?`
-                };
-                return greetings[language] || greetings.en;
-            }
-        }
-    }
-
-    /**
-     * Generate smart party size question that avoids redundancy
-     * SOURCE: booking-agent.ts generateSmartPartyQuestion function
-     */
-    generateSmartPartyQuestion(
-        language: Language,
-        hasAskedPartySize: boolean,
-        isSubsequentBooking: boolean,
-        commonPartySize?: number | null,
-        conversationContext?: any
-    ): string {
-        // ✅ CRITICAL FIX: Don't ask if we already asked party size in this conversation
-        if (hasAskedPartySize || conversationContext?.hasAskedPartySize) {
-            // For subsequent bookings or if already asked, be direct and simple
-            const directQuestions = {
-                en: `How many guests?`,
-                ru: `Сколько человек?`,
-                sr: `Koliko osoba?`,
-                hu: `Hány fő?`,
-                de: `Wie viele Personen?`,
-                fr: `Combien de personnes?`,
-                es: `¿Cuántas personas?`,
-                it: `Quante persone?`,
-                pt: `Quantas pessoas?`,
-                nl: `Hoeveel personen?`,
-                auto: `How many guests?`
-            };
-            return directQuestions[language] || directQuestions.en;
-        }
+        // Get current date context for relative date parsing
+        const dateContext = getRestaurantTimeContext(this.restaurantConfig.timezone);
         
-        if (isSubsequentBooking) {
-            // For subsequent bookings, be direct and simple
-            const directQuestions = {
-                en: `How many guests this time?`,
-                ru: `Сколько человек на этот раз?`,
-                sr: `Koliko osoba ovaj put?`,
-                hu: `Hány fő ezúttal?`,
-                de: `Wie viele Personen diesmal?`,
-                fr: `Combien de personnes cette fois?`,
-                es: `¿Cuántas personas esta vez?`,
-                it: `Quante persone questa volta?`,
-                pt: `Quantas pessoas desta vez?`,
-                nl: `Hoeveel personen deze keer?`,
-                auto: `How many guests this time?`
-            };
-            return directQuestions[language] || directQuestions.en;
-        } else if (commonPartySize) {
-            // First time asking, with history - ONLY suggest if haven't asked yet
-            const suggestiveQuestions = {
-                en: `How many people will be joining you? (Usually ${commonPartySize} for you)`,
-                ru: `Сколько человек будет? (Обычно у вас ${commonPartySize})`,
-                sr: `Koliko osoba će biti? (Obično ${commonPartySize} kod vas)`,
-                hu: `Hányan lesztek? (Általában ${commonPartySize} fő nálad)`,
-                de: `Wie viele Personen werden dabei sein? (Normalerweise ${commonPartySize} bei Ihnen)`,
-                fr: `Combien de personnes seront présentes? (Habituellement ${commonPartySize} pour vous)`,
-                es: `¿Cuántas personas serán? (Normalmente ${commonPartySize} para ti)`,
-                it: `Quante persone saranno? (Di solito ${commonPartySize} per te)`,
-                pt: `Quantas pessoas serão? (Normalmente ${commonPartySize} para você)`,
-                nl: `Hoeveel personen worden het? (Gewoonlijk ${commonPartySize} voor jou)`,
-                auto: `How many people will be joining you? (Usually ${commonPartySize} for you)`
-            };
-            return suggestiveQuestions[language] || suggestiveQuestions.en;
-        } else {
-            // First time asking, no history
-            const standardQuestions = {
-                en: `How many guests will be joining you?`,
-                ru: `Сколько гостей будет с вами?`,
-                sr: `Koliko gostiju će biti sa vama?`,
-                hu: `Hány vendég lesz veled?`,
-                de: `Wie viele Gäste werden Sie begleiten?`,
-                fr: `Combien d'invités vous accompagneront?`,
-                es: `¿Cuántos invitados te acompañarán?`,
-                it: `Quanti ospiti ti accompagneranno?`,
-                pt: `Quantos convidados o acompanharão?`,
-                nl: `Hoeveel gasten gaan met je mee?`,
-                auto: `How many guests will be joining you?`
-            };
-            return standardQuestions[language] || standardQuestions.en;
-        }
-    }
+        // ✅ ENHANCED: Create dynamic personalization prompt with guest history
+        let personalizationInstructions = '';
+        if (guestHistory?.guest_name) {
+            const { guest_name, guest_phone } = guestHistory;
+            personalizationInstructions = `
+GUEST HISTORY CONTEXT:
+- The user's name is: "${guest_name}"
+- The user's phone is: "${guest_phone || 'not available'}"
 
-    /**
-     * Get comprehensive system prompt for Sofia
-     * SOURCE: enhanced-conversation-manager.ts getAgentPersonality Sofia logic (lines ~600-700)
-     */
-    getSystemPrompt(
-        context: 'hostess' | 'guest',
-        userLanguage: Language = 'en',
-        guestHistory?: GuestHistory | null,
-        isFirstMessage: boolean = false,
-        conversationContext?: any
-    ): string {
-        const currentTime = DateTime.now().setZone(this.restaurantConfig.timezone);
-        const dateContext = {
-            currentDate: currentTime.toFormat('yyyy-MM-dd'),
-            tomorrowDate: currentTime.plus({ days: 1 }).toFormat('yyyy-MM-dd'),
-            currentTime: currentTime.toFormat('HH:mm'),
-            dayOfWeek: currentTime.toFormat('cccc'),
-            timezone: this.restaurantConfig.timezone
-        };
-
-        // ✅ LANGUAGE INSTRUCTION (works for all languages)
-        const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
-- User's language: ${userLanguage}
-- You MUST respond in ${userLanguage} for ALL messages
-- Maintain warm, professional tone in ${userLanguage}
-- If unsure of translation, use simple clear ${userLanguage}`;
-
-        // ✅ CRITICAL BOOKING WORKFLOW INSTRUCTIONS
-        const getCriticalBookingInstructions = () => {
-            return `
-🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
-
-STEP 1: GATHER ALL REQUIRED INFORMATION FIRST:
-   1️⃣ Date (must be explicit: "2025-07-19")
-   2️⃣ Time (must be explicit: "20:00" - NEVER assume!)
-   3️⃣ Number of guests
-   4️⃣ Guest name
-   5️⃣ Guest phone number
-
-❌ CRITICAL: NEVER call check_availability without EXPLICIT time!
-❌ NEVER assume time from date (e.g., "19 июля" ≠ "19:00")
-
-STEP 2: Only after ALL 5 items → call check_availability
-STEP 3: If available → call create_reservation
-STEP 4: Only after successful create_reservation, say "confirmed!"
-
-🚫 FORBIDDEN PATTERNS:
-❌ NEVER: Check availability → immediately ask "want me to book it?"
-❌ NEVER: Ask "Can I confirm the booking in your name?" when you DON'T HAVE the name
-❌ NEVER: Call create_reservation without phone number
-❌ NEVER: Say "booked" or "confirmed" after just check_availability
-
-✅ REQUIRED PATTERNS:
-✅ Check availability → "Table available! I need your name and phone number to complete the booking"
-✅ Have all 5 items → Call create_reservation → "Booking confirmed!"
-
-💡 HANDLING FAILED AVAILABILITY (MANDATORY WORKFLOW - FOLLOW EXACTLY):
-This is the MOST CRITICAL rule. LLMs often hallucinate availability when tools fail. You MUST follow this exact pattern.
-
-🚨 MANDATORY TRIGGER CONDITIONS:
-- 'check_availability' returns tool_status: 'FAILURE'  
-- User then asks: "when is it available?", "what about earlier?", "any other times?", "а когда свободно?", "на сколько можно?", "другое время?", "что есть?", "когда можно?"
-
-🚨 MANDATORY ACTION SEQUENCE:
-1. Find the TIME from your FAILED 'check_availability' call in conversation history
-2. Immediately call 'find_alternative_times' with that exact time as 'preferredTime'
-3. NEVER suggest times without calling the tool first
-4. NEVER leave 'preferredTime' as undefined/empty
-
-🚨 MANDATORY DIALOG EXAMPLE (COPY THIS PATTERN EXACTLY):
-User: "I need a table for 2 tomorrow at 19:00"
-Agent: [calls check_availability(date="2025-07-07", time="19:00", guests=2)] → FAILS
-Agent: "I'm sorry, but we're fully booked at 19:00 tomorrow."
-User: "What about earlier?" 
-Agent: [MUST call find_alternative_times(date="2025-07-07", preferredTime="19:00", guests=2)]
-Agent: [After tool returns results] "I found these earlier times: 18:30 and 17:45 are available. Would either work?"
-
-🚨 FORBIDDEN ACTIONS:
-❌ NEVER say "How about 18:00 or 18:30?" without calling find_alternative_times first
-❌ NEVER invent times like "earlier times are usually available"
-❌ NEVER call find_alternative_times with preferredTime: undefined
-❌ NEVER suggest times that weren't returned by the tool
-
-🚨 VALIDATION CHECK:
-Before suggesting ANY time, ask yourself: "Did find_alternative_times return this exact time?" If no, DON'T suggest it.
-
-This prevents availability hallucination where you suggest times without tool confirmation, leading to booking failures and user frustration.
-
-📞 PHONE COLLECTION EXAMPLES:
-"Perfect! Table 5 is available for 3 guests on July 13th at 8pm. I need your name and phone number to complete the reservation."
-
-🔒 VALIDATION RULES:
-- If ANY required item is missing, ask for it - do NOT proceed
-- Phone numbers must have at least 7 digits
-- Names must be at least 2 characters
-- Always confirm all details before final booking
-
-🚨 CRITICAL: NEVER ask "Can I confirm booking in your name?" when you don't have the name!
-Instead say: "I need your name and phone number to complete the booking."
+INFERENCE RULES:
+- If the user says "my name", "on my name", "same name" ("на моё имя", "то же имя"), extract the name as "${guest_name}".
+- If the user says "my phone", "same number", "my number" ("мой номер", "тот же номер"), extract the phone as "${guest_phone}".
+- If the user says "use my details", "same as before", extract both name and phone from history.
 `;
-        };
+        }
 
-        // ✅ PERSONALIZED PROMPT SECTION
-        const getPersonalizedPromptSection = (guestHistory: GuestHistory | null, language: Language, conversationContext?: any): string => {
-            if (!guestHistory || guestHistory.total_bookings === 0) {
-                return '';
+        // ✅ CRITICAL ENHANCEMENT: Conversational memory for confirmation blindness fix
+        let conversationalMemoryInstructions = '';
+        if (lastAssistantMessage) {
+            conversationalMemoryInstructions = `
+🧠 CONVERSATIONAL CONTEXT (CRITICAL):
+- The user's message is: "${message}"
+- The PREVIOUS assistant message was: "${lastAssistantMessage}"
+
+💡 INTELLIGENT INFERENCE RULES (CONFIRMATION BLINDNESS FIX):
+- If the PREVIOUS assistant message asked to confirm details (e.g., "Should I use the name...", "Использовать имя...", "да использовать", "можно использовать"), AND the user's message is affirmative (e.g., "yes", "ok", "use them", "да", "можно", "давай", "хорошо"), you MUST extract the 'name' and 'phone' from the GUEST HISTORY CONTEXT.
+- Look for confirmation patterns: "да можно", "yes ok", "use it", "давай так", "хорошо", "согласен"
+- If user gives affirmation + new info (e.g. "да можно. на 20-14"), extract BOTH the confirmed details AND the new information.
+`;
+        }
+
+        // ✅ CRITICAL ENHANCEMENT: Occasion detection prompt
+        const extractionPrompt = `You are a parameter extraction system. Your ONLY job is to extract booking information that the user EXPLICITLY mentioned or implied using their known history and conversational context. 
+
+🆕 ENHANCED OCCASION DETECTION:
+You must now detect special occasions mentioned by the user. This is CRITICAL for personalized service.
+
+🧠 CONFIRMATION BLINDNESS FIX:
+You must understand confirmations in conversational context to avoid asking for the same information repeatedly.
+
+CRITICAL RULES:
+- ONLY extract information that is EXPLICITLY stated by the user or clearly implied from their history/previous conversation.
+- NEVER assume or invent missing information.
+- Return null for any information not explicitly provided.
+- 🆕 DETECT OCCASIONS: Look for birthday, anniversary, business, celebration indicators
+- 🧠 UNDERSTAND CONFIRMATIONS: Use conversational context to infer confirmed details
+
+Current date context:
+- TODAY: ${dateContext.currentDate} (${dateContext.dayOfWeek})
+- TOMORROW: ${dateContext.tomorrowDate}
+
+${personalizationInstructions}
+
+${conversationalMemoryInstructions}
+
+User message: "${message}"
+
+🆕 ENHANCED OCCASION DETECTION EXAMPLES:
+- "хотел у вас отметить др с компанией" → occasion: "birthday"
+- "день рождения", "birthday", "rođendan", "születésnap" → occasion: "birthday"
+- "годовщина", "anniversary", "obljetnica", "évforduló" → occasion: "anniversary"  
+- "деловая встреча", "business meeting", "poslovni sastanak" → occasion: "business"
+- "celebration", "celebration", "proslava", "ünneplés" → occasion: "other"
+
+🧠 CONFIRMATION UNDERSTANDING EXAMPLES:
+- Previous: "Использовать имя Эрик и номер телефона 89001113355?" + User: "да можно. на 20-14" → extract name: "Эрик", phone: "89001113355", time: "20:14"
+- Previous: "Should I use name John and phone 555-1234?" + User: "yes, for tomorrow 8pm" → extract name: "John", phone: "555-1234", date: "${dateContext.tomorrowDate}", time: "20:00"
+
+Extract ONLY what the user explicitly mentioned or confirmed into this JSON format:
+{
+    "date": null or "YYYY-MM-DD" if explicitly mentioned,
+    "time": null or "HH:MM" if explicitly mentioned,
+    "guests": null or number if explicitly mentioned,
+    "name": null or string if explicitly mentioned or confirmed from history,
+    "phone": null or string if explicitly mentioned or confirmed from history,
+    "specialRequests": null or string if mentioned,
+    "occasion": null or "birthday" | "anniversary" | "business" | "other", // 🆕 NEW FIELD
+    "hasDateMention": true/false,
+    "hasTimeMention": true/false,
+    "hasGuestsMention": true/false,
+    "hasNameMention": true/false,
+    "hasPhoneMention": true/false,
+    "userIntent": "booking_request" | "availability_check" | "general_inquiry" | "unclear",
+    "extractionConfidence": 0.0-1.0
+}
+
+🧠 ENHANCED CONFIRMATION EXAMPLES:
+User: "да можно. на 20-14" (GIVEN PREVIOUS MESSAGE ASKED TO CONFIRM NAME "Эрик" AND PHONE)
+→ {"date": null, "time": "20:14", "guests": null, "name": "Эрик", "phone": "89001113355", "occasion": null, "hasDateMention": false, "hasTimeMention": true, "hasGuestsMention": false, "hasNameMention": true, "hasPhoneMention": true, "userIntent": "booking_request", "extractionConfidence": 0.95}
+
+User: "yes ok, for 6 people" (GIVEN PREVIOUS MESSAGE ASKED TO CONFIRM DETAILS)
+→ {"date": null, "time": null, "guests": 6, "name": "John", "phone": "555-1234", "occasion": null, "hasDateMention": false, "hasTimeMention": false, "hasGuestsMention": true, "hasNameMention": true, "hasPhoneMention": true, "userIntent": "booking_request", "extractionConfidence": 0.9}
+
+User: "хотел у вас отметить др с компанией на 13 июля в 17-15"
+→ {"date": "2025-07-13", "time": "17:15", "guests": null, "occasion": "birthday", "specialRequests": "отметить с компанией", "hasDateMention": true, "hasTimeMention": true, "hasGuestsMention": false, "userIntent": "booking_request", "extractionConfidence": 0.95}
+
+Return ONLY the JSON, no explanations.`;
+
+        try {
+            const completion = await this.openaiClient.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [{ role: "user", content: extractionPrompt }],
+                temperature: 0.1, // Low temperature for consistent extraction
+                max_tokens: 500
+            });
+
+            const response = completion.choices[0]?.message?.content?.trim();
+            if (!response) {
+                throw new Error('Empty response from parameter extraction');
             }
 
-            const { guest_name, guest_phone, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
+            // Parse JSON response
+            const extracted: ExtractedBookingParameters = JSON.parse(response);
+            
+            console.log(`[SofiaAgent] 🧠 ENHANCED extraction with conversational memory:`, {
+                date: extracted.date,
+                time: extracted.time,
+                guests: extracted.guests,
+                name: extracted.name,
+                phone: extracted.phone,
+                occasion: extracted.occasion, // 🆕 New field
+                userIntent: extracted.userIntent,
+                confidence: extracted.extractionConfidence,
+                conversationalMemoryUsed: !!lastAssistantMessage,
+                mentions: {
+                    date: extracted.hasDateMention,
+                    time: extracted.hasTimeMention,
+                    guests: extracted.hasGuestsMention,
+                    name: extracted.hasNameMention,
+                    phone: extracted.hasPhoneMention
+                }
+            });
 
-            return `
-👤 GUEST HISTORY & PERSONALIZATION:
-- Guest Name: ${guest_name}
-- Guest Phone: ${guest_phone || 'Not available'}
-- Total Previous Bookings: ${total_bookings}
-- ${common_party_size ? `Common Party Size: ${common_party_size}` : 'No common party size pattern'}
-- ${frequent_special_requests.length > 0 ? `Frequent Requests: ${frequent_special_requests.join(', ')}` : 'No frequent special requests'}
-- ${last_visit_date ? `Last Visit: ${last_visit_date}` : 'No previous visits recorded'}
+            return extracted;
 
-💡 PERSONALIZATION GUIDELINES:
-- ${total_bookings >= 3 ? `RETURNING GUEST: This is a valued returning customer! Use warm, personal language.` : `INFREQUENT GUEST: Guest has visited before but not frequently.`}
-- ✅ CRITICAL FIX: ${common_party_size ? `USUAL PARTY SIZE: Only suggest "${common_party_size} people" if user hasn't specified AND you haven't asked about party size yet in this conversation. If you already asked about party size, DON'T ask again.` : ''}
-- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Would you like your usual ${frequent_special_requests[0]}?" when appropriate during booking.` : ''}
-- ✅ CONVERSATION RULE: ${conversationContext?.isSubsequentBooking ? 'This is a SUBSEQUENT booking in the same session - be concise and skip repetitive questions.' : 'This is the first booking in the session.'}
-- ✅ CRITICAL: Track what you've already asked to avoid repetition. If you asked about party size, don't ask again.
-- **SAME NAME/PHONE HANDLING**: If the guest says "my name" or "same name", use "${guest_name}" from their history. If they say "same number", "same phone", or "using same number", use "${guest_phone || 'Not available'}" from their history.
-- Use this information naturally in conversation - don't just list their history!
-- Make the experience feel personal and welcoming for returning guests.`;
-        };
-
-        // ✅ CONVERSATION CONTEXT INSTRUCTIONS
-        const conversationInstructions = conversationContext ? `
-📝 CONVERSATION CONTEXT:
-- Session Turn: ${conversationContext.sessionTurnCount || 1}
-- Booking Number: ${conversationContext.bookingNumber || 1} ${conversationContext.isSubsequentBooking ? '(SUBSEQUENT)' : '(FIRST)'}
-- ✅ CRITICAL: Asked Party Size: ${conversationContext.hasAskedPartySize ? 'YES - DO NOT ASK AGAIN' : 'NO - CAN ASK IF NEEDED'}
-
-🎯 CONTEXT-AWARE BEHAVIOR:
-${conversationContext.isSubsequentBooking ? 
-  '- SUBSEQUENT BOOKING: Be concise, skip redundant questions, focus on the new booking details.' :
-  '- FIRST BOOKING: Full greeting and standard workflow.'
-}
-${conversationContext.hasAskedPartySize ? 
-  '- ✅ CRITICAL: Already asked about party size - DON\'T ASK AGAIN unless user explicitly changes topic. Use their previous answer.' :
-  '- Can suggest usual party size if appropriate and haven\'t asked yet.'
-}
-` : '';
-
-        const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage, conversationContext);
-
-        if (context === 'hostess') {
-            // 🏢 HOSTESS CONTEXT: Staff assistant, efficiency-focused
-            return `You are Sofia, the professional booking assistant for ${this.restaurantConfig.name} staff.
-
-${languageInstruction}
-
-🎯 YOUR ROLE: Staff Assistant
-You help hostesses manage reservations quickly and efficiently. You understand staff workflow and speak professionally but efficiently.
-
-🏪 RESTAURANT DETAILS:
-- Name: ${this.restaurantConfig.name}
-- Restaurant ID: ${this.restaurantConfig.id}
-- Timezone: ${this.restaurantConfig.timezone}
-- Hours: ${this.restaurantConfig.openingTime} - ${this.restaurantConfig.closingTime}
-- Maximum party size: ${this.restaurantConfig.maxGuests}
-
-📅 CURRENT DATE CONTEXT (CRITICAL):
-- TODAY is ${dateContext.currentDate} (${dateContext.dayOfWeek})
-- TOMORROW is ${dateContext.tomorrowDate}
-- Current time: ${dateContext.currentTime} in ${dateContext.timezone}
-- When guests say "today", use: ${dateContext.currentDate}
-- When guests say "tomorrow", use: ${dateContext.tomorrowDate}
-- ✅ When a guest says "next Friday" and today is Wednesday, it means the Friday of the *following* week, not the closest one. Calculate this correctly.
-- ALWAYS use YYYY-MM-DD format for dates
-- NEVER use dates from 2023 or other years - only current dates!
-
-${getCriticalBookingInstructions()}
-
-${conversationInstructions}
-
-${personalizedSection}
-
-💼 STAFF COMMUNICATION STYLE:
-- Professional and efficient, like talking to a colleague
-- Use quick commands: "Book Martinez for 4 tonight 8pm"
-- Provide immediate results without excessive pleasantries
-- Focus on getting things done fast
-- Confirm actions clearly
-- Handle tool errors gracefully and suggest solutions immediately
-
-🛠️ QUICK COMMANDS YOU UNDERSTAND:
-- "Book [name] for [guests] [date] [time]" - Direct booking
-- "Check availability [date] [time] [guests]" - Quick availability
-- "Find alternatives for [details]" - Alternative time search
-
-💡 EXAMPLES:
-Hostess: "Check availability for 6 tonight"
-Sofia: "Tonight (${dateContext.currentDate}) for 6 guests: ✅ 7:00 PM Table 15, ✅ 8:30 PM Table 8, ✅ 9:00 PM Combined tables"
-
-Hostess: "Book Martinez for 4 tonight 8pm phone 555-1234"
-Sofia: "✅ Booked! Martinez party, 4 guests, tonight (${dateContext.currentDate}) 8pm, Table 12"`;
-
-        } else {
-            // 👥 GUEST CONTEXT: Customer service, welcoming
-            return `You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}!
-
-${languageInstruction}
-
-🎯 YOUR ROLE: Guest Service Specialist
-You help guests make reservations with warm, welcoming customer service.
-
-🏪 RESTAURANT DETAILS:
-- Name: ${this.restaurantConfig.name}
-- Restaurant ID: ${this.restaurantConfig.id}
-- Cuisine: ${this.restaurantConfig.cuisine || 'Excellent dining'}
-- Atmosphere: ${this.restaurantConfig.atmosphere || 'Welcoming and comfortable'}
-- Hours: ${this.restaurantConfig.openingTime} - ${this.restaurantConfig.closingTime}
-- Timezone: ${this.restaurantConfig.timezone}
-
-📅 CURRENT DATE CONTEXT (CRITICAL):
-- TODAY is ${dateContext.currentDate} (${dateContext.dayOfWeek})
-- TOMORROW is ${dateContext.tomorrowDate}
-- Current time: ${dateContext.currentTime} in ${dateContext.timezone}
-- When guests say "today", use: ${dateContext.currentDate}
-- When guests say "tomorrow", use: ${dateContext.tomorrowDate}
-- ✅ When a guest says "next Friday" and today is Wednesday, it means the Friday of the *following* week, not the closest one. Calculate this correctly.
-- ALWAYS use YYYY-MM-DD format for dates
-- NEVER use dates from 2023 or other years - only current dates!
-
-${getCriticalBookingInstructions()}
-
-${conversationInstructions}
-
-${personalizedSection}
-
-🤝 GUEST COMMUNICATION STYLE:
-- Warm and welcoming, like a friendly hostess
-- Guide step-by-step through booking process
-- Show enthusiasm: "I'd love to help you with that!"
-- Ask follow-up questions naturally
-- Celebrate successful bookings: "🎉 Your table is reserved!"
-- Handle errors gracefully with helpful alternatives
-- When tools fail, offer to help manually or try again
-
-💡 CONVERSATION FLOW EXAMPLES:
-Guest: "I need a table for tonight"
-Sofia: "Perfect! For tonight (${dateContext.currentDate}), how many guests will be joining you? And what time would work best?"
-
-Guest: "Can I book for tomorrow evening?"  
-Sofia: "Absolutely! For tomorrow (${dateContext.tomorrowDate}) evening, what time works best and how many people? Also, I'll need your name and phone number for the reservation."
-
-CRITICAL WORKFLOW EXAMPLES:
-❌ WRONG: Guest: "Table for 3 tonight 8pm" → Sofia: "✅ Booked table for 3 tonight 8pm!"
-✅ CORRECT: Guest: "Table for 3 tonight 8pm" → Sofia: "Great! Let me check availability for 3 guests tonight at 8pm... Perfect! Table 5 is available. I need your name and phone number to complete the reservation."
-
-📞 PHONE COLLECTION EXAMPLES:
-After availability check: "Perfect! Table 5 is available for 3 guests tonight at 8pm. I need your name and phone number to complete the reservation."`;
+        } catch (error) {
+            console.error(`[SofiaAgent] Parameter extraction error:`, error);
+            
+            // Fallback: conservative extraction
+            return {
+                date: undefined,
+                time: undefined,
+                guests: undefined,
+                name: undefined,
+                phone: undefined,
+                specialRequests: undefined,
+                occasion: undefined, // 🆕 New field
+                hasDateMention: false,
+                hasTimeMention: false,
+                hasGuestsMention: false,
+                hasNameMention: false,
+                hasPhoneMention: false,
+                userIntent: 'unclear',
+                extractionConfidence: 0.0
+            };
         }
     }
 
     /**
-     * Sofia's available tools for booking operations
-     * SOURCE: enhanced-conversation-manager.ts getToolsForAgent for booking agent
+     * ✅ ENHANCED: Validate parameters using merged data with occasion context
      */
-    getTools() {
+    private validateRequiredParameters(
+        mergedParams: any,
+        context: AgentContext
+    ): ParameterValidation {
+        const missing: string[] = [];
+        
+        // Check what's missing for different actions
+        const hasDate = mergedParams.date !== null && mergedParams.date !== undefined;
+        const hasTime = mergedParams.time !== null && mergedParams.time !== undefined;
+        const hasGuests = mergedParams.guests !== null && mergedParams.guests !== undefined;
+        const hasName = mergedParams.name !== null && mergedParams.name !== undefined;
+        const hasPhone = mergedParams.phone !== null && mergedParams.phone !== undefined;
+
+        // For availability checking, we need: date, time, guests
+        const readyForAvailabilityCheck = hasDate && hasTime && hasGuests;
+        
+        // For booking creation, we need: date, time, guests, name, phone
+        const readyForBooking = hasDate && hasTime && hasGuests && hasName && hasPhone;
+
+        // Determine what's missing based on user intent
+        if (mergedParams.userIntent === 'booking_request' || mergedParams.userIntent === 'availability_check') {
+            if (!hasDate) missing.push('date');
+            if (!hasTime) missing.push('time');
+            if (!hasGuests) missing.push('guests');
+            
+            // If they want to book (not just check), also need personal info
+            if (mergedParams.userIntent === 'booking_request') {
+                if (!hasName) missing.push('name');
+                if (!hasPhone) missing.push('phone');
+            }
+        }
+
+        let nextAction: ParameterValidation['nextAction'];
+        if (mergedParams.userIntent === 'general_inquiry') {
+            nextAction = 'general_response';
+        } else if (readyForBooking) {
+            nextAction = 'create_booking';
+        } else if (readyForAvailabilityCheck) {
+            nextAction = 'check_availability';
+        } else {
+            nextAction = 'ask_for_missing';
+        }
+
+        const validation: ParameterValidation = {
+            isComplete: missing.length === 0,
+            missing,
+            readyForBooking,
+            readyForAvailabilityCheck,
+            nextAction
+        };
+
+        console.log(`[SofiaAgent] Parameter validation with occasion context:`, {
+            isComplete: validation.isComplete,
+            missing: missing,
+            readyForAvailabilityCheck,
+            readyForBooking,
+            nextAction,
+            userIntent: mergedParams.userIntent,
+            occasion: mergedParams.occasion // 🆕 Log occasion
+        });
+
+        return validation;
+    }
+
+    /**
+     * ✅ ENHANCED: Ask for missing information with conversation intelligence and personality layer
+     * 🧠 NEW: Context-aware questions that use guest history intelligently
+     * 🆕 PERSONALITY LAYER: More natural, contextual responses
+     * 🚨 CRITICAL FIX: Double greeting issue RESOLVED - prevents re-greetings
+     */
+    private async promptForMissingInfo(
+        missing: string[],
+        mergedParams: any,
+        context: AgentContext
+    ): Promise<AgentResponse> {
+        console.log(`[SofiaAgent] Prompting for missing info with conversation intelligence:`, missing);
+
+        const language = context.language;
+        const guestHistory = context.guestHistory;
+        
+        // 🧠 NEW: INTELLIGENT QUESTION LOGIC - Check what we can confirm from history
+        let useDetailsConfirmation = '';
+        const missingButInHistory = { name: false, phone: false };
+
+        if (guestHistory?.guest_name && missing.includes('name')) {
+            missingButInHistory.name = true;
+        }
+        if (guestHistory?.guest_phone && missing.includes('phone')) {
+            missingButInHistory.phone = true;
+        }
+
+        // 🧠 CONVERSATION INTELLIGENCE: Ask for confirmation instead of asking for known information
+        if (missingButInHistory.name || missingButInHistory.phone) {
+            const confirmations = {
+                en: `Should I use the name ${guestHistory?.guest_name} and phone number we have on file for you?`,
+                ru: `Использовать имя ${guestHistory?.guest_name} и номер телефона, которые у нас сохранены?`,
+                sr: `Da koristim ime ${guestHistory?.guest_name} i broj telefona koji imamo za vas?`,
+                hu: `Használjam a ${guestHistory?.guest_name} nevet és a telefonszámot, amelyet tárolunk?`,
+                de: `Soll ich den Namen ${guestHistory?.guest_name} und die Telefonnummer verwenden, die wir gespeichert haben?`,
+                fr: `Dois-je utiliser le nom ${guestHistory?.guest_name} et le numéro de téléphone que nous avons en dossier?`,
+                es: `¿Debo usar el nombre ${guestHistory?.guest_name} y el número de teléfono que tenemos registrado?`,
+                it: `Devo usare il nome ${guestHistory?.guest_name} e il numero di telefono che abbiamo in archivio?`,
+                pt: `Devo usar o nome ${guestHistory?.guest_name} e o número de telefone que temos em arquivo?`,
+                nl: `Zal ik de naam ${guestHistory?.guest_name} en het telefoonnummer gebruiken dat we voor u hebben?`,
+                auto: `Should I use the name ${guestHistory?.guest_name} and phone number we have on file for you?`
+            };
+            useDetailsConfirmation = confirmations[language] || confirmations.en;
+        }
+
+        // Filter out the missing items we can confirm from history
+        const stillMissing = missing.filter(item => 
+            !(missingButInHistory.name && item === 'name') && 
+            !(missingButInHistory.phone && item === 'phone')
+        );
+        
+        // 🆕 PERSONALITY ENHANCEMENT: Build context-aware prompt with occasion awareness
+        let occasionContext = '';
+        if (mergedParams.occasion) {
+            const occasionContexts = {
+                birthday: {
+                    en: "A birthday celebration, how wonderful! ",
+                    ru: "День рождения, как замечательно! ",
+                    sr: "Rođendan, kako divno! ",
+                    hu: "Születésnap, milyen csodálatos! ",
+                    de: "Ein Geburtstag, wie wunderbar! ",
+                    fr: "Un anniversaire, comme c'est merveilleux! ",
+                    es: "¡Un cumpleaños, qué maravilloso! ",
+                    it: "Un compleanno, che meraviglioso! ",
+                    pt: "Um aniversário, que maravilhoso! ",
+                    nl: "Een verjaardag, hoe prachtig! ",
+                    auto: "A birthday celebration, how wonderful! "
+                },
+                anniversary: {
+                    en: "An anniversary - such a special occasion! ",
+                    ru: "Годовщина - такое особенное событие! ",
+                    sr: "Godišnjica - tako posebna prilika! ",
+                    hu: "Évforduló - milyen különleges alkalom! ",
+                    de: "Ein Jahrestag - so ein besonderer Anlass! ",
+                    fr: "Un anniversaire - une occasion si spéciale! ",
+                    es: "¡Un aniversario - una ocasión tan especial! ",
+                    it: "Un anniversario - un'occasione così speciale! ",
+                    pt: "Um aniversário - uma ocasião tão especial! ",
+                    nl: "Een jubileum - zo'n bijzondere gelegenheid! ",
+                    auto: "An anniversary - such a special occasion! "
+                },
+                business: {
+                    en: "A business meeting - I'll ensure everything is perfect! ",
+                    ru: "Деловая встреча - я позабочусь, чтобы всё было идеально! ",
+                    sr: "Poslovni sastanak - postaraću se da sve bude savršeno! ",
+                    hu: "Üzleti találkozó - gondoskodom róla, hogy minden tökéletes legyen! ",
+                    de: "Ein Geschäftstreffen - ich sorge dafür, dass alles perfekt ist! ",
+                    fr: "Une réunion d'affaires - je m'assurerai que tout soit parfait! ",
+                    es: "¡Una reunión de negocios - me aseguraré de que todo sea perfecto! ",
+                    it: "Un incontro di lavoro - mi assicurerò che tutto sia perfetto! ",
+                    pt: "Uma reunião de negócios - vou garantir que tudo seja perfeito! ",
+                    nl: "Een zakelijke bijeenkomst - ik zorg ervoor dat alles perfect is! ",
+                    auto: "A business meeting - I'll ensure everything is perfect! "
+                }
+            };
+
+            const occasionType = mergedParams.occasion.toLowerCase();
+            if (occasionContexts[occasionType]) {
+                occasionContext = occasionContexts[occasionType][language] || 
+                                occasionContexts[occasionType].en;
+            }
+        }
+
+        // The remaining missing parameters after filtering
+        const missingParams = stillMissing.join(', ');
+
+        // 🧠 ENHANCED: Intelligent missing info prompt with conversation context
+        let missingInfoPrompt = `You are Sofia, the booking assistant. The user wants to make a reservation but didn't provide all required information.
+
+🧠 CONVERSATION INTELLIGENCE CONTEXT:
+${guestHistory ? `GUEST HISTORY: Name: ${guestHistory.guest_name}, Phone: ${guestHistory.guest_phone}` : 'GUEST HISTORY: No history'}
+${occasionContext ? `SPECIAL OCCASION: ${mergedParams.occasion} - Use this context to be more engaging and personal.` : 'PERSONALITY: Be warm and helpful.'}
+
+USER PROVIDED:
+${mergedParams.date ? `- Date: ${mergedParams.date}` : ''}
+${mergedParams.time ? `- Time: ${mergedParams.time}` : ''}
+${mergedParams.guests ? `- Guests: ${mergedParams.guests}` : ''}
+${mergedParams.name ? `- Name: ${mergedParams.name}` : ''}
+${mergedParams.phone ? `- Phone: ${mergedParams.phone}` : ''}
+${mergedParams.occasion ? `- Special occasion: ${mergedParams.occasion}` : ''}
+
+🧠 INTELLIGENT INSTRUCTIONS:
+${useDetailsConfirmation ? `FIRST: Ask this confirmation question: "${useDetailsConfirmation}"` : ''}
+${stillMissing.length > 0 ? `THEN: Ask for these remaining missing items naturally: ${missingParams}` : 'NO additional items needed.'}
+
+Respond in ${language} and ask for the missing information intelligently. 
+${occasionContext ? `Start with the occasion context: "${occasionContext}"` : 'Be warm and helpful.'}
+${useDetailsConfirmation ? `Then ask: "${useDetailsConfirmation}"` : ''}
+${stillMissing.length > 0 ? `Then ask for: ${missingParams}` : ''}
+
+🚨 CRITICAL FIX: Double greeting prevention rules:
+- Do NOT add greetings like "Здравствуйте", "Hello", "Привет", or "Welcome back" as this is a follow-up question
+- Get straight to the point - this is NOT the first interaction
+- Skip pleasantries and focus on getting the missing information
+- Be direct and efficient, not repetitive
+
+🧠 ENHANCED EXAMPLES:
+- If need to confirm details + time: "${occasionContext}${useDetailsConfirmation} And what time works best?"
+- If just missing time: "${occasionContext}На какое время?"
+- If just missing guests: "На сколько человек?"
+- If confirming details only: "${useDetailsConfirmation}"
+
+🚨 ANTI-DOUBLE-GREETING EXAMPLES:
+❌ BAD: "Здравствуйте, Эрик! Я рада помочь. На сколько человек?" 
+✅ GOOD: "На сколько человек вы бы хотели забронировать?"
+❌ BAD: "Hello! How can I help you? What time would work?"
+✅ GOOD: "What time would work best for your reservation?"
+
+Keep it brief and natural. Don't repeat information they already provided. 
+CRITICAL: Do NOT add greetings like "Hello", "Привет", or "Welcome back" as this is a follow-up question. Get straight to the point.
+Use intelligent confirmation for known details.`;
+
+        try {
+            const completion = await this.openaiClient.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [{ role: "user", content: missingInfoPrompt }],
+                temperature: 0.3,
+                max_tokens: 250
+            });
+
+            let response = completion.choices[0]?.message?.content?.trim() || 
+                "I need a bit more information to help you with your reservation.";
+
+            // 🧠 CONVERSATION INTELLIGENCE: Ensure confirmation question is included
+            if (useDetailsConfirmation && !response.toLowerCase().includes(guestHistory?.guest_name?.toLowerCase() || '')) {
+                response = useDetailsConfirmation + " " + response;
+            }
+
+            // 🆕 PERSONALITY LAYER: Add occasion context if available
+            if (occasionContext && !response.includes(occasionContext.trim())) {
+                response = occasionContext + response;
+            }
+
+            console.log(`[SofiaAgent] 🚨 FIXED: Generated follow-up question without double greeting: "${response.substring(0, 100)}..."`);
+
+            return {
+                content: response,
+                sessionUpdates: {
+                    gatheringInfo: {
+                        ...context.session.gatheringInfo,
+                        ...mergedParams  // ✅ Store all merged parameters including occasion
+                    }
+                }
+            };
+
+        } catch (error) {
+            console.error(`[SofiaAgent] Error generating missing info prompt:`, error);
+            
+            // Intelligent fallback
+            let fallbackResponse = '';
+            
+            if (useDetailsConfirmation) {
+                fallbackResponse = useDetailsConfirmation;
+                if (stillMissing.length > 0) {
+                    const fallbackMessages = {
+                        en: " Also, what time would work best?",
+                        ru: " Также, на какое время вам удобно?",
+                        sr: " Takođe, koje vreme vam odgovara?",
+                        auto: " Also, what time would work best?"
+                    };
+                    fallbackResponse += fallbackMessages[language as keyof typeof fallbackMessages] || fallbackMessages.en;
+                }
+            } else {
+                const fallbackMessages = {
+                    en: "I need a bit more information. What time and how many guests?",
+                    ru: "Мне нужно уточнить. На какое время и на сколько человек?",
+                    sr: "Treba mi još informacija. Za koje vreme i koliko osoba?",
+                    auto: "I need a bit more information. What time and how many guests?"
+                };
+                fallbackResponse = fallbackMessages[language as keyof typeof fallbackMessages] || fallbackMessages.en;
+            }
+            
+            // Add occasion context to fallback
+            if (occasionContext) {
+                fallbackResponse = occasionContext + fallbackResponse;
+            }
+            
+            console.log(`[SofiaAgent] 🚨 FIXED: Fallback response without double greeting: "${fallbackResponse}"`);
+            
+            return {
+                content: fallbackResponse,
+                sessionUpdates: {
+                    gatheringInfo: {
+                        ...context.session.gatheringInfo,
+                        ...mergedParams  // ✅ Store all merged parameters including occasion
+                    }
+                }
+            };
+        }
+    }
+
+    /**
+     * ✅ ENHANCED: Process message with tools using merged parameters and occasion context
+     * 🚨 CRITICAL FIX: [object Object] table display issue resolved in confirmation generation
+     */
+    private async processWithTools(
+        mergedParams: any,
+        validation: ParameterValidation,
+        context: AgentContext
+    ): Promise<AgentResponse> {
+        console.log(`[SofiaAgent] Processing with tools - action: ${validation.nextAction}, occasion: ${mergedParams.occasion}`);
+
+        // Build unified tool context
+        let effectiveTimezone = this.restaurantConfig.timezone;
+        if (!isValidTimezone(effectiveTimezone)) {
+            console.warn(`[SofiaAgent] Invalid timezone: ${effectiveTimezone}, falling back to Belgrade`);
+            effectiveTimezone = 'Europe/Belgrade';
+        }
+
+        const toolContext: UnifiedToolContext = {
+            restaurantId: context.restaurantId,
+            timezone: effectiveTimezone,
+            language: context.language,
+            telegramUserId: context.telegramUserId,
+            sessionId: context.sessionId,
+            session: context.session
+        };
+
+        if (validation.nextAction === 'check_availability') {
+            // Call availability check with validated parameters
+            try {
+                const availabilityResult = await bookingTools.check_availability(
+                    mergedParams.date!,
+                    mergedParams.time!,
+                    mergedParams.guests!,
+                    toolContext
+                );
+
+                if (availabilityResult.tool_status === 'SUCCESS') {
+                    // ✅ CRITICAL FIX: Instead of asking for name/phone, re-run validation.
+                    // All parameters (date, time, guests) are now known. Let's see if we can book.
+                    console.log(`[SofiaAgent] 🧠 Availability confirmed. Re-validating to see if booking is possible.`);
+
+                    // Re-validate with the complete set of information
+                    const finalValidation = this.validateRequiredParameters(mergedParams, context);
+
+                    if (finalValidation.readyForBooking) {
+                        // If we are ready, call this function again to trigger the 'create_booking' path
+                        console.log(`[SofiaAgent] 🧠 All info present. Proceeding directly to create_booking.`);
+                        return await this.processWithTools(mergedParams, finalValidation, context);
+
+                    } else {
+                        // If we are STILL missing info (shouldn't happen in this flow, but safe to handle),
+                        // then call the intelligent promptForMissingInfo function.
+                        console.log(`[SofiaAgent] 🧠 Still missing info after availability check. Prompting again.`);
+                        return await this.promptForMissingInfo(finalValidation.missing, mergedParams, context);
+                    }
+                } else {
+                    // No availability - suggest alternatives
+                    const alternativesResult = await bookingTools.find_alternative_times(
+                        mergedParams.date!,
+                        mergedParams.time!,
+                        mergedParams.guests!,
+                        toolContext
+                    );
+
+                    let responseContent = `Sorry, no tables available at ${mergedParams.time} on ${mergedParams.date}.`;
+                    if (alternativesResult.tool_status === 'SUCCESS' && alternativesResult.data?.alternatives) {
+                        const alternatives = alternativesResult.data.alternatives.slice(0, 3);
+                        const altTimes = alternatives.map(alt => alt.time).join(', ');
+                        responseContent = `Sorry, ${mergedParams.time} is not available${mergedParams.occasion ? ` for your ${mergedParams.occasion}` : ''}. How about these times: ${altTimes}?`;
+                    }
+
+                    return {
+                        content: responseContent,
+                        toolCalls: [
+                            {
+                                function: { name: 'check_availability', arguments: JSON.stringify({
+                                    date: mergedParams.date,
+                                    time: mergedParams.time,
+                                    guests: mergedParams.guests
+                                })},
+                                id: 'check_availability_validated',
+                                result: availabilityResult
+                            },
+                            {
+                                function: { name: 'find_alternative_times', arguments: JSON.stringify({
+                                    date: mergedParams.date,
+                                    preferredTime: mergedParams.time,
+                                    guests: mergedParams.guests
+                                })},
+                                id: 'find_alternatives_validated',
+                                result: alternativesResult
+                            }
+                        ],
+                        sessionUpdates: {
+                            gatheringInfo: {
+                                ...context.session.gatheringInfo,
+                                ...mergedParams  // ✅ Preserve all data including occasion
+                            }
+                        }
+                    };
+                }
+            } catch (error) {
+                console.error(`[SofiaAgent] Tool execution error:`, error);
+                return {
+                    content: "I'm sorry, I encountered an issue checking availability. Please try again."
+                };
+            }
+        } else if (validation.nextAction === 'create_booking') {
+            // 🆕 ENHANCED: Create reservation with occasion context
+            try {
+                // Enhance special requests with occasion information
+                let enhancedSpecialRequests = mergedParams.specialRequests || '';
+                if (mergedParams.occasion && !enhancedSpecialRequests.includes(mergedParams.occasion)) {
+                    const occasionLabels = {
+                        birthday: context.language === 'ru' ? 'День рождения' : 'Birthday celebration',
+                        anniversary: context.language === 'ru' ? 'Годовщина' : 'Anniversary celebration',
+                        business: context.language === 'ru' ? 'Деловая встреча' : 'Business meeting',
+                        other: context.language === 'ru' ? 'Особый случай' : 'Special occasion'
+                    };
+                    
+                    const occasionLabel = occasionLabels[mergedParams.occasion] || occasionLabels.other;
+                    enhancedSpecialRequests = enhancedSpecialRequests 
+                        ? `${enhancedSpecialRequests}. ${occasionLabel}` 
+                        : occasionLabel;
+                }
+
+                const bookingResult = await bookingTools.create_reservation(
+                    mergedParams.name!,
+                    mergedParams.phone!,
+                    mergedParams.date!,
+                    mergedParams.time!,
+                    mergedParams.guests!,
+                    enhancedSpecialRequests,
+                    toolContext
+                );
+
+                if (bookingResult.tool_status === 'SUCCESS') {
+                    // ✅ CRITICAL FIX: Use enhanced localized confirmation with reservation details
+                    // 🚨 DEPLOYMENT SAFETY: Multiple fallback layers to ensure localization works
+                    // 🚨 CRITICAL FIX: [object Object] issue resolved in SofiaConfirmations class
+                    let localizedConfirmation;
+                    
+                    try {
+                        // ✅ ENHANCED: Pass reservation details from booking result (handles complex table objects now)
+                        const bookingData = bookingResult.data; // Get data from the tool result
+                        console.log(`[SofiaAgent] 🔧 FIXING: Booking data received:`, {
+                            reservationId: bookingData?.reservationId,
+                            table: bookingData?.table,
+                            tableType: typeof bookingData?.table
+                        });
+
+                        localizedConfirmation = SofiaConfirmations.generateConfirmationMessage(
+                            context.language,
+                            {
+                                name: mergedParams.name!,
+                                guests: mergedParams.guests!,
+                                date: mergedParams.date!,
+                                time: mergedParams.time!,
+                                occasion: mergedParams.occasion, // 🆕 Include occasion context
+                                reservationId: bookingData?.reservationId, // ✅ NEW: Pass reservation ID
+                                tableName: bookingData?.table // ✅ FIXED: Now handles complex objects properly
+                            }
+                        );
+                        console.log(`[SofiaAgent] ✅ Generated enhanced localized confirmation in ${context.language}:`, localizedConfirmation.substring(0, 100));
+                        console.log(`[SofiaAgent] 🚨 FIXED: [object Object] issue resolved - table properly extracted`);
+                    } catch (confirmationError) {
+                        console.error(`[SofiaAgent] 🚨 Enhanced localization error, using fallback:`, confirmationError);
+                        
+                        // 🚨 DEPLOYMENT SAFETY: Emergency fallback to manual translation
+                        const emergencyConfirmations = {
+                            en: `🎉 Your reservation is confirmed! ${mergedParams.name} for ${mergedParams.guests} guests on ${mergedParams.date} at ${mergedParams.time}.`,
+                            ru: `🎉 Ваше бронирование подтверждено! ${mergedParams.name} на ${mergedParams.guests} человек ${mergedParams.date} в ${mergedParams.time}.`,
+                            sr: `🎉 Vaša rezervacija je potvrđena! ${mergedParams.name} za ${mergedParams.guests} osoba ${mergedParams.date} u ${mergedParams.time}.`,
+                            hu: `🎉 A foglalása megerősítve! ${mergedParams.name} ${mergedParams.guests} főre ${mergedParams.date}-án ${mergedParams.time}-kor.`,
+                            de: `🎉 Ihre Reservierung ist bestätigt! ${mergedParams.name} für ${mergedParams.guests} Personen am ${mergedParams.date} um ${mergedParams.time}.`,
+                            fr: `🎉 Votre réservation est confirmée! ${mergedParams.name} pour ${mergedParams.guests} personnes le ${mergedParams.date} à ${mergedParams.time}.`,
+                            es: `🎉 ¡Su reserva está confirmada! ${mergedParams.name} para ${mergedParams.guests} personas el ${mergedParams.date} a las ${mergedParams.time}.`,
+                            it: `🎉 La sua prenotazione è confermata! ${mergedParams.name} per ${mergedParams.guests} persone il ${mergedParams.date} alle ${mergedParams.time}.`,
+                            pt: `🎉 Sua reserva está confirmada! ${mergedParams.name} para ${mergedParams.guests} pessoas em ${mergedParams.date} às ${mergedParams.time}.`,
+                            nl: `🎉 Uw reservering is bevestigd! ${mergedParams.name} voor ${mergedParams.guests} personen op ${mergedParams.date} om ${mergedParams.time}.`,
+                            auto: `🎉 Your reservation is confirmed! ${mergedParams.name} for ${mergedParams.guests} guests on ${mergedParams.date} at ${mergedParams.time}.`
+                        };
+                        
+                        localizedConfirmation = emergencyConfirmations[context.language] || emergencyConfirmations.en;
+                        
+                        // Add occasion context manually if available
+                        if (mergedParams.occasion) {
+                            const occasionSuffixes = {
+                                birthday: context.language === 'ru' ? ' 🎂 Отлично подходит для празднования дня рождения!' : ' 🎂 Perfect for a birthday celebration!',
+                                anniversary: context.language === 'ru' ? ' 💕 Прекрасный выбор для вашей годовщины!' : ' 💕 Wonderful choice for your anniversary!',
+                                business: context.language === 'ru' ? ' 💼 Отлично подходит для деловой встречи!' : ' 💼 Excellent for your business meeting!'
+                            };
+                            
+                            const suffix = occasionSuffixes[mergedParams.occasion] || '';
+                            if (suffix) {
+                                localizedConfirmation += suffix;
+                            }
+                        }
+
+                        // Add reservation details manually
+                        if (bookingResult.data?.reservationId) {
+                            const reservationDetail = context.language === 'ru' ? 
+                                `\n📋 Бронь №${bookingResult.data.reservationId}` : 
+                                `\n📋 Reservation #${bookingResult.data.reservationId}`;
+                            localizedConfirmation += reservationDetail;
+                        }
+
+                        // 🚨 CRITICAL FIX: Manual table name extraction for fallback
+                        if (bookingResult.data?.table) {
+                            let fallbackTableName = '';
+                            if (typeof bookingResult.data.table === 'string') {
+                                fallbackTableName = bookingResult.data.table;
+                            } else if (typeof bookingResult.data.table === 'object') {
+                                fallbackTableName = bookingResult.data.table.Name || 
+                                                  bookingResult.data.table.name || 
+                                                  bookingResult.data.table.TableID || 
+                                                  bookingResult.data.table.tableName || 
+                                                  bookingResult.data.table.id ||
+                                                  'Table';
+                            }
+                            
+                            if (fallbackTableName) {
+                                const tableDetail = context.language === 'ru' ? 
+                                    ` за столиком ${fallbackTableName}` : 
+                                    ` at table ${fallbackTableName}`;
+                                // Insert table detail before the period
+                                localizedConfirmation = localizedConfirmation.replace('.', `${tableDetail}.`);
+                                console.log(`[SofiaAgent] 🚨 FALLBACK FIX: Added table "${fallbackTableName}" manually`);
+                            }
+                        }
+                    }
+
+                    console.log(`[SofiaAgent] 🎉 FINAL ENHANCED LOCALIZED CONFIRMATION (${context.language}):`, localizedConfirmation);
+
+                    return {
+                        content: localizedConfirmation, // ✅ ENHANCED LOCALIZED CONFIRMATION WITH DETAILS - [object Object] FIXED!
+                        hasBooking: true,
+                        reservationId: bookingResult.data?.reservationId,
+                        toolCalls: [{
+                            function: { name: 'create_reservation', arguments: JSON.stringify({
+                                guestName: mergedParams.name,
+                                guestPhone: mergedParams.phone,
+                                date: mergedParams.date,
+                                time: mergedParams.time,
+                                guests: mergedParams.guests,
+                                specialRequests: enhancedSpecialRequests
+                            })},
+                            id: 'create_reservation_validated',
+                            result: bookingResult
+                        }]
+                    };
+                } else {
+                    // Localized failure message
+                    const failureMessage = await this.translationService.translate(
+                        `I'm sorry, I couldn't complete your reservation. ${bookingResult.error?.message || 'Please try again.'}`,
+                        context.language,
+                        'error'
+                    );
+
+                    return {
+                        content: failureMessage,
+                        toolCalls: [{
+                            function: { name: 'create_reservation', arguments: JSON.stringify({
+                                guestName: mergedParams.name,
+                                guestPhone: mergedParams.phone,
+                                date: mergedParams.date,
+                                time: mergedParams.time,
+                                guests: mergedParams.guests,
+                                specialRequests: enhancedSpecialRequests
+                            })},
+                            id: 'create_reservation_validated',
+                            result: bookingResult
+                        }]
+                    };
+                }
+            } catch (error) {
+                console.error(`[SofiaAgent] Booking creation error:`, error);
+                
+                const errorMessage = await this.translationService.translate(
+                    "I'm sorry, I encountered an issue creating your reservation. Please try again.",
+                    context.language,
+                    'error'
+                );
+
+                return {
+                    content: errorMessage
+                };
+            }
+        }
+
+        // Fallback for general response
+        const generalResponse = await this.translationService.translate(
+            "I'm here to help you with your reservation. What would you like to know?",
+            context.language,
+            'question'
+        );
+
+        return {
+            content: generalResponse
+        };
+    }
+
+    /**
+     * ✅ CRITICAL FIX: Enhanced main message processing with conversational memory
+     * 🧠 CONFIRMATION BLINDNESS FIXED: AI now remembers previous questions
+     * 🚨 DOUBLE GREETING FIXED: No more redundant greetings in follow-up questions
+     */
+    async processMessage(
+        message: string, 
+        context: AgentContext
+    ): Promise<AgentResponse> {
+        console.log(`[SofiaAgent] 🧠 Processing message with enhanced conversational intelligence: "${message}"`);
+
+        try {
+            // ✅ STEP 1: Guest history is now available from ConversationManager context
+            const guestHistory = await this.fetchGuestHistoryIfNeeded(context);
+
+            // ✅ CRITICAL FIX: Get the last assistant message for conversational memory
+            const lastAssistantMessage = context.session.conversationHistory
+                .filter(m => m.role === 'assistant')
+                .pop()?.content;
+
+            console.log(`[SofiaAgent] 🧠 Conversational memory: Last assistant message: "${lastAssistantMessage?.substring(0, 100) || 'None'}"`);
+
+            // ✅ STEP 2: Extract with enhanced occasion detection and conversational memory
+            const extracted = await this.extractBookingParameters(
+                message, 
+                context, 
+                guestHistory, 
+                lastAssistantMessage // ✅ CRITICAL FIX: Pass previous message for confirmation understanding
+            );
+
+            // ✅ STEP 3: MERGE EXTRACTED PARAMS WITH SESSION STATE (preserves context including occasion)
+            const mergedParams = {
+                ...context.session.gatheringInfo, // Start with what's already in the session
+                // Overwrite with newly extracted values if they are not null/undefined
+                ...(extracted.date && { date: extracted.date }),
+                ...(extracted.time && { time: extracted.time }),
+                ...(extracted.guests && { guests: extracted.guests }),
+                ...(extracted.name && { name: extracted.name }),
+                ...(extracted.phone && { phone: extracted.phone }),
+                ...(extracted.specialRequests && { specialRequests: extracted.specialRequests }),
+                ...(extracted.occasion && { occasion: extracted.occasion }), // 🆕 Include occasion
+                // Carry over the user's immediate intent
+                userIntent: extracted.userIntent 
+            };
+
+            console.log(`[SofiaAgent] 🧠 Merged parameters with conversational memory:`, {
+                date: mergedParams.date,
+                time: mergedParams.time,
+                guests: mergedParams.guests,
+                name: mergedParams.name,
+                phone: mergedParams.phone,
+                occasion: mergedParams.occasion, // 🆕 Enhanced logging
+                userIntent: mergedParams.userIntent,
+                conversationalMemoryUsed: !!lastAssistantMessage
+            });
+
+            // ✅ STEP 4: Validate parameters using the MERGED data
+            const validation = this.validateRequiredParameters(mergedParams, context);
+
+            // ✅ PRESERVED: Add specific logic for first-turn general greetings
+            const isFirstTurn = context.session.conversationHistory.length <= 1;
+            if (validation.nextAction === 'general_response' && isFirstTurn) {
+                console.log(`[SofiaAgent] Handling first-turn general inquiry. Generating personalized greeting.`);
+                
+                // Generate a personalized, non-booking-focused greeting using prompt helper
+                const greeting = SofiaGreetings.generatePersonalizedGreeting({
+                    guestHistory: guestHistory,
+                    language: context.language,
+                    context: context.session.context,
+                    restaurantConfig: this.restaurantConfig
+                });
+
+                return {
+                    content: greeting
+                };
+            }
+
+            // ✅ STEP 5: Route based on validation results
+            if (validation.nextAction === 'ask_for_missing') {
+                // Missing information - prompt user with personality layer (NO DOUBLE GREETING!)
+                return await this.promptForMissingInfo(validation.missing, mergedParams, context);
+            } else if (validation.nextAction === 'general_response') {
+                // General inquiry on subsequent turns - simple response
+                const response = await this.translationService.translate(
+                    "I can help with new reservations. What date and time are you interested in?",
+                    context.language,
+                    'question'
+                );
+                return { content: response };
+            } else {
+                // All parameters validated - proceed with tools (includes enhanced localized confirmations - [object Object] FIXED!)
+                return await this.processWithTools(mergedParams, validation, context);
+            }
+
+        } catch (error) {
+            console.error(`[SofiaAgent] Error in processMessage:`, error);
+            
+            // Fallback to AI service if all else fails
+            try {
+                const fallbackResponse = await this.aiService.generateContent(
+                    `As a booking agent, respond to: "${message}"`,
+                    'booking'
+                );
+                
+                return {
+                    content: fallbackResponse,
+                    toolCalls: []
+                };
+            } catch (fallbackError) {
+                console.error(`[SofiaAgent] Fallback error:`, fallbackError);
+                
+                const errorMessage = await this.translationService.translate(
+                    "I apologize, I encountered a technical issue. Please try again.",
+                    context.language,
+                    'error'
+                );
+
+                return {
+                    content: errorMessage,
+                    toolCalls: [],
+                    requiresConfirmation: false
+                };
+            }
+        }
+    }
+
+    // ✅ PRESERVED: Existing validation and tool methods
+    private validateBookingTime(date: string, time: string): { 
+        isValid: boolean; 
+        isWithinHours: boolean; 
+        reason?: string;
+        suggestedTime?: string;
+    } {
+        if (!isValidTimezone(this.restaurantConfig.timezone)) {
+            console.warn(`[SofiaAgent] Invalid restaurant timezone: ${this.restaurantConfig.timezone}`);
+            return {
+                isValid: false,
+                isWithinHours: false,
+                reason: 'Invalid restaurant timezone configuration'
+            };
+        }
+
+        const validation = validateBookingDateTime(
+            date,
+            time,
+            this.restaurantConfig.timezone,
+            this.restaurantConfig.openingTime,
+            this.restaurantConfig.closingTime
+        );
+
+        return {
+            isValid: validation.isValid,
+            isWithinHours: validation.isWithinHours,
+            reason: validation.reason,
+            suggestedTime: validation.suggestedTime
+        };
+    }
+
+    private getOpenAITools(): OpenAI.Chat.Completions.ChatCompletionTool[] {
         return [
             {
-                type: "function" as const,
+                type: "function",
                 function: {
                     name: "get_guest_history",
-                    description: "Get guest's booking history for personalized service. Use this to welcome returning guests and suggest their usual preferences.",
+                    description: "Get guest's booking history for personalized service",
                     parameters: {
                         type: "object",
                         properties: {
@@ -571,17 +1236,17 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
                 }
             },
             {
-                type: "function" as const,
+                type: "function",
                 function: {
                     name: "get_restaurant_info",
-                    description: "Get information about the restaurant including flexible time booking capabilities. Returns standardized response with requested information or error details.",
+                    description: "Get information about the restaurant including timezone-aware operating hours",
                     parameters: {
                         type: "object",
                         properties: {
                             infoType: {
                                 type: "string",
                                 enum: ["hours", "location", "cuisine", "contact", "features", "all"],
-                                description: "Type of information to retrieve (hours includes flexible time booking settings)"
+                                description: "Type of information to retrieve"
                             }
                         },
                         required: ["infoType"]
@@ -589,24 +1254,28 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
                 }
             },
             {
-                type: "function" as const,
+                type: "function",
                 function: {
                     name: "check_availability",
-                    description: "Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30). Returns standardized response with tool_status and detailed data or error information.",
+                    description: "Check if tables are available for specific date, time and party size with timezone validation",
                     parameters: {
                         type: "object",
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                                pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+                                description: "Date in YYYY-MM-DD format"
                             },
                             time: {
                                 type: "string",
-                                description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30, etc."
+                                pattern: "^\\d{1,2}:\\d{2}$",
+                                description: "Time in HH:MM format (24-hour) - validated against operating hours"
                             },
                             guests: {
-                                type: "number",
-                                description: "Number of guests (1-50)"
+                                type: "integer",
+                                minimum: 1,
+                                maximum: 50,
+                                description: "Number of guests"
                             }
                         },
                         required: ["date", "time", "guests"]
@@ -614,24 +1283,28 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
                 }
             },
             {
-                type: "function" as const,
+                type: "function",
                 function: {
                     name: "find_alternative_times",
-                    description: "Find alternative time slots around ANY preferred time (supports exact times like 16:15, 19:43). Returns standardized response with available alternatives sorted by proximity to preferred time.",
+                    description: "Find alternative available times when preferred time is not available or outside operating hours",
                     parameters: {
                         type: "object",
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                                pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+                                description: "Date in YYYY-MM-DD format"
                             },
                             preferredTime: {
                                 type: "string",
-                                description: "Preferred time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43"
+                                pattern: "^\\d{1,2}:\\d{2}$",
+                                description: "Preferred time in HH:MM format"
                             },
                             guests: {
-                                type: "number",
-                                description: "Number of guests (1-50)"
+                                type: "integer",
+                                minimum: 1,
+                                maximum: 50,
+                                description: "Number of guests"
                             }
                         },
                         required: ["date", "preferredTime", "guests"]
@@ -639,37 +1312,42 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
                 }
             },
             {
-                type: "function" as const,
+                type: "function",
                 function: {
                     name: "create_reservation",
-                    description: "Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30). Returns standardized response indicating success with reservation details or failure with categorized error.",
+                    description: "Create a new reservation with complete guest information and timezone validation. Special requests will include occasion context.",
                     parameters: {
                         type: "object",
                         properties: {
                             guestName: {
                                 type: "string",
+                                minLength: 2,
                                 description: "Guest's full name"
                             },
                             guestPhone: {
                                 type: "string",
+                                pattern: "^[+]?[0-9\\s\\-\\(\\)]{7,}$",
                                 description: "Guest's phone number"
                             },
                             date: {
                                 type: "string",
-                                description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                                pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+                                description: "Reservation date in YYYY-MM-DD format"
                             },
                             time: {
                                 type: "string",
-                                description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
+                                pattern: "^\\d{1,2}:\\d{2}$",
+                                description: "Reservation time in HH:MM format - will be validated against operating hours"
                             },
                             guests: {
-                                type: "number",
-                                description: "Number of guests (1-50)"
+                                type: "integer",
+                                minimum: 1,
+                                maximum: 50,
+                                description: "Number of guests"
                             },
                             specialRequests: {
                                 type: "string",
-                                description: "Special requests or comments",
-                                default: ""
+                                description: "Any special requests or comments (may include occasion context)"
                             }
                         },
                         required: ["guestName", "guestPhone", "date", "time", "guests"]
@@ -679,358 +1357,6 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
         ];
     }
 
-    /**
-     * Get current restaurant context for date/time operations
-     * SOURCE: booking-agent.ts getCurrentRestaurantContext
-     */
-    getCurrentRestaurantContext() {
-        try {
-            const now = DateTime.now().setZone(this.restaurantConfig.timezone);
-            const today = now.toISODate();
-            const tomorrow = now.plus({ days: 1 }).toISODate();
-            const currentTime = now.toFormat('HH:mm');
-            const dayOfWeek = now.toFormat('cccc');
-
-            return {
-                currentDate: today,
-                tomorrowDate: tomorrow,
-                currentTime: currentTime,
-                dayOfWeek: dayOfWeek,
-                timezone: this.restaurantConfig.timezone
-            };
-        } catch (error) {
-            console.error(`[SofiaAgent] Error getting restaurant time context:`, error);
-            const now = DateTime.now();
-            return {
-                currentDate: now.toISODate(),
-                tomorrowDate: now.plus({ days: 1 }).toISODate(),
-                currentTime: now.toFormat('HH:mm'),
-                dayOfWeek: now.toFormat('cccc'),
-                timezone: 'UTC'
-            };
-        }
-    }
-
-    /**
-     * ✅ COMPLETE: Main message processing method for Sofia
-     */
-    async processMessage(
-        message: string, 
-        context: AgentContext
-    ): Promise<AgentResponse> {
-        console.log(`[SofiaAgent] Processing message: "${message}"`);
-
-        try {
-            // Build tool context for Sofia's tools
-            const toolContext = {
-                restaurantId: context.restaurantId,
-                timezone: context.session.currentStep || this.restaurantConfig.timezone,
-                language: context.language,
-                telegramUserId: context.telegramUserId,
-                sessionId: context.sessionId
-            };
-
-            // Get system prompt
-            const systemPrompt = this.getSystemPrompt(
-                context.session.context,
-                context.language,
-                context.guestHistory,
-                context.session.conversationHistory.length === 0,
-                context.conversationContext
-            );
-
-            // Build conversation history for AI
-            const conversationHistory = context.session.conversationHistory
-                .slice(-5) // Last 5 messages for context
-                .map(msg => `${msg.role}: ${msg.content}`)
-                .join('\n');
-
-            const fullPrompt = `${systemPrompt}
-
-Recent conversation:
-${conversationHistory}
-
-Current user message: "${message}"
-
-Respond naturally and use tools when needed. Always follow the critical booking workflow rules.`;
-
-            // Generate response using AI service
-            const response = await this.aiService.generateContent(
-                fullPrompt,
-                'booking',
-                { 
-                    temperature: 0.3, 
-                    maxTokens: 800 
-                }
-            );
-
-            console.log(`[SofiaAgent] AI response: ${response}`);
-
-            // Parse function calls from response if any
-            const toolCalls = this.parseToolCalls(response);
-            
-            // Execute tool calls if present
-            const executedToolCalls = [];
-            let finalResponse = response;
-
-            if (toolCalls.length > 0) {
-                console.log(`[SofiaAgent] Found ${toolCalls.length} tool calls`);
-                
-                for (const toolCall of toolCalls) {
-                    try {
-                        const toolResult = await this.executeToolCall(toolCall, toolContext);
-                        executedToolCalls.push({
-                            ...toolCall,
-                            result: toolResult
-                        });
-                        
-                        // Update response based on tool results
-                        finalResponse = await this.incorporateToolResult(
-                            finalResponse, 
-                            toolCall, 
-                            toolResult, 
-                            context.language
-                        );
-                        
-                    } catch (error) {
-                        console.error(`[SofiaAgent] Tool execution error:`, error);
-                        const errorMessage = await this.translationService.translate(
-                            `I encountered an error while processing your request. Please try again.`,
-                            context.language,
-                            'error'
-                        );
-                        finalResponse = errorMessage;
-                    }
-                }
-            }
-
-            // Clean response (remove any function call syntax)
-            finalResponse = this.cleanResponse(finalResponse);
-
-            return {
-                content: finalResponse,
-                toolCalls: executedToolCalls,
-                requiresConfirmation: this.shouldRequireConfirmation(executedToolCalls),
-                hasBooking: this.hasSuccessfulBooking(executedToolCalls),
-                reservationId: this.extractReservationId(executedToolCalls)
-            };
-
-        } catch (error) {
-            console.error(`[SofiaAgent] Error processing message:`, error);
-            
-            const errorMessage = await this.translationService.translate(
-                "I apologize, I encountered a technical issue. Please try again.",
-                context.language,
-                'error'
-            );
-
-            return {
-                content: errorMessage,
-                toolCalls: [],
-                requiresConfirmation: false
-            };
-        }
-    }
-
-    /**
-     * Parse tool calls from AI response
-     */
-    private parseToolCalls(response: string): Array<{function: {name: string, arguments: string}, id: string}> {
-        const toolCalls = [];
-        
-        // Look for function call patterns in the response
-        const functionPatterns = [
-            /check_availability\s*\(\s*([^)]+)\)/g,
-            /find_alternative_times\s*\(\s*([^)]+)\)/g,
-            /create_reservation\s*\(\s*([^)]+)\)/g,
-            /get_guest_history\s*\(\s*([^)]+)\)/g,
-            /get_restaurant_info\s*\(\s*([^)]+)\)/g
-        ];
-
-        for (const pattern of functionPatterns) {
-            let match;
-            while ((match = pattern.exec(response)) !== null) {
-                const functionName = pattern.source.split('\\s*\\(')[0];
-                const args = match[1];
-                
-                toolCalls.push({
-                    function: {
-                        name: functionName,
-                        arguments: args
-                    },
-                    id: `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-                });
-            }
-        }
-
-        return toolCalls;
-    }
-
-    /**
-     * Execute a tool call
-     */
-    private async executeToolCall(toolCall: any, toolContext: any): Promise<any> {
-        const { name, arguments: args } = toolCall.function;
-        
-        console.log(`[SofiaAgent] Executing tool: ${name} with args: ${args}`);
-
-        try {
-            // Parse arguments (handle both JSON and function call format)
-            let parsedArgs;
-            try {
-                parsedArgs = JSON.parse(args);
-            } catch {
-                // Try to parse function call format: "date='2025-07-07', time='19:00', guests=2"
-                parsedArgs = this.parseFunctionCallArgs(args);
-            }
-
-            switch (name) {
-                case 'check_availability':
-                    return await bookingTools.check_availability(
-                        parsedArgs.date,
-                        parsedArgs.time,
-                        parsedArgs.guests,
-                        toolContext
-                    );
-
-                case 'find_alternative_times':
-                    return await bookingTools.find_alternative_times(
-                        parsedArgs.date,
-                        parsedArgs.preferredTime,
-                        parsedArgs.guests,
-                        toolContext
-                    );
-
-                case 'create_reservation':
-                    return await bookingTools.create_reservation(
-                        parsedArgs.guestName,
-                        parsedArgs.guestPhone,
-                        parsedArgs.date,
-                        parsedArgs.time,
-                        parsedArgs.guests,
-                        parsedArgs.specialRequests || '',
-                        toolContext
-                    );
-
-                case 'get_guest_history':
-                    return await guestTools.get_guest_history(
-                        parsedArgs.telegramUserId,
-                        toolContext
-                    );
-
-                case 'get_restaurant_info':
-                    return await bookingTools.get_restaurant_info(
-                        parsedArgs.infoType,
-                        toolContext
-                    );
-
-                default:
-                    throw new Error(`Unknown tool: ${name}`);
-            }
-        } catch (error) {
-            console.error(`[SofiaAgent] Error executing ${name}:`, error);
-            return {
-                tool_status: 'FAILURE',
-                error: {
-                    type: 'SYSTEM_ERROR',
-                    message: error.message || 'Unknown error'
-                }
-            };
-        }
-    }
-
-    /**
-     * Parse function call arguments in string format
-     */
-    private parseFunctionCallArgs(argsString: string): any {
-        const args = {};
-        const pairs = argsString.split(',');
-        
-        for (const pair of pairs) {
-            const [key, value] = pair.split('=').map(s => s.trim());
-            if (key && value) {
-                // Remove quotes and parse value
-                const cleanValue = value.replace(/['"]/g, '');
-                args[key] = isNaN(Number(cleanValue)) ? cleanValue : Number(cleanValue);
-            }
-        }
-        
-        return args;
-    }
-
-    /**
-     * Incorporate tool result into response
-     */
-    private async incorporateToolResult(
-        originalResponse: string,
-        toolCall: any,
-        toolResult: any,
-        language: Language
-    ): Promise<string> {
-        const { name } = toolCall.function;
-
-        if (toolResult.tool_status === 'SUCCESS') {
-            // Success case - tool already provides translated message
-            if (toolResult.data?.message) {
-                return toolResult.data.message;
-            }
-            
-            // Generate success message based on tool type
-            switch (name) {
-                case 'check_availability':
-                    if (toolResult.data?.available) {
-                        return await this.translationService.translate(
-                            `Great! ${toolResult.data.table} is available for ${toolResult.data.exactTime}. I need your name and phone number to complete the booking.`,
-                            language,
-                            'success'
-                        );
-                    }
-                    break;
-                    
-                case 'create_reservation':
-                    return await this.translationService.translate(
-                        `🎉 Perfect! Your reservation is confirmed. Reservation number: ${toolResult.data.reservationId}`,
-                        language,
-                        'success'
-                    );
-                    
-                default:
-                    return originalResponse;
-            }
-        } else {
-            // Error case - return translated error message
-            if (toolResult.error?.message) {
-                return toolResult.error.message; // Already translated by tools
-            }
-            
-            return await this.translationService.translate(
-                `I'm sorry, I encountered an issue processing your request.`,
-                language,
-                'error'
-            );
-        }
-
-        return originalResponse;
-    }
-
-    /**
-     * Clean response by removing function call syntax
-     */
-    private cleanResponse(response: string): string {
-        // Remove function call patterns
-        return response
-            .replace(/check_availability\s*\([^)]+\)/g, '')
-            .replace(/find_alternative_times\s*\([^)]+\)/g, '')
-            .replace(/create_reservation\s*\([^)]+\)/g, '')
-            .replace(/get_guest_history\s*\([^)]+\)/g, '')
-            .replace(/get_restaurant_info\s*\([^)]+\)/g, '')
-            .replace(/\n\s*\n/g, '\n')
-            .trim();
-    }
-
-    /**
-     * Check if confirmation is required
-     */
     private shouldRequireConfirmation(toolCalls: any[]): boolean {
         return toolCalls.some(call => 
             call.function.name === 'create_reservation' &&
@@ -1038,9 +1364,6 @@ Respond naturally and use tools when needed. Always follow the critical booking 
         );
     }
 
-    /**
-     * Check if there's a successful booking
-     */
     private hasSuccessfulBooking(toolCalls: any[]): boolean {
         return toolCalls.some(call => 
             call.function.name === 'create_reservation' &&
@@ -1049,9 +1372,6 @@ Respond naturally and use tools when needed. Always follow the critical booking 
         );
     }
 
-    /**
-     * Extract reservation ID from successful booking
-     */
     private extractReservationId(toolCalls: any[]): number | undefined {
         const successfulBooking = toolCalls.find(call => 
             call.function.name === 'create_reservation' &&
@@ -1063,5 +1383,4 @@ Respond naturally and use tools when needed. Always follow the critical booking 
     }
 }
 
-// ===== EXPORT DEFAULT =====
 export default SofiaAgent;

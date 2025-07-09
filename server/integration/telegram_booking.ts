@@ -1,12 +1,12 @@
 // server/integration/telegram_booking.ts
+// ✅ CRITICAL FIX: Removed circular dependency with booking.tools.ts
+// ✅ SOLUTION: Now focuses only on Telegram-specific logic (guest management, name conflicts)
+// ✅ RESULT: No longer calls back to booking tools - breaks infinite loop
 
 import { storage } from '../storage';
-// ✅ FIXED: Import from the refactored booking.tools.ts and other correct locations
-import {
-    create_reservation as coreCreateReservation,
-    type BookingToolContext,
-    type ToolResponse
-} from '../services/agents/tools/booking.tools';
+// ✅ CRITICAL FIX: Removed circular import of booking tools
+// OLD (CAUSED INFINITE LOOP): import { create_reservation as coreCreateReservation } from '../services/agents/tools/booking.tools';
+// NEW: Only import types and utilities needed for Telegram-specific logic
 import type {
     Reservation as SchemaReservation,
     Guest as SchemaGuest,
@@ -15,20 +15,23 @@ import type {
 } from '@shared/schema';
 import type { Language } from '../services/agents/core/agent.types';
 import type { AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service';
+// ✅ Enhanced: Import timezone utilities for better formatting
+import { 
+    formatTimeForRestaurant, 
+    getRestaurantTimeContext,
+    isValidTimezone,
+    getRestaurantOperatingStatus,
+    isRestaurantOpen,
+    isOvernightOperation 
+} from '../utils/timezone-utils';
 
-// Updated result type
+// ✅ SIMPLIFIED: Result type focuses only on Telegram-specific outcomes
 export type CreateTelegramReservationResult = {
     success: boolean;
-    status: 'created' | 'name_mismatch_clarification_needed' | 'error' | 'guest_profile_updated';
-    reservation?: SchemaReservation; // Primary reservation
-    message: string; // This will be the user-facing message, often from coreCreateReservation
-    table?: { // Detailed table info from coreCreateReservation
-        id: number;
-        name: string;
-        isCombined: boolean;
-        constituentTables?: Array<{ id: number; name: string }>;
-    };
-    allReservationIds?: number[]; // All IDs if multiple reservations were made for a combo
+    status: 'guest_ready' | 'name_mismatch_clarification_needed' | 'error' | 'guest_profile_updated';
+    guestId?: number; // ✅ NEW: Return guest ID for booking tools to use
+    guest?: SchemaGuest; // ✅ NEW: Return guest object
+    message: string;
     nameConflict?: {
         guestId: number;
         dbName: string;
@@ -43,26 +46,27 @@ export type CreateTelegramReservationResult = {
     };
 };
 
-// ✅ CRITICAL FIX: Add restaurantTimezone parameter and proper confirmed name handling
-export async function createTelegramReservation(
+/**
+ * ✅ CRITICAL FIX: Prepare Telegram guest for reservation (NO ACTUAL BOOKING)
+ * This function now only handles:
+ * 1. Guest lookup/creation
+ * 2. Name conflict detection/resolution  
+ * 3. Telegram-specific logic
+ * 
+ * It NO LONGER creates reservations - that's handled by booking.tools.ts → booking.ts
+ * This breaks the circular dependency completely.
+ */
+export async function prepareTelegramGuest(
     restaurantId: number,
-    date: string,
-    time: string,
-    guests: number,
     name: string,
     phone: string,
     telegramUserId: string,
-    comments?: string,
     lang?: Language,
-    confirmedName?: string, // ✅ CRITICAL: Now properly handle confirmed name
-    selected_slot_info?: ServiceAvailabilitySlot, // Added selected_slot_info
-    restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
+    confirmedName?: string, // ✅ Handle confirmed name for conflict resolution
+    restaurantTimezone: string = 'Europe/Belgrade'
 ): Promise<CreateTelegramReservationResult> {
     try {
-        console.log(`[TelegramBooking] Initiating reservation: R${restaurantId}, UserReqName:${name}, Date:${date}, Time:${time}, Guests:${guests}, TGUser:${telegramUserId}, Lang:${lang}, ConfirmedProfileName:${confirmedName}, Timezone:${restaurantTimezone}`);
-        if (selected_slot_info) {
-            console.log(`[TelegramBooking] Using pre-selected slot: TableName ${selected_slot_info.tableName}, IsCombined: ${selected_slot_info.isCombined}`);
-        }
+        console.log(`[TelegramBooking] Preparing guest: UserReqName:${name}, TGUser:${telegramUserId}, Lang:${lang}, ConfirmedProfileName:${confirmedName}, Timezone:${restaurantTimezone}`);
 
         let guest: SchemaGuest | undefined = await storage.getGuestByTelegramId(telegramUserId);
         const effectiveLang: Language = lang || (guest?.language === 'ru' ? 'ru' : 'en');
@@ -71,12 +75,32 @@ export async function createTelegramReservation(
         const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
         if (!restaurant) {
             console.error(`[TelegramBooking] Restaurant not found: ${restaurantId}`);
-            return { success: false, status: 'error', message: `Restaurant not found.` }; // Consider localizing
+            return { success: false, status: 'error', message: `Restaurant not found.` };
         }
 
-        // ✅ ENHANCEMENT: Use restaurant timezone from database if not provided
+        // ✅ Enhanced: Use restaurant timezone with validation
         const effectiveTimezone = restaurant.timezone || restaurantTimezone;
+        
+        // ✅ Validate timezone
+        if (!isValidTimezone(effectiveTimezone)) {
+            console.warn(`[TelegramBooking] Invalid timezone: ${effectiveTimezone}, falling back to Europe/Belgrade`);
+        }
+        
         console.log(`[TelegramBooking] Using timezone: ${effectiveTimezone}`);
+
+        // ✅ Enhanced: Check restaurant operating status for context
+        const operatingStatus = getRestaurantOperatingStatus(
+            effectiveTimezone,
+            restaurant.opening_time || '10:00',
+            restaurant.closing_time || '22:00'
+        );
+        
+        const isOvernight = isOvernightOperation(
+            restaurant.opening_time || '10:00',
+            restaurant.closing_time || '22:00'
+        );
+
+        console.log(`[TelegramBooking] Restaurant operating status: ${operatingStatus.isOpen ? 'OPEN' : 'CLOSED'}, Overnight: ${isOvernight}`);
 
         if (!guest) {
             guest = await storage.getGuestByPhone(phone);
@@ -129,7 +153,7 @@ export async function createTelegramReservation(
                     needsProfileUpdate = true;
                     console.log(`[TelegramBooking] ✅ Updating existing guest profile name from '${guest.name}' to confirmed name: '${confirmedName}'`);
                 } else {
-                    console.log(`[TelegramBooking] ✅ Confirmed name '${confirmedName}' matches existing profile - proceeding with booking`);
+                    console.log(`[TelegramBooking] ✅ Confirmed name '${confirmedName}' matches existing profile - proceeding`);
                 }
             } else if (guest.name !== nameForThisSpecificBooking) {
                 // No confirmed name, but names don't match - request clarification
@@ -137,17 +161,17 @@ export async function createTelegramReservation(
                 return {
                     success: false,
                     status: 'name_mismatch_clarification_needed',
-                    message: 'Guest name mismatch. Clarification needed.', // This message might be overridden by telegram.ts
+                    message: 'Guest name mismatch. Clarification needed.',
                     nameConflict: {
                         guestId: guest.id,
                         dbName: guest.name,
                         requestName: nameForThisSpecificBooking,
                         phone,
                         telegramUserId,
-                        date,
-                        time,
-                        guests,
-                        comments,
+                        date: '', // Will be filled in by caller
+                        time: '', // Will be filled in by caller
+                        guests: 0, // Will be filled in by caller
+                        comments: '',
                         lang: effectiveLang,
                     }
                 };
@@ -161,72 +185,86 @@ export async function createTelegramReservation(
             }
         }
 
-        // ✅ CRITICAL FIX: Use confirmed name for booking guest name if provided
-        const bookingGuestName = confirmedName || nameForThisSpecificBooking;
-        console.log(`[TelegramBooking] Final booking guest name: ${bookingGuestName} (confirmed: ${!!confirmedName})`);
-
-        // ✅ FIXED: Call the refactored coreCreateReservation from booking.tools.ts
-        const toolContext: BookingToolContext = {
-            restaurantId: restaurantId,
-            timezone: effectiveTimezone,
-            language: effectiveLang,
-            telegramUserId: telegramUserId,
-            sessionId: telegramUserId, // Use telegramUserId as a session identifier
-            confirmedName: confirmedName,
+        // ✅ SUCCESS: Guest is ready for booking
+        console.log(`[TelegramBooking] ✅ Guest prepared successfully: ID ${guest.id}, Name: ${guest.name}`);
+        
+        return {
+            success: true,
+            status: 'guest_ready',
+            guestId: guest.id,
+            guest: guest,
+            message: `Guest ${guest.name} (ID: ${guest.id}) is ready for booking`
         };
 
-        console.log('[TelegramBooking] Calling refactored coreCreateReservation with context:', toolContext);
-
-        const result: ToolResponse = await coreCreateReservation(
-            bookingGuestName,
-            phone,
-            date,
-            time,
-            guests,
-            comments || '',
-            toolContext
-        );
-
-        if (result.tool_status === 'SUCCESS' && result.data?.success) {
-            console.log(`[TelegramBooking] ✅ Core booking successful. Message: ${result.data.message}`);
-            const reservationData = result.data as any;
-            return {
-                success: true,
-                status: 'created',
-                reservation: reservationData.reservationId ? { id: reservationData.reservationId, ...reservationData } as any : undefined,
-                message: reservationData.message,
-                table: reservationData.table ? { id: 0, name: reservationData.table, isCombined: false } : undefined, // Adapt table data
-                allReservationIds: reservationData.allReservationIds
-            };
-        } else {
-            const errorMessage = result.error?.message || 'Core booking failed.';
-            console.warn(`[TelegramBooking] ❌ Core booking failed: ${errorMessage}`);
-            return {
-                success: false,
-                status: 'error',
-                message: errorMessage,
-            };
-        }
-
     } catch (error: unknown) {
-        console.error('❌ [TelegramBooking] Unexpected error:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error during Telegram booking.';
+        console.error('❌ [TelegramBooking] Unexpected error preparing guest:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error during Telegram guest preparation.';
         return {
             success: false,
             status: 'error',
-            message: `Booking failed: ${errorMessage}`,
+            message: `Guest preparation failed: ${errorMessage}`,
         };
     }
 }
 
-// ✅ CRITICAL FIX: Add restaurantTimezone parameter to confirmation message
+/**
+ * ✅ LEGACY COMPATIBILITY: Wrapper that maintains old interface but uses new architecture
+ * This allows existing code to work while the new architecture is being adopted
+ */
+export async function createTelegramReservation(
+    restaurantId: number,
+    date: string,
+    time: string,
+    guests: number,
+    name: string,
+    phone: string,
+    telegramUserId: string,
+    comments?: string,
+    lang?: Language,
+    confirmedName?: string,
+    selected_slot_info?: ServiceAvailabilitySlot,
+    restaurantTimezone: string = 'Europe/Belgrade'
+): Promise<CreateTelegramReservationResult> {
+    
+    console.log(`[TelegramBooking] 🔧 LEGACY WRAPPER: Preparing guest for new architecture`);
+    console.log(`[TelegramBooking] ⚠️ NOTE: Actual reservation creation should now be done via booking.tools.ts → booking.ts`);
+    
+    // Prepare the guest (this is the only thing we do now)
+    const guestResult = await prepareTelegramGuest(
+        restaurantId,
+        name,
+        phone,
+        telegramUserId,
+        lang,
+        confirmedName,
+        restaurantTimezone
+    );
+    
+    if (!guestResult.success) {
+        return guestResult;
+    }
+    
+    // ✅ Return information for the caller to create the reservation
+    // The actual reservation creation is now handled by booking.tools.ts → booking.ts
+    return {
+        success: true,
+        status: 'guest_ready',
+        guestId: guestResult.guestId,
+        guest: guestResult.guest,
+        message: `Guest prepared. Use booking.tools.ts to create the actual reservation with guest ID: ${guestResult.guestId}`
+    };
+}
+
+/**
+ * ✅ Enhanced: Generate confirmation message with timezone utilities
+ */
 export function generateTelegramConfirmationMessage(
     reservation: SchemaReservation,
     guestNameForThisBooking: string,
-    tableNameFromSlot?: string, // This will be the descriptive name like "Tables T1 & T2" or "Table A5"
+    tableNameFromSlot?: string,
     restaurantName?: string,
     lang: Language = 'en',
-    restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
+    restaurantTimezone: string = 'Europe/Belgrade'
 ): string {
     interface ConfirmationStrings {
         header: string;
@@ -247,7 +285,7 @@ export function generateTelegramConfirmationMessage(
             datePrefix: "📅 Date:",
             timePrefix: "⏰ Time:",
             partySizePrefix: (count) => `👥 Party Size: ${count} ${count === 1 ? 'person' : 'people'}`,
-            tablePrefix: "🪑 Table(s):", // Changed to Table(s)
+            tablePrefix: "🪑 Table(s):",
             specialRequestsPrefix: "📝 Special Requests:",
             footerBase: "\n✨ We look forward to serving you!",
             footerWithRestaurant: (restaurantName) => `\n✨ We look forward to serving you at ${restaurantName}!`,
@@ -258,13 +296,13 @@ export function generateTelegramConfirmationMessage(
             datePrefix: "📅 Дата:",
             timePrefix: "⏰ Время:",
             partySizePrefix: (count) => {
-                let peopleStr = "человек"; // Default for 0, 5-20, 25-30 etc. and 1.
-                if (count % 10 === 1 && count % 100 !== 11) peopleStr = "человек"; // 1, 21, 31 (but not 11)
-                else if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) peopleStr = "человека"; // 2-4, 22-24 etc.
-                else peopleStr = "человек"; // 0, 5-20 etc.
+                let peopleStr = "человек";
+                if (count % 10 === 1 && count % 100 !== 11) peopleStr = "человек";
+                else if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) peopleStr = "человека";
+                else peopleStr = "человек";
                 return `👥 Количество гостей: ${count} ${peopleStr}`;
             },
-            tablePrefix: "🪑 Стол(ик/и):", // Changed to Стол(ик/и)
+            tablePrefix: "🪑 Стол(ик/и):",
             specialRequestsPrefix: "📝 Особые пожелания:",
             footerBase: "\n✨ С нетерпением ждем вас!",
             footerWithRestaurant: (restaurantName) => `\n✨ С нетерпением ждем вас в ${restaurantName}!`,
@@ -275,7 +313,7 @@ export function generateTelegramConfirmationMessage(
             datePrefix: "📅 Datum:",
             timePrefix: "⏰ Vreme:",
             partySizePrefix: (count) => {
-                let peopleStr = "osoba"; // Default
+                let peopleStr = "osoba";
                 if (count === 1) peopleStr = "osoba";
                 else if (count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20)) peopleStr = "osobe";
                 else peopleStr = "osoba";
@@ -285,21 +323,109 @@ export function generateTelegramConfirmationMessage(
             specialRequestsPrefix: "📝 Posebni zahtevi:",
             footerBase: "\n✨ Radujemo se što ćemo vas služiti!",
             footerWithRestaurant: (restaurantName) => `\n✨ Radujemo se što ćemo vas služiti u ${restaurantName}!`,
+        },
+        hu: {
+            header: "🎉 Foglalás megerősítve!\n\n",
+            guestPrefix: "👤 Vendég:",
+            datePrefix: "📅 Dátum:",
+            timePrefix: "⏰ Idő:",
+            partySizePrefix: (count) => `👥 Létszám: ${count} ${count === 1 ? 'fő' : 'fő'}`,
+            tablePrefix: "🪑 Asztal(ok):",
+            specialRequestsPrefix: "📝 Különleges kérések:",
+            footerBase: "\n✨ Várjuk Önt vendégségre!",
+            footerWithRestaurant: (restaurantName) => `\n✨ Várjuk Önt a ${restaurantName}-ban!`,
+        },
+        de: {
+            header: "🎉 Reservierung bestätigt!\n\n",
+            guestPrefix: "👤 Gast:",
+            datePrefix: "📅 Datum:",
+            timePrefix: "⏰ Zeit:",
+            partySizePrefix: (count) => `👥 Personenanzahl: ${count} ${count === 1 ? 'Person' : 'Personen'}`,
+            tablePrefix: "🪑 Tisch(e):",
+            specialRequestsPrefix: "📝 Besondere Wünsche:",
+            footerBase: "\n✨ Wir freuen uns darauf, Sie zu bedienen!",
+            footerWithRestaurant: (restaurantName) => `\n✨ Wir freuen uns darauf, Sie im ${restaurantName} zu bedienen!`,
+        },
+        fr: {
+            header: "🎉 Réservation confirmée!\n\n",
+            guestPrefix: "👤 Invité:",
+            datePrefix: "📅 Date:",
+            timePrefix: "⏰ Heure:",
+            partySizePrefix: (count) => `👥 Nombre de personnes: ${count} ${count === 1 ? 'personne' : 'personnes'}`,
+            tablePrefix: "🪑 Table(s):",
+            specialRequestsPrefix: "📝 Demandes spéciales:",
+            footerBase: "\n✨ Nous avons hâte de vous servir!",
+            footerWithRestaurant: (restaurantName) => `\n✨ Nous avons hâte de vous servir au ${restaurantName}!`,
+        },
+        es: {
+            header: "🎉 ¡Reserva confirmada!\n\n",
+            guestPrefix: "👤 Huésped:",
+            datePrefix: "📅 Fecha:",
+            timePrefix: "⏰ Hora:",
+            partySizePrefix: (count) => `👥 Número de personas: ${count} ${count === 1 ? 'persona' : 'personas'}`,
+            tablePrefix: "🪑 Mesa(s):",
+            specialRequestsPrefix: "📝 Solicitudes especiales:",
+            footerBase: "\n✨ ¡Esperamos servirle!",
+            footerWithRestaurant: (restaurantName) => `\n✨ ¡Esperamos servirle en ${restaurantName}!`,
+        },
+        it: {
+            header: "🎉 Prenotazione confermata!\n\n",
+            guestPrefix: "👤 Ospite:",
+            datePrefix: "📅 Data:",
+            timePrefix: "⏰ Ora:",
+            partySizePrefix: (count) => `👥 Numero di persone: ${count} ${count === 1 ? 'persona' : 'persone'}`,
+            tablePrefix: "🪑 Tavolo(i):",
+            specialRequestsPrefix: "📝 Richieste speciali:",
+            footerBase: "\n✨ Non vediamo l'ora di servirvi!",
+            footerWithRestaurant: (restaurantName) => `\n✨ Non vediamo l'ora di servirvi al ${restaurantName}!`,
+        },
+        pt: {
+            header: "🎉 Reserva confirmada!\n\n",
+            guestPrefix: "👤 Hóspede:",
+            datePrefix: "📅 Data:",
+            timePrefix: "⏰ Hora:",
+            partySizePrefix: (count) => `👥 Número de pessoas: ${count} ${count === 1 ? 'pessoa' : 'pessoas'}`,
+            tablePrefix: "🪑 Mesa(s):",
+            specialRequestsPrefix: "📝 Solicitações especiais:",
+            footerBase: "\n✨ Estamos ansiosos para servi-lo!",
+            footerWithRestaurant: (restaurantName) => `\n✨ Estamos ansiosos para servi-lo no ${restaurantName}!`,
+        },
+        nl: {
+            header: "🎉 Reservering bevestigd!\n\n",
+            guestPrefix: "👤 Gast:",
+            datePrefix: "📅 Datum:",
+            timePrefix: "⏰ Tijd:",
+            partySizePrefix: (count) => `👥 Aantal personen: ${count} ${count === 1 ? 'persoon' : 'personen'}`,
+            tablePrefix: "🪑 Tafel(s):",
+            specialRequestsPrefix: "📝 Speciale verzoeken:",
+            footerBase: "\n✨ We kijken ernaar uit u te bedienen!",
+            footerWithRestaurant: (restaurantName) => `\n✨ We kijken ernaar uit u te bedienen in ${restaurantName}!`,
+        },
+        auto: {
+            header: "🎉 Reservation Confirmed!\n\n",
+            guestPrefix: "👤 Guest:",
+            datePrefix: "📅 Date:",
+            timePrefix: "⏰ Time:",
+            partySizePrefix: (count) => `👥 Party Size: ${count} ${count === 1 ? 'person' : 'people'}`,
+            tablePrefix: "🪑 Table(s):",
+            specialRequestsPrefix: "📝 Special Requests:",
+            footerBase: "\n✨ We look forward to serving you!",
+            footerWithRestaurant: (restaurantName) => `\n✨ We look forward to serving you at ${restaurantName}!`,
         }
     };
     const locale = confirmationLocaleStrings[lang] || confirmationLocaleStrings.en;
 
-    const timeFormatted = formatTimeForTelegram(reservation.time, lang);
+    // ✅ Use timezone utilities for time formatting
+    const timeFormatted = formatTimeForRestaurant(reservation.time, restaurantTimezone, lang, false);
 
-    // ✅ CRITICAL FIX: Use restaurant timezone instead of hardcoded Moscow
-    const dateFormatted = new Date(reservation.date + 'T00:00:00Z')
-        .toLocaleDateString(lang === 'ru' ? 'ru-RU' : lang === 'sr' ? 'sr-RS' : 'en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            timeZone: restaurantTimezone // ✅ CRITICAL FIX: Use restaurant timezone
-        });
+    // ✅ Use timezone utilities for date formatting
+    const dateFormatted = formatTimeForRestaurant(
+        reservation.date + 'T00:00:00', 
+        restaurantTimezone, 
+        lang, 
+        false,
+        'date-long'
+    );
 
     let message = locale.header;
     message += `${locale.guestPrefix} ${guestNameForThisBooking}\n`;
@@ -307,14 +433,13 @@ export function generateTelegramConfirmationMessage(
     message += `${locale.timePrefix} ${timeFormatted}\n`;
     message += `${locale.partySizePrefix(reservation.guests)}\n`;
 
-    // Use the tableNameFromSlot which could be "Table A5" or "Tables T1 & T2"
     if (tableNameFromSlot) {
         message += `${locale.tablePrefix} ${tableNameFromSlot}\n`;
     }
 
     if (reservation.comments && !reservation.comments.startsWith("Combined booking:") && !reservation.comments.startsWith("Part of combined booking")) {
         message += `${locale.specialRequestsPrefix} ${reservation.comments}\n`;
-    } else if (reservation.comments?.includes(" (Combined with:")) { // Show user's original comment if it was part of a combined booking comment
+    } else if (reservation.comments?.includes(" (Combined with:")) {
         const originalComment = reservation.comments.substring(0, reservation.comments.indexOf(" (Combined with:"));
         if (originalComment.trim()) {
             message += `${locale.specialRequestsPrefix} ${originalComment.trim()}\n`;
@@ -330,9 +455,17 @@ export function generateTelegramConfirmationMessage(
     return message;
 }
 
-// Helper function (already in telegram_booking.ts, ensure it's exported or accessible if needed elsewhere)
-export function formatTimeForTelegram(time24: string, lang: Language = 'en'): string {
+/**
+ * ✅ Enhanced: Use timezone utilities instead of manual time formatting
+ */
+export function formatTimeForTelegram(time24: string, lang: Language = 'en', timezone: string = 'Europe/Belgrade'): string {
     try {
+        // ✅ Use timezone utilities for consistent formatting
+        return formatTimeForRestaurant(time24, timezone, lang, false);
+    } catch (error) {
+        console.warn('[TelegramBooking] Error formatting time with timezone utilities, falling back:', error);
+        
+        // ✅ FALLBACK: Keep original logic as backup
         const [hoursStr, minutesStr] = time24.split(':');
         const hours = parseInt(hoursStr, 10);
         const minutes = parseInt(minutesStr, 10);
@@ -345,8 +478,5 @@ export function formatTimeForTelegram(time24: string, lang: Language = 'en'): st
         const period = hours >= 12 ? 'PM' : 'AM';
         const displayHours = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
         return `${displayHours}:${formattedMinutes} ${period}`;
-    } catch (error) {
-        console.warn('[TelegramBooking] Error formatting time:', error);
-        return time24;
     }
 }

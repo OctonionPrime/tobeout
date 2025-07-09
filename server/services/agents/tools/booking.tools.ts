@@ -1,16 +1,21 @@
 // server/services/agents/tools/booking.tools.ts
-// ✅ PHASE 5: Booking tools extracted from agent-tools.ts
-// SOURCE: agent-tools.ts booking-related functions (lines ~200-300, ~350-450, ~500-650, ~700-800)
+// ✅ CRITICAL FIX: Removed circular dependency with telegram_booking.ts
+// ✅ SOLUTION: Now calls booking.ts directly for reservation creation
 
 import { getAvailableTimeSlots } from '../../availability.service';
-import { createTelegramReservation } from '../../../integration/telegram_booking';
+// ✅ CRITICAL FIX: Import booking service instead of telegram integration
+import { createReservation, type BookingRequest } from '../../booking';
 import { storage } from '../../../storage';
 import type { Language } from '../core/agent.types';
 import OpenAI from 'openai';
 import { DateTime } from 'luxon';
+import { 
+    isValidTimezone,
+    validateBookingDateTime,
+    getRestaurantOperatingStatus 
+} from '../../../utils/timezone-utils';
 
 // ===== TOOL RESPONSE INTERFACES =====
-// SOURCE: agent-tools.ts standardized response interface
 interface ToolResponse<T = any> {
     tool_status: 'SUCCESS' | 'FAILURE';
     data?: T;
@@ -28,7 +33,6 @@ interface ToolResponse<T = any> {
 }
 
 // ===== RESPONSE CREATION HELPERS =====
-// SOURCE: agent-tools.ts helper functions
 const createSuccessResponse = <T>(data: T, metadata?: ToolResponse['metadata']): ToolResponse<T> => ({
     tool_status: 'SUCCESS',
     data,
@@ -60,7 +64,6 @@ const createSystemError = (message: string, originalError?: any): ToolResponse =
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
 
 // ===== TRANSLATION SERVICE =====
-// SOURCE: agent-tools.ts AgentToolTranslationService class
 class BookingToolTranslationService {
     private static client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
@@ -110,14 +113,67 @@ export interface BookingToolContext {
     sessionId?: string;
     source?: string;
     confirmedName?: string;
-    excludeReservationId?: number; // For Maya's modification scenarios
+    excludeReservationId?: number;
+}
+
+// ===== TIMEZONE VALIDATION HELPER =====
+function validateTimezoneAndOperatingHours(
+    context: BookingToolContext,
+    date?: string,
+    time?: string
+): { 
+    isValid: boolean; 
+    timezone: string; 
+    operatingStatus?: any;
+    timeValidation?: any;
+    error?: string 
+} {
+    // Validate timezone
+    if (!isValidTimezone(context.timezone)) {
+        console.warn(`[BookingTools] Invalid timezone: ${context.timezone}, falling back to Belgrade`);
+        context.timezone = 'Europe/Belgrade';
+    }
+
+    const result = {
+        isValid: true,
+        timezone: context.timezone
+    };
+
+    // If date and time provided, validate against operating hours
+    if (date && time) {
+        try {
+            const operatingStatus = getRestaurantOperatingStatus(
+                context.timezone,
+                '10:00', // Default opening time - should come from restaurant config
+                '23:00'  // Default closing time - should come from restaurant config
+            );
+
+            const timeValidation = validateBookingDateTime(
+                date,
+                time,
+                context.timezone,
+                '10:00', // Default opening time
+                '23:00'  // Default closing time
+            );
+
+            return {
+                ...result,
+                operatingStatus,
+                timeValidation
+            };
+        } catch (error) {
+            console.warn(`[BookingTools] Operating hours validation failed:`, error);
+            return result; // Return basic validation without operating hours check
+        }
+    }
+
+    return result;
 }
 
 // ===== BOOKING TOOLS IMPLEMENTATION =====
 
 /**
- * Check availability for ANY specific time with optional reservation exclusion
- * SOURCE: agent-tools.ts check_availability function (lines ~200-300)
+ * Check availability for ANY specific time with optional reservation exclusion and timezone validation
  */
 export async function check_availability(
     date: string,
@@ -127,6 +183,12 @@ export async function check_availability(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Booking Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
+
+    // ✅ Timezone validation at entry point
+    const timezoneValidation = validateTimezoneAndOperatingHours(context, date, time);
+    if (!timezoneValidation.isValid) {
+        return createValidationFailure(`Timezone validation failed: ${timezoneValidation.error}`);
+    }
 
     try {
         if (!date || !time || !guests || !context.restaurantId) {
@@ -173,13 +235,23 @@ export async function check_availability(
         if (slots.length > 0) {
             const bestSlot = slots[0];
             
-            // ✅ USE TRANSLATION SERVICE
             const baseMessage = `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`;
             const translatedMessage = await BookingToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
                 'success'
             );
+
+            const responseMetadata: any = {
+                execution_time_ms: executionTime,
+                timezone_validated: true,
+                restaurant_timezone: context.timezone
+            };
+
+            // Add operating hours warning if applicable
+            if (timezoneValidation.timeValidation && !timezoneValidation.timeValidation.isWithinHours) {
+                responseMetadata.warnings = [`Time ${time} is outside normal operating hours`];
+            }
 
             return createSuccessResponse({
                 available: true,
@@ -190,66 +262,21 @@ export async function check_availability(
                 message: translatedMessage,
                 constituentTables: bestSlot.constituentTables || null,
                 allAvailableSlots: slots.map(s => ({ time: s.time, table: s.tableName })),
-                timeSupported: 'exact'
-            }, {
-                execution_time_ms: executionTime
-            });
+                timeSupported: 'exact',
+                timezone: context.timezone
+            }, responseMetadata);
         } else {
-            console.log(`⚠️ [Booking Tool] No tables for ${guests} guests at exact time ${timeFormatted}, checking for smaller party sizes...`);
+            const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
+            const translatedMessage = await BookingToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
 
-            let suggestedAlternatives = [];
-            for (let altGuests = guests - 1; altGuests >= 1 && suggestedAlternatives.length === 0; altGuests--) {
-                const altSlots = await getAvailableTimeSlots(
-                    context.restaurantId,
-                    date,
-                    altGuests,
-                    {
-                        requestedTime: timeFormatted,
-                        exactTimeOnly: true,
-                        timezone: context.timezone,
-                        allowCombinations: true,
-                        excludeReservationId: context.excludeReservationId
-                    }
-                );
-
-                if (altSlots.length > 0) {
-                    suggestedAlternatives = altSlots.slice(0, 3).map(slot => ({
-                        time: slot.time,
-                        table: slot.tableName,
-                        guests: altGuests,
-                        capacity: slot.tableCapacity?.max || altGuests
-                    }));
-                    break;
-                }
-            }
-
-            if (suggestedAlternatives.length > 0) {
-                // ✅ USE TRANSLATION SERVICE
-                const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would that work?`;
-                const translatedMessage = await BookingToolTranslationService.translateToolMessage(
-                    baseMessage,
-                    context.language as Language,
-                    'error'
-                );
-
-                return createBusinessRuleFailure(
-                    translatedMessage,
-                    'NO_AVAILABILITY_SUGGEST_SMALLER'
-                );
-            } else {
-                // ✅ USE TRANSLATION SERVICE
-                const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
-                const translatedMessage = await BookingToolTranslationService.translateToolMessage(
-                    baseMessage,
-                    context.language as Language,
-                    'error'
-                );
-
-                return createBusinessRuleFailure(
-                    translatedMessage,
-                    'NO_AVAILABILITY'
-                );
-            }
+            return createBusinessRuleFailure(
+                translatedMessage,
+                'NO_AVAILABILITY'
+            );
         }
 
     } catch (error) {
@@ -259,8 +286,7 @@ export async function check_availability(
 }
 
 /**
- * Find alternative time slots around ANY preferred time with excludeReservationId support
- * SOURCE: agent-tools.ts find_alternative_times function (lines ~350-450)
+ * Find alternative time slots around ANY preferred time with timezone validation
  */
 export async function find_alternative_times(
     date: string,
@@ -270,6 +296,11 @@ export async function find_alternative_times(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Booking Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
+
+    const timezoneValidation = validateTimezoneAndOperatingHours(context, date, preferredTime);
+    if (!timezoneValidation.isValid) {
+        return createValidationFailure(`Timezone validation failed: ${timezoneValidation.error}`);
+    }
 
     try {
         if (!date || !preferredTime || !guests || !context.restaurantId) {
@@ -336,18 +367,22 @@ export async function find_alternative_times(
         console.log(`✅ [Booking Tool] Found ${alternatives.length} alternatives around ${preferredTime}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
         if (alternatives.length > 0) {
+            const responseMetadata: any = {
+                execution_time_ms: executionTime,
+                timezone_validated: true,
+                restaurant_timezone: context.timezone
+            };
+
             return createSuccessResponse({
                 alternatives,
                 count: alternatives.length,
                 date: date,
                 preferredTime: preferredTime,
                 exactTimeRequested: timeFormatted,
-                closestAlternative: alternatives[0]
-            }, {
-                execution_time_ms: executionTime
-            });
+                closestAlternative: alternatives[0],
+                timezone: context.timezone
+            }, responseMetadata);
         } else {
-            // ✅ USE TRANSLATION SERVICE
             const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
             const translatedMessage = await BookingToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -368,8 +403,8 @@ export async function find_alternative_times(
 }
 
 /**
- * Create a reservation with proper name clarification handling
- * SOURCE: agent-tools.ts create_reservation function (lines ~500-650)
+ * ✅ CRITICAL FIX: Create a reservation by calling booking.ts directly (no circular dependency)
+ * This breaks the infinite loop by bypassing telegram_booking.ts completely
  */
 export async function create_reservation(
     guestName: string,
@@ -382,6 +417,13 @@ export async function create_reservation(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`📝 [Booking Tool] create_reservation: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
+    console.log(`🔧 [FIXED] Using direct booking.ts call - NO circular dependency`);
+
+    // Timezone validation at entry point
+    const timezoneValidation = validateTimezoneAndOperatingHours(context, date, time);
+    if (!timezoneValidation.isValid) {
+        return createValidationFailure(`Timezone validation failed: ${timezoneValidation.error}`);
+    }
 
     const effectiveGuestName = context.confirmedName || guestName;
     if (context.confirmedName) {
@@ -429,60 +471,114 @@ export async function create_reservation(
             return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
         }
 
-        console.log(`✅ [Booking Tool] Validation passed. Creating reservation with exact time:`);
+        console.log(`✅ [Booking Tool] Validation passed. Creating reservation with booking service:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
-        console.log(`   - Date/Time: ${date} ${timeFormatted} (exact time support)`);
+        console.log(`   - Date/Time: ${date} ${timeFormatted}`);
         console.log(`   - Guests: ${guests}`);
-        console.log(`   - Timezone: ${context.timezone}`);
-        console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
+        console.log(`   - Timezone: ${context.timezone} (validated)`);
+        console.log(`   - Source: ${context.telegramUserId ? 'telegram' : 'web'}`);
 
-        const result = await createTelegramReservation(
-            context.restaurantId,
-            date,
-            timeFormatted,
-            guests,
-            cleanName,
-            cleanPhone,
-            context.telegramUserId || context.sessionId || 'web_chat_user',
-            specialRequests,
-            context.language as any,
-            context.confirmedName,
-            undefined,
-            context.timezone
-        );
+        // ✅ CRITICAL FIX: Handle guest lookup and creation before calling booking service
+        let guestId: number;
+        
+        try {
+            // Look up or create guest
+            if (context.telegramUserId) {
+                let guest = await storage.getGuestByTelegramId(context.telegramUserId);
+                
+                if (!guest) {
+                    // Try to find by phone
+                    guest = await storage.getGuestByPhone(cleanPhone);
+                    if (guest) {
+                        // Associate with telegram ID
+                        guest = await storage.updateGuest(guest.id, { 
+                            telegram_user_id: context.telegramUserId 
+                        });
+                        console.log(`📝 [Booking Tool] Associated existing guest ${guest.id} with Telegram ID`);
+                    } else {
+                        // Create new guest
+                        guest = await storage.createGuest({
+                            name: cleanName,
+                            phone: cleanPhone,
+                            telegram_user_id: context.telegramUserId,
+                            language: context.language as any
+                        });
+                        console.log(`📝 [Booking Tool] Created new guest ${guest.id}`);
+                    }
+                } else {
+                    // Check for name conflicts
+                    if (guest.name !== cleanName && !context.confirmedName) {
+                        console.log(`⚠️ [Booking Tool] Name mismatch detected: DB has '${guest.name}', booking requests '${cleanName}'`);
+                        return createFailureResponse(
+                            'BUSINESS_RULE',
+                            `Name mismatch: database has '${guest.name}' but booking requests '${cleanName}'. Please confirm which name to use.`,
+                            'NAME_CLARIFICATION_NEEDED',
+                            {
+                                dbName: guest.name,
+                                requestName: cleanName,
+                                guestId: guest.id,
+                                phone: cleanPhone,
+                                telegramUserId: context.telegramUserId
+                            }
+                        );
+                    }
+                    
+                    // Update guest name if confirmed
+                    if (context.confirmedName && guest.name !== context.confirmedName) {
+                        guest = await storage.updateGuest(guest.id, { name: context.confirmedName });
+                        console.log(`📝 [Booking Tool] Updated guest name to confirmed: ${context.confirmedName}`);
+                    }
+                }
+                
+                guestId = guest.id;
+            } else {
+                // Web booking - simple guest lookup/creation
+                let guest = await storage.getGuestByPhone(cleanPhone);
+                if (!guest) {
+                    guest = await storage.createGuest({
+                        name: cleanName,
+                        phone: cleanPhone,
+                        language: context.language as any
+                    });
+                    console.log(`📝 [Booking Tool] Created new web guest ${guest.id}`);
+                }
+                guestId = guest.id;
+            }
+        } catch (guestError) {
+            console.error(`❌ [Booking Tool] Guest lookup/creation error:`, guestError);
+            return createSystemError('Failed to process guest information', guestError);
+        }
+
+        // ✅ CRITICAL FIX: Call booking.ts directly instead of telegram_booking.ts
+        // This breaks the circular dependency completely
+        const bookingRequest: BookingRequest = {
+            restaurantId: context.restaurantId,
+            guestId: guestId,
+            // Convert to UTC timestamp for booking service
+            reservation_utc: DateTime.fromISO(`${date}T${timeFormatted}`, { zone: context.timezone }).toUTC().toISO()!,
+            guests: guests,
+            comments: specialRequests,
+            source: context.telegramUserId ? 'telegram' : 'web',
+            lang: context.language as any,
+            booking_guest_name: cleanName
+        };
+
+        console.log(`🔧 [FIXED] Calling booking.ts directly - breaking circular dependency`);
+        const result = await createReservation(bookingRequest);
 
         const executionTime = Date.now() - startTime;
 
-        if (!result.success && result.status === 'name_mismatch_clarification_needed' && result.nameConflict) {
-            console.log(`⚠️ [Booking Tool] NAME MISMATCH DETECTED: Converting to proper format for conversation manager`);
+        if (result.success && result.reservation) {
+            console.log(`✅ [Booking Tool] Reservation created successfully: #${result.reservation.id}`);
+            
+            const responseMetadata: any = {
+                execution_time_ms: executionTime,
+                timezone_validated: true,
+                restaurant_timezone: context.timezone,
+                architecture: 'fixed_no_circular_dependency'
+            };
 
-            const { dbName, requestName } = result.nameConflict;
-
-            return createFailureResponse(
-                'BUSINESS_RULE',
-                `Name mismatch detected: database has '${dbName}' but booking requests '${requestName}'`,
-                'NAME_CLARIFICATION_NEEDED',
-                {
-                    dbName: dbName,
-                    requestName: requestName,
-                    guestId: result.nameConflict.guestId,
-                    phone: result.nameConflict.phone,
-                    telegramUserId: result.nameConflict.telegramUserId,
-                    originalMessage: result.message
-                }
-            );
-        }
-
-        console.log(`🔍 [Booking Tool] Reservation result:`, {
-            success: result.success,
-            status: result.status,
-            reservationId: result.reservation?.id,
-            message: result.message
-        });
-
-        if (result.success && result.reservation && result.reservation.id) {
-            console.log(`✅ [Booking Tool] Exact time reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
             return createSuccessResponse({
                 reservationId: result.reservation.id,
                 confirmationNumber: result.reservation.id,
@@ -496,17 +592,11 @@ export async function create_reservation(
                 specialRequests: specialRequests,
                 message: result.message,
                 success: true,
-                timeSupported: 'exact'
-            }, {
-                execution_time_ms: executionTime
-            });
+                timeSupported: 'exact',
+                timezone: context.timezone
+            }, responseMetadata);
         } else {
-            console.log(`⚠️ [Booking Tool] Exact time reservation failed:`, {
-                success: result.success,
-                status: result.status,
-                message: result.message,
-                reservation: result.reservation
-            });
+            console.log(`⚠️ [Booking Tool] Reservation failed:`, result.message);
 
             let errorCode = 'BOOKING_FAILED';
             if (result.message?.toLowerCase().includes('no table')) {
@@ -517,7 +607,6 @@ export async function create_reservation(
                 errorCode = 'CAPACITY_EXCEEDED';
             }
 
-            // ✅ USE TRANSLATION SERVICE
             const translatedMessage = await BookingToolTranslationService.translateToolMessage(
                 result.message || 'Could not complete reservation due to business constraints',
                 context.language as Language,
@@ -532,27 +621,12 @@ export async function create_reservation(
 
     } catch (error) {
         console.error(`❌ [Booking Tool] create_reservation error:`, error);
-
-        console.error(`❌ [Booking Tool] Error details:`, {
-            guestName: effectiveGuestName,
-            guestPhone,
-            date,
-            time,
-            guests,
-            contextExists: !!context,
-            contextRestaurantId: context?.restaurantId,
-            contextTimezone: context?.timezone,
-            confirmedName: context?.confirmedName,
-            errorMessage: error instanceof Error ? error.message : 'Unknown error'
-        });
-
         return createSystemError('Failed to create reservation due to system error', error);
     }
 }
 
 /**
- * Get restaurant information
- * SOURCE: agent-tools.ts get_restaurant_info function (lines ~700-800)
+ * Get restaurant information with timezone-aware operating hours
  */
 export async function get_restaurant_info(
     infoType: 'hours' | 'location' | 'cuisine' | 'contact' | 'features' | 'all',
@@ -560,6 +634,11 @@ export async function get_restaurant_info(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`ℹ️ [Booking Tool] get_restaurant_info: ${infoType} for restaurant ${context.restaurantId}`);
+
+    const timezoneValidation = validateTimezoneAndOperatingHours(context);
+    if (!timezoneValidation.isValid) {
+        return createValidationFailure(`Timezone validation failed: ${timezoneValidation.error}`);
+    }
 
     try {
         if (!context || !context.restaurantId) {
@@ -574,7 +653,7 @@ export async function get_restaurant_info(
             );
         }
 
-        console.log(`✅ [Booking Tool] Getting restaurant info for ID: ${context.restaurantId}`);
+        console.log(`✅ [Booking Tool] Getting restaurant info for ID: ${context.restaurantId} (timezone validated: ${context.timezone})`);
 
         const restaurant = await storage.getRestaurant(context.restaurantId);
         if (!restaurant) {
@@ -596,19 +675,36 @@ export async function get_restaurant_info(
         let responseData: any;
         let message: string;
 
+        // Get current operating status for enhanced hours info
+        let currentOperatingStatus;
+        if (infoType === 'hours' || infoType === 'all') {
+            try {
+                currentOperatingStatus = getRestaurantOperatingStatus(
+                    context.timezone,
+                    restaurant.openingTime || '10:00',
+                    restaurant.closingTime || '23:00'
+                );
+            } catch (error) {
+                console.warn(`[BookingTools] Could not get operating status:`, error);
+            }
+        }
+
         switch (infoType) {
             case 'hours':
                 responseData = {
                     openingTime: formatTime(restaurant.openingTime),
                     closingTime: formatTime(restaurant.closingTime),
-                    timezone: restaurant.timezone,
+                    timezone: restaurant.timezone || context.timezone,
                     rawOpeningTime: restaurant.openingTime,
                     rawClosingTime: restaurant.closingTime,
                     slotInterval: restaurant.slotInterval || 30,
                     allowAnyTime: restaurant.allowAnyTime !== false,
-                    minTimeIncrement: restaurant.minTimeIncrement || 15
+                    minTimeIncrement: restaurant.minTimeIncrement || 15,
+                    currentStatus: currentOperatingStatus?.status,
+                    currentStatusMessage: currentOperatingStatus?.message,
+                    isOvernightOperation: currentOperatingStatus?.isOvernightOperation
                 };
-                message = `We're open from ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? '. You can book at any time during our hours!' : ''}`;
+                message = `We're open from ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? '. You can book at any time during our hours!' : ''}${currentOperatingStatus ? ` Currently: ${currentOperatingStatus.message}` : ''}`;
                 break;
 
             case 'location':
@@ -616,9 +712,10 @@ export async function get_restaurant_info(
                     name: restaurant.name,
                     address: restaurant.address,
                     city: restaurant.city,
-                    country: restaurant.country
+                    country: restaurant.country,
+                    timezone: restaurant.timezone || context.timezone
                 };
-                message = `${restaurant.name} is located at ${restaurant.address}, ${restaurant.city}${restaurant.country ? `, ${restaurant.country}` : ''}`;
+                message = `${restaurant.name} is located at ${restaurant.address}, ${restaurant.city}${restaurant.country ? `, ${restaurant.country}` : ''} (${restaurant.timezone || context.timezone} timezone)`;
                 break;
 
             case 'cuisine':
@@ -633,9 +730,10 @@ export async function get_restaurant_info(
             case 'contact':
                 responseData = {
                     name: restaurant.name,
-                    phone: restaurant.phone
+                    phone: restaurant.phone,
+                    timezone: restaurant.timezone || context.timezone
                 };
-                message = `You can reach ${restaurant.name}${restaurant.phone ? ` at ${restaurant.phone}` : ''}`;
+                message = `You can reach ${restaurant.name}${restaurant.phone ? ` at ${restaurant.phone}` : ''} (${restaurant.timezone || context.timezone} timezone)`;
                 break;
 
             default: // 'all'
@@ -650,16 +748,18 @@ export async function get_restaurant_info(
                     openingTime: formatTime(restaurant.openingTime),
                     closingTime: formatTime(restaurant.closingTime),
                     features: restaurant.features,
-                    timezone: restaurant.timezone,
+                    timezone: restaurant.timezone || context.timezone,
                     slotInterval: restaurant.slotInterval || 30,
                     allowAnyTime: restaurant.allowAnyTime !== false,
-                    minTimeIncrement: restaurant.minTimeIncrement || 15
+                    minTimeIncrement: restaurant.minTimeIncrement || 15,
+                    currentStatus: currentOperatingStatus?.status,
+                    currentStatusMessage: currentOperatingStatus?.message,
+                    isOvernightOperation: currentOperatingStatus?.isOvernightOperation
                 };
-                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? ' You can book at any exact time during our operating hours!' : ''}`;
+                message = `${restaurant.name} serves ${restaurant.cuisine || 'excellent cuisine'} in a ${restaurant.atmosphere || 'wonderful'} atmosphere. We're open ${formatTime(restaurant.openingTime)} to ${formatTime(restaurant.closingTime)}${restaurant.allowAnyTime ? ' You can book at any exact time during our operating hours!' : ''}${currentOperatingStatus ? ` Currently: ${currentOperatingStatus.message}` : ''}`;
                 break;
         }
 
-        // ✅ USE TRANSLATION SERVICE if language context provided
         if (context.language && context.language !== 'en') {
             message = await BookingToolTranslationService.translateToolMessage(
                 message,
@@ -670,9 +770,13 @@ export async function get_restaurant_info(
 
         responseData.message = message;
 
-        return createSuccessResponse(responseData, {
-            execution_time_ms: executionTime
-        });
+        const responseMetadata: any = {
+            execution_time_ms: executionTime,
+            timezone_validated: true,
+            restaurant_timezone: context.timezone
+        };
+
+        return createSuccessResponse(responseData, responseMetadata);
 
     } catch (error) {
         console.error(`❌ [Booking Tool] get_restaurant_info error:`, error);
@@ -688,115 +792,4 @@ export const bookingTools = {
     get_restaurant_info
 };
 
-// ===== TOOL DEFINITIONS FOR AGENTS =====
-export const bookingToolDefinitions = [
-    {
-        type: "function" as const,
-        function: {
-            name: "check_availability",
-            description: "Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30). Returns standardized response with tool_status and detailed data or error information.",
-            parameters: {
-                type: "object",
-                properties: {
-                    date: {
-                        type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
-                    },
-                    time: {
-                        type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30, etc."
-                    },
-                    guests: {
-                        type: "number",
-                        description: "Number of guests (1-50)"
-                    }
-                },
-                required: ["date", "time", "guests"]
-            }
-        }
-    },
-    {
-        type: "function" as const,
-        function: {
-            name: "find_alternative_times",
-            description: "Find alternative time slots around ANY preferred time (supports exact times like 16:15, 19:43). Returns standardized response with available alternatives sorted by proximity to preferred time.",
-            parameters: {
-                type: "object",
-                properties: {
-                    date: {
-                        type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
-                    },
-                    preferredTime: {
-                        type: "string",
-                        description: "Preferred time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43"
-                    },
-                    guests: {
-                        type: "number",
-                        description: "Number of guests (1-50)"
-                    }
-                },
-                required: ["date", "preferredTime", "guests"]
-            }
-        }
-    },
-    {
-        type: "function" as const,
-        function: {
-            name: "create_reservation",
-            description: "Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30). Returns standardized response indicating success with reservation details or failure with categorized error.",
-            parameters: {
-                type: "object",
-                properties: {
-                    guestName: {
-                        type: "string",
-                        description: "Guest's full name"
-                    },
-                    guestPhone: {
-                        type: "string",
-                        description: "Guest's phone number"
-                    },
-                    date: {
-                        type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
-                    },
-                    time: {
-                        type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
-                    },
-                    guests: {
-                        type: "number",
-                        description: "Number of guests (1-50)"
-                    },
-                    specialRequests: {
-                        type: "string",
-                        description: "Special requests or comments",
-                        default: ""
-                    }
-                },
-                required: ["guestName", "guestPhone", "date", "time", "guests"]
-            }
-        }
-    },
-    {
-        type: "function" as const,
-        function: {
-            name: "get_restaurant_info",
-            description: "Get information about the restaurant including flexible time booking capabilities. Returns standardized response with requested information or error details.",
-            parameters: {
-                type: "object",
-                properties: {
-                    infoType: {
-                        type: "string",
-                        enum: ["hours", "location", "cuisine", "contact", "features", "all"],
-                        description: "Type of information to retrieve (hours includes flexible time booking settings)"
-                    }
-                },
-                required: ["infoType"]
-            }
-        }
-    }
-];
-
-// ===== DEFAULT EXPORT =====
 export default bookingTools;

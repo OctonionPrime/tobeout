@@ -3,10 +3,10 @@
 // SOURCE: enhanced-conversation-manager.ts runOverseer (lines ~400-600)
 // SOURCE: enhanced-conversation-manager.ts detectRecentAvailabilityFailure (lines ~350-400)
 
-import type { 
-    AgentType, 
+import type {
+    AgentType,
     BookingSessionWithAgent,
-    AgentContext 
+    AgentContext
 } from '../core/agent.types';
 import { AIFallbackService } from '../../ai/ai-fallback.service';
 import { UnifiedTranslationService } from '../../ai/translation.service';
@@ -34,7 +34,7 @@ export class OverseerAgent {
     constructor(
         private aiService: AIFallbackService,
         private translationService: UnifiedTranslationService
-    ) {}
+    ) { }
 
     /**
      * Main overseer decision method
@@ -79,7 +79,7 @@ export class OverseerAgent {
                     maxTokens: 1000
                 }
             );
-            
+
             const decision = this.parseOverseerResponse(responseText);
 
             console.log(`🧠 [Overseer-Claude] Decision for "${userMessage}":`, {
@@ -106,7 +106,7 @@ export class OverseerAgent {
 
         } catch (error) {
             console.error('[Overseer] Error:', error);
-            
+
             // Fallback to safe decision
             if (session.currentAgent && session.currentAgent !== 'conductor') {
                 console.log('[Overseer] Fallback: keeping current agent due to error');
@@ -116,7 +116,7 @@ export class OverseerAgent {
                     isNewBookingRequest: false
                 };
             }
-            
+
             return {
                 agentToUse: 'booking',
                 reasoning: 'Fallback to Sofia due to Overseer error',
@@ -235,7 +235,16 @@ Respond with ONLY a JSON object:
      */
     private parseOverseerResponse(responseText: string): OverseerDecision {
         try {
-            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            // FIX START: Make JSON parsing robust by extracting the JSON block
+            const jsonStart = responseText.indexOf('{');
+            const jsonEnd = responseText.lastIndexOf('}');
+            if (jsonStart === -1 || jsonEnd === -1) {
+                console.error('[Overseer] No JSON object found in response:', responseText);
+                throw new Error("No JSON object found in the Overseer's response.");
+            }
+            const cleanJson = responseText.substring(jsonStart, jsonEnd + 1);
+            // FIX END
+
             const parsed = JSON.parse(cleanJson);
 
             return {
@@ -260,41 +269,41 @@ Respond with ONLY a JSON object:
      */
     private detectRecentAvailabilityFailure(session: BookingSessionWithAgent): AvailabilityFailureContext {
         console.log(`🔍 [Apollo] Scanning conversation history for recent availability failures...`);
-        
+
         // Look through recent conversation history for failed availability checks
         const recentMessages = session.conversationHistory.slice(-10); // Check last 10 messages
-        
+
         for (let i = recentMessages.length - 1; i >= 0; i--) {
             const msg = recentMessages[i];
-            
+
             if (msg.toolCalls) {
                 for (const toolCall of msg.toolCalls) {
-                    if (toolCall.function?.name === 'check_availability' || 
+                    if (toolCall.function?.name === 'check_availability' ||
                         toolCall.function?.name === 'modify_reservation') {
-                        
+
                         try {
                             const args = JSON.parse(toolCall.function.arguments);
-                            
+
                             // Look for the response to this tool call in the next message
                             const nextMessage = recentMessages[i + 1];
                             if (nextMessage && nextMessage.role === 'assistant') {
                                 // Check if the response contains failure indicators
                                 const response = nextMessage.content.toLowerCase();
-                                
-                                if (response.includes('no availability') || 
+
+                                if (response.includes('no availability') ||
                                     response.includes('not available') ||
                                     response.includes('fully booked') ||
                                     response.includes('нет мест') ||
                                     response.includes('не доступно') ||
                                     response.includes('занято')) {
-                                    
+
                                     console.log(`🔍 [Apollo] Found availability failure:`, {
                                         tool: toolCall.function.name,
                                         date: args.date,
                                         time: args.time || args.newTime,
                                         guests: args.guests || args.newGuests
                                     });
-                                    
+
                                     return {
                                         hasFailure: true,
                                         failedDate: args.date,
@@ -311,7 +320,7 @@ Respond with ONLY a JSON object:
                 }
             }
         }
-        
+
         console.log(`🔍 [Apollo] No recent availability failures found`);
         return { hasFailure: false };
     }
@@ -349,7 +358,7 @@ Respond with ONLY a JSON object:
  */
 export function isNewBookingRequest(message: string): boolean {
     const lowerMessage = message.toLowerCase();
-    
+
     const newBookingIndicators = [
         'book again', 'new reservation', 'make another booking', 'another table',
         'забронировать снова', 'новое бронирование', 'еще одну бронь', 'еще забронировать',
@@ -365,7 +374,7 @@ export function isNewBookingRequest(message: string): boolean {
  */
 export function isSimpleContinuation(message: string): boolean {
     const cleanMessage = message.trim().toLowerCase();
-    
+
     const continuationPatterns = [
         /^(да|нет|yes|no|ok|okay|confirm|yep|nope|agree|good|fine)$/,
         /^(спасибо|thanks|thank you|hvala|köszönöm)$/,
@@ -382,7 +391,7 @@ export function isSimpleContinuation(message: string): boolean {
  */
 export function isAskingForAlternatives(message: string): boolean {
     const lowerMessage = message.toLowerCase();
-    
+
     const alternativeIndicators = [
         'what time is free', 'any alternatives', 'other times',
         'а когда можно', 'когда свободно', 'другое время',

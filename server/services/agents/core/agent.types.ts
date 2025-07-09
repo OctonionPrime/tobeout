@@ -1,6 +1,5 @@
 // server/services/agents/core/agent.types.ts
-// ✅ PHASE 1: Core type definitions extracted from existing files
-// SOURCE: enhanced-conversation-manager.ts, booking-agent.ts, agent-tools.ts
+// ✅ FIXED: Unified interfaces and standardized agent response structure
 
 // ===== LANGUAGE & AGENT TYPES =====
 // SOURCE: enhanced-conversation-manager.ts line ~15-16
@@ -178,6 +177,41 @@ export interface ToolResponse<T = any> {
     };
 }
 
+// ===== ✅ NEW: UNIFIED TOOL CONTEXT INTERFACE =====
+// Replaces separate BookingToolContext, ReservationToolContext, GuestToolContext
+export interface UnifiedToolContext {
+    restaurantId: number;
+    timezone: string;
+    language: Language;
+    telegramUserId?: string;
+    sessionId?: string;
+    userMessage?: string;
+    session?: BookingSessionWithAgent;
+    excludeReservationId?: number;
+    confirmedName?: string;
+    
+    // ✅ NEW: Timezone-specific context
+    restaurantOperatingHours?: {
+        opening: string;
+        closing: string;
+        isOvernight: boolean;
+        currentStatus: 'open' | 'closed';
+    };
+}
+
+// ===== ✅ LEGACY COMPATIBILITY: Individual tool contexts extend unified =====
+export interface BookingToolContext extends UnifiedToolContext {
+    // Booking-specific fields can be added here if needed
+}
+
+export interface ReservationToolContext extends UnifiedToolContext {
+    // Reservation-specific fields can be added here if needed
+}
+
+export interface GuestToolContext extends UnifiedToolContext {
+    // Guest-specific fields can be added here if needed
+}
+
 // ===== NEW: AI PROVIDER INTERFACES =====
 export interface AIOptions {
     model?: string;
@@ -212,21 +246,60 @@ export interface AgentContext {
     conversationContext?: ConversationContext;
 }
 
+// ===== ✅ FIXED: STANDARDIZED AGENT RESPONSE INTERFACE =====
+// This interface now matches what ConversationManager expects
 export interface AgentResponse {
-    content: string;
+    content: string; // The agent's message content
+    
+    // ✅ FIXED: Add fields that ConversationManager expects
+    hasBooking?: boolean; // Indicates if a booking was made
+    reservationId?: number; // The created reservation ID
+    
+    // Tool calling support
     toolCalls?: Array<{
         function: {
             name: string;
             arguments: string;
         };
         id: string;
+        result?: any; // ✅ NEW: Store tool call results
     }>;
+    
+    // Confirmation and handoff
     requiresConfirmation?: boolean;
     agentHandoff?: {
         to: AgentType;
         reason: string;
+        selectedTime?: string; // ✅ NEW: Context for handoffs
     };
+    
+    // ✅ NEW: Session updates that agents can make
     sessionUpdates?: Partial<BookingSessionWithAgent>;
+    
+    // ✅ NEW: Additional response metadata
+    responseMetadata?: {
+        confidence?: number;
+        toolsUsed?: string[];
+        executionTimeMs?: number;
+        warningsOrErrors?: string[];
+    };
+}
+
+// ===== ✅ NEW: CONVERSATION MANAGER COMPATIBLE RESPONSE =====
+// This is what ConversationManager actually expects
+export interface ConversationManagerResponse {
+    response: string; // Maps to AgentResponse.content
+    hasBooking: boolean; // Maps to AgentResponse.hasBooking
+    reservationId?: number; // Maps to AgentResponse.reservationId
+    session: BookingSessionWithAgent; // Updated session
+    currentAgent: AgentType; // Current agent type
+    agentHandoff?: {
+        to: AgentType;
+        reason: string;
+        selectedTime?: string;
+    };
+    requiresConfirmation?: boolean;
+    toolCallResults?: any[];
 }
 
 export interface BaseAgentConfig {
@@ -252,6 +325,33 @@ export interface RestaurantConfig {
     allowAnyTime?: boolean;
     minTimeIncrement?: number;
     slotInterval?: number;
+    
+    // ✅ NEW: Timezone-related fields
+    timezoneDisplayName?: string;
+    supportsOvernightOperations?: boolean;
+}
+
+// ===== ✅ NEW: TIMEZONE-RELATED INTERFACES =====
+export interface TimezoneContext {
+    timezone: string;
+    currentDate: string;
+    currentTime: string;
+    tomorrowDate: string;
+    dayOfWeek: string;
+    operatingStatus: {
+        isOpen: boolean;
+        nextStatusChange?: string;
+        timeUntilChange?: string;
+    };
+    isOvernightOperation: boolean;
+}
+
+export interface TimeValidationResult {
+    isValid: boolean;
+    isWithinOperatingHours: boolean;
+    crossesMidnight?: boolean;
+    suggestion?: string;
+    reason?: string;
 }
 
 // ===== PROMPT TEMPLATE INTERFACES =====
@@ -271,6 +371,8 @@ export interface PromptContext {
     conversationContext?: ConversationContext;
     currentDate: string;
     currentTime: string;
+    // ✅ NEW: Enhanced timezone context
+    timezoneContext?: TimezoneContext;
 }
 
 // ===== GUARDRAIL INTERFACES =====
@@ -292,6 +394,9 @@ export interface AvailabilityContext {
     exactTimeOnly?: boolean;
     timezone?: string;
     allowCombinations?: boolean;
+    // ✅ NEW: Enhanced timezone support
+    operatingHoursValidation?: boolean;
+    crossMidnightSupport?: boolean;
 }
 
 // ===== RESERVATION INTERFACES =====
@@ -311,6 +416,10 @@ export interface ReservationDetails {
     canModify: boolean;
     canCancel: boolean;
     hoursUntil?: number;
+    
+    // ✅ NEW: Timezone-aware fields
+    localDateTime?: string; // Formatted in restaurant timezone
+    utcDateTime?: string; // UTC timestamp
 }
 
 export interface ModificationRequest {
@@ -320,12 +429,49 @@ export interface ModificationRequest {
     newGuests?: number;
     newSpecialRequests?: string;
     reason?: string;
+    
+    // ✅ NEW: Timezone validation
+    timezoneValidation?: TimeValidationResult;
 }
 
 // ===== ERROR TYPES =====
-export type ToolErrorType = 'BUSINESS_RULE' | 'SYSTEM_ERROR' | 'VALIDATION_ERROR';
+export type ToolErrorType = 'BUSINESS_RULE' | 'SYSTEM_ERROR' | 'VALIDATION_ERROR' | 'TIMEZONE_ERROR';
 export type ConfirmationStatus = 'positive' | 'negative' | 'unclear';
 export type LanguageConfidence = 'high' | 'medium' | 'low';
+
+// ===== ✅ NEW: AGENT INTERFACE COMPATIBILITY HELPERS =====
+// Helper functions to convert between agent response formats
+export namespace AgentResponseHelpers {
+    export function toConversationManagerResponse(
+        agentResponse: AgentResponse,
+        session: BookingSessionWithAgent
+    ): ConversationManagerResponse {
+        return {
+            response: agentResponse.content,
+            hasBooking: agentResponse.hasBooking || false,
+            reservationId: agentResponse.reservationId,
+            session: agentResponse.sessionUpdates ? { ...session, ...agentResponse.sessionUpdates } : session,
+            currentAgent: session.currentAgent,
+            agentHandoff: agentResponse.agentHandoff,
+            requiresConfirmation: agentResponse.requiresConfirmation,
+            toolCallResults: agentResponse.toolCalls?.map(tc => tc.result).filter(Boolean) || []
+        };
+    }
+    
+    export function fromConversationManagerExpectation(
+        response: string,
+        hasBooking: boolean,
+        session: BookingSessionWithAgent,
+        reservationId?: number
+    ): AgentResponse {
+        return {
+            content: response,
+            hasBooking,
+            reservationId,
+            sessionUpdates: {} // Will be populated as needed
+        };
+    }
+}
 
 // ===== EXPORT ALL TYPES =====
 export type {
@@ -355,4 +501,45 @@ export function isReturningGuest(guestHistory?: GuestHistory | null): boolean {
 
 export function isFrequentGuest(guestHistory?: GuestHistory | null): boolean {
     return guestHistory ? guestHistory.total_bookings >= 5 : false;
+}
+
+// ===== ✅ NEW: INTERFACE VALIDATION TYPE GUARDS =====
+export function isValidAgentResponse(response: any): response is AgentResponse {
+    return response && 
+           typeof response.content === 'string' &&
+           (response.hasBooking === undefined || typeof response.hasBooking === 'boolean') &&
+           (response.reservationId === undefined || typeof response.reservationId === 'number');
+}
+
+export function isValidConversationManagerResponse(response: any): response is ConversationManagerResponse {
+    return response &&
+           typeof response.response === 'string' &&
+           typeof response.hasBooking === 'boolean' &&
+           response.session &&
+           typeof response.currentAgent === 'string';
+}
+
+export function isUnifiedToolContext(context: any): context is UnifiedToolContext {
+    return context &&
+           typeof context.restaurantId === 'number' &&
+           typeof context.timezone === 'string' &&
+           typeof context.language === 'string';
+}
+
+// ===== ✅ NEW: TIMEZONE VALIDATION HELPERS =====
+export function isValidTimezone(timezone: string): boolean {
+    try {
+        Intl.DateTimeFormat(undefined, { timeZone: timezone });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export function isValidTimeFormat(time: string): boolean {
+    return /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time);
+}
+
+export function isValidDateFormat(date: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) && !isNaN(Date.parse(date));
 }
