@@ -1,27 +1,14 @@
 // server/services/agents/booking-agent.ts
-// ✅ PHASE 1 INTEGRATION COMPLETE:
-// 1. Added Claude primary + OpenAI fallback system (matching other files)
-// 2. Unified translation service pattern
-// 3. Enhanced Maya integration with context preservation
-// 4. Improved system prompts with immediate action rules
+// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
+// 🔧 BUG FIX: Enhanced Maya cancellation rules and system prompts
 
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
+import { aiService } from '../ai-service';
 import type { Language } from '../enhanced-conversation-manager';
 import { agentTools } from './agent-tools';
 import { DateTime } from 'luxon';
 
-// ✅ PHASE 1 FIX: Initialize both AI clients for fallback system
-const openaiClient = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
-
-const claude = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY!
-});
-
 /**
- * ✅ PHASE 1 FIX: Unified Translation Service (matching other files)
+ * ✅ PHASE 1 FIX: Unified Translation Service using AIService
  */
 class UnifiedTranslationService {
     private static cache = new Map<string, { translation: string, timestamp: number }>();
@@ -42,7 +29,7 @@ class UnifiedTranslationService {
         }
         
         try {
-            const translation = await this.translateWithFallback(text, targetLanguage, context);
+            const translation = await this.translateWithAIService(text, targetLanguage, context);
             
             // Cache the result
             this.cache.set(cacheKey, { translation, timestamp: Date.now() });
@@ -55,9 +42,9 @@ class UnifiedTranslationService {
     }
     
     /**
-     * ✅ PHASE 1 FIX: AI abstraction layer with Claude primary + OpenAI fallback
+     * ✅ PHASE 1 FIX: Translation using centralized AIService
      */
-    private static async translateWithFallback(
+    private static async translateWithAIService(
         text: string,
         targetLanguage: Language,
         context: string
@@ -75,40 +62,15 @@ class UnifiedTranslationService {
 Keep the same tone and professional style.
 Return only the translation, no explanations.`;
 
-        // ✅ PRIMARY: Claude Haiku for fast translation
-        try {
-            const result = await claude.messages.create({
-                model: "claude-3-haiku-20240307",
-                max_tokens: 300,
-                temperature: 0.2,
-                messages: [{ role: 'user', content: prompt }]
-            });
-
-            const response = result.content[0];
-            if (response.type === 'text') {
-                return response.text;
-            }
-            throw new Error("Non-text response from Claude");
-
-        } catch (claudeError: any) {
-            console.warn(`[Translation] Claude failed, using OpenAI fallback: ${claudeError.message}`);
-
-            // ✅ FALLBACK: OpenAI
-            try {
-                const completion = await openaiClient.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [{ role: 'user', content: prompt }],
-                    max_tokens: 300,
-                    temperature: 0.2
-                });
-                
-                return completion.choices[0]?.message?.content?.trim() || text;
-                
-            } catch (openaiError: any) {
-                console.error(`[Translation] Both Claude and OpenAI failed: ${openaiError.message}`);
-                return text; // Final fallback to original
-            }
-        }
+        // ✅ USE AISERVICE: Fast translation with automatic fallback
+        const translation = await aiService.generateContent(prompt, {
+            model: 'haiku', // Fast and cost-effective for translation
+            maxTokens: 300,
+            temperature: 0.2,
+            context: `booking-translation-${context}`
+        });
+        
+        return translation;
     }
     
     // Clean expired cache entries periodically
@@ -395,75 +357,10 @@ function generateSmartPartyQuestion(
 }
 
 /**
- * Creates Sofia - the natural language booking specialist agent
- * ✅ PHASE 1 INTEGRATION: Enhanced with context preservation awareness and unified translation
+ * ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection and alternative search handling
  */
-export function createBookingAgent(restaurantConfig: {
-    id: number;
-    name: string;
-    timezone: string;
-    openingTime: string;
-    closingTime: string;
-    maxGuests: number;
-    cuisine?: string;
-    atmosphere?: string;
-    country?: string;
-    languages?: string[];
-}) {
-
-    // Get current date in restaurant timezone
-    const getCurrentRestaurantContext = () => {
-        try {
-            const now = DateTime.now().setZone(restaurantConfig.timezone);
-            const today = now.toISODate();
-            const tomorrow = now.plus({ days: 1 }).toISODate();
-            const currentTime = now.toFormat('HH:mm');
-            const dayOfWeek = now.toFormat('cccc');
-
-            return {
-                currentDate: today,
-                tomorrowDate: tomorrow,
-                currentTime: currentTime,
-                dayOfWeek: dayOfWeek,
-                timezone: restaurantConfig.timezone
-            };
-        } catch (error) {
-            console.error(`[BookingAgent] Error getting restaurant time context:`, error);
-            const now = DateTime.now();
-            return {
-                currentDate: now.toISODate(),
-                tomorrowDate: now.plus({ days: 1 }).toISODate(),
-                currentTime: now.toFormat('HH:mm'),
-                dayOfWeek: now.toFormat('cccc'),
-                timezone: 'UTC'
-            };
-        }
-    };
-
-    const getRestaurantLanguage = () => {
-        if (restaurantConfig.languages && restaurantConfig.languages.length > 0) {
-            return restaurantConfig.languages[0];
-        }
-
-        const country = restaurantConfig.country?.toLowerCase();
-        if (country === 'russia' || country === 'russian federation') return 'ru';
-        if (country === 'serbia' || country === 'republic of serbia') return 'sr';
-        if (country === 'hungary') return 'hu';
-        if (country === 'germany') return 'de';
-        if (country === 'france') return 'fr';
-        if (country === 'spain') return 'es';
-        if (country === 'italy') return 'it';
-        if (country === 'portugal') return 'pt';
-        if (country === 'netherlands') return 'nl';
-
-        return 'en';
-    };
-
-    const restaurantLanguage = getRestaurantLanguage();
-
-    // ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection and alternative search handling
-    const getCriticalBookingInstructions = () => {
-        return `
+const getCriticalBookingInstructions = () => {
+    return `
 🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
 
 STEP 1: GATHER ALL REQUIRED INFORMATION FIRST:
@@ -534,9 +431,140 @@ This prevents availability hallucination where you suggest times without tool co
 🚨 CRITICAL: NEVER ask "Can I confirm booking in your name?" when you don't have the name!
 Instead say: "I need your name and phone number to complete the booking."
 `;
+};
+
+/**
+ * 🔧 BUG FIX: Enhanced Maya modification execution rules with cancellation support
+ */
+const getMayaModificationExecutionRules = () => {
+    return `
+🚨 CRITICAL MODIFICATION EXECUTION RULES (MAYA AGENT)
+Your primary goal is to execute user requests with minimal conversation. When a user wants to modify or cancel a booking, you must act, not just talk.
+
+RULE 1: IMMEDIATE ACTION AFTER FINDING A BOOKING
+- **IF** you have just successfully found a reservation (e.g., using 'find_existing_reservation').
+- **AND** the user then provides new details to change (e.g., "move to 19:10", "add one person", "move 10 minutes later").
+- **THEN** your IMMEDIATE next action is to call the 'modify_reservation' tool.
+- **DO NOT** talk to the user first. **DO NOT** ask for confirmation. **DO NOT** say "I will check...". CALL THE 'modify_reservation' TOOL. This is not optional. The tool will handle checking availability internally.
+
+🔧 BUG FIX: RULE 2: IMMEDIATE CANCELLATION
+- **IF** the user requests to cancel a reservation (e.g. "отменить бронь", "cancel my booking").
+- **THEN** your IMMEDIATE next action is to call the \`cancel_reservation\` tool with the reservation ID.
+- **DO NOT** ask for confirmation yourself. The system will handle it. Just call the tool.
+
+RULE 3: CONTEXT-AWARE RESERVATION ID RESOLUTION
+- **IF** user provides a contextual reference like "эту бронь", "this booking", "it", "её", "эту":
+- **THEN** use the most recently modified reservation from session context
+- **DO NOT** ask for clarification if context is clear from recent operations
+
+RULE 4: TIME CALCULATION (If necessary)
+- **IF** the user requests a relative time change (e.g., "10 minutes later", "half an hour earlier").
+- **STEP 1:** Get the current time from the reservation details you just found.
+- **STEP 2:** Calculate the new absolute time (e.g., if current is 19:00 and user says "10 minutes later", you calculate \`newTime: "19:10"\`).
+- **STEP 3:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
+
+--- EXAMPLE OF CORRECT, SILENT TOOL USE (CANCELLATION) ---
+🔧 BUG FIX: New cancellation example
+User: "давай отменим бронь номер 12" (let's cancel booking #12)
+Maya: [Your first and only action MUST be to call cancel_reservation(reservationId=12)]
+System: [The tool triggers a confirmation prompt to the user: "Are you sure?"]
+User: "да" (yes)
+System: [The system confirms and calls the tool again with confirmation.]
+Maya: [The tool succeeds. Now, and only now, you respond to the user.] "✅ Done! I've cancelled your reservation #12."
+
+--- EXAMPLE OF CORRECT, SILENT TOOL USE (MODIFICATION) ---
+User: "на 10 минут перенести?" (move it by 10 minutes?)
+Maya: [Asks for booking identifier.]
+User: "бронь 2"
+Maya: [Calls find_existing_reservation(identifier="2"). The tool returns booking #2, which is at 19:00.]
+Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10) and then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
+Maya: [The tool returns SUCCESS. Now, and only now, you respond to the user.] "✅ Done! I've moved your reservation to 19:10."
+
+--- FORBIDDEN BEHAVIOR ---
+🔧 BUG FIX: New forbidden cancellation patterns
+❌ NEVER ask "Are you sure you want to cancel?" yourself. Call the tool and let the system ask.
+❌ NEVER say "I will move it..." or "Let me confirm..." and then stop. This is a failure.
+❌ The user's prompt ("и?") was required because you failed to follow this rule. Your goal is to never require that prompt again.
+❌ NEVER call 'check_availability' directly for a modification. Use 'modify_reservation'.
+
+--- TIME CALCULATION HELPERS (This part is unchanged) ---
+- "15 минут попозже" = current time + 15 minutes
+- "на полчаса раньше" = current time - 30 minutes
+- "на час позже" = current time + 60 minutes
+- "change to 8pm" = newTime: "20:00"
+`;
+};
+
+/**
+ * Creates Sofia - the natural language booking specialist agent
+ * ✅ PHASE 1 INTEGRATION: Enhanced with AIService and unified translation
+ */
+export function createBookingAgent(restaurantConfig: {
+    id: number;
+    name: string;
+    timezone: string;
+    openingTime: string;
+    closingTime: string;
+    maxGuests: number;
+    cuisine?: string;
+    atmosphere?: string;
+    country?: string;
+    languages?: string[];
+}) {
+
+    // Get current date in restaurant timezone
+    const getCurrentRestaurantContext = () => {
+        try {
+            const now = DateTime.now().setZone(restaurantConfig.timezone);
+            const today = now.toISODate();
+            const tomorrow = now.plus({ days: 1 }).toISODate();
+            const currentTime = now.toFormat('HH:mm');
+            const dayOfWeek = now.toFormat('cccc');
+
+            return {
+                currentDate: today,
+                tomorrowDate: tomorrow,
+                currentTime: currentTime,
+                dayOfWeek: dayOfWeek,
+                timezone: restaurantConfig.timezone
+            };
+        } catch (error) {
+            console.error(`[BookingAgent] Error getting restaurant time context:`, error);
+            const now = DateTime.now();
+            return {
+                currentDate: now.toISODate(),
+                tomorrowDate: now.plus({ days: 1 }).toISODate(),
+                currentTime: now.toFormat('HH:mm'),
+                dayOfWeek: now.toFormat('cccc'),
+                timezone: 'UTC'
+            };
+        }
     };
 
-    // ✅ CRITICAL FIX: Generate personalized system prompt section with enhanced special requests handling
+    const getRestaurantLanguage = () => {
+        if (restaurantConfig.languages && restaurantConfig.languages.length > 0) {
+            return restaurantConfig.languages[0];
+        }
+
+        const country = restaurantConfig.country?.toLowerCase();
+        if (country === 'russia' || country === 'russian federation') return 'ru';
+        if (country === 'serbia' || country === 'republic of serbia') return 'sr';
+        if (country === 'hungary') return 'hu';
+        if (country === 'germany') return 'de';
+        if (country === 'france') return 'fr';
+        if (country === 'spain') return 'es';
+        if (country === 'italy') return 'it';
+        if (country === 'portugal') return 'pt';
+        if (country === 'netherlands') return 'nl';
+
+        return 'en';
+    };
+
+    const restaurantLanguage = getRestaurantLanguage();
+
+    /**
+     * ✅ CRITICAL FIX: Generate personalized system prompt section with enhanced special requests handling
+     */
     const getPersonalizedPromptSection = (guestHistory: GuestHistory | null, language: Language, conversationContext?: ConversationContext): string => {
         if (!guestHistory || guestHistory.total_bookings === 0) {
             return '';
@@ -564,51 +592,9 @@ Instead say: "I need your name and phone number to complete the booking."
 - Make the experience feel personal and welcoming for returning guests.`;
     };
 
-    // ✅ PHASE 1 FIX: Enhanced Maya modification execution with immediate action for clear requests
-    const getMayaModificationExecutionRules = () => {
-        return `
-🚨 CRITICAL MODIFICATION EXECUTION RULES (MAYA AGENT)
-Your primary goal is to execute user requests with minimal conversation. When a user wants to modify a booking, you must act, not just talk.
-
-RULE 1: IMMEDIATE ACTION AFTER FINDING A BOOKING
-- **IF** you have just successfully found a reservation (e.g., using 'find_existing_reservation').
-- **AND** the user then provides new details to change (e.g., "move to 19:10", "add one person", "move 10 minutes later").
-- **THEN** your IMMEDIATE next action is to call the 'modify_reservation' tool.
-- **DO NOT** talk to the user first. **DO NOT** ask for confirmation. **DO NOT** say "I will check...". CALL THE 'modify_reservation' TOOL. This is not optional. The tool will handle checking availability internally.
-
-RULE 2: CONTEXT-AWARE RESERVATION ID RESOLUTION
-- **IF** user provides a contextual reference like "эту бронь", "this booking", "it", "её", "эту":
-- **THEN** use the most recently modified reservation from session context
-- **DO NOT** ask for clarification if context is clear from recent operations
-
-RULE 3: TIME CALCULATION (If necessary)
-- **IF** the user requests a relative time change (e.g., "10 minutes later", "half an hour earlier").
-- **STEP 1:** Get the current time from the reservation details you just found.
-- **STEP 2:** Calculate the new absolute time (e.g., if current is 19:00 and user says "10 minutes later", you calculate \`newTime: "19:10"\`).
-- **STEP 3:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
-
---- EXAMPLE OF CORRECT, SILENT TOOL USE ---
-User: "на 10 минут перенести?" (move it by 10 minutes?)
-Maya: [Asks for booking identifier.]
-User: "бронь 2"
-Maya: [Calls find_existing_reservation(identifier="2"). The tool returns booking #2, which is at 19:00.]
-Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10) and then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
-Maya: [The tool returns SUCCESS. Now, and only now, you respond to the user.] "✅ Done! I've moved your reservation to 19:10."
-
---- FORBIDDEN BEHAVIOR ---
-❌ NEVER say "I will move it..." or "Let me confirm..." and then stop. This is a failure.
-❌ The user's prompt ("и?") was required because you failed to follow this rule. Your goal is to never require that prompt again.
-❌ NEVER call 'check_availability' directly for a modification. Use 'modify_reservation'.
-
---- TIME CALCULATION HELPERS (This part is unchanged) ---
-- "15 минут попозже" = current time + 15 minutes
-- "на полчаса раньше" = current time - 30 minutes
-- "на час позже" = current time + 60 minutes
-- "change to 8pm" = newTime: "20:00"
-`;
-    };
-
-    // ✅ ENHANCED: Language-agnostic system prompts that work for all languages
+    /**
+     * ✅ Enhanced language-agnostic system prompts that work for all languages
+     */
     const getSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
 
         const dateContext = getCurrentRestaurantContext();
@@ -797,11 +783,13 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
         }
     };
 
-    // ✅ PHASE 1 FIX: Enhanced system prompt for Maya agent with modification execution rules
+    /**
+     * ✅ 🔧 BUG FIX: Enhanced system prompt for Maya agent with improved cancellation execution rules
+     */
     const getMayaSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
         const dateContext = getCurrentRestaurantContext();
         const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage, conversationContext);
-        const mayaModificationRules = getMayaModificationExecutionRules();
+        const mayaModificationRules = getMayaModificationExecutionRules(); // 🔧 BUG FIX: Now includes cancellation rules
 
         // ✅ LANGUAGE INSTRUCTION (works for all languages)
         const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
@@ -870,8 +858,7 @@ ${personalizedSection}`;
     };
 
     return {
-        client: openaiClient, // Main conversations still use OpenAI for compatibility
-        claude, // ✅ PHASE 1 FIX: Add Claude client for fallback system
+        client: aiService, // ✅ PHASE 1 FIX: Use AIService for main conversations
         restaurantConfig,
         systemPrompt: getSystemPrompt('guest'), // Default to guest context
         tools: agentTools,

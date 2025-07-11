@@ -1,9 +1,11 @@
 // server/services/enhanced-conversation-manager.ts
-// ✅ PHASE 1 FIX: Enhanced Conversation Manager with Smart Context Preservation
-// Fixes state management after successful modifications to prevent context loss
+// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
+// 1. Replaced generateContentWithFallback with aiService calls
+// 2. Unified translation service using AIService
+// 3. Enhanced meta-agents (Overseer, Language, Confirmation) with AIService
+// 4. Removed duplicate Claude/OpenAI client initialization
 
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
+import { aiService } from './ai-service';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
 import { agentFunctions } from './agents/agent-tools';
 import { storage } from '../storage';
@@ -16,11 +18,9 @@ export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | '
 export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability'; // ✅ Added 'availability'
 
 /**
- * ✅ NEW: Translation Service Class for consistent language handling
+ * ✅ PHASE 1 FIX: Unified Translation Service using AIService
  */
 class TranslationService {
-    private static client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    
     static async translateMessage(
         message: string, 
         targetLanguage: Language, 
@@ -43,14 +43,15 @@ Keep the same tone, emojis, and professional style.
 Return only the translation, no explanations.`;
 
         try {
-            const completion = await this.client.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: 300,
-                temperature: 0.2
+            // ✅ USE AISERVICE: Fast translation with automatic fallback
+            const translation = await aiService.generateContent(prompt, {
+                model: 'haiku', // Fast and cost-effective for translation
+                maxTokens: 300,
+                temperature: 0.2,
+                context: `translation-${context}`
             });
             
-            return completion.choices[0]?.message?.content?.trim() || message;
+            return translation;
         } catch (error) {
             console.error('[Translation] Error:', error);
             return message; // Fallback to original
@@ -199,174 +200,24 @@ interface GuestHistory {
 }
 
 /**
- * Enhanced conversation manager with Claude-powered meta-agents and Apollo Availability Agent
- * ✅ NEW LLM ARCHITECTURE: Claude Sonnet 4 (Overseer) + Claude Haiku (Language/Confirmation) + OpenAI GPT fallback
+ * Enhanced conversation manager with AIService-powered meta-agents and Apollo Availability Agent
+ * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
  */
 export class EnhancedConversationManager {
     private sessions = new Map<string, BookingSessionWithAgent>();
     private agents = new Map<string, any>();
     private sessionCleanupInterval: NodeJS.Timeout;
-    private openaiClient: OpenAI;
-    private claude: Anthropic;
 
     constructor() {
-        this.openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        
-        // ✅ NEW: Initialize Claude for meta-agents
-        this.claude = new Anthropic({
-            apiKey: process.env.ANTHROPIC_API_KEY!
-        });
-
         this.sessionCleanupInterval = setInterval(() => {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with Claude-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + OpenAI GPT fallback');
+        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + OpenAI GPT fallback');
     }
 
     /**
-     * ✅ ENHANCED: AI Abstraction Layer with Claude Primary + Smart OpenAI Fallbacks
-     * This method attempts to generate content using Claude (Sonnet for Overseer, Haiku for others).
-     * If it fails, it falls back to appropriate OpenAI models based on the task complexity.
-     * @param prompt The prompt to send to the AI model.
-     * @param agentContext A string identifier for logging purposes (e.g., 'Overseer').
-     * @param modelType 'sonnet' for complex reasoning (Overseer), 'haiku' for fast decisions (Language/Confirmation)
-     * @returns The generated content string.
-     */
-    private async generateContentWithFallback(
-        prompt: string, 
-        agentContext: string,
-        modelType: 'sonnet' | 'haiku' = 'haiku'
-    ): Promise<string> {
-        // --- Primary Model: Claude (Sonnet for Overseer, Haiku for others) ---
-        try {
-            const model = modelType === 'sonnet' 
-                ? "claude-3-5-sonnet-20241022"    // Complex strategic decisions (Overseer)
-                : "claude-3-haiku-20240307";      // Fast decisions (Language Detection, Confirmation)
-
-            const maxTokens = modelType === 'sonnet' ? 1000 : 500;
-
-            const result = await this.claude.messages.create({
-                model: model,
-                max_tokens: maxTokens,
-                temperature: 0.2,
-                messages: [{ role: 'user', content: prompt }]
-            });
-
-            const response = result.content[0];
-            if (response.type === 'text') {
-                return response.text;
-            }
-            throw new Error("Non-text response from Claude");
-
-        } catch (error: any) {
-            const errorMessage = error.message || 'Unknown error';
-            console.warn(`[AI Fallback] Claude ${modelType} failed for [${agentContext}]. Reason: ${errorMessage.split('\n')[0]}`);
-
-            // Check for specific errors that warrant a fallback (e.g., rate limits, server errors)
-            if (errorMessage.includes('429') || errorMessage.includes('500') || 
-                errorMessage.includes('503') || errorMessage.includes('timeout') ||
-                errorMessage.includes('rate limit') || errorMessage.includes('quota') ||
-                errorMessage.includes('overloaded') || errorMessage.includes('401') ||
-                errorMessage.includes('403') || errorMessage.includes('network')) {
-                
-                console.log(`[AI Fallback] Error detected, switching to OpenAI model for [${agentContext}].`);
-
-                // --- Enhanced Fallback: Choose appropriate OpenAI model based on task complexity ---
-                try {
-                    // For Overseer (complex strategic decisions): Use GPT-4o for maximum capability
-                    // For Language/Confirmation (simple tasks): Use GPT-4o-mini for cost efficiency
-                    const fallbackModel = modelType === 'sonnet' ? "gpt-4o" : "gpt-4o-mini";
-                    const fallbackMaxTokens = modelType === 'sonnet' ? 1000 : 500;
-                    const fallbackTemperature = modelType === 'sonnet' ? 0.2 : 0.1; // Lower temp for simple tasks
-                    
-                    console.log(`[AI Fallback] Using ${fallbackModel} for ${agentContext} (${modelType} equivalent)`);
-
-                    const gptCompletion = await this.openaiClient.chat.completions.create({
-                        model: fallbackModel,
-                        messages: [{ role: 'user', content: prompt }],
-                        max_tokens: fallbackMaxTokens,
-                        temperature: fallbackTemperature
-                    });
-                    
-                    const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
-                    if (gptResponse) {
-                        console.log(`[AI Fallback] ✅ Successfully used ${fallbackModel} as fallback for [${agentContext}].`);
-                        return gptResponse;
-                    }
-                    throw new Error("OpenAI response was empty.");
-                    
-                } catch (gptError: any) {
-                    console.error(`[AI Fallback] Primary OpenAI model failed for [${agentContext}]. Trying final fallback...`);
-                    
-                    // --- Final Fallback: Try most compatible OpenAI model ---
-                    try {
-                        const finalCompletion = await this.openaiClient.chat.completions.create({
-                            model: "gpt-3.5-turbo", // Most widely available and compatible
-                            messages: [{ role: 'user', content: prompt }],
-                            max_tokens: 800,
-                            temperature: 0.3
-                        });
-                        
-                        const finalResponse = finalCompletion.choices[0]?.message?.content?.trim();
-                        if (finalResponse) {
-                            console.log(`[AI Fallback] ✅ Final fallback (GPT-3.5-turbo) succeeded for [${agentContext}].`);
-                            return finalResponse;
-                        }
-                        throw new Error("Final fallback response was empty.");
-                        
-                    } catch (finalError: any) {
-                        console.error(`[AI Fallback] CRITICAL: All AI models failed for [${agentContext}]. Using safe defaults.`);
-                        
-                        // Return contextually appropriate safe defaults
-                        if (agentContext === 'Overseer') {
-                            return JSON.stringify({
-                                reasoning: "AI system unavailable - maintaining current agent for safety",
-                                agentToUse: "booking", // Safe default: always go to booking agent
-                                isNewBookingRequest: false
-                            });
-                        } else if (agentContext === 'LanguageAgent') {
-                            return JSON.stringify({
-                                detectedLanguage: "en", // Safe default language
-                                confidence: 0.1,
-                                reasoning: "AI system unavailable - defaulting to English",
-                                shouldLock: false
-                            });
-                        } else if (agentContext === 'ConfirmationAgent') {
-                            return JSON.stringify({
-                                confirmationStatus: "unclear", // Safe default: ask for clarification
-                                reasoning: "AI system unavailable - unable to determine confirmation status"
-                            });
-                        }
-                        
-                        // Generic fallback
-                        return JSON.stringify({
-                            reasoning: "AI system temporarily unavailable",
-                            agentToUse: "booking",
-                            confirmationStatus: "unclear",
-                            detectedLanguage: "en",
-                            confidence: 0.1,
-                            shouldLock: false
-                        });
-                    }
-                }
-            }
-
-            // For non-retryable errors (e.g., malformed requests), return safe defaults
-            console.error(`[AI Fallback] Non-retryable error for [${agentContext}]: ${errorMessage}`);
-            return JSON.stringify({
-                reasoning: "Request error - using safe defaults",
-                agentToUse: "booking",
-                confirmationStatus: "unclear", 
-                detectedLanguage: "en",
-                confidence: 0.1,
-                shouldLock: false
-            });
-        }
-    }
-
-    /**
-     * ✅ UPDATED: Language Detection Agent using Claude Haiku with GPT fallback
+     * ✅ PHASE 1 FIX: Language Detection Agent using AIService with GPT fallback
      */
     private async runLanguageDetectionAgent(
         message: string,
@@ -426,24 +277,26 @@ Respond with JSON only:
   "shouldLock": true/false
 }`;
 
-            // ✅ USE CLAUDE HAIKU: Fast language detection with fallback
-            const responseText = await this.generateContentWithFallback(prompt, 'LanguageAgent', 'haiku');
-            
-            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-            const detection = JSON.parse(cleanJson);
+            // ✅ USE AISERVICE: Fast language detection with fallback
+            const response = await aiService.generateJSON(prompt, {
+                model: 'haiku', // Fast language detection
+                maxTokens: 200,
+                temperature: 0.0,
+                context: 'LanguageAgent'
+            });
 
-            console.log(`🌍 [LanguageAgent-Claude] Detection for "${message}":`, {
-                detected: detection.detectedLanguage,
-                confidence: detection.confidence,
-                reasoning: detection.reasoning,
-                shouldLock: detection.shouldLock
+            console.log(`🌍 [LanguageAgent-AIService] Detection for "${message}":`, {
+                detected: response.detectedLanguage,
+                confidence: response.confidence,
+                reasoning: response.reasoning,
+                shouldLock: response.shouldLock
             });
 
             return {
-                detectedLanguage: detection.detectedLanguage || 'en',
-                confidence: detection.confidence || 0.5,
-                reasoning: detection.reasoning || 'Claude Haiku detection',
-                shouldLock: detection.shouldLock || false
+                detectedLanguage: response.detectedLanguage || 'en',
+                confidence: response.confidence || 0.5,
+                reasoning: response.reasoning || 'AIService detection',
+                shouldLock: response.shouldLock || false
             };
 
         } catch (error) {
@@ -468,8 +321,7 @@ Respond with JSON only:
     }
 
     /**
-     * ✅ UPDATED: Intelligent Confirmation Agent using Claude Haiku with GPT fallback
-     * This agent determines if a user's response is a positive or negative confirmation.
+     * ✅ PHASE 1 FIX: Confirmation Agent using AIService with GPT fallback
      */
     private async runConfirmationAgent(
         message: string,
@@ -527,20 +379,22 @@ Respond with ONLY a JSON object.
   "reasoning": "Briefly explain your decision based on the user's message."
 }`;
 
-            // ✅ USE CLAUDE HAIKU: Fast confirmation analysis with fallback
-            const responseText = await this.generateContentWithFallback(prompt, 'ConfirmationAgent', 'haiku');
-            
-            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-            const decision = JSON.parse(cleanJson);
+            // ✅ USE AISERVICE: Fast confirmation analysis with fallback
+            const response = await aiService.generateJSON(prompt, {
+                model: 'haiku', // Fast confirmation analysis
+                maxTokens: 200,
+                temperature: 0.0,
+                context: 'ConfirmationAgent'
+            });
 
-            console.log(`🤖 [ConfirmationAgent-Claude] Decision for "${message}":`, {
-                status: decision.confirmationStatus,
-                reasoning: decision.reasoning
+            console.log(`🤖 [ConfirmationAgent-AIService] Decision for "${message}":`, {
+                status: response.confirmationStatus,
+                reasoning: response.reasoning
             });
 
             return {
-                confirmationStatus: decision.confirmationStatus || 'unclear',
-                reasoning: decision.reasoning || 'Claude Haiku confirmation analysis.'
+                confirmationStatus: response.confirmationStatus || 'unclear',
+                reasoning: response.reasoning || 'AIService confirmation analysis.'
             };
 
         } catch (error) {
@@ -683,10 +537,8 @@ Respond with ONLY a JSON object.
                     missingParams: missing
                 });
 
-                // ✅ USE TRANSLATION SERVICE
                 const baseMessage = `I need the following information to complete your booking: ${missing.join(', ')}. Please provide this information.`;
                 
-                // Note: We can't use async here, so we'll return the English version and handle translation in the calling function
                 return {
                     valid: false,
                     errorMessage: baseMessage,
@@ -766,8 +618,7 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ APOLLO: Enhanced Overseer with availability failure detection - THE OVERSEER - Intelligent Agent Decision System using Claude Sonnet 4 with GPT fallback
-     * ✅ BUGFIX: Added rule to prevent misclassifying simple continuations as new booking requests
+     * ✅ PHASE 1 FIX: Overseer with availability failure detection using AIService
      */
     private async runOverseer(
         session: BookingSessionWithAgent, 
@@ -776,7 +627,7 @@ Respond with ONLY a JSON object.
         agentToUse: AgentType;
         reasoning: string;
         intervention?: string;
-        isNewBookingRequest?: boolean; // ✅ NEW: Flag for session contamination detection
+        isNewBookingRequest?: boolean;
     }> {
         try {
             const recentHistory = session.conversationHistory
@@ -891,13 +742,15 @@ Respond with ONLY a JSON object:
   "isNewBookingRequest": true/false
 }`;
 
-            // ✅ USE CLAUDE SONNET 4: Strategic decision-making with fallback
-            const responseText = await this.generateContentWithFallback(prompt, 'Overseer', 'sonnet');
-            
-            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-            const decision = JSON.parse(cleanJson);
+            // ✅ USE AISERVICE: Strategic decision-making with fallback
+            const decision = await aiService.generateJSON(prompt, {
+                model: 'sonnet', // Complex strategic decision-making
+                maxTokens: 1000,
+                temperature: 0.2,
+                context: 'Overseer'
+            });
 
-            console.log(`🧠 [Overseer-Claude] Decision for "${userMessage}":`, {
+            console.log(`🧠 [Overseer-AIService] Decision for "${userMessage}":`, {
                 currentAgent: session.currentAgent,
                 decision: decision.agentToUse,
                 reasoning: decision.reasoning,
@@ -1664,39 +1517,21 @@ Important: Return the EXACT name (including non-Latin characters) that the user 
 
 Respond with JSON only.`;
 
-            const completion = await this.openaiClient.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [{ role: 'user', content: prompt }],
-                functions: [{
-                    name: "extract_name_choice",
-                    parameters: {
-                        type: "object",
-                        properties: {
-                            chosen_name: {
-                                type: "string",
-                                description: "The exact name the user wants to use, or null if unclear"
-                            },
-                            confidence: { type: "number" },
-                            reasoning: { type: "string" }
-                        },
-                        required: ["chosen_name", "confidence", "reasoning"]
-                    }
-                }],
-                function_call: { name: "extract_name_choice" },
+            const response = await aiService.generateJSON(prompt, {
+                model: 'haiku', // Fast name choice extraction
+                maxTokens: 150,
                 temperature: 0.0,
-                max_tokens: 150
+                context: 'name-choice-extraction'
             });
 
-            const result = JSON.parse(completion.choices[0]?.message?.function_call?.arguments || '{}');
-
-            console.log(`[NameClarification] LLM extracted choice from "${userMessage}":`, {
-                chosenName: result.chosen_name,
-                confidence: result.confidence,
-                reasoning: result.reasoning
+            console.log(`[NameClarification] AIService extracted choice from "${userMessage}":`, {
+                chosenName: response.chosen_name,
+                confidence: response.confidence,
+                reasoning: response.reasoning
             });
 
-            if (result.confidence >= 0.8 && result.chosen_name) {
-                const chosenName = result.chosen_name.trim();
+            if (response.confidence >= 0.8 && response.chosen_name) {
+                const chosenName = response.chosen_name.trim();
 
                 if (chosenName.toLowerCase() === dbName.toLowerCase() ||
                     chosenName.toLowerCase() === requestName.toLowerCase()) {
@@ -1707,7 +1542,7 @@ Respond with JSON only.`;
             return null;
 
         } catch (error) {
-            console.error('[NameClarification] LLM extraction failed:', error);
+            console.error('[NameClarification] AIService extraction failed:', error);
             return null;
         }
     }
@@ -1776,7 +1611,7 @@ Respond with JSON only.`;
         };
 
         const agent = {
-            client: this.openaiClient, // Main conversations still use OpenAI GPT-4o
+            client: aiService, // ✅ PHASE 1 FIX: Use AIService instead of separate OpenAI client
             restaurantConfig,
             tools: this.getToolsForAgent(agentType),
             agentType,
@@ -1794,6 +1629,7 @@ Respond with JSON only.`;
 
     /**
      * ✅ PHASE 1 FIX: Main message handling with smart context preservation
+     * ✅ CRITICAL BUG FIX: Move hasBooking and reservationId declarations to top of try block
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1811,6 +1647,11 @@ Respond with JSON only.`;
         }
 
         try {
+            // ✅ CRITICAL BUG FIX: Declare variables at the beginning of try block
+            // so they're available throughout the entire function
+            let hasBooking = false;
+            let reservationId: number | undefined;
+
             const isFirstMessage = session.conversationHistory.length === 0;
 
             // ✅ CRITICAL FIX: Guest history retrieval now happens before any other action on the first message.
@@ -1885,7 +1726,7 @@ Respond with JSON only.`;
                     }
                 }
                 
-                // ✅ Call the Claude-powered Intelligent Confirmation Agent
+                // ✅ Call the AIService-powered Intelligent Confirmation Agent
                 const confirmationResult = await this.runConfirmationAgent(message, summary, session.language);
 
                 switch (confirmationResult.confirmationStatus) {
@@ -1912,7 +1753,7 @@ Respond with JSON only.`;
                 // ✅ --- END OF INTELLIGENT CONFIRMATION LOGIC ---
             }
 
-            // ✅ STEP 2: CLAUDE-POWERED LANGUAGE DETECTION WITH INTELLIGENCE
+            // ✅ STEP 2: AISERVICE-POWERED LANGUAGE DETECTION WITH INTELLIGENCE
             // ✅ ENHANCED: Always run language detection, but be more conservative after locking
             const shouldRunDetection = !session.languageLocked || 
                                      session.conversationHistory.length <= 1 || 
@@ -1955,7 +1796,7 @@ Respond with JSON only.`;
                 }
             }
 
-            // STEP 3: CLAUDE-POWERED OVERSEER AGENT DECISION (includes Apollo detection)
+            // STEP 3: AISERVICE-POWERED OVERSEER AGENT DECISION (includes Apollo detection)
             const overseerDecision = await this.runOverseer(session, message);
             
             if (overseerDecision.intervention) {
@@ -2147,21 +1988,42 @@ Respond with JSON only.`;
                 ...session.conversationHistory.slice(-8).map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content }))
             ];
 
-            // STEP 6: Initial completion with function calling (still using OpenAI GPT-4o for main conversations)
-            let completion = await agent.client.chat.completions.create({
-                model: "gpt-4o",
-                messages: messages,
-                tools: agent.tools,
-                tool_choice: "auto",
-                temperature: 0.7,
-                max_tokens: 1000
-            });
+            // STEP 6: Initial completion with function calling using AIService for OpenAI calls
+            let completion;
+            try {
+                // Use a standard client call that supports tools. For now, we'll use the OpenAI client
+                // that the AIService holds, until we abstract this part further.
+                const openaiClient = aiService.getOpenAIClient(); // We'll need to add this getter to AIService
 
-            let hasBooking = false;
-            let reservationId: number | undefined;
+                completion = await openaiClient.chat.completions.create({
+                    model: "gpt-4o",
+                    messages: messages,
+                    tools: agent.tools,
+                    tool_choice: "auto",
+                    temperature: 0.7,
+                    max_tokens: 1000
+                });
+
+            } catch (error) {
+                console.error('[ConversationManager] Error with OpenAI call:', error);
+                const fallbackResponse = await TranslationService.translateMessage(
+                    "I apologize, I'm experiencing technical difficulties. Please try again.",
+                    session.language,
+                    'error'
+                );
+                session.conversationHistory.push({ role: 'assistant', content: fallbackResponse, timestamp: new Date() });
+                this.sessions.set(sessionId, session);
+                return {
+                    response: fallbackResponse,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent,
+                    agentHandoff
+                };
+            }
 
             // STEP 7: Handle function calls (including Apollo's specialized calls)
-            if (completion.choices[0]?.message?.tool_calls) {
+            if (completion.choices?.[0]?.message?.tool_calls) {
                 console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls with ${session.currentAgent} agent`);
                 messages.push({ role: 'assistant' as const, content: completion.choices[0].message.content || null, tool_calls: completion.choices[0].message.tool_calls });
 
@@ -2508,18 +2370,40 @@ Respond with JSON only.`;
                     }
                 }
 
-                // STEP 8: Get final response incorporating function results (still using OpenAI GPT-4o)
+                // STEP 8: Get final response incorporating function results
                 console.log(`[EnhancedConversationManager] Getting final response with function results for ${session.currentAgent} agent`);
-                completion = await agent.client.chat.completions.create({ model: "gpt-4o", messages: messages, temperature: 0.7, max_tokens: 1000 });
+                try {
+                    const openaiClient = aiService.getOpenAIClient();
+                    completion = await openaiClient.chat.completions.create({
+                        model: "gpt-4o",
+                        messages: messages, // The 'messages' array now includes the tool call results
+                        temperature: 0.7,
+                        max_tokens: 1000
+                    });
+                } catch (error) {
+                    console.error('[ConversationManager] Error getting final response:', error);
+                    // Handle error gracefully if the final AI call fails
+                    completion = {
+                        choices: [{
+                            message: {
+                                content: await TranslationService.translateMessage(
+                                    "I seem to be having trouble processing that request. Could you please try again?",
+                                    session.language,
+                                    'error'
+                                )
+                            }
+                        }]
+                    };
+                }
             }
 
-            const response = completion.choices[0]?.message?.content || await TranslationService.translateMessage(
+            const response = completion.choices?.[0]?.message?.content || await TranslationService.translateMessage(
                 "I apologize, I didn't understand that. Could you please try again?",
                 session.language,
                 'error'
             );
 
-            session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices[0]?.message?.tool_calls });
+            session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices?.[0]?.message?.tool_calls });
             this.sessions.set(sessionId, session);
             
             console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
@@ -2894,7 +2778,7 @@ Respond with JSON only.`;
             avgAlternativesFound: number;
             mostCommonFailureReasons: string[];
         };
-        claudeMetaAgentStats: {
+        aiServiceStats: {
             overseerUsage: number;
             languageDetectionUsage: number;
             confirmationAgentUsage: number;
@@ -2979,8 +2863,8 @@ Respond with JSON only.`;
         const avgAlternativesFound = apolloActivations > 0 ? Math.round((totalAlternatives / apolloActivations) * 10) / 10 : 0;
         const mostCommonFailureReasons = [...new Set(failureReasons)].slice(0, 3);
 
-        // ✅ NEW: Claude meta-agent stats (would be tracked in a real implementation)
-        const claudeMetaAgentStats = {
+        // ✅ NEW: AIService stats (would be tracked in a real implementation)
+        const aiServiceStats = {
             overseerUsage: overseerDecisions, // Number of Overseer decisions made
             languageDetectionUsage: totalLanguageDetections, // Number of language detections
             confirmationAgentUsage: 0, // Would be tracked separately
@@ -3011,7 +2895,7 @@ Respond with JSON only.`;
                 avgAlternativesFound,
                 mostCommonFailureReasons
             },
-            claudeMetaAgentStats
+            aiServiceStats
         };
     }
 
@@ -3022,7 +2906,7 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with Claude-powered meta-agents including Apollo Availability Agent');
+        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent');
     }
 }
 
@@ -3102,8 +2986,8 @@ interface BookingSessionWithAgent extends BookingSession {
         contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
     };
     
-    // ✅ NEW: Claude meta-agent tracking (optional for monitoring)
-    claudeMetaAgentLog?: Array<{
+    // ✅ NEW: AIService meta-agent tracking (optional for monitoring)
+    aiServiceMetaAgentLog?: Array<{
         timestamp: string;
         agentType: 'overseer' | 'language' | 'confirmation';
         modelUsed: 'claude-sonnet' | 'claude-haiku' | 'gpt-fallback';
@@ -3125,3 +3009,4 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
+                

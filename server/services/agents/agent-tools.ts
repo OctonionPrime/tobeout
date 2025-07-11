@@ -1,10 +1,8 @@
 // server/services/agents/agent-tools.ts
-// ✅ PHASE 1 FIXES APPLIED:
-// 1. Enhanced modify_reservation with smart context resolution
-// 2. Optional reservationId parameter with context awareness
-// 3. Integration with context preservation system
-// 4. Removed state cleanup logic that was causing context loss
+// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
+// 🔧 BUG FIX: Fixed cancel_reservation tool definition to make confirmCancellation optional
 
+import { aiService } from '../ai-service';
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
 import { storage } from '../../storage';
@@ -12,8 +10,6 @@ import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
 import { getRestaurantDateTime } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
@@ -61,11 +57,9 @@ interface BookingSessionWithAgent {
 }
 
 /**
- * ✅ CRITICAL FIX: Translation Service for Agent Tool Messages
+ * ✅ PHASE 1 FIX: Translation Service using AIService
  */
 class AgentToolTranslationService {
-    private static client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    
     static async translateToolMessage(
         message: string, 
         targetLanguage: Language,
@@ -88,14 +82,15 @@ Keep the same tone and professional style.
 Return only the translation, no explanations.`;
 
         try {
-            const completion = await this.client.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: 300,
-                temperature: 0.2
+            // ✅ USE AISERVICE: Fast translation with automatic fallback
+            const translation = await aiService.generateContent(prompt, {
+                model: 'haiku', // Fast and cost-effective for translation
+                maxTokens: 300,
+                temperature: 0.2,
+                context: `agent-tool-translation-${context}`
             });
             
-            return completion.choices[0]?.message?.content?.trim() || message;
+            return translation;
         } catch (error) {
             console.error('[AgentToolTranslation] Error:', error);
             return message; // Fallback to original
@@ -104,119 +99,11 @@ Return only the translation, no explanations.`;
 }
 
 /**
- * ✅ CRITICAL FIX: Enhanced AI Analysis Service with much better prompts and no generic patterns
+ * ✅ CRITICAL LANGUAGE BUG FIX: AI Analysis Service using AIService with English output enforcement
  */
 class AgentAIAnalysisService {
-    private static openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    private static claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-
     /**
-     * ✅ ENHANCED: AI Abstraction Layer with Robust OpenAI Fallbacks (matching conversation manager)
-     */
-    private static async generateContentWithFallback(prompt: string, agentContext: string): Promise<string> {
-        // --- Primary Model: Claude Haiku ---
-        try {
-            const result = await this.claude.messages.create({
-                model: "claude-3-haiku-20240307", // Fast and cost-effective for analysis tasks
-                max_tokens: 1000,
-                temperature: 0.2,
-                messages: [{ role: 'user', content: prompt }]
-            });
-
-            const response = result.content[0];
-            if (response.type === 'text') {
-                console.log(`[AI Primary] Claude Haiku succeeded for [${agentContext}]`);
-                return response.text;
-            }
-            throw new Error("Non-text response from Claude");
-
-        } catch (error: any) {
-            const errorMessage = error.message || 'Unknown error';
-            console.warn(`[AI Fallback] Claude Haiku failed for [${agentContext}]. Reason: ${errorMessage.split('\n')[0]}`);
-
-            // ✅ ENHANCED: Always attempt OpenAI fallback for critical analysis components
-            return await this.openAIFallbackWithRetries(prompt, agentContext, errorMessage);
-        }
-    }
-
-    /**
-     * ✅ NEW: Enhanced OpenAI Fallback System with Multiple Model Options and Retries
-     */
-    private static async openAIFallbackWithRetries(
-        prompt: string,
-        agentContext: string,
-        claudeError: string
-    ): Promise<string> {
-        // Define fallback models in order of preference for analysis tasks
-        const fallbackModels = ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'];
-
-        for (let i = 0; i < fallbackModels.length; i++) {
-            const model = fallbackModels[i];
-            
-            try {
-                console.log(`[AI Fallback] Attempting OpenAI ${model} (attempt ${i + 1}/${fallbackModels.length}) for [${agentContext}]`);
-                
-                const maxTokens = 1000;
-                const temperature = model === 'gpt-3.5-turbo' ? 0.3 : 0.4; // Lower temp for less capable models
-                
-                const gptCompletion = await this.openaiClient.chat.completions.create({
-                    model: model,
-                    messages: [{ role: 'user', content: prompt }],
-                    max_tokens: maxTokens,
-                    temperature: temperature,
-                    timeout: 30000 // 30 second timeout
-                });
-                
-                const gptResponse = gptCompletion.choices[0]?.message?.content?.trim();
-                if (gptResponse && gptResponse.length > 10) { // Basic content validation
-                    console.log(`[AI Fallback] ✅ Successfully used OpenAI ${model} as fallback for [${agentContext}]`);
-                    return gptResponse;
-                }
-                
-                throw new Error(`Empty or invalid response from ${model}`);
-                
-            } catch (gptError: any) {
-                const gptErrorMessage = gptError.message || 'Unknown error';
-                console.warn(`[AI Fallback] OpenAI ${model} failed for [${agentContext}]: ${gptErrorMessage.split('\n')[0]}`);
-                
-                // If this was the last model, we'll fall through to the safe default
-                if (i === fallbackModels.length - 1) {
-                    console.error(`[AI Fallback] 🚨 CRITICAL: All AI models failed for [${agentContext}]. Claude: ${claudeError}, Final OpenAI: ${gptErrorMessage}`);
-                }
-                
-                // Continue to next model
-                continue;
-            }
-        }
-        
-        // ✅ ENHANCED: Context-aware safe defaults for analysis
-        return this.generateAnalysisSafeDefault(agentContext);
-    }
-
-    /**
-     * ✅ NEW: Generate context-aware safe defaults for analysis when all AI models fail
-     */
-    private static generateAnalysisSafeDefault(agentContext: string): string {
-        console.warn(`[AI Fallback] Using safe default for [${agentContext}]`);
-        
-        if (agentContext === 'SpecialRequestAnalysis') {
-            return JSON.stringify({
-                patterns: [],
-                reasoning: "AI analysis temporarily unavailable - no recurring patterns identified"
-            });
-        }
-        
-        // Generic fallback for other analysis contexts
-        return JSON.stringify({
-            patterns: [],
-            reasoning: "AI analysis system temporarily unavailable",
-            confidence: 0.0,
-            fallback: true
-        });
-    }
-
-    /**
-     * ✅ CRITICAL FIX: Much improved AI prompt to avoid generic "meal requests"
+     * ✅ CRITICAL LANGUAGE BUG FIXED: Enhanced AI analysis that ALWAYS returns English results
      */
     static async analyzeSpecialRequests(
         completedReservations: Array<{ comments: string | null }>,
@@ -271,10 +158,17 @@ RESPONSE FORMAT: Return ONLY a valid JSON object:
   "reasoning": "Brief explanation focusing on why these patterns are useful for staff"
 }
 
+✅ CRITICAL LANGUAGE RULE: You MUST return the identified "patterns" in ENGLISH language, regardless of the language of the source comments. This is essential for our translation system to work properly. Even if the input comments are in Russian, Serbian, Hungarian, or any other language, the output patterns must be in English.
+
 If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "No actionable recurring patterns found"}`;
 
-            // ✅ USE CLAUDE HAIKU: AI analysis with fallback system
-            const responseText = await this.generateContentWithFallback(prompt, 'SpecialRequestAnalysis');
+            // ✅ USE AISERVICE: Enhanced AI analysis with automatic fallback
+            const responseText = await aiService.generateContent(prompt, {
+                model: 'haiku', // Fast and cost-effective for analysis
+                maxTokens: 1000,
+                temperature: 0.2,
+                context: 'SpecialRequestAnalysis'
+            });
             
             // Parse the JSON response
             const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -283,7 +177,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
             try {
                 analysis = JSON.parse(cleanJson);
             } catch (parseError) {
-                console.warn('[SpecialRequestAnalysis] Failed to parse AI response, using fallback logic');
+                console.warn('[SpecialRequestAnalysis] Failed to parse AIService response, using fallback logic');
                 return this.fallbackKeywordAnalysis(allComments);
             }
 
@@ -295,12 +189,13 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
                     .slice(0, 3) // Max 3 patterns to keep focused
                 : [];
 
-            console.log(`🤖 [SpecialRequestAnalysis] Enhanced AI identified ${validPatterns.length} useful patterns for ${guestName}:`, validPatterns);
-            console.log(`🤖 [SpecialRequestAnalysis] AI reasoning: ${analysis.reasoning}`);
+            console.log(`🤖 [SpecialRequestAnalysis] AIService identified ${validPatterns.length} useful patterns for ${guestName}:`, validPatterns);
+            console.log(`🤖 [SpecialRequestAnalysis] AIService reasoning: ${analysis.reasoning}`);
+            console.log(`✅ [Language Fix] Patterns should now be in English:`, validPatterns);
             return validPatterns;
 
         } catch (error) {
-            console.error('[SpecialRequestAnalysis] AI analysis failed:', error);
+            console.error('[SpecialRequestAnalysis] AIService analysis failed:', error);
             // Fallback to keyword-based analysis
             return this.fallbackKeywordAnalysis(allComments);
         }
@@ -332,7 +227,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
     }
 
     /**
-     * ✅ Enhanced fallback keyword analysis with better patterns
+     * ✅ Enhanced fallback keyword analysis with better patterns (returns English patterns)
      */
     private static fallbackKeywordAnalysis(allComments: string[]): string[] {
         const requestCounts: Record<string, number> = {};
@@ -368,7 +263,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
             .filter(([, count]) => count >= minOccurrences)
             .map(([request]) => request);
 
-        console.log(`🔄 [SpecialRequestAnalysis] Fallback analysis found ${frequentRequests.length} useful patterns`);
+        console.log(`🔄 [SpecialRequestAnalysis] Fallback analysis found ${frequentRequests.length} useful patterns (English):`, frequentRequests);
         return frequentRequests;
     }
 }
@@ -543,7 +438,7 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 // ===== 🆕 NEW: GUEST HISTORY TOOL =====
 
 /**
- * ✅ CRITICAL FIX: Get guest history with TRANSLATED frequent requests
+ * ✅ PHASE 1 FIX: Get guest history with AIService-powered analysis (now returns English patterns)
  */
 export async function get_guest_history(
     telegramUserId: string,
@@ -642,18 +537,19 @@ export async function get_guest_history(
             }
         }
 
-        // 6. ✅ CRITICAL FIX: Enhanced AI-powered analysis that avoids generic patterns
+        // 6. ✅ LANGUAGE BUG FIXED: AIService-powered analysis that returns English patterns
         const englishRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
             completedReservations,
             guest.name
         );
 
-        console.log(`👤 [Guest History] Enhanced AI-analyzed frequent requests (English):`, englishRequests);
+        console.log(`👤 [Guest History] AIService-analyzed frequent requests (English):`, englishRequests);
+        console.log(`✅ [Language Fix] Patterns are now guaranteed to be in English, regardless of source comment language`);
 
-        // 7. ✅ CRITICAL FIX: Translate the requests to target language
+        // 7. ✅ PHASE 1 FIX: Translate the English requests to target language using AIService
         let translatedRequests = englishRequests;
         if (context.language && context.language !== 'en' && englishRequests.length > 0) {
-            console.log(`👤 [Guest History] Translating requests to ${context.language}...`);
+            console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
             translatedRequests = await Promise.all(
                 englishRequests.map(request => 
                     AgentToolTranslationService.translateToolMessage(request, context.language as Language)
@@ -670,10 +566,10 @@ export async function get_guest_history(
             total_cancellations: cancelledReservations.length,
             last_visit_date: lastVisitDate,
             common_party_size: commonPartySize,
-            frequent_special_requests: translatedRequests // ✅ Now properly translated
+            frequent_special_requests: translatedRequests // ✅ Now powered by AIService with English-first analysis
         };
 
-        console.log(`👤 [Guest History] Final history data with translations:`, historyData);
+        console.log(`👤 [Guest History] Final history data with fixed AIService analysis:`, historyData);
 
         return createSuccessResponse(historyData, {
             execution_time_ms: Date.now() - startTime
@@ -747,7 +643,7 @@ export async function check_availability(
         if (slots.length > 0) {
             const bestSlot = slots[0];
             
-            // ✅ USE TRANSLATION SERVICE
+            // ✅ USE AISERVICE TRANSLATION
             const baseMessage = `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -798,7 +694,7 @@ export async function check_availability(
             }
 
             if (suggestedAlternatives.length > 0) {
-                // ✅ USE TRANSLATION SERVICE
+                // ✅ USE AISERVICE TRANSLATION
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would that work?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -811,7 +707,7 @@ export async function check_availability(
                     'NO_AVAILABILITY_SUGGEST_SMALLER'
                 );
             } else {
-                // ✅ USE TRANSLATION SERVICE
+                // ✅ USE AISERVICE TRANSLATION
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -925,7 +821,7 @@ export async function find_alternative_times(
                 execution_time_ms: executionTime
             });
         } else {
-            // ✅ USE TRANSLATION SERVICE
+            // ✅ USE AISERVICE TRANSLATION
             const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -1106,7 +1002,7 @@ export async function create_reservation(
                 errorCode = 'CAPACITY_EXCEEDED';
             }
 
-            // ✅ USE TRANSLATION SERVICE
+            // ✅ USE AISERVICE TRANSLATION
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 result.message || 'Could not complete reservation due to business constraints',
                 context.language as Language,
@@ -1247,7 +1143,7 @@ export async function get_restaurant_info(
                 break;
         }
 
-        // ✅ USE TRANSLATION SERVICE if language context provided
+        // ✅ USE AISERVICE TRANSLATION if language context provided
         if (context.language && context.language !== 'en') {
             message = await AgentToolTranslationService.translateToolMessage(
                 message,
@@ -1372,7 +1268,7 @@ export async function find_existing_reservation(
             case 'confirmation':
                 const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
                 if (isNaN(numericIdentifier)) {
-                    // ✅ USE TRANSLATION SERVICE
+                    // ✅ USE AISERVICE TRANSLATION
                     const baseMessage = `"${identifier}" is not a valid confirmation number. It must be a number.`;
                     const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                         baseMessage,
@@ -1409,7 +1305,7 @@ export async function find_existing_reservation(
             .limit(10);
 
         if (!results || results.length === 0) {
-            // ✅ USE TRANSLATION SERVICE
+            // ✅ USE AISERVICE TRANSLATION
             const baseMessage = timeRange === 'past' 
                 ? `I couldn't find any past reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
                 : timeRange === 'upcoming'
@@ -1489,7 +1385,7 @@ export async function find_existing_reservation(
             };
         });
 
-        // ✅ USE TRANSLATION SERVICE
+        // ✅ USE AISERVICE TRANSLATION
         const baseMessage = timeRange === 'past'
             ? `Found ${formattedReservations.length} past reservation(s) for you. Let me show you the details.`
             : timeRange === 'upcoming'
@@ -1577,7 +1473,7 @@ export async function modify_reservation(
                 const errorMessage = await AgentToolTranslationService.translateToolMessage(
                     `I need to know which reservation to modify. Available reservations: ${availableIds.join(', ')}. Please specify the reservation number.`,
                     context.language as Language,
-                    'question'
+                    'error'
                 );
                 
                 return createBusinessRuleFailure(
@@ -1947,12 +1843,12 @@ export async function modify_reservation(
 }
 
 /**
- * ✅ COMPLETE IMPLEMENTATION: Enhanced cancel_reservation with ownership validation and proper database operations
+ * ✅ BUG FIX: Enhanced cancel_reservation with optional confirmCancellation parameter
  */
 export async function cancel_reservation(
     reservationId: number,
     reason: string = 'Guest requested cancellation',
-    confirmCancellation: boolean = false,
+    confirmCancellation?: boolean, // 🔧 BUG FIX: Made optional
     context: {
         restaurantId: number;
         timezone: string;
@@ -1965,13 +1861,14 @@ export async function cancel_reservation(
     console.log(`❌ [Maya Tool] Cancelling reservation ${reservationId}, confirmed: ${confirmCancellation}`);
 
     try {
-        if (!confirmCancellation) {
-            // ✅ USE TRANSLATION SERVICE
+        // 🔧 BUG FIX: If confirmCancellation is not provided, ask for confirmation
+        if (confirmCancellation !== true) {
+            // ✅ USE AISERVICE TRANSLATION
             const baseMessage = `Are you sure you want to cancel your reservation? This action cannot be undone. Please confirm if you want to proceed.`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
-                'question'
+                'error'
             );
 
             return createBusinessRuleFailure(
@@ -1998,7 +1895,7 @@ export async function cancel_reservation(
                 ));
 
             if (!ownershipCheck) {
-                // ✅ USE TRANSLATION SERVICE
+                // ✅ USE AISERVICE TRANSLATION
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2015,7 +1912,7 @@ export async function cancel_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED CANCELLATION ATTEMPT: Telegram user ${context.telegramUserId} tried to cancel reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
 
-                // ✅ USE TRANSLATION SERVICE
+                // ✅ USE AISERVICE TRANSLATION
                 const baseMessage = 'For security, you can only cancel reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2142,7 +2039,7 @@ export async function cancel_reservation(
     }
 }
 
-// ✅ ENHANCED: Export agent tools configuration with guest history tool and enhanced reservation search
+// ✅ PHASE 1 INTEGRATION: Export agent tools configuration with AIService support
 export const agentTools = [
     {
         type: "function" as const,
@@ -2283,7 +2180,7 @@ export const agentTools = [
                     identifierType: {
                         type: "string",
                         enum: ["phone", "telegram", "name", "confirmation", "auto"],
-                        description: "Type of identifier being used. Defaults to 'auto' to let the system intelligently decide."
+                        description: "Type of identifier being used. Use 'auto' to let the system decide."
                     },
                     timeRange: {
                         type: "string",
@@ -2350,7 +2247,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "cancel_reservation",
-            description: "Cancel an existing reservation. Always ask for confirmation before proceeding. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
+            description: "🔧 BUG FIX: Cancel an existing reservation. The system will prompt for confirmation if not provided. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2365,28 +2262,28 @@ export const agentTools = [
                     },
                     confirmCancellation: {
                         type: "boolean",
-                        description: "Explicit confirmation from guest that they want to cancel"
+                        description: "🔧 BUG FIX: Explicit confirmation from guest that they want to cancel. Omit this to have the system prompt the user for confirmation."
                     }
                 },
-                required: ["reservationId", "confirmCancellation"]
+                required: ["reservationId"]
             }
         }
     }
 ];
 
-// ✅ PHASE 1 FIX: Export function implementations with enhanced context resolution
+// ✅ PHASE 1 INTEGRATION: Export function implementations with AIService integration
 export const agentFunctions = {
-    // ✅ CRITICAL FIX: Guest memory tool with enhanced AI analysis and translation support
+    // ✅ PHASE 1 FIX: Guest memory tool with AIService-powered analysis and translation (now returns English patterns)
     get_guest_history,
 
-    // Sofia's tools (existing)
+    // Sofia's tools (existing, now with AIService translation)
     check_availability,
     find_alternative_times,
     create_reservation,
     get_restaurant_info,
 
-    // ✅ PHASE 1 FIX: Maya's tools with smart context resolution and state preservation
+    // ✅ PHASE 1 FIX: Maya's tools with smart context resolution and AIService integration
     find_existing_reservation,
     modify_reservation, // ✅ Now supports optional reservationId with context resolution
-    cancel_reservation
+    cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter
 };

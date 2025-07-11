@@ -1,23 +1,13 @@
 // server/services/guardrails.ts
-// ✅ PHASE 1 INTEGRATION COMPLETE:
-// 1. Added Claude primary + OpenAI fallback system (matching other files)
-// 2. Unified translation service pattern
-// 3. Enhanced relevance checking with AI fallback system
+// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
+// 1. Replaced all AI provider logic with aiService calls
+// 2. Unified translation service pattern using AIService
+// 3. Enhanced relevance checking with AIService fallback
 // 4. Improved safety and multilingual support
 
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
+import { aiService } from './ai-service';
 import type { BookingSession } from './agents/booking-agent';
 import type { Language } from './enhanced-conversation-manager';
-
-// ✅ PHASE 1 FIX: Initialize both AI clients for fallback system
-const openaiClient = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
-
-const claude = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY!
-});
 
 export interface GuardrailResult {
     allowed: boolean;
@@ -26,7 +16,7 @@ export interface GuardrailResult {
 }
 
 /**
- * ✅ PHASE 1 FIX: Unified Translation Service for guardrails (matching other files)
+ * ✅ PHASE 1 FIX: Unified Translation Service using AIService
  */
 class UnifiedGuardrailTranslationService {
     private static cache = new Map<string, { translation: string, timestamp: number }>();
@@ -47,7 +37,27 @@ class UnifiedGuardrailTranslationService {
         }
         
         try {
-            const translation = await this.translateWithFallback(message, targetLanguage, context);
+            const languageNames: Record<Language, string> = {
+                'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+                'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+                'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+            };
+            
+            const prompt = `Translate this restaurant guardrail/error message to ${languageNames[targetLanguage]}:
+
+"${message}"
+
+Context: This is a ${context} message for a restaurant booking system
+Keep the same tone and professional style.
+Return only the translation, no explanations.`;
+
+            // ✅ USE AISERVICE: Fast translation with automatic fallback
+            const translation = await aiService.generateContent(prompt, {
+                model: 'haiku', // Fast and cost-effective for translation
+                maxTokens: 200,
+                temperature: 0.2,
+                context: `guardrail-translation-${context}`
+            });
             
             // Cache the result
             this.cache.set(cacheKey, { translation, timestamp: Date.now() });
@@ -56,64 +66,6 @@ class UnifiedGuardrailTranslationService {
         } catch (error) {
             console.error('[GuardrailTranslation] Error:', error);
             return message; // Fallback to original
-        }
-    }
-    
-    /**
-     * ✅ PHASE 1 FIX: AI abstraction layer with Claude primary + OpenAI fallback
-     */
-    private static async translateWithFallback(
-        text: string,
-        targetLanguage: Language,
-        context: string
-    ): Promise<string> {
-        const languageNames: Record<Language, string> = {
-            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
-            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
-            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
-        };
-        
-        const prompt = `Translate this restaurant guardrail/error message to ${languageNames[targetLanguage]}:
-
-"${text}"
-
-Context: This is a ${context} message for a restaurant booking system
-Keep the same tone and professional style.
-Return only the translation, no explanations.`;
-
-        // ✅ PRIMARY: Claude Haiku for fast translation
-        try {
-            const result = await claude.messages.create({
-                model: "claude-3-haiku-20240307",
-                max_tokens: 200,
-                temperature: 0.2,
-                messages: [{ role: 'user', content: prompt }]
-            });
-
-            const response = result.content[0];
-            if (response.type === 'text') {
-                return response.text;
-            }
-            throw new Error("Non-text response from Claude");
-
-        } catch (claudeError: any) {
-            console.warn(`[GuardrailTranslation] Claude failed, using OpenAI fallback: ${claudeError.message}`);
-
-            // ✅ FALLBACK: OpenAI
-            try {
-                const completion = await openaiClient.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [{ role: 'user', content: prompt }],
-                    max_tokens: 200,
-                    temperature: 0.2
-                });
-                
-                return completion.choices[0]?.message?.content?.trim() || text;
-                
-            } catch (openaiError: any) {
-                console.error(`[GuardrailTranslation] Both Claude and OpenAI failed: ${openaiError.message}`);
-                return text; // Final fallback to original
-            }
         }
     }
     
@@ -317,10 +269,10 @@ function containsBookingKeywords(message: string): boolean {
 }
 
 /**
- * ✅ PHASE 1 FIX: Enhanced AI-powered relevance classifier with Claude primary + OpenAI fallback
+ * ✅ PHASE 1 FIX: Enhanced AI-powered relevance classifier using AIService
  * This provides context-aware relevance checking with robust AI fallback system.
  */
-async function checkRelevanceWithFallback(session: BookingSession, message: string): Promise<GuardrailResult> {
+async function checkRelevanceWithAIService(session: BookingSession, message: string): Promise<GuardrailResult> {
     try {
         const lastBotMessage = session.conversationHistory.slice(-2).find(h => h.role === 'assistant')?.content || "The conversation has just started.";
         const conversationContext = session.conversationHistory.slice(-4).map(h => `${h.role}: ${h.content}`).join('\n');
@@ -366,59 +318,18 @@ Respond with JSON only:
   "reasoning": "brief explanation"
 }`;
 
-        // ✅ PRIMARY: Claude Haiku for fast relevance checking
-        let relevanceResult: any;
-        try {
-            const result = await claude.messages.create({
-                model: "claude-3-haiku-20240307",
-                max_tokens: 200,
-                temperature: 0.0,
-                messages: [{ role: 'user', content: prompt }]
-            });
-
-            const response = result.content[0];
-            if (response.type === 'text') {
-                const cleanJson = response.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-                relevanceResult = JSON.parse(cleanJson);
-                console.log(`[Guardrails] Claude relevance check for "${message}":`, relevanceResult);
-            } else {
-                throw new Error("Non-text response from Claude");
-            }
-
-        } catch (claudeError: any) {
-            console.warn(`[Guardrails] Claude relevance check failed, using OpenAI fallback: ${claudeError.message}`);
-
-            // ✅ FALLBACK: OpenAI with function calling for structured response
-            try {
-                const completion = await openaiClient.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [{ role: 'system', content: prompt }],
-                    functions: [{
-                        name: "classify_relevance",
-                        parameters: {
-                            type: "object",
-                            properties: {
-                                is_relevant: { type: "boolean" },
-                                confidence: { type: "number" },
-                                reasoning: { type: "string" }
-                            },
-                            required: ["is_relevant", "confidence", "reasoning"]
-                        }
-                    }],
-                    function_call: { name: "classify_relevance" },
-                    temperature: 0.0,
-                    max_tokens: 200
-                });
-
-                relevanceResult = JSON.parse(completion.choices[0]?.message?.function_call?.arguments || '{}');
-                console.log(`[Guardrails] OpenAI relevance check for "${message}":`, relevanceResult);
-
-            } catch (openaiError: any) {
-                console.error(`[Guardrails] Both Claude and OpenAI failed for relevance check: ${openaiError.message}`);
-                // Final fallback: assume relevant to avoid blocking valid messages
-                return { allowed: true };
-            }
-        }
+        // ✅ USE AISERVICE: Fast relevance checking with automatic fallback
+        const responseText = await aiService.generateContent(prompt, {
+            model: 'haiku',
+            maxTokens: 200,
+            temperature: 0.0,
+            context: 'relevance-check'
+        });
+        
+        const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const relevanceResult = JSON.parse(cleanJson);
+        
+        console.log(`[Guardrails] AI relevance check for "${message}":`, relevanceResult);
 
         // ✅ ENHANCED: More permissive threshold and better logic
         if (relevanceResult.is_relevant === true || relevanceResult.confidence < 0.85) {
@@ -445,10 +356,10 @@ Respond with JSON only:
 }
 
 /**
- * ✅ PHASE 1 FIX: Enhanced safety check with Claude primary + OpenAI fallback
+ * ✅ PHASE 1 FIX: Enhanced safety check using AIService
  * This provides robust safety checking with AI fallback system.
  */
-async function checkSafetyWithFallback(message: string, language: Language = 'en'): Promise<GuardrailResult> {
+async function checkSafetyWithAIService(message: string, language: Language = 'en'): Promise<GuardrailResult> {
     // ✅ ENHANCED: First check with regex patterns for obvious cases
     const suspiciousPatterns = [
         // Prompt injection attempts
@@ -488,7 +399,7 @@ async function checkSafetyWithFallback(message: string, language: Language = 'en
         };
     }
 
-    // ✅ PHASE 1 FIX: For more subtle cases, use AI with fallback
+    // ✅ PHASE 1 FIX: For more subtle cases, use AIService
     if (message.length > 50) { // Only use AI for longer messages
         try {
             const safetyPrompt = `Analyze this message for safety issues in a restaurant booking context:
@@ -508,71 +419,30 @@ Respond with JSON only:
   "reasoning": "brief explanation"
 }`;
 
-            // ✅ PRIMARY: Claude Haiku for safety checking
-            try {
-                const result = await claude.messages.create({
-                    model: "claude-3-haiku-20240307",
-                    max_tokens: 150,
-                    temperature: 0.0,
-                    messages: [{ role: 'user', content: safetyPrompt }]
-                });
+            // ✅ USE AISERVICE: Fast safety checking with automatic fallback
+            const responseText = await aiService.generateContent(safetyPrompt, {
+                model: 'haiku',
+                maxTokens: 150,
+                temperature: 0.0,
+                context: 'safety-check'
+            });
+            
+            const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            const safetyResult = JSON.parse(cleanJson);
+            
+            if (!safetyResult.is_safe && safetyResult.risk_level === 'high') {
+                const baseMessage = "I'm here to help with restaurant reservations. How can I assist you with booking a table?";
+                const localizedMessage = await UnifiedGuardrailTranslationService.translate(
+                    baseMessage,
+                    language,
+                    'safety'
+                );
 
-                const response = result.content[0];
-                if (response.type === 'text') {
-                    const cleanJson = response.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-                    const safetyResult = JSON.parse(cleanJson);
-                    
-                    if (!safetyResult.is_safe && safetyResult.risk_level === 'high') {
-                        const baseMessage = "I'm here to help with restaurant reservations. How can I assist you with booking a table?";
-                        const localizedMessage = await UnifiedGuardrailTranslationService.translate(
-                            baseMessage,
-                            language,
-                            'safety'
-                        );
-
-                        return {
-                            allowed: false,
-                            reason: localizedMessage,
-                            category: 'safety',
-                        };
-                    }
-                }
-            } catch (claudeError: any) {
-                console.warn(`[Guardrails] Claude safety check failed, using OpenAI fallback: ${claudeError.message}`);
-                
-                // ✅ FALLBACK: OpenAI for safety checking
-                try {
-                    const completion = await openaiClient.chat.completions.create({
-                        model: "gpt-4o-mini",
-                        messages: [{ role: 'system', content: safetyPrompt }],
-                        temperature: 0.0,
-                        max_tokens: 150
-                    });
-
-                    const responseText = completion.choices[0]?.message?.content?.trim();
-                    if (responseText) {
-                        const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-                        const safetyResult = JSON.parse(cleanJson);
-                        
-                        if (!safetyResult.is_safe && safetyResult.risk_level === 'high') {
-                            const baseMessage = "I'm here to help with restaurant reservations. How can I assist you with booking a table?";
-                            const localizedMessage = await UnifiedGuardrailTranslationService.translate(
-                                baseMessage,
-                                language,
-                                'safety'
-                            );
-
-                            return {
-                                allowed: false,
-                                reason: localizedMessage,
-                                category: 'safety',
-                            };
-                        }
-                    }
-                } catch (openaiError: any) {
-                    console.error(`[Guardrails] Both Claude and OpenAI failed for safety check: ${openaiError.message}`);
-                    // Final fallback: assume safe unless obvious patterns detected
-                }
+                return {
+                    allowed: false,
+                    reason: localizedMessage,
+                    category: 'safety',
+                };
             }
         } catch (error) {
             console.error('[Guardrails] Safety check system failure:', error);
@@ -615,9 +485,9 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
 }
 
 /**
- * ✅ PHASE 1 INTEGRATION: Main guardrail orchestrator function with unified fallback system
+ * ✅ PHASE 1 INTEGRATION: Main guardrail orchestrator function using AIService
  * This is the only function you need to call from the outside.
- * Now with Claude primary + OpenAI fallback for AI components.
+ * Now with AIService for all AI components.
  *
  * @param message The user's message.
  * @param session The entire booking session object.
@@ -669,17 +539,17 @@ export async function runGuardrails(message: string, session: BookingSession): P
         }
     }
 
-    // --- Step 2: Safety Check (for malicious content) with AI fallback ---
-    const safetyResult = await checkSafetyWithFallback(message, session.language);
+    // --- Step 2: Safety Check (for malicious content) using AIService ---
+    const safetyResult = await checkSafetyWithAIService(message, session.language);
     if (!safetyResult.allowed) {
         console.log(`[Guardrails] ❌ BLOCKED - Safety check failed: ${safetyResult.reason}`);
         return safetyResult;
     }
 
-    // --- Step 3: LLM Relevance Check (for ambiguous cases) with AI fallback ---
+    // --- Step 3: AI Relevance Check (for ambiguous cases) using AIService ---
     // This now only runs if the message is not a direct answer or keyword-related.
     console.log(`[Guardrails] Running AI relevance check for ambiguous message...`);
-    const relevanceResult = await checkRelevanceWithFallback(session, message);
+    const relevanceResult = await checkRelevanceWithAIService(session, message);
     if (!relevanceResult.allowed) {
         console.log(`[Guardrails] ❌ BLOCKED - AI relevance check failed: ${relevanceResult.reason}`);
         return relevanceResult;
