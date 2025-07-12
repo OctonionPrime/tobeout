@@ -1,9 +1,11 @@
 // server/services/enhanced-conversation-manager.ts
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
+// ✅ PHASE 3 STEP 2: Context Manager Integration Safety Test
 // 1. Replaced generateContentWithFallback with aiService calls
 // 2. Unified translation service using AIService
 // 3. Enhanced meta-agents (Overseer, Language, Confirmation) with AIService
 // 4. Removed duplicate Claude/OpenAI client initialization
+// 5. NOW TESTING: Context Manager wrapper integration
 
 import { aiService } from './ai-service';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
@@ -12,6 +14,9 @@ import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
+
+// ✅ STEP 2: Import ContextManager for testing (no function calls changed yet)
+import { contextManager } from './context-manager';
 
 // ✅ APOLLO: Updated AgentType to include availability agent
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
@@ -1630,6 +1635,7 @@ Respond with JSON only.`;
     /**
      * ✅ PHASE 1 FIX: Main message handling with smart context preservation
      * ✅ CRITICAL BUG FIX: Move hasBooking and reservationId declarations to top of try block
+     * ✅ STEP 2: Added ContextManager test integration
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1653,6 +1659,16 @@ Respond with JSON only.`;
             let reservationId: number | undefined;
 
             const isFirstMessage = session.conversationHistory.length === 0;
+
+            // ✅ STEP 2 TEST: Verify ContextManager works (remove after testing)
+            console.log('[STEP 2 TEST] Testing ContextManager wrapper...');
+            try {
+                // Test that the wrapper methods exist and can be called
+                const testResolution = contextManager.resolveReservationFromContext('test', session as any);
+                console.log('[STEP 2 TEST] ContextManager wrapper working:', !!testResolution);
+            } catch (error) {
+                console.error('[STEP 2 TEST] ContextManager wrapper FAILED:', error);
+            }
 
             // ✅ CRITICAL FIX: Guest history retrieval now happens before any other action on the first message.
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
@@ -3009,4 +3025,3 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
-                

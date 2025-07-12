@@ -1,8 +1,11 @@
 // server/services/agents/agent-tools.ts
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
 // 🔧 BUG FIX: Fixed cancel_reservation tool definition to make confirmCancellation optional
+// ✅ STEP 3A COMPLETE: Context Manager function calls replaced
 
 import { aiService } from '../ai-service';
+// ✅ STEP 3A: Using ContextManager for all context resolution
+import { contextManager } from '../context-manager';
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
 import { storage } from '../../storage';
@@ -315,99 +318,6 @@ const createBusinessRuleFailure = (message: string, code?: string): ToolResponse
 
 const createSystemError = (message: string, originalError?: any): ToolResponse =>
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
-
-/**
- * ✅ PHASE 1 FIX: Smart Context Preservation and Resolution Functions
- */
-function cleanExpiredContext(session: BookingSessionWithAgent): void {
-    if (!session.recentlyModifiedReservations) return;
-    
-    const now = new Date();
-    const beforeCount = session.recentlyModifiedReservations.length;
-    
-    session.recentlyModifiedReservations = session.recentlyModifiedReservations
-        .filter(r => r.contextExpiresAt > now);
-    
-    const afterCount = session.recentlyModifiedReservations.length;
-    
-    if (beforeCount > afterCount) {
-        console.log(`[ContextManager] Cleaned ${beforeCount - afterCount} expired context entries`);
-    }
-}
-
-function resolveReservationFromContext(
-    userMessage: string,
-    session: BookingSessionWithAgent,
-    providedId?: number
-): {
-    resolvedId: number | null;
-    confidence: 'high' | 'medium' | 'low';
-    method: string;
-    shouldAskForClarification: boolean;
-} {
-    
-    // Clean expired context first
-    cleanExpiredContext(session);
-    
-    // 1. If explicit ID provided and valid, use it
-    if (providedId) {
-        if (session.foundReservations?.some(r => r.id === providedId)) {
-            return {
-                resolvedId: providedId,
-                confidence: 'high',
-                method: 'explicit_id_validated',
-                shouldAskForClarification: false
-            };
-        }
-    }
-    
-    // 2. Check for recent modifications (high confidence)
-    if (session.recentlyModifiedReservations?.length > 0) {
-        const recentReservation = session.recentlyModifiedReservations[0];
-        if (recentReservation.contextExpiresAt > new Date()) {
-            // Check for contextual references
-            const contextualPhrases = ['эту бронь', 'this booking', 'it', 'её', 'эту', 'this one', 'that one'];
-            const userMessageLower = userMessage.toLowerCase();
-            
-            if (contextualPhrases.some(phrase => userMessageLower.includes(phrase))) {
-                return {
-                    resolvedId: recentReservation.reservationId,
-                    confidence: 'high',
-                    method: 'recent_modification_context',
-                    shouldAskForClarification: false
-                };
-            }
-        }
-    }
-    
-    // 3. Check active reservation (medium confidence)
-    if (session.activeReservationId) {
-        return {
-            resolvedId: session.activeReservationId,
-            confidence: 'medium',
-            method: 'active_session_reservation',
-            shouldAskForClarification: false
-        };
-    }
-    
-    // 4. Single found reservation (medium confidence)
-    if (session.foundReservations?.length === 1) {
-        return {
-            resolvedId: session.foundReservations[0].id,
-            confidence: 'medium',
-            method: 'single_found_reservation',
-            shouldAskForClarification: false
-        };
-    }
-    
-    // 5. Multiple reservations - need clarification
-    return {
-        resolvedId: null,
-        confidence: 'low',
-        method: 'ambiguous_context',
-        shouldAskForClarification: true
-    };
-}
 
 /**
  * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
@@ -1429,11 +1339,11 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ PHASE 1 FIX: Enhanced modify_reservation with smart context resolution
+ * ✅ STEP 3A COMPLETE: Enhanced modify_reservation with ContextManager integration
  * This is the CRITICAL function that was causing the context loss problem
  */
 export async function modify_reservation(
-    reservationIdHint: number | undefined, // ✅ PHASE 1 FIX: Made optional
+    reservationIdHint: number | undefined, // ✅ Made optional
     modifications: {
         newDate?: string;
         newTime?: string;
@@ -1447,7 +1357,7 @@ export async function modify_reservation(
         language: string;
         telegramUserId?: string;
         sessionId?: string;
-        // ✅ PHASE 1 FIX: Added new context parameters
+        // ✅ STEP 3A: Added new context parameters
         userMessage?: string;
         session?: BookingSessionWithAgent;
     }
@@ -1456,13 +1366,14 @@ export async function modify_reservation(
     console.log(`✏️ [Maya Tool] Modifying reservation ${reservationIdHint || 'TBD'}:`, modifications);
 
     try {
-        // ✅ PHASE 1 FIX: Smart reservation ID resolution with context awareness
+        // ✅ STEP 3A: Use ContextManager for smart reservation ID resolution
         let targetReservationId: number;
         
         if (context.session && context.userMessage) {
-            console.log(`[SmartContext] Using context resolution for reservation ID...`);
+            console.log(`[ContextManager] Using ContextManager for reservation ID resolution...`);
             
-            const resolution = resolveReservationFromContext(
+            // ✅ STEP 3A: Replace with contextManager call
+            const resolution = contextManager.resolveReservationFromContext(
                 context.userMessage,
                 context.session,
                 reservationIdHint
@@ -1496,14 +1407,14 @@ export async function modify_reservation(
             }
 
             targetReservationId = resolution.resolvedId;
-            console.log(`[SmartContext] Resolved reservation ID: ${targetReservationId} (method: ${resolution.method}, confidence: ${resolution.confidence})`);
+            console.log(`[ContextManager] ✅ Resolved reservation ID: ${targetReservationId} (method: ${resolution.method}, confidence: ${resolution.confidence})`);
         } else {
             // Fallback to traditional approach if no context
             if (!reservationIdHint) {
                 return createValidationFailure('Reservation ID is required when context resolution is not available');
             }
             targetReservationId = reservationIdHint;
-            console.log(`[SmartContext] Using provided reservation ID: ${targetReservationId} (no context available)`);
+            console.log(`[ContextManager] Using provided reservation ID: ${targetReservationId} (no context available)`);
         }
 
         // ✅ SECURITY ENHANCEMENT: Validate ownership before modification
@@ -1815,7 +1726,7 @@ export async function modify_reservation(
             'success'
         );
 
-        // ✅ PHASE 1 FIX: Return success with reservation ID for context preservation
+        // ✅ STEP 3A: Return success with reservation ID for context preservation
         return createSuccessResponse({
             reservationId: targetReservationId, // ✅ CRITICAL: Include reservation ID for context preservation
             previousValues: {
@@ -2072,7 +1983,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30, etc."
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
                     },
                     guests: {
                         type: "number",
@@ -2204,13 +2115,13 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "✅ PHASE 1 FIX: Modify details of an existing reservation with smart context resolution. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
+            description: "✅ STEP 3A COMPLETE: Modify details of an existing reservation with ContextManager integration. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
             parameters: {
                 type: "object",
                 properties: {
                     reservationId: {
                         type: "number",
-                        description: "✅ PHASE 1 FIX: ID of the reservation to modify (now OPTIONAL - can be resolved from context)"
+                        description: "✅ STEP 3A: ID of the reservation to modify (now OPTIONAL - can be resolved from context using ContextManager)"
                     },
                     modifications: {
                         type: "object",
@@ -2271,7 +2182,7 @@ export const agentTools = [
     }
 ];
 
-// ✅ PHASE 1 INTEGRATION: Export function implementations with AIService integration
+// ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
 export const agentFunctions = {
     // ✅ PHASE 1 FIX: Guest memory tool with AIService-powered analysis and translation (now returns English patterns)
     get_guest_history,
@@ -2282,8 +2193,8 @@ export const agentFunctions = {
     create_reservation,
     get_restaurant_info,
 
-    // ✅ PHASE 1 FIX: Maya's tools with smart context resolution and AIService integration
+    // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration for smart context resolution
     find_existing_reservation,
-    modify_reservation, // ✅ Now supports optional reservationId with context resolution
+    modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution
     cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter
 };
