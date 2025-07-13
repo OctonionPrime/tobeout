@@ -1,11 +1,13 @@
 // server/services/enhanced-conversation-manager.ts
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
-// ✅ PHASE 3 STEP 2: Context Manager Integration Safety Test
+// ✅ STEP 3B.1 COMPLETE: All context calls now go through ContextManager
+// ✅ FIXES IMPLEMENTED: Natural explicit confirmations + Zero-assumption special requests + Enhanced debug logging
+// 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
 // 1. Replaced generateContentWithFallback with aiService calls
 // 2. Unified translation service using AIService
 // 3. Enhanced meta-agents (Overseer, Language, Confirmation) with AIService
 // 4. Removed duplicate Claude/OpenAI client initialization
-// 5. NOW TESTING: Context Manager wrapper integration
+// 5. ALL CONTEXT MANAGEMENT: Now uses contextManager for all context operations
 
 import { aiService } from './ai-service';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
@@ -15,7 +17,7 @@ import { runGuardrails, requiresConfirmation, type GuardrailResult } from './gua
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
 
-// ✅ STEP 2: Import ContextManager for testing (no function calls changed yet)
+// ✅ STEP 3B.1: Using ContextManager for ALL context resolution and management
 import { contextManager } from './context-manager';
 
 // ✅ APOLLO: Updated AgentType to include availability agent
@@ -65,132 +67,6 @@ Return only the translation, no explanations.`;
 }
 
 /**
- * ✅ PHASE 1 FIX: Smart Context Preservation Functions
- */
-function preserveReservationContext(
-    session: BookingSessionWithAgent, 
-    reservationId: number, 
-    operationType: 'modification' | 'cancellation' | 'creation'
-): void {
-    const expiryTime = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-    
-    if (!session.recentlyModifiedReservations) {
-        session.recentlyModifiedReservations = [];
-    }
-    
-    // Remove old entries for same reservation
-    session.recentlyModifiedReservations = session.recentlyModifiedReservations
-        .filter(r => r.reservationId !== reservationId);
-    
-    // Add new context
-    session.recentlyModifiedReservations.unshift({
-        reservationId,
-        lastModifiedAt: new Date(),
-        contextExpiresAt: expiryTime,
-        operationType,
-        userReference: undefined // Will be set by resolution logic
-    });
-    
-    // Keep only last 3 reservations
-    session.recentlyModifiedReservations = session.recentlyModifiedReservations.slice(0, 3);
-    
-    console.log(`[ContextManager] Preserved context for reservation ${reservationId} until ${expiryTime.toISOString()}`);
-}
-
-function cleanExpiredContext(session: BookingSessionWithAgent): void {
-    if (!session.recentlyModifiedReservations) return;
-    
-    const now = new Date();
-    const beforeCount = session.recentlyModifiedReservations.length;
-    
-    session.recentlyModifiedReservations = session.recentlyModifiedReservations
-        .filter(r => r.contextExpiresAt > now);
-    
-    const afterCount = session.recentlyModifiedReservations.length;
-    
-    if (beforeCount > afterCount) {
-        console.log(`[ContextManager] Cleaned ${beforeCount - afterCount} expired context entries`);
-    }
-}
-
-/**
- * ✅ PHASE 1 FIX: Enhanced Reservation ID Resolution with Context Awareness
- */
-function resolveReservationFromContext(
-    userMessage: string,
-    session: BookingSessionWithAgent,
-    providedId?: number
-): {
-    resolvedId: number | null;
-    confidence: 'high' | 'medium' | 'low';
-    method: string;
-    shouldAskForClarification: boolean;
-} {
-    
-    // Clean expired context first
-    cleanExpiredContext(session);
-    
-    // 1. If explicit ID provided and valid, use it
-    if (providedId) {
-        if (session.foundReservations?.some(r => r.id === providedId)) {
-            return {
-                resolvedId: providedId,
-                confidence: 'high',
-                method: 'explicit_id_validated',
-                shouldAskForClarification: false
-            };
-        }
-    }
-    
-    // 2. Check for recent modifications (high confidence)
-    if (session.recentlyModifiedReservations?.length > 0) {
-        const recentReservation = session.recentlyModifiedReservations[0];
-        if (recentReservation.contextExpiresAt > new Date()) {
-            // Check for contextual references
-            const contextualPhrases = ['эту бронь', 'this booking', 'it', 'её', 'эту', 'this one', 'that one'];
-            const userMessageLower = userMessage.toLowerCase();
-            
-            if (contextualPhrases.some(phrase => userMessageLower.includes(phrase))) {
-                return {
-                    resolvedId: recentReservation.reservationId,
-                    confidence: 'high',
-                    method: 'recent_modification_context',
-                    shouldAskForClarification: false
-                };
-            }
-        }
-    }
-    
-    // 3. Check active reservation (medium confidence)
-    if (session.activeReservationId) {
-        return {
-            resolvedId: session.activeReservationId,
-            confidence: 'medium',
-            method: 'active_session_reservation',
-            shouldAskForClarification: false
-        };
-    }
-    
-    // 4. Single found reservation (medium confidence)
-    if (session.foundReservations?.length === 1) {
-        return {
-            resolvedId: session.foundReservations[0].id,
-            confidence: 'medium',
-            method: 'single_found_reservation',
-            shouldAskForClarification: false
-        };
-    }
-    
-    // 5. Multiple reservations - need clarification
-    return {
-        resolvedId: null,
-        confidence: 'low',
-        method: 'ambiguous_context',
-        shouldAskForClarification: true
-    };
-}
-
-/**
  * ✅ PHONE FIX: Updated Guest history interface to include phone number
  */
 interface GuestHistory {
@@ -205,8 +81,33 @@ interface GuestHistory {
 }
 
 /**
+ * 🚨 CRITICAL BUG FIX: Enhanced tool validation result interface
+ */
+interface ToolValidationResult {
+    valid: boolean;
+    errorMessage?: string;
+    shouldClarify?: boolean;
+    autoFixedParams?: Record<string, any>;
+    warningMessage?: string;
+}
+
+/**
+ * 🚨 CRITICAL BUG FIX: Time parsing and validation result interface
+ */
+interface TimeParsingResult {
+    isValid: boolean;
+    parsedTime?: string;
+    isAmbiguous: boolean;
+    clarificationNeeded?: string;
+    confidence: number;
+    detectedPattern?: string;
+}
+
+/**
  * Enhanced conversation manager with AIService-powered meta-agents and Apollo Availability Agent
  * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
+ * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and preservation
+ * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
  */
 export class EnhancedConversationManager {
     private sessions = new Map<string, BookingSessionWithAgent>();
@@ -218,7 +119,278 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + OpenAI GPT fallback');
+        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + OpenAI GPT fallback + Enhanced Tool Validation');
+    }
+
+    /**
+     * 🚨 CRITICAL BUG FIX: Enhanced time parsing and validation utility
+     * This prevents ambiguous time input from causing tool failures
+     */
+    private parseAndValidateTimeInput(
+        input: string,
+        language: Language
+    ): TimeParsingResult {
+        const cleanInput = input.trim().toLowerCase();
+        
+        console.log(`[TimeValidation] Parsing input: "${cleanInput}" (Language: ${language})`);
+
+        // 🚨 CRITICAL: Detect explicitly ambiguous patterns that should NEVER be passed to tools
+        const ambiguousPatterns = [
+            { 
+                pattern: /^\d{1,2}-\d{1,2}$/, 
+                reason: "time range vs specific time",
+                examples: "17-20 could mean 17:20 or times between 17:00-20:00"
+            },
+            { 
+                pattern: /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/, 
+                reason: "time range format",
+                examples: "18:30-20:00 is a range, not a specific time"
+            },
+            { 
+                pattern: /^(evening|утром|вечером|popodne|este|délután|sera|tarde|sera|avond)$/i, 
+                reason: "vague time reference",
+                examples: "evening could mean 18:00, 19:00, 20:00, or 21:00"
+            },
+            { 
+                pattern: /^(around|около|oko|körül|vers|hacia|verso|rond)\s+\d{1,2}$/i, 
+                reason: "approximate time",
+                examples: "around 7 could mean 18:30, 19:00, or 19:30"
+            },
+            {
+                pattern: /^(между|između|között|entre|tussen)\s+\d{1,2}\s+(и|i|és|y|en)\s+\d{1,2}$/i,
+                reason: "time range in multiple languages",
+                examples: "между 7 и 8 is a range, not specific time"
+            },
+            {
+                pattern: /^\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i,
+                reason: "date without time",
+                examples: "19 июля has no time specified"
+            }
+        ];
+        
+        // Check for ambiguous patterns
+        for (const { pattern, reason, examples } of ambiguousPatterns) {
+            if (pattern.test(cleanInput)) {
+                console.log(`[TimeValidation] ❌ Detected ambiguous pattern: ${reason}`);
+                return {
+                    isValid: false,
+                    isAmbiguous: true,
+                    confidence: 0.9,
+                    clarificationNeeded: `Ambiguous input detected (${reason}). Please specify exact time. ${examples}`,
+                    detectedPattern: pattern.toString()
+                };
+            }
+        }
+        
+        // ✅ Standard time parsing for valid formats
+        const validTimePatterns = [
+            { pattern: /^(\d{1,2}):(\d{2})$/, name: "HH:MM format" },
+            { pattern: /^(\d{1,2})\.(\d{2})$/, name: "HH.MM format" },
+            { pattern: /^(\d{1,2})\s*:\s*(\d{2})$/, name: "HH : MM format with spaces" }
+        ];
+
+        for (const { pattern, name } of validTimePatterns) {
+            const match = cleanInput.match(pattern);
+            if (match) {
+                const [, hours, minutes] = match;
+                const hourNum = parseInt(hours);
+                const minNum = parseInt(minutes);
+                
+                if (hourNum >= 0 && hourNum <= 23 && minNum >= 0 && minNum <= 59) {
+                    const parsedTime = `${hourNum.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+                    console.log(`[TimeValidation] ✅ Valid time parsed: ${parsedTime} (${name})`);
+                    return {
+                        isValid: true,
+                        parsedTime,
+                        isAmbiguous: false,
+                        confidence: 1.0,
+                        detectedPattern: name
+                    };
+                }
+            }
+        }
+        
+        // If no valid pattern matches, it's ambiguous
+        console.log(`[TimeValidation] ❌ No valid time pattern found for: "${cleanInput}"`);
+        return {
+            isValid: false,
+            isAmbiguous: true,
+            confidence: 0.3,
+            clarificationNeeded: "Please provide time in HH:MM format (e.g., 19:30).",
+            detectedPattern: "unknown_format"
+        };
+    }
+
+    /**
+     * 🚨 CRITICAL BUG FIX: Comprehensive tool pre-condition validation
+     * This is the main fix to prevent tool failure loops
+     */
+    private validateToolPreConditions(
+        toolCall: any, 
+        session: BookingSessionWithAgent
+    ): ToolValidationResult {
+        console.log(`[ToolValidation] Validating tool: ${toolCall.function.name}`);
+        
+        try {
+            const args = JSON.parse(toolCall.function.arguments);
+            
+            // 🚨 CRITICAL: Enhanced validation for find_alternative_times
+            if (toolCall.function.name === 'find_alternative_times') {
+                console.log(`[ToolValidation] Validating find_alternative_times with args:`, args);
+                
+                // Check for missing preferredTime - this is the main cause of the bug
+                if (!args.preferredTime || args.preferredTime.trim() === '') {
+                    console.error('[ToolValidation] ❌ find_alternative_times missing preferredTime');
+                    
+                    // 🚨 CRITICAL FIX: Check for recent availability failure context
+                    const recentFailure = this.detectRecentAvailabilityFailure(session);
+                    
+                    if (recentFailure.hasFailure && recentFailure.failedTime) {
+                        // Auto-populate from failure context
+                        args.preferredTime = recentFailure.failedTime;
+                        toolCall.function.arguments = JSON.stringify(args);
+                        
+                        console.log(`[ToolValidation] ✅ Auto-fixed preferredTime from failure context: ${args.preferredTime}`);
+                        return {
+                            valid: true,
+                            autoFixedParams: { preferredTime: args.preferredTime },
+                            warningMessage: `Auto-populated preferred time from recent availability check: ${args.preferredTime}`
+                        };
+                    } else {
+                        // No context available - request clarification
+                        return {
+                            valid: false,
+                            shouldClarify: true,
+                            errorMessage: "I need to know what specific time you were originally interested in to find alternatives. Please specify your preferred time."
+                        };
+                    }
+                }
+                
+                // 🚨 CRITICAL: Validate time format in preferredTime
+                const timeValidation = this.parseAndValidateTimeInput(args.preferredTime, session.language);
+                if (!timeValidation.isValid) {
+                    return {
+                        valid: false,
+                        shouldClarify: true,
+                        errorMessage: timeValidation.clarificationNeeded || "Please provide a valid time in HH:MM format."
+                    };
+                }
+                
+                // Use parsed time if available
+                if (timeValidation.parsedTime && timeValidation.parsedTime !== args.preferredTime) {
+                    args.preferredTime = timeValidation.parsedTime;
+                    toolCall.function.arguments = JSON.stringify(args);
+                    console.log(`[ToolValidation] ✅ Normalized preferredTime: ${args.preferredTime}`);
+                }
+            }
+            
+            // 🚨 CRITICAL: Enhanced validation for check_availability 
+            if (toolCall.function.name === 'check_availability') {
+                console.log(`[ToolValidation] Validating check_availability with args:`, args);
+                
+                // Validate time format to prevent ambiguous input from reaching tools
+                if (!args.time || args.time.trim() === '') {
+                    return {
+                        valid: false,
+                        shouldClarify: true,
+                        errorMessage: "Please specify a time for your reservation (e.g., 19:30)."
+                    };
+                }
+                
+                const timeValidation = this.parseAndValidateTimeInput(args.time, session.language);
+                if (!timeValidation.isValid) {
+                    return {
+                        valid: false,
+                        shouldClarify: true,
+                        errorMessage: timeValidation.clarificationNeeded || "Please provide a specific time in HH:MM format (e.g., 19:30)."
+                    };
+                }
+                
+                // Use parsed time if normalized
+                if (timeValidation.parsedTime && timeValidation.parsedTime !== args.time) {
+                    args.time = timeValidation.parsedTime;
+                    toolCall.function.arguments = JSON.stringify(args);
+                    console.log(`[ToolValidation] ✅ Normalized time: ${args.time}`);
+                }
+                
+                // Validate date format
+                if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
+                    return {
+                        valid: false,
+                        shouldClarify: true,
+                        errorMessage: "Please provide a valid date in YYYY-MM-DD format (e.g., 2025-07-20)."
+                    };
+                }
+                
+                // Validate guests
+                if (!args.guests || args.guests < 1 || args.guests > 50) {
+                    return {
+                        valid: false,
+                        shouldClarify: true,
+                        errorMessage: "Please specify the number of guests (between 1 and 50)."
+                    };
+                }
+            }
+            
+            // Enhanced validation for create_reservation
+            if (toolCall.function.name === 'create_reservation') {
+                const missing: string[] = [];
+
+                if (!args.guestName || args.guestName.trim().length < 2) {
+                    missing.push('guest name');
+                }
+                if (!args.guestPhone || args.guestPhone.trim().length < 7) {
+                    missing.push('phone number');
+                }
+                if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
+                    missing.push('valid date (YYYY-MM-DD format)');
+                }
+                
+                // Time validation for create_reservation
+                if (!args.time) {
+                    missing.push('time');
+                } else {
+                    const timeValidation = this.parseAndValidateTimeInput(args.time, session.language);
+                    if (!timeValidation.isValid) {
+                        return {
+                            valid: false,
+                            shouldClarify: true,
+                            errorMessage: timeValidation.clarificationNeeded || "Please provide a specific time in HH:MM format."
+                        };
+                    }
+                    
+                    // Normalize time
+                    if (timeValidation.parsedTime && timeValidation.parsedTime !== args.time) {
+                        args.time = timeValidation.parsedTime;
+                        toolCall.function.arguments = JSON.stringify(args);
+                        console.log(`[ToolValidation] ✅ Normalized reservation time: ${args.time}`);
+                    }
+                }
+                
+                if (!args.guests || args.guests < 1 || args.guests > 50) {
+                    missing.push('number of guests (1-50)');
+                }
+
+                if (missing.length > 0) {
+                    console.log(`[ToolValidation] ❌ create_reservation missing required params:`, missing);
+                    return {
+                        valid: false,
+                        errorMessage: `I need the following information to complete your booking: ${missing.join(', ')}. Please provide this information.`,
+                        shouldClarify: true
+                    };
+                }
+            }
+            
+            console.log(`[ToolValidation] ✅ Tool validation passed for ${toolCall.function.name}`);
+            return { valid: true };
+            
+        } catch (parseError) {
+            console.error(`[ToolValidation] ❌ Failed to parse tool arguments:`, parseError);
+            return {
+                valid: false,
+                errorMessage: "Invalid tool call format. Please try again with a clear request."
+            };
+        }
     }
 
     /**
@@ -502,57 +674,6 @@ Respond with ONLY a JSON object.
             console.error(`👤 [GuestHistory] Error retrieving guest history:`, error);
             return null;
         }
-    }
-
-    /**
-     * Validate function call parameters before execution
-     */
-    private validateFunctionCall(
-        toolCall: any,
-        session: BookingSessionWithAgent
-    ): { valid: boolean; errorMessage?: string; missingParams?: string[] } {
-
-        if (toolCall.function.name === 'create_reservation') {
-            const args = JSON.parse(toolCall.function.arguments);
-            const missing: string[] = [];
-
-            if (!args.guestName || args.guestName.trim().length < 2) {
-                missing.push('guest name');
-            }
-            if (!args.guestPhone || args.guestPhone.trim().length < 7) {
-                missing.push('phone number');
-            }
-            if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
-                missing.push('date');
-            }
-            if (!args.time || !/^\d{1,2}:\d{2}$/.test(args.time)) {
-                missing.push('time');
-            }
-            if (!args.guests || args.guests < 1 || args.guests > 50) {
-                missing.push('number of guests');
-            }
-
-            if (missing.length > 0) {
-                console.log(`❌ [Validation] create_reservation missing required params:`, {
-                    hasName: !!args.guestName,
-                    hasPhone: !!args.guestPhone,
-                    hasDate: !!args.date,
-                    hasTime: !!args.time,
-                    hasGuests: !!args.guests,
-                    missingParams: missing
-                });
-
-                const baseMessage = `I need the following information to complete your booking: ${missing.join(', ')}. Please provide this information.`;
-                
-                return {
-                    valid: false,
-                    errorMessage: baseMessage,
-                    missingParams: missing
-                };
-            }
-        }
-
-        return { valid: true };
     }
 
     /**
@@ -1167,7 +1288,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ PHONE FIX + CONTEXTUAL AWARENESS BUGFIX: Generate personalized system prompt section based on guest history with phone number instructions and contextual evaluation of special requests + Apollo system prompt
+     * ✅ FIX #1 & #2: Generate personalized system prompt section with NATURAL EXPLICIT CONFIRMATION + ZERO-ASSUMPTION SPECIAL REQUESTS
      */
     private getPersonalizedPromptSection(guestHistory: GuestHistory | null, language: Language): string {
         if (!guestHistory || guestHistory.total_bookings === 0) {
@@ -1190,8 +1311,40 @@ Respond with ONLY a JSON object:
 💡 PERSONALIZATION GUIDELINES:
 - ${total_bookings >= 3 ? `RETURNING GUEST: Greet warmly as a valued returning customer! Say "Welcome back, ${guest_name}!" or similar.` : `NEW/INFREQUENT GUEST: Treat as a regular new guest, but you can mention "${guest_name}" once you know their name.`}
 - ${common_party_size ? `USUAL PARTY SIZE: You can proactively ask "Will it be for your usual party of ${common_party_size} today?" when they don't specify.` : ''}
-- **CONTEXTUAL SPECIAL REQUESTS (CRITICAL):** Before suggesting a past request like '${frequent_special_requests.join(', ')}', you MUST analyze the user's current message. If the current context (e.g., "business lunch", "meeting", "деловой обед", "бизнес ланч", "corporate event", "работа") makes the past request inappropriate, DO NOT suggest it. Only suggest a past request if the current booking context is neutral or similar to past bookings.
-- **SAME NAME/PHONE HANDLING**: If the guest says "my name" or "same name", use "${guest_name}" from their history. If they say "same number", "same phone", or "using same number", use "${guest_phone || 'Not available'}" from their history.
+
+- **CONTACT CONFIRMATION (NATURAL EXPLICIT FORMAT):** When confirming details for returning guests, ask naturally but be specific about what information you intend to use.
+  - **Preferred Natural Formats:**
+    * "May I use your name **${guest_name}** for the booking?" 
+    * "May I use your phone number **${guest_phone}** to complete the booking?" 
+    * "Can I use **${guest_name}** and **${guest_phone}** for this booking?" 
+  - **Key Principle:** Always show the actual information you plan to use, but ask in a conversational way
+  - **Forbidden Patterns:** 
+    * "Do you want to use the same information?" (vague - what information?)
+    * "Should I use your usual details?" (vague - which details?)
+    * Any reference to "same" or "usual" without showing the actual data
+  - **Why This Works:** User sees exactly what will be used but the question feels natural and polite
+
+- **SPECIAL REQUESTS (ZERO-ASSUMPTION RULE):** You are STRICTLY FORBIDDEN from adding any frequent special request to a booking unless explicitly confirmed in the CURRENT conversation.
+  
+  **Mandatory Workflow:**
+  1. **After** confirming contact details (as separate step)
+  2. Ask naturally but specifically: "I also see you often request '${frequent_special_requests[0]}'. Add that to this booking?"
+  3. Wait for explicit "yes"/"confirm" response to THIS specific question
+  4. Only then add to create_reservation call
+  
+  **Forbidden Actions:**
+  - ❌ Assuming general "yes" applies to special requests
+  - ❌ Auto-adding requests based on history without current confirmation
+  - ❌ Bundling contact confirmation with special request confirmation
+  
+  **Critical Rule:** Contact confirmation and special request confirmation are COMPLETELY SEPARATE steps that cannot be combined.
+  
+  **Examples:**
+  - ✅ Good: "Contact confirmed. I also see you usually request tea on arrival. Add that too?"
+  - ✅ Good: "Great with contacts! By the way, add your usual window seat request?"
+  - ❌ Bad: "Use same contact info and usual requests?"
+  - ❌ Bad: "Everything as usual?" - too vague
+
 - Use this information naturally in conversation - don't just list their history!
 - Make the experience feel personal and welcoming for returning guests.`,
 
@@ -1207,8 +1360,40 @@ Respond with ONLY a JSON object:
 💡 РУКОВОДСТВО ПО ПЕРСОНАЛИЗАЦИИ:
 - ${total_bookings >= 3 ? `ВОЗВРАЩАЮЩИЙСЯ ГОСТЬ: Тепло встречайте как ценного постоянного клиента! Скажите "Добро пожаловать снова, ${guest_name}!" или подобное.` : `НОВЫЙ/РЕДКИЙ ГОСТЬ: Относитесь как к обычному новому гостю, но можете упомянуть "${guest_name}", когда узнаете имя.`}
 - ${common_party_size ? `ОБЫЧНОЕ КОЛИЧЕСТВО: Можете проактивно спросить "Будет ли как обычно на ${common_party_size} человек сегодня?" когда они не уточняют.` : ''}
-- **КОНТЕКСТНЫЕ ОСОБЫЕ ПРОСЬБЫ (КРИТИЧНО):** Перед тем как предложить прошлую просьбу вроде '${frequent_special_requests.join(', ')}', вы ДОЛЖНЫ проанализировать текущее сообщение пользователя. Если текущий контекст (например, "бизнес ланч", "деловая встреча", "работа", "корпоратив") делает прошлую просьбу неуместной, НЕ предлагайте её. Предлагайте прошлую просьбу только если текущий контекст бронирования нейтральный или похож на прошлые брони.
-- **ОБРАБОТКА ТОГО ЖЕ ИМЕНИ/ТЕЛЕФОНА**: Если гость говорит "мое имя" или "то же имя", используйте "${guest_name}" из его истории. Если говорит "тот же номер", "тот же телефон" или "использовать тот же номер", используйте "${guest_phone || 'Недоступен'}" из его истории.
+
+- **ПОДТВЕРЖДЕНИЕ КОНТАКТОВ (ЕСТЕСТВЕННЫЙ ЯВНЫЙ ФОРМАТ):** При подтверждении данных для возвращающихся гостей спрашивайте естественно, но конкретно о том, какую информацию собираетесь использовать.
+  - **Предпочтительные естественные форматы:**
+    * "Могу ли я использовать ваше имя **${guest_name}** для бронирования?"
+    * "Могу ли я использовать ваш номер телефона **${guest_phone}** для завершения бронирования?"
+    * "Можно использовать **${guest_name}** и **${guest_phone}** для этого бронирования?"
+  - **Ключевой принцип:** Всегда показывайте фактическую информацию, которую планируете использовать, но спрашивайте разговорным способом
+  - **Запрещенные паттерны:** 
+    * "Хотите использовать ту же информацию?" (неопределенно - какую информацию?)
+    * "Использовать ваши обычные данные?" (неопределенно - какие данные?)
+    * Любые ссылки на "то же" или "обычные" без показа фактических данных
+  - **Почему это работает:** Пользователь видит точно, что будет использовано, но вопрос звучит естественно и вежливо
+
+- **ОСОБЫЕ ПРОСЬБЫ (ПРАВИЛО НУЛЕВЫХ ПРЕДПОЛОЖЕНИЙ):** Вам СТРОГО ЗАПРЕЩЕНО добавлять любую частую особую просьбу к бронированию без явного подтверждения в ТЕКУЩЕМ разговоре.
+  
+  **Обязательный рабочий процесс:**
+  1. **После** подтверждения контактных данных (как отдельный шаг)
+  2. Спросите естественно, но конкретно: "Я также вижу, что вы часто просите '${frequent_special_requests[0]}'. Добавить это к бронированию?"
+  3. Ждите явного ответа "да"/"подтверждаю" на ЭТОТ конкретный вопрос
+  4. Только тогда добавляйте в вызов create_reservation
+  
+  **Запрещенные действия:**
+  - ❌ Предполагать, что общее "да" относится к особым просьбам
+  - ❌ Автодобавление просьб на основе истории без текущего подтверждения
+  - ❌ Объединение подтверждения контактов с подтверждением особых просьб
+  
+  **Критическое правило:** Подтверждение контактов и подтверждение особых просьб - это ПОЛНОСТЬЮ ОТДЕЛЬНЫЕ шаги, которые нельзя объединять.
+  
+  **Примеры:**
+  - ✅ Хорошо: "Контакт подтвержден. Я также вижу, что вы обычно просите чай к прибытию. Добавить это тоже?"
+  - ✅ Хорошо: "Отлично с контактами! Кстати, добавить ваш обычный запрос про столик у окна?"
+  - ❌ Плохо: "Использовать те же контакты и обычные просьбы?"
+  - ❌ Плохо: "Всё как обычно?" - слишком неопределенно
+
 - Используйте эту информацию естественно в разговоре - не просто перечисляйте историю!
 - Сделайте опыт личным и гостеприимным для возвращающихся гостей.`,
 
@@ -1224,8 +1409,40 @@ Respond with ONLY a JSON object:
 💡 SMERNICE ZA PERSONALIZACIJU:
 - ${total_bookings >= 3 ? `VRAĆAJUĆI SE GOST: Toplo pozdravite kao cenjenog stalnog klijenta! Recite "Dobrodošli ponovo, ${guest_name}!" ili slično.` : `NOVI/REDAK GOST: Tretirajte kao običnog novog gosta, ali možete spomenuti "${guest_name}" kada saznate ime.`}
 - ${common_party_size ? `UOBIČAJEN BROJ: Možete proaktivno pitati "Hoće li biti kao obično za ${common_party_size} osoba danas?" kada ne specificiraju.` : ''}
-- **KONTEKSTUALNI POSEBNI ZAHTEVI (KRITIČNO):** Pre nego što predložite prošli zahtev poput '${frequent_special_requests.join(', ')}', MORATE analizirati trenutnu poruku korisnika. Ako trenutni kontekst (npr. "poslovni ručak", "sastanak", "posao", "korporativni događaj") čini prošli zahtev neodgovarajućim, NE predlažite ga. Predložite prošli zahtev samo ako je trenutni kontekst rezervacije neutralan ili sličan prošlim rezervacijama.
-- **RUKOVANJE ISTIM IMENOM/TELEFONOM**: Ako gost kaže "moje ime" ili "isto ime", koristite "${guest_name}" iz njegove istorije. Ako kaže "isti broj", "isti telefon" ili "koristi isti broj", koristite "${guest_phone || 'Nije dostupno'}" iz njegove istorije.
+
+- **POTVRDA KONTAKATA (PRIRODNI EKSPLICITNI FORMAT):** Kada potvrđujete detalje za goste koji se vraćaju, pitajte prirodno ali budite specifični o tome koje informacije nameravate da koristite.
+  - **Preferirani prirodni formati:**
+    * "Mogu li da koristim vaše ime **${guest_name}** za rezervaciju?"
+    * "Mogu li da koristim vaš broj telefona **${guest_phone}** da završim rezervaciju?"
+    * "Mogu li da koristim **${guest_name}** i **${guest_phone}** za ovu rezervaciju?"
+  - **Ključni princip:** Uvek pokažite stvarne informacije koje planirate da koristite, ali pitajte na razgovorni način
+  - **Zabranjeni obrasci:** 
+    * "Da li želite da koristite iste informacije?" (nejasno - koje informacije?)
+    * "Da koristim vaše uobičajene podatke?" (nejasno - koje podatke?)
+    * Bilo koje upućivanje na "isto" ili "uobičajeno" bez prikazivanja stvarnih podataka
+  - **Zašto ovo funkcioniše:** Korisnik vidi tačno šta će biti korišćeno, ali pitanje zvuči prirodno i pristojno
+
+- **POSEBNI ZAHTEVI (PRAVILO NULTE PRETPOSTAVKE):** STROGO vam je ZABRANJENO da dodate bilo koji čest posebni zahtev rezervaciji bez eksplicitne potvrde u TRENUTNOM razgovoru.
+  
+  **Obavezni tok rada:**
+  1. **Nakon** potvrde kontakt podataka (kao poseban korak)
+  2. Pitajte prirodno ali specifično: "Takođe vidim da često tražite '${frequent_special_requests[0]}'. Da dodam to ovoj rezervaciji?"
+  3. Sačekajte eksplicitan odgovor "da"/"potvrđujem" na OVO specifično pitanje
+  4. Tek tada dodajte u poziv create_reservation
+  
+  **Zabranjene radnje:**
+  - ❌ Pretpostavljanje da opšte "da" važi za posebne zahteve
+  - ❌ Auto-dodavanje zahteva na osnovu istorije bez trenutne potvrde
+  - ❌ Spajanje potvrde kontakata sa potvrdom posebnih zahteva
+  
+  **Kritično pravilo:** Potvrda kontakata i potvrda posebnih zahteva su POTPUNO ODVOJENI koraci koji se ne mogu kombinovati.
+  
+  **Primeri:**
+  - ✅ Dobro: "Kontakt potvrđen. Takođe vidim da obično tražite čaj po dolasku. Da dodam i to?"
+  - ✅ Dobro: "Odlično sa kontaktima! Usput, da dodam vaš uobičajeni zahtev za sto kod prozora?"
+  - ❌ Loše: "Koristiti iste kontakt informacije i uobičajene zahteve?"
+  - ❌ Loše: "Sve kao obično?" - previše nejasno
+
 - Koristite ove informacije prirodno u razgovoru - nemojte samo nabrajati istoriju!
 - Učinite iskustvo ličnim i gostoljubivim za goste koji se vraćaju.`,
 
@@ -1241,8 +1458,40 @@ Respond with ONLY a JSON object:
 💡 SZEMÉLYRE SZABÁSI IRÁNYELVEK:
 - ${total_bookings >= 3 ? `VISSZATÉRŐ VENDÉG: Melegesen köszöntse mint értékes állandó ügyfelet! Mondja "Üdvözöljük vissza, ${guest_name}!" vagy hasonlót.` : `ÚJ/RITKA VENDÉG: Kezelje mint egy szokásos új vendéget, de megemlítheti "${guest_name}"-t amikor megismeri a nevét.`}
 - ${common_party_size ? `SZOKÁSOS LÉTSZÁM: Proaktívan kérdezheti "A szokásos ${common_party_size} főre lesz ma?" amikor nem specificálják.` : ''}
-- **KONTEXTUÁLIS KÜLÖNLEGES KÉRÉSEK (KRITIKUS):** Mielőtt korábbi kérést javasolna, mint '${frequent_special_requests.join(', ')}', elemezze a felhasználó jelenlegi üzenetét. Ha a jelenlegi kontextus (pl. "üzleti ebéd", "tárgyalás", "munka", "vállalati esemény") a korábbi kérést helytelenné teszi, NE javasolja. Csak akkor javasoljon korábbi kérést, ha a jelenlegi foglalási kontextus semleges vagy hasonló a korábbiakhoz.
-- **UGYANAZ A NÉV/TELEFON KEZELÉSE**: Ha a vendég azt mondja "az én nevem" vagy "ugyanaz a név", használja "${guest_name}"-t a történetéből. Ha azt mondja "ugyanaz a szám", "ugyanaz a telefon" vagy "ugyanazt a számot használom", használja "${guest_phone || 'Nem elérhető'}"-t a történetéből.
+
+- **KONTAKT MEGERŐSÍTÉS (TERMÉSZETES EXPLICIT FORMÁTUM):** Amikor visszatérő vendégek részleteit erősíti meg, kérdezzen természetesen, de legyen konkrét arról, milyen információkat szándékozik használni.
+  - **Előnyben részesített természetes formátumok:**
+    * "Használhatom a nevét **${guest_name}** a foglaláshoz?"
+    * "Használhatom a telefonszámát **${guest_phone}** a foglalás befejezéséhez?"
+    * "Használhatom **${guest_name}** és **${guest_phone}** ehhez a foglaláshoz?"
+  - **Kulcs elv:** Mindig mutassa meg a tényleges információt, amit használni tervez, de kérdezzen beszélgetős módon
+  - **Tiltott minták:** 
+    * "Ugyanazokat az információkat szeretné használni?" (homályos - milyen információkat?)
+    * "A szokásos adatait használjam?" (homályos - milyen adatokat?)
+    * Bármilyen hivatkozás "ugyanaz" vagy "szokásos" a tényleges adatok mutatása nélkül
+  - **Miért működik ez:** A felhasználó pontosan látja, mit fognak használni, de a kérdés természetesen és udvariasan hangzik
+
+- **KÜLÖNLEGES KÉRÉSEK (NULLA FELTÉTELEZÉS SZABÁLY):** SZIGORÚAN TILOS bármilyen gyakori különleges kérést hozzáadni a foglaláshoz anélkül, hogy azt kifejezetten megerősítenék a JELENLEGI beszélgetésben.
+  
+  **Kötelező munkafolyamat:**
+  1. **Miután** megerősítette a kontakt adatokat (külön lépésként)
+  2. Kérdezzen természetesen, de konkrétan: "Azt is látom, hogy gyakran kéri '${frequent_special_requests[0]}'. Hozzáadjam ehhez a foglaláshoz?"
+  3. Várjon kifejezett "igen"/"megerősítés" választ ERRE a konkrét kérdésre
+  4. Csak aztán adja hozzá a create_reservation híváshoz
+  
+  **Tiltott tevékenységek:**
+  - ❌ Feltételezni, hogy az általános "igen" a különleges kérésekre vonatkozik
+  - ❌ Automatikus hozzáadás a történet alapján aktuális megerősítés nélkül
+  - ❌ A kontakt megerősítés és különleges kérés megerősítés összevonása
+  
+  **Kritikus szabály:** A kontakt megerősítés és a különleges kérés megerősítés TELJESEN KÜLÖN lépések, amelyek nem kombinálhatók.
+  
+  **Példák:**
+  - ✅ Jó: "Kontakt megerősítve. Azt is látom, hogy általában teát kér érkezéskor. Azt is hozzáadjam?"
+  - ✅ Jó: "Remek a kontaktokkal! Egyébként, hozzáadjam a szokásos ablak melletti asztal kérését?"
+  - ❌ Rossz: "Ugyanazokat a kontakt információkat és szokásos kéréseket használja?"
+  - ❌ Rossz: "Minden a szokásos módon?" - túl homályos
+
 - Használja ezeket az információkat természetesen a beszélgetésben - ne csak sorolja fel a történetet!
 - Tegye a tapasztalatot személyessé és vendégszeretővé a visszatérő vendégek számára.`
         };
@@ -1635,7 +1884,8 @@ Respond with JSON only.`;
     /**
      * ✅ PHASE 1 FIX: Main message handling with smart context preservation
      * ✅ CRITICAL BUG FIX: Move hasBooking and reservationId declarations to top of try block
-     * ✅ STEP 2: Added ContextManager test integration
+     * ✅ STEP 3B.1 COMPLETE: All context operations now use ContextManager
+     * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1659,16 +1909,6 @@ Respond with JSON only.`;
             let reservationId: number | undefined;
 
             const isFirstMessage = session.conversationHistory.length === 0;
-
-            // ✅ STEP 2 TEST: Verify ContextManager works (remove after testing)
-            console.log('[STEP 2 TEST] Testing ContextManager wrapper...');
-            try {
-                // Test that the wrapper methods exist and can be called
-                const testResolution = contextManager.resolveReservationFromContext('test', session as any);
-                console.log('[STEP 2 TEST] ContextManager wrapper working:', !!testResolution);
-            } catch (error) {
-                console.error('[STEP 2 TEST] ContextManager wrapper FAILED:', error);
-            }
 
             // ✅ CRITICAL FIX: Guest history retrieval now happens before any other action on the first message.
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
@@ -2056,20 +2296,28 @@ Respond with JSON only.`;
                 for (const toolCall of completion.choices[0].message.tool_calls) {
                     if (toolCall.function.name in agentFunctions) {
                         try {
-                            const validation = this.validateFunctionCall(toolCall, session);
+                            // 🚨 CRITICAL BUG FIX: Validate tool pre-conditions before execution
+                            const validation = this.validateToolPreConditions(toolCall, session);
                             if (!validation.valid) {
-                                console.log(`❌ [Validation] Function call validation failed: ${validation.errorMessage}`);
+                                console.log(`❌ [ToolValidation] Function call validation failed: ${validation.errorMessage}`);
                                 
-                                // ✅ USE TRANSLATION SERVICE
-                                const translatedError = await TranslationService.translateMessage(
-                                    validation.errorMessage!,
-                                    session.language,
-                                    'error'
-                                );
+                                if (validation.shouldClarify) {
+                                    // ✅ USE TRANSLATION SERVICE
+                                    const translatedError = await TranslationService.translateMessage(
+                                        validation.errorMessage!,
+                                        session.language,
+                                        'error'
+                                    );
 
-                                session.conversationHistory.push({ role: 'assistant', content: translatedError, timestamp: new Date() });
-                                this.sessions.set(sessionId, session);
-                                return { response: translatedError, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
+                                    session.conversationHistory.push({ role: 'assistant', content: translatedError, timestamp: new Date() });
+                                    this.sessions.set(sessionId, session);
+                                    return { response: translatedError, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
+                                }
+                            }
+
+                            // Log any auto-fixed parameters
+                            if (validation.autoFixedParams) {
+                                console.log(`✅ [ToolValidation] Auto-fixed parameters:`, validation.autoFixedParams);
                             }
 
                             const args = JSON.parse(toolCall.function.arguments);
@@ -2188,6 +2436,28 @@ Respond with JSON only.`;
                                     }
                                     break;
                                 case 'create_reservation':
+                                    // ✅ FIX #4: Add validation for special requests
+                                    if (args.specialRequests && session.guestHistory?.frequent_special_requests?.includes(args.specialRequests)) {
+                                        // Check if this was explicitly confirmed in current conversation
+                                        const recentMessages = session.conversationHistory.slice(-5);
+                                        const hasExplicitConfirmation = recentMessages.some(msg => 
+                                            msg.role === 'user' && 
+                                            (msg.content.toLowerCase().includes('tea') || // Adjust based on request type
+                                             msg.content.toLowerCase().includes('да')) && 
+                                            // Only if the previous assistant message mentioned the specific request
+                                            recentMessages.some(prevMsg => 
+                                                prevMsg.role === 'assistant' && 
+                                                prevMsg.content.includes(args.specialRequests)
+                                            )
+                                        );
+                                        
+                                        if (!hasExplicitConfirmation) {
+                                            console.warn(`🚨 [WORKFLOW_VIOLATION] Special request "${args.specialRequests}" appears to be auto-added without explicit confirmation`);
+                                            // Remove the special request or return validation error
+                                            args.specialRequests = ''; // Remove unauthorized special request
+                                        }
+                                    }
+
                                     result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
                                     break;
                                 case 'find_existing_reservation':
@@ -2201,11 +2471,14 @@ Respond with JSON only.`;
                                         session.foundReservations = result.data.reservations;
                                         console.log(`[ConversationManager] Stored ${result.data.reservations.length} found reservations in session:`, result.data.reservations.map(r => `#${r.id}`));
 
+                                        // ✅ STEP 3B.2: Enhanced result handling with smart context management
                                         if (result.data.reservations.length === 1) {
-                                            // ✅ CRITICAL FIX: If only one reservation is found, set it as active immediately.
-                                            // This ensures the next turn's system prompt has the context needed to prevent looping.
+                                            // ✅ STEP 3B.2: If only one reservation is found, set it as active immediately.
                                             session.activeReservationId = result.data.reservations[0].id;
                                             console.log(`[ConversationManager] Auto-selected active reservation #${session.activeReservationId} as it was the only result.`);
+                                            
+                                            // ✅ STEP 3B.1: Use ContextManager for context preservation
+                                            contextManager.preserveReservationContext(session, session.activeReservationId, 'lookup');
                                         } else {
                                             // If multiple reservations are found, clear the active one to force the user to choose.
                                             delete session.activeReservationId;
@@ -2214,11 +2487,11 @@ Respond with JSON only.`;
                                     }
                                     break;
                                 case 'modify_reservation':
-                                    // ✅ PHASE 1 FIX: Enhanced reservation ID resolution with context awareness
+                                    // ✅ STEP 3B.1: Enhanced reservation ID resolution with ContextManager
                                     let reservationIdToModify = args.reservationId;
 
-                                    // ✅ PHASE 1 FIX: Use smart context resolution
-                                    const resolution = resolveReservationFromContext(
+                                    // ✅ STEP 3B.1: Use ContextManager for smart context resolution
+                                    const resolution = contextManager.resolveReservationFromContext(
                                         message,
                                         session,
                                         reservationIdToModify
@@ -2260,8 +2533,8 @@ Respond with JSON only.`;
                                     
                                     if (result.tool_status === 'SUCCESS') {
                                         console.log(`[ContextManager] Modification successful. Preserving context instead of clearing.`);
-                                        // ✅ PHASE 1 FIX: Preserve context instead of clearing
-                                        preserveReservationContext(session, reservationIdToModify, 'modification');
+                                        // ✅ STEP 3B.1: Use ContextManager for context preservation
+                                        contextManager.preserveReservationContext(session, reservationIdToModify, 'modification');
                                         // Keep Maya active for potential follow-up modifications
                                         console.log(`[ContextManager] Keeping Maya active for potential follow-ups`);
                                     }
@@ -2358,12 +2631,17 @@ Respond with JSON only.`;
                                     session.currentStep = 'completed';
                                     delete session.pendingConfirmation;
                                     delete session.confirmedName;
+                                    
+                                    // ✅ STEP 3B.3: Use ContextManager for creation context preservation
+                                    contextManager.preserveReservationContext(session, reservationId, 'creation');
+                                    console.log(`[ContextManager] Preserved context for new reservation #${reservationId}`);
+                                    
                                     this.resetAgentState(session);
                                 } else if (toolCall.function.name === 'modify_reservation') {
                                     hasBooking = false;
                                     reservationId = result.data.reservationId;
                                     session.hasActiveReservation = reservationId;
-                                    // ✅ PHASE 1 FIX: Don't reset agent state immediately for modifications
+                                    // ✅ STEP 3B.1: Don't reset agent state immediately for modifications
                                     // this.resetAgentState(session); // REMOVED - let context preservation handle this
                                 } else if (toolCall.function.name === 'cancel_reservation') {
                                     this.resetAgentState(session);
@@ -2378,7 +2656,26 @@ Respond with JSON only.`;
                                 }
                             }
 
-                            this.extractGatheringInfo(session, args);
+                            // ✅ FIX #3: Enhanced debug logging for special requests
+                            if (toolCall.function.name === 'create_reservation') {
+                                this.extractGatheringInfo(session, args);
+                                
+                                // ✅ FIX #3: Add debug logging after extractGatheringInfo
+                                if (args.specialRequests) {
+                                    const isFromHistory = session.guestHistory?.frequent_special_requests?.includes(args.specialRequests);
+                                    const sourceType = isFromHistory ? 'AUTO-ADDED FROM HISTORY' : 'USER REQUESTED';
+                                    
+                                    console.log(`🚨 [SPECIAL_REQUEST_DEBUG] Adding: "${args.specialRequests}"`);
+                                    console.log(`🚨 [SPECIAL_REQUEST_DEBUG] Source: ${sourceType}`);
+                                    console.log(`🚨 [SPECIAL_REQUEST_DEBUG] User message context: "${message}"`);
+                                    
+                                    if (isFromHistory && sourceType === 'AUTO-ADDED FROM HISTORY') {
+                                        console.log(`⚠️ [POTENTIAL_BUG] Special request may have been auto-added without explicit user confirmation`);
+                                    }
+                                }
+                            } else {
+                                this.extractGatheringInfo(session, args);
+                            }
                         } catch (funcError) {
                             console.error(`[EnhancedConversationManager] Function call error:`, funcError);
                             messages.push({ role: 'tool' as const, content: JSON.stringify({ tool_status: 'FAILURE', error: { type: 'SYSTEM_ERROR', message: funcError instanceof Error ? funcError.message : 'Unknown error' } }), tool_call_id: toolCall.id });
@@ -2420,6 +2717,10 @@ Respond with JSON only.`;
             );
 
             session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices?.[0]?.message?.tool_calls });
+            
+            // ✅ STEP 3B.1: Use ContextManager for clean expired context
+            contextManager.cleanExpiredContext(session);
+            
             this.sessions.set(sessionId, session);
             
             console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
@@ -2482,6 +2783,11 @@ Respond with JSON only.`;
             if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
                 session.hasActiveReservation = result.data.reservationId;
                 session.currentStep = 'completed';
+                
+                // ✅ STEP 3B.3: Use ContextManager for creation context preservation
+                contextManager.preserveReservationContext(session, result.data.reservationId, 'creation');
+                console.log(`[ContextManager] Preserved context for confirmed reservation #${result.data.reservationId}`);
+                
                 this.resetAgentState(session);
                 
                 // ✅ USE TRANSLATION SERVICE
@@ -2584,6 +2890,13 @@ Respond with JSON only.`;
                     const reservationId = result.data.reservationId;
                     session.hasActiveReservation = reservationId;
                     session.currentStep = 'completed';
+                    
+                    // ✅ STEP 3B.3: Use ContextManager for creation context preservation
+                    if (toolCall.function.name === 'create_reservation') {
+                        contextManager.preserveReservationContext(session, reservationId, 'creation');
+                        console.log(`[ContextManager] Preserved context for confirmed reservation #${reservationId}`);
+                    }
+                    
                     this.resetAgentState(session);
 
                     let baseMessage;
@@ -2922,11 +3235,11 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent');
+        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Enhanced Tool Validation');
     }
 }
 
-// ✅ PHASE 1 FIX: Extended session interface with smart context preservation
+// ✅ STEP 3B.1: Extended session interface with ContextManager integration
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -2984,7 +3297,7 @@ interface BookingSessionWithAgent extends BookingSession {
         detectedAt: string;
     };
     
-    // ✅ PHASE 1 FIX: Smart context preservation
+    // ✅ STEP 3B.1: Smart context preservation (now managed by ContextManager)
     recentlyModifiedReservations?: Array<{
         reservationId: number;
         lastModifiedAt: Date;
@@ -2993,7 +3306,7 @@ interface BookingSessionWithAgent extends BookingSession {
         userReference?: string; // Store "эту бронь", "this booking"
     }>;
     
-    // ✅ PHASE 1 FIX: Current operation context with disambiguation
+    // ✅ STEP 3B.1: Current operation context with disambiguation (now managed by ContextManager)
     currentOperationContext?: {
         type: 'modification' | 'cancellation' | 'lookup';
         targetReservationId?: number;
@@ -3025,3 +3338,4 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
+                

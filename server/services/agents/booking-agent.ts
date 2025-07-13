@@ -1,6 +1,8 @@
 // server/services/agents/booking-agent.ts
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
 // 🔧 BUG FIX: Enhanced Maya cancellation rules and system prompts
+// ✅ FIXES IMPLEMENTED: Zero-assumption special requests + Maya tiered-confidence context resolution
+// 🚨 CRITICAL BUG FIX: Enhanced ambiguous time input handling to prevent conversation loops
 
 import { aiService } from '../ai-service';
 import type { Language } from '../enhanced-conversation-manager';
@@ -357,15 +359,48 @@ function generateSmartPartyQuestion(
 }
 
 /**
- * ✅ CRITICAL FIX: Enhanced booking workflow instructions with explicit phone collection and alternative search handling
+ * 🚨 CRITICAL BUG FIX: Enhanced booking workflow instructions with explicit AMBIGUOUS INPUT HANDLING
+ * This is the main fix for Bug #1: Conversation Loop on Ambiguous Time Input
  */
 const getCriticalBookingInstructions = () => {
     return `
 🚨 MANDATORY BOOKING WORKFLOW - FOLLOW EXACTLY:
 
+🚨 AMBIGUOUS INPUT HANDLING (CRITICAL RULE - HIGHEST PRIORITY):
+
+MANDATORY DETECTION PATTERNS:
+- Time ranges: "17-20", "7-8", "evening", "между 7 и 8", "од 19 до 21"
+- Vague expressions: "around noon", "late evening", "в районе 7", "oko 8", "körül 7"
+- Incomplete times: "19 июля" (date without time), "July 19" (just date)
+- Ambiguous formats: "17.30-18", "7:30-8", "от 19", "after 6"
+
+MANDATORY RESPONSE PATTERN - NEVER MAKE TOOL CALLS ON AMBIGUOUS INPUT:
+1. DETECT ambiguous input using patterns above
+2. NEVER call check_availability, find_alternative_times, or any other tools
+3. ALWAYS ask for clarification FIRST with specific examples
+4. Example responses:
+   - "17-20" → "Do you mean 17:20, or are you looking for a time between 17:00 and 20:00? Please specify the exact time you prefer."
+   - "evening" → "What specific time in the evening? For example, 18:00, 19:00, or 20:00?"
+   - "around 7" → "Do you mean exactly 19:00, or would 18:30 or 19:30 also work? Please specify the exact time."
+   - "19 июля" → "What time on July 19th would you like? For example, 18:00, 19:00, or 20:00?"
+
+❌ ABSOLUTELY FORBIDDEN ON AMBIGUOUS INPUT:
+- Multiple check_availability calls for guessed times (like 17:00, 18:00, 19:00)
+- Assuming "17-20" means 17:00, 18:00, 19:00 separately
+- ANY tool calls before explicit time clarification
+- Presenting "suggested alternatives" without user requesting them
+- Hallucinating user intent on ambiguous input
+
+✅ REQUIRED CLARIFICATION EXAMPLES:
+- "17-20" → "Do you mean 17:20, or a time between 17:00 and 20:00? Please specify the exact time."
+- "evening" → "What specific time in the evening? For example, 18:00, 19:00, or 20:00?"
+- "around 7" → "Do you mean exactly 19:00, or would 18:30 or 19:30 also work?"
+- "между 7 и 8" → "В какое именно время между 19:00 и 20:00? Например, 19:30?"
+- "од 19 до 21" → "U koje tačno vreme između 19:00 i 21:00? Na primer, 20:00?"
+
 STEP 1: GATHER ALL REQUIRED INFORMATION FIRST:
    1️⃣ Date (must be explicit: "2025-07-19")
-   2️⃣ Time (must be explicit: "20:00" - NEVER assume!)
+   2️⃣ Time (must be explicit: "20:00" - NEVER assume from ambiguous input!)
    3️⃣ Number of guests
    4️⃣ Guest name
    5️⃣ Guest phone number
@@ -373,7 +408,7 @@ STEP 1: GATHER ALL REQUIRED INFORMATION FIRST:
 ❌ CRITICAL: NEVER call check_availability without EXPLICIT time!
 ❌ NEVER assume time from date (e.g., "19 июля" ≠ "19:00")
 
-STEP 2: Only after ALL 5 items → call check_availability
+STEP 2: Only after ALL 5 items AND unambiguous time → call check_availability
 STEP 3: If available → call create_reservation
 STEP 4: Only after successful create_reservation, say "confirmed!"
 
@@ -382,8 +417,10 @@ STEP 4: Only after successful create_reservation, say "confirmed!"
 ❌ NEVER: Ask "Can I confirm the booking in your name?" when you DON'T HAVE the name
 ❌ NEVER: Call create_reservation without phone number
 ❌ NEVER: Say "booked" or "confirmed" after just check_availability
+❌ NEVER: Make assumptions about ambiguous time input
 
 ✅ REQUIRED PATTERNS:
+✅ Ambiguous input → Ask for clarification with specific examples
 ✅ Check availability → "Table available! I need your name and phone number to complete the booking"
 ✅ Have all 5 items → Call create_reservation → "Booking confirmed!"
 
@@ -434,64 +471,58 @@ Instead say: "I need your name and phone number to complete the booking."
 };
 
 /**
- * 🔧 BUG FIX: Enhanced Maya modification execution rules with cancellation support
+ * ✅ FIX #3 & #5: Maya Tiered-Confidence Context Resolution (COMPLETE REPLACEMENT)
  */
 const getMayaModificationExecutionRules = () => {
     return `
-🚨 CRITICAL MODIFICATION EXECUTION RULES (MAYA AGENT)
-Your primary goal is to execute user requests with minimal conversation. When a user wants to modify or cancel a booking, you must act, not just talk.
+🚨 MAYA TIERED-CONFIDENCE CONTEXT RESOLUTION (CRITICAL UPGRADE)
 
-RULE 1: IMMEDIATE ACTION AFTER FINDING A BOOKING
-- **IF** you have just successfully found a reservation (e.g., using 'find_existing_reservation').
-- **AND** the user then provides new details to change (e.g., "move to 19:10", "add one person", "move 10 minutes later").
-- **THEN** your IMMEDIATE next action is to call the 'modify_reservation' tool.
-- **DO NOT** talk to the user first. **DO NOT** ask for confirmation. **DO NOT** say "I will check...". CALL THE 'modify_reservation' TOOL. This is not optional. The tool will handle checking availability internally.
+Your primary goal is INTELLIGENT CONTEXT RESOLUTION. Use this tiered approach:
 
-🔧 BUG FIX: RULE 2: IMMEDIATE CANCELLATION
-- **IF** the user requests to cancel a reservation (e.g. "отменить бронь", "cancel my booking").
-- **THEN** your IMMEDIATE next action is to call the \`cancel_reservation\` tool with the reservation ID.
-- **DO NOT** ask for confirmation yourself. The system will handle it. Just call the tool.
+### TIER 1: HIGH CONFIDENCE - IMMEDIATE ACTION (No Questions Asked)
+**Trigger Conditions:**
+- User just used find_existing_reservation and found exactly ONE reservation
+- OR: session.activeReservationId exists from recent context
+- OR: User references "this booking", "it", "эту бронь" within 5 minutes of finding a reservation
 
-RULE 3: CONTEXT-AWARE RESERVATION ID RESOLUTION
-- **IF** user provides a contextual reference like "эту бронь", "this booking", "it", "её", "эту":
-- **THEN** use the most recently modified reservation from session context
-- **DO NOT** ask for clarification if context is clear from recent operations
+**Required Action:** 
+- IMMEDIATELY call modify_reservation or cancel_reservation
+- DO NOT ask "which reservation?" - the context is clear
+- The ContextManager will auto-resolve the reservation ID
 
-RULE 4: TIME CALCULATION (If necessary)
-- **IF** the user requests a relative time change (e.g., "10 minutes later", "half an hour earlier").
-- **STEP 1:** Get the current time from the reservation details you just found.
-- **STEP 2:** Calculate the new absolute time (e.g., if current is 19:00 and user says "10 minutes later", you calculate \`newTime: "19:10"\`).
-- **STEP 3:** Call \`modify_reservation\` with the calculated \`newTime\` in the \`modifications\` object.
+**Examples:**
+- User: "I found my booking, change it to 8pm" → IMMEDIATE modify_reservation
+- User: "Cancel it" (after finding reservation) → IMMEDIATE cancel_reservation
 
---- EXAMPLE OF CORRECT, SILENT TOOL USE (CANCELLATION) ---
-🔧 BUG FIX: New cancellation example
-User: "давай отменим бронь номер 12" (let's cancel booking #12)
-Maya: [Your first and only action MUST be to call cancel_reservation(reservationId=12)]
-System: [The tool triggers a confirmation prompt to the user: "Are you sure?"]
-User: "да" (yes)
-System: [The system confirms and calls the tool again with confirmation.]
-Maya: [The tool succeeds. Now, and only now, you respond to the user.] "✅ Done! I've cancelled your reservation #12."
+### TIER 2: MEDIUM CONFIDENCE - SMART CLARIFICATION
+**Trigger Conditions:**
+- Multiple reservations were found recently
+- User provides partial identification (date, time, partial name)
 
---- EXAMPLE OF CORRECT, SILENT TOOL USE (MODIFICATION) ---
-User: "на 10 минут перенести?" (move it by 10 minutes?)
-Maya: [Asks for booking identifier.]
-User: "бронь 2"
-Maya: [Calls find_existing_reservation(identifier="2"). The tool returns booking #2, which is at 19:00.]
-Maya: [Your next action MUST be to calculate the new time (19:00 + 10 mins = 19:10) and then immediately call modify_reservation(reservationId=2, modifications={newTime:"19:10"})]
-Maya: [The tool returns SUCCESS. Now, and only now, you respond to the user.] "✅ Done! I've moved your reservation to 19:10."
+**Required Action:**
+- Show available options with actual reservation IDs
+- Ask user to specify using reservation number: "Please specify: #123, #124, or #125?"
 
---- FORBIDDEN BEHAVIOR ---
-🔧 BUG FIX: New forbidden cancellation patterns
-❌ NEVER ask "Are you sure you want to cancel?" yourself. Call the tool and let the system ask.
-❌ NEVER say "I will move it..." or "Let me confirm..." and then stop. This is a failure.
-❌ The user's prompt ("и?") was required because you failed to follow this rule. Your goal is to never require that prompt again.
-❌ NEVER call 'check_availability' directly for a modification. Use 'modify_reservation'.
+### TIER 3: LOW CONFIDENCE - BROAD SEARCH
+**Trigger Conditions:**
+- No recent context
+- User provides completely new search criteria
+- First interaction in session
 
---- TIME CALCULATION HELPERS (This part is unchanged) ---
-- "15 минут попозже" = current time + 15 minutes
-- "на полчаса раньше" = current time - 30 minutes
-- "на час позже" = current time + 60 minutes
-- "change to 8pm" = newTime: "20:00"
+**Required Action:**
+- Use find_existing_reservation to establish context
+- Then immediately proceed to Tier 1 or Tier 2 based on results
+
+### CRITICAL EXECUTION RULES:
+1. **Context First**: Always check session.activeReservationId and recent context before asking questions
+2. **Trust the Tools**: modify_reservation has smart context resolution - USE IT
+3. **Immediate Action**: If confidence is High (Tier 1), act immediately without confirmation
+4. **No Redundant Searches**: If context exists, don't call find_existing_reservation again
+
+### FORBIDDEN PATTERNS:
+❌ "Which reservation would you like to modify?" (when context is clear)
+❌ Calling find_existing_reservation when activeReservationId exists
+❌ Asking for confirmation on clear modification requests
 `;
 };
 
@@ -563,7 +594,7 @@ export function createBookingAgent(restaurantConfig: {
     const restaurantLanguage = getRestaurantLanguage();
 
     /**
-     * ✅ CRITICAL FIX: Generate personalized system prompt section with enhanced special requests handling
+     * ✅ FIX #2: Generate personalized system prompt section with ZERO-ASSUMPTION SPECIAL REQUESTS
      */
     const getPersonalizedPromptSection = (guestHistory: GuestHistory | null, language: Language, conversationContext?: ConversationContext): string => {
         if (!guestHistory || guestHistory.total_bookings === 0) {
@@ -584,10 +615,31 @@ export function createBookingAgent(restaurantConfig: {
 💡 PERSONALIZATION GUIDELINES:
 - ${total_bookings >= 3 ? `RETURNING GUEST: This is a valued returning customer! Use warm, personal language.` : `INFREQUENT GUEST: Guest has visited before but not frequently.`}
 - ✅ CRITICAL FIX: ${common_party_size ? `USUAL PARTY SIZE: Only suggest "${common_party_size} people" if user hasn't specified AND you haven't asked about party size yet in this conversation. If you already asked about party size, DON'T ask again.` : ''}
-- ${frequent_special_requests.length > 0 ? `USUAL REQUESTS: Ask "Would you like your usual ${frequent_special_requests[0]}?" when appropriate during booking.` : ''}
 - ✅ CONVERSATION RULE: ${conversationContext?.isSubsequentBooking ? 'This is a SUBSEQUENT booking in the same session - be concise and skip repetitive questions.' : 'This is the first booking in the session.'}
 - ✅ CRITICAL: Track what you've already asked to avoid repetition. If you asked about party size, don't ask again.
 - **SAME NAME/PHONE HANDLING**: If the guest says "my name" or "same name", use "${guest_name}" from their history. If they say "same number", "same phone", or "using same number", use "${guest_phone || 'Not available'}" from their history.
+
+- **SPECIAL REQUESTS (ZERO-ASSUMPTION RULE):** You are STRICTLY FORBIDDEN from adding any frequent special request to a booking unless explicitly confirmed in the CURRENT conversation.
+  
+  **Mandatory Workflow:**
+  1. **After** confirming contact details (as separate step)
+  2. Ask naturally but specifically: "I also see you often request '${frequent_special_requests[0]}'. Add that to this booking?"
+  3. Wait for explicit "yes"/"confirm" response to THIS specific question
+  4. Only then add to create_reservation call
+  
+  **Forbidden Actions:**
+  - ❌ Assuming general "yes" applies to special requests
+  - ❌ Auto-adding requests based on history without current confirmation
+  - ❌ Bundling contact confirmation with special request confirmation
+  
+  **Critical Rule:** Contact confirmation and special request confirmation are COMPLETELY SEPARATE steps that cannot be combined.
+  
+  **Examples:**
+  - ✅ Good: "Contact confirmed. I also see you usually request tea on arrival. Add that too?"
+  - ✅ Good: "Great with contacts! By the way, add your usual window seat request?"
+  - ❌ Bad: "Use same contact info and usual requests?"
+  - ❌ Bad: "Everything as usual?" - too vague
+
 - Use this information naturally in conversation - don't just list their history!
 - Make the experience feel personal and welcoming for returning guests.`;
     };
@@ -784,12 +836,12 @@ After availability check: "Perfect! Table 5 is available for 3 guests tonight at
     };
 
     /**
-     * ✅ 🔧 BUG FIX: Enhanced system prompt for Maya agent with improved cancellation execution rules
+     * ✅ FIX #3 & #5: Enhanced system prompt for Maya agent with improved context resolution
      */
     const getMayaSystemPrompt = (context: 'hostess' | 'guest', userLanguage: Language = 'en', guestHistory?: GuestHistory | null, conversationContext?: ConversationContext) => {
         const dateContext = getCurrentRestaurantContext();
         const personalizedSection = getPersonalizedPromptSection(guestHistory || null, userLanguage, conversationContext);
-        const mayaModificationRules = getMayaModificationExecutionRules(); // 🔧 BUG FIX: Now includes cancellation rules
+        const mayaModificationRules = getMayaModificationExecutionRules(); // ✅ FIX #3 & #5: New tiered-confidence rules
 
         // ✅ LANGUAGE INSTRUCTION (works for all languages)
         const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
@@ -834,7 +886,9 @@ ${languageInstruction}
 ${mayaModificationRules}
 
 🚨 CRITICAL CONTEXT RULE:
-When calling 'modify_reservation', if the user's message is a simple confirmation (e.g., "yes", "ok", "да", "давай так") and does NOT contain a number, you MUST OMIT the 'reservationId' argument in your tool call. The system will automatically use the reservation ID from the current session context. This prevents errors.
+    - IF you have already found a reservation and the user provides new details (like a new time or guest count).
+    - THEN your next action MUST be to call \`check_availability\` or \`modify_reservation\`.
+    - DO NOT call \`find_existing_reservation\` again. This is a critical failure.
 
 ✅ CRITICAL RESERVATION DISPLAY RULES:
 - When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"

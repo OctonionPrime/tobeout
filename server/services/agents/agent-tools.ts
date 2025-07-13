@@ -2,6 +2,7 @@
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
 // 🔧 BUG FIX: Fixed cancel_reservation tool definition to make confirmCancellation optional
 // ✅ STEP 3A COMPLETE: Context Manager function calls replaced
+// ✅ FIXES IMPLEMENTED: Workflow validation + Enhanced tool descriptions
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -57,6 +58,18 @@ interface BookingSessionWithAgent {
         confidenceLevel: 'high' | 'medium' | 'low';
         contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
     };
+    // ✅ FIX #4: Add conversation history and guest history for validation
+    conversationHistory?: Array<{
+        role: 'user' | 'assistant';
+        content: string;
+        timestamp: Date;
+    }>;
+    guestHistory?: {
+        guest_name: string;
+        guest_phone: string;
+        total_bookings: number;
+        frequent_special_requests: string[];
+    } | null;
 }
 
 /**
@@ -752,7 +765,7 @@ export async function find_alternative_times(
 }
 
 /**
- * ✅ CRITICAL FIX: Create a reservation with proper name clarification handling
+ * ✅ FIX #4: Create a reservation with workflow validation for special requests
  */
 export async function create_reservation(
     guestName: string,
@@ -769,6 +782,8 @@ export async function create_reservation(
         sessionId?: string;
         language: string;
         confirmedName?: string;
+        // ✅ FIX #4: Add session context for validation
+        session?: BookingSessionWithAgent;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -824,11 +839,67 @@ export async function create_reservation(
             return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
         }
 
+        // ✅ FIX #4: WORKFLOW VALIDATION FOR SPECIAL REQUESTS
+        let validatedSpecialRequests = specialRequests;
+        if (specialRequests && context.session?.guestHistory?.frequent_special_requests?.includes(specialRequests)) {
+            console.log(`🚨 [WORKFLOW_VALIDATION] Special request "${specialRequests}" detected from guest history. Checking for explicit confirmation...`);
+            
+            // Check if this was explicitly confirmed in current conversation
+            const recentMessages = context.session.conversationHistory?.slice(-5) || [];
+            
+            // Look for explicit confirmation pattern
+            let hasExplicitConfirmation = false;
+            for (let i = 0; i < recentMessages.length - 1; i++) {
+                const assistantMsg = recentMessages[i];
+                const userMsg = recentMessages[i + 1];
+                
+                if (assistantMsg.role === 'assistant' && userMsg.role === 'user') {
+                    // Check if assistant mentioned the specific request
+                    const assistantMentionsRequest = assistantMsg.content.includes(specialRequests) ||
+                        assistantMsg.content.toLowerCase().includes('special request') ||
+                        assistantMsg.content.toLowerCase().includes('add that') ||
+                        assistantMsg.content.toLowerCase().includes('добавить это') ||
+                        assistantMsg.content.toLowerCase().includes('add this');
+                    
+                    // Check if user explicitly confirmed
+                    const userConfirms = /\b(yes|да|confirm|add|добавить|sure|good|ok)\b/i.test(userMsg.content);
+                    
+                    if (assistantMentionsRequest && userConfirms) {
+                        hasExplicitConfirmation = true;
+                        console.log(`✅ [WORKFLOW_VALIDATION] Found explicit confirmation pattern:`, {
+                            assistantMessage: assistantMsg.content.substring(0, 100),
+                            userResponse: userMsg.content,
+                            requestMentioned: assistantMentionsRequest,
+                            userConfirmed: userConfirms
+                        });
+                        break;
+                    }
+                }
+            }
+            
+            if (!hasExplicitConfirmation) {
+                console.warn(`🚨 [WORKFLOW_VIOLATION] Special request "${specialRequests}" appears to be auto-added without explicit confirmation`);
+                console.warn(`🚨 [WORKFLOW_VIOLATION] Recent conversation:`, recentMessages.map(m => `${m.role}: ${m.content.substring(0, 50)}...`));
+                
+                // Remove unauthorized special request
+                validatedSpecialRequests = '';
+                console.log(`🔧 [WORKFLOW_FIX] Removed unauthorized special request. Clean booking will proceed.`);
+                
+                // Optional: Add warning to metadata
+                console.log(`⚠️ [WORKFLOW_WARNING] Special request "${specialRequests}" was removed due to lack of explicit confirmation in current conversation`);
+            } else {
+                console.log(`✅ [WORKFLOW_VALIDATION] Special request "${specialRequests}" confirmed - proceeding with inclusion`);
+            }
+        } else if (specialRequests) {
+            console.log(`✅ [WORKFLOW_VALIDATION] Special request "${specialRequests}" is new (not from history) - proceeding normally`);
+        }
+
         console.log(`✅ [Agent Tool] Validation passed. Creating reservation with exact time:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
         console.log(`   - Date/Time: ${date} ${timeFormatted} (exact time support)`);
         console.log(`   - Guests: ${guests}`);
+        console.log(`   - Special Requests: "${validatedSpecialRequests}" (validated)`);
         console.log(`   - Timezone: ${context.timezone}`);
         console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
 
@@ -840,7 +911,7 @@ export async function create_reservation(
             cleanName,
             cleanPhone,
             context.telegramUserId || context.sessionId || 'web_chat_user',
-            specialRequests,
+            validatedSpecialRequests, // ✅ FIX #4: Use validated special requests
             context.language as any,
             context.confirmedName,
             undefined,
@@ -878,6 +949,17 @@ export async function create_reservation(
 
         if (result.success && result.reservation && result.reservation.id) {
             console.log(`✅ [Agent Tool] Exact time reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
+            
+            // ✅ FIX #4: Add workflow validation metadata to response
+            const metadata: any = {
+                execution_time_ms: executionTime
+            };
+            
+            if (specialRequests !== validatedSpecialRequests) {
+                metadata.warnings = [`Special request workflow validation applied: "${specialRequests}" → "${validatedSpecialRequests}"`];
+                metadata.workflowValidationApplied = true;
+            }
+            
             return createSuccessResponse({
                 reservationId: result.reservation.id,
                 confirmationNumber: result.reservation.id,
@@ -888,13 +970,11 @@ export async function create_reservation(
                 time: timeFormatted,
                 exactTime: timeFormatted,
                 guests: guests,
-                specialRequests: specialRequests,
+                specialRequests: validatedSpecialRequests, // ✅ FIX #4: Return validated special requests
                 message: result.message,
                 success: true,
                 timeSupported: 'exact'
-            }, {
-                execution_time_ms: executionTime
-            });
+            }, metadata);
         } else {
             console.log(`⚠️ [Agent Tool] Exact time reservation failed:`, {
                 success: result.success,
@@ -1950,7 +2030,7 @@ export async function cancel_reservation(
     }
 }
 
-// ✅ PHASE 1 INTEGRATION: Export agent tools configuration with AIService support
+// ✅ FIX #6: Enhanced agent tools configuration with improved tool descriptions
 export const agentTools = [
     {
         type: "function" as const,
@@ -2080,7 +2160,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "find_existing_reservation",
-            description: "Find guest's reservations across different time periods. Use 'upcoming' for future bookings, 'past' for history, 'all' for complete record. Automatically detects user intent from queries like 'do I have bookings?' (upcoming) vs 'were there any?' (past).",
+            description: "🎯 PRIMARY RESERVATION DISCOVERY TOOL: Use this to ESTABLISH context when you don't have a clear reservation reference. After calling this, immediately use the results for modifications/cancellations - don't ask the user to re-specify what you just found. Sets activeReservationId automatically for single results. Find guest's reservations across different time periods. Use 'upcoming' for future bookings, 'past' for history, 'all' for complete record. Automatically detects user intent from queries like 'do I have bookings?' (upcoming) vs 'were there any?' (past).",
             parameters: {
                 type: "object",
                 properties: {
@@ -2115,7 +2195,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "✅ STEP 3A COMPLETE: Modify details of an existing reservation with ContextManager integration. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. SECURITY VALIDATED: Only allows guests to modify their own reservations. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
+            description: "🎯 PRIMARY MODIFICATION TOOL: Your FIRST choice for any reservation modification. AUTOMATICALLY resolves reservation ID from recent context (e.g., 'this booking', recent search results). Call this DIRECTLY when user intent is clear - don't search first. The ContextManager handles ambiguity resolution internally. SECURITY VALIDATED: Only allows guests to modify their own reservations. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2190,7 +2270,7 @@ export const agentFunctions = {
     // Sofia's tools (existing, now with AIService translation)
     check_availability,
     find_alternative_times,
-    create_reservation,
+    create_reservation, // ✅ FIX #4: Now includes workflow validation for special requests
     get_restaurant_info,
 
     // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration for smart context resolution
@@ -2198,3 +2278,4 @@ export const agentFunctions = {
     modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution
     cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter
 };
+                
