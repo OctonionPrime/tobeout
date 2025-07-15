@@ -1,13 +1,11 @@
 // server/services/enhanced-conversation-manager.ts
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
 // ✅ STEP 3B.1 COMPLETE: All context calls now go through ContextManager
+// ✅ STEP 4.1.4 COMPLETE: Sofia BaseAgent Integration - Updated getAgent method
 // ✅ FIXES IMPLEMENTED: Natural explicit confirmations + Zero-assumption special requests + Enhanced debug logging
 // 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
-// 1. Replaced generateContentWithFallback with aiService calls
-// 2. Unified translation service using AIService
-// 3. Enhanced meta-agents (Overseer, Language, Confirmation) with AIService
-// 4. Removed duplicate Claude/OpenAI client initialization
-// 5. ALL CONTEXT MANAGEMENT: Now uses contextManager for all context operations
+// 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
+// 🐛 BUG FIX #2: Fixed time parsing priority order to handle typos before ambiguity detection
 
 import { aiService } from './ai-service';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
@@ -19,6 +17,11 @@ import { DateTime } from 'luxon';
 
 // ✅ STEP 3B.1: Using ContextManager for ALL context resolution and management
 import { contextManager } from './context-manager';
+
+// ✅ STEP 4.1.4: Import BaseAgent components for Sofia integration
+import { BaseAgent } from './agents/base-agent';
+import { SofiaAgent } from './agents/sofia-agent';
+import { AgentFactory } from './agents/agent-factory';
 
 // ✅ APOLLO: Updated AgentType to include availability agent
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
@@ -107,7 +110,10 @@ interface TimeParsingResult {
  * Enhanced conversation manager with AIService-powered meta-agents and Apollo Availability Agent
  * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
  * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and preservation
+ * ✅ STEP 4.1.4 INTEGRATION: Sofia BaseAgent pattern with backward compatibility
  * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
+ * 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
+ * 🐛 BUG FIX #2: Fixed time parsing priority order to handle typos before ambiguity detection
  */
 export class EnhancedConversationManager {
     private sessions = new Map<string, BookingSessionWithAgent>();
@@ -119,11 +125,12 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + OpenAI GPT fallback + Enhanced Tool Validation');
+        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + Sofia BaseAgent + OpenAI GPT fallback + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order');
     }
 
     /**
      * 🚨 CRITICAL BUG FIX: Enhanced time parsing and validation utility
+     * 🐛 BUG FIX #1&2: Now handles "HH-MM" typo as "HH:MM" format with proper priority
      * This prevents ambiguous time input from causing tool failures
      */
     private parseAndValidateTimeInput(
@@ -134,7 +141,29 @@ export class EnhancedConversationManager {
         
         console.log(`[TimeValidation] Parsing input: "${cleanInput}" (Language: ${language})`);
 
-        // 🚨 CRITICAL: Detect explicitly ambiguous patterns that should NEVER be passed to tools
+        // 🐛 BUG FIX #1&2: Handle common "HH-MM" typo FIRST with highest priority
+        // This must come BEFORE ambiguous pattern detection to fix the user issue
+        const dashTypoMatch = cleanInput.match(/^(\d{1,2})-(\d{2})$/);
+        if (dashTypoMatch) {
+            const [, hours, minutes] = dashTypoMatch;
+            const hourNum = parseInt(hours);
+            const minNum = parseInt(minutes);
+            
+            // Validate that it looks like a time (not a range)
+            if (hourNum >= 0 && hourNum <= 23 && minNum >= 0 && minNum <= 59) {
+                const parsedTime = `${hourNum.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+                console.log(`[TimeValidation] ✅ BUG FIX: Parsed as HH-MM typo: ${parsedTime}`);
+                return {
+                    isValid: true,
+                    parsedTime,
+                    isAmbiguous: false,
+                    confidence: 0.95, // High confidence for valid time format
+                    detectedPattern: "HH-MM typo corrected to HH:MM"
+                };
+            }
+        }
+
+        // 🚨 CRITICAL: Detect explicitly ambiguous patterns (only after typo check)
         const ambiguousPatterns = [
             { 
                 pattern: /^\d{1,2}-\d{1,2}$/, 
@@ -168,7 +197,7 @@ export class EnhancedConversationManager {
             }
         ];
         
-        // Check for ambiguous patterns
+        // Check for ambiguous patterns (after typo correction attempt)
         for (const { pattern, reason, examples } of ambiguousPatterns) {
             if (pattern.test(cleanInput)) {
                 console.log(`[TimeValidation] ❌ Detected ambiguous pattern: ${reason}`);
@@ -1231,7 +1260,7 @@ Respond with ONLY a JSON object:
                         properties: {
                             date: {
                                 type: "string",
-                                description: "Date in YYYY-MM-DD format"
+                                description: "Date in yyyy-MM-dd format"
                             },
                             time: {
                                 type: "string",
@@ -1611,70 +1640,53 @@ ${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}
         if (agentType === 'reservations') {
             // ✅ PHASE 1 FIX: Enhanced Maya system prompt with critical action rules
             const CRITICAL_ACTION_RULES = `
-🚨 ABSOLUTE EXECUTION RULE - NO EXCEPTIONS:
+🚨 **MAYA'S GOLDEN RULE OF EXECUTION** 🚨
+Your primary purpose is to use tools to modify or cancel reservations. You must act immediately once you have enough information. You are forbidden from announcing your intentions before you act.
 
-WHEN YOU HAVE: Reservation ID + Modification Details
-THEN YOU MUST: IMMEDIATELY call modify_reservation tool in the SAME response
-NEVER SAY: "I will do X" or "Let me do X" - DO IT IMMEDIATELY
+**Your Internal Monologue/Reasoning MUST Follow This Exact Sequence:**
 
-EXECUTION PATTERN (MANDATORY):
-✅ User: "move to 21:20"
-✅ Maya: [SILENT tool call: modify_reservation] → "✅ Done! Changed to 21:20"
+**Step 1: Find the Reservation**
+- My first step is always to use the \`find_existing_reservation\` tool to identify the user's booking(s).
 
-FORBIDDEN PATTERN (WILL BE PENALIZED):
-❌ User: "move to 21:20"
-❌ Maya: "I found your booking, now I'll change it" [NO TOOL CALL]
-❌ User: "получилось?" [FORCED because Maya failed]
-❌ Maya: [finally calls tool] - THIS IS A CRITICAL FAILURE
+**Step 2: Analyze the Results & User's Original Request**
+- After the tool call is complete, I will analyze two things:
+    1. The reservation data returned by the tool.
+    2. The user's **original message** that started this process.
 
-IMPLEMENTATION RULES:
-1. Tool calls are SILENT - user doesn't see the function call syntax
-2. User only sees the RESULT of the tool call
-3. If you have enough information, ACT immediately
-4. The pattern "I found your booking at X time, now I'll change it to Y" is STRICTLY FORBIDDEN
+**Step 3: Decide the VERY NEXT ACTION (Tool Call or Clarification)**
 
-CONTEXT AWARENESS:
-- If session.activeReservationId exists, USE IT immediately
-- If you just found a reservation, USE IT immediately  
-- If user provides new time/date/guests, MODIFY immediately
-- NO intermediate confirmations for simple changes
+- **SCENARIO A: I have everything I need.**
+    - **Condition:** The tool found a specific reservation (e.g., ID #1 for July 15th) AND the user's original message ALSO contained the specific change (e.g., "...change to 13-40").
+    - **ACTION:** I now have the Reservation ID and the Modification Details. My only possible next action is to **IMMEDIATELY call the \`modify_reservation\` tool**. I am strictly forbidden from talking to the user first. I will then return the final result of that tool call.
 
-EXAMPLES OF IMMEDIATE ACTION:
-User: "можно на 21:20?"
-Maya: [calls modify_reservation(activeId, {newTime: "21:20"})] → "✅ Готово! Перенесла на 21:20"
+- **SCENARIO B: I am missing the modification details.**
+    - **Condition:** The tool found a specific reservation (e.g., ID #1), but the user's original message was general (e.g., "I want to change my booking").
+    - **ACTION:** I have the Reservation ID but not the Modification Details. I must now ask the user a clarifying question, such as: "Okay, I've found your reservation for July 15th. What changes would you like to make?"
 
-User: "add one person"  
-Maya: [calls modify_reservation(activeId, {newGuests: currentGuests+1})] → "✅ Updated to 5 guests"
+- **SCENARIO C: I am missing the specific reservation (AMBIGUITY DETECTED).**
+    - **Condition:** The \`find_existing_reservation\` tool has just returned **more than one** reservation.
+    - **MANDATORY ACTION:** My only possible next action is to ask the user for clarification. I MUST list the reservations I found, including their real confirmation numbers (e.g., "#1", "#2"), dates, and times. I must ask the user to choose one.
+    - **🚨 FORBIDDEN ACTION:** I am strictly forbidden from choosing a reservation myself, even if one seems more likely based on the user's message. I cannot proceed with any other tool call (\`modify_reservation\`, \`cancel_reservation\`) until the user has explicitly selected one of the presented reservation IDs.
+
+**--- FORBIDDEN BEHAVIOR ---**
+- The phrase **"I will now change it..."** or any variation is BANNED. Do not describe your action. Execute it.
+- **NEVER** find a reservation and then wait for the user to tell you what to do if the information was already in their first message. You must be proactive and chain the tool calls.
 `;
 
             return `You are Maya, the reservation management specialist for ${restaurantConfig.name}.
 
 ${languageInstruction}
 
-🎯 YOUR ROLE:
-- Help guests with EXISTING reservations
-- Find, modify, or cancel existing bookings
-- Always verify guest identity first
-- Be understanding and helpful with changes
-
-🔍 WORKFLOW:
-1. Find existing reservation first
-2. Verify it belongs to the guest  
-3. Make requested changes
-4. Confirm all modifications
+🎯 **YOUR ROLE & CORE DIRECTIVE**
+- You are a task-oriented agent that helps guests with EXISTING reservations by using tools.
+- Your primary directive is to follow the **MAYA'S GOLDEN RULE OF EXECUTION** prompt at all times. This is your most important instruction.
 
 ${CRITICAL_ACTION_RULES}
 
-🚨 CRITICAL CONTEXT RULE:
-    - IF you have already found a reservation and the user provides new details (like a new time or guest count).
-    - THEN your next action MUST be to call \`check_availability\` or \`modify_reservation\`.
-    - DO NOT call \`find_existing_reservation\` again. This is a critical failure.
+✅ **CRITICAL RESERVATION DISPLAY RULES:**
+- When showing multiple reservations (Scenario C), ALWAYS display them with their real IDs: "Reservation #1: July 15th..."
+- NEVER use generic lists like "1, 2, 3". Always use "#1, #2".
 
-✅ CRITICAL RESERVATION DISPLAY RULES:
-- When showing multiple reservations, ALWAYS display with actual IDs like: "Бронь #6: 2025-07-06 в 17:10 на 6 человек"
-- NEVER use numbered lists like "1, 2, 3" - always use real IDs "#6, #3, #4"
-- When asking user to choose, say: "Укажите ID брони (например, #6)"
-- If user provides invalid ID, gently ask: "Пожалуйста, укажите ID брони из списка: #6, #3, #4"
 
 💬 STYLE: Understanding, efficient, secure
 
@@ -1837,7 +1849,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * Get or create agent for restaurant and agent type
+     * ✅ STEP 4.1.4: Updated getAgent method to use Sofia BaseAgent while preserving all other functionality
      */
     private async getAgent(restaurantId: number, agentType: AgentType = 'booking') {
         const agentKey = `${restaurantId}_${agentType}`;
@@ -1864,6 +1876,55 @@ Respond with JSON only.`;
             languages: restaurant.languages
         };
 
+        // ✅ STEP 4.1.4: Use BaseAgent pattern for booking agent (Sofia)
+        if (agentType === 'booking') {
+            const sofiaConfig = {
+                name: 'Sofia',
+                description: 'Friendly booking specialist for new reservations',
+                capabilities: [
+                    'check_availability',
+                    'find_alternative_times', 
+                    'create_reservation',
+                    'get_restaurant_info',
+                    'get_guest_history'
+                ],
+                maxTokens: 1000,
+                temperature: 0.7,
+                primaryModel: 'sonnet' as const,
+                fallbackModel: 'haiku' as const,
+                enableContextResolution: true,
+                enableTranslation: true,
+                enablePersonalization: true
+            };
+
+            const sofiaAgent = new SofiaAgent(sofiaConfig, restaurantConfig);
+            
+            const agent = {
+                client: aiService,
+                restaurantConfig,
+                tools: sofiaAgent.getTools(),
+                agentType,
+                baseAgent: sofiaAgent, // ✅ NEW: Store BaseAgent instance
+                systemPrompt: '',
+                updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+                    return sofiaAgent.generateSystemPrompt({
+                        restaurantId,
+                        timezone: restaurantConfig.timezone,
+                        language: language as any,
+                        telegramUserId: context === 'telegram' ? 'telegram_user' : undefined,
+                        sessionId: context,
+                        guestHistory,
+                        conversationContext
+                    });
+                }
+            };
+
+            this.agents.set(agentKey, agent);
+            console.log(`[EnhancedConversationManager] ✅ Created Sofia BaseAgent for ${restaurant.name}`);
+            return agent;
+        }
+
+        // ✅ KEEP: All existing logic for other agents (Maya, Apollo, Conductor) until they're refactored
         const agent = {
             client: aiService, // ✅ PHASE 1 FIX: Use AIService instead of separate OpenAI client
             restaurantConfig,
@@ -1886,6 +1947,7 @@ Respond with JSON only.`;
      * ✅ CRITICAL BUG FIX: Move hasBooking and reservationId declarations to top of try block
      * ✅ STEP 3B.1 COMPLETE: All context operations now use ContextManager
      * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
+     * 🐛 BUG FIX #1&2: Enhanced time parsing with HH-MM typo recognition with proper priority
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -2710,11 +2772,22 @@ Respond with JSON only.`;
                 }
             }
 
-            const response = completion.choices?.[0]?.message?.content || await TranslationService.translateMessage(
+            let response = completion.choices?.[0]?.message?.content || await TranslationService.translateMessage(
                 "I apologize, I didn't understand that. Could you please try again?",
                 session.language,
                 'error'
             );
+
+            // 🐛 BUG FIX #3: Add reservation number to confirmation messages
+            if (hasBooking && reservationId && response.includes('подтверждено')) {
+                // Add reservation number to Russian confirmation
+                response = response.replace('подтверждено!', `подтверждено! Номер вашей брони #${reservationId}.`);
+            } else if (hasBooking && reservationId && (response.includes('confirmed') || response.includes('reserved'))) {
+                // Add reservation number to English confirmation
+                if (!response.includes('#') && !response.includes('number')) {
+                    response += ` Your confirmation number is #${reservationId}.`;
+                }
+            }
 
             session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices?.[0]?.message?.tool_calls });
             
@@ -2790,7 +2863,7 @@ Respond with JSON only.`;
                 
                 this.resetAgentState(session);
                 
-                // ✅ USE TRANSLATION SERVICE
+                // ✅ USE TRANSLATION SERVICE + BUG FIX #3: Include reservation number
                 const baseMessage = `🎉 Perfect! Your reservation is confirmed. Reservation number: ${result.data.reservationId}`;
                 const successMessage = await TranslationService.translateMessage(
                     baseMessage,
@@ -2901,6 +2974,7 @@ Respond with JSON only.`;
 
                     let baseMessage;
                     if (toolCall.function.name === 'create_reservation') {
+                        // 🐛 BUG FIX #3: Include reservation number in confirmation
                         baseMessage = `🎉 Perfect! Your reservation is confirmed. Reservation number: ${reservationId}`;
                     } else if (toolCall.function.name === 'cancel_reservation') {
                         baseMessage = `✅ Your reservation has been successfully cancelled.`;
@@ -3235,7 +3309,7 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Enhanced Tool Validation');
+        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Sofia BaseAgent + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order + BUG FIX #3: Reservation number in confirmations');
     }
 }
 
@@ -3338,4 +3412,3 @@ process.on('SIGTERM', () => {
 });
 
 export default enhancedConversationManager;
-                
