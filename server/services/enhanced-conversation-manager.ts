@@ -2,6 +2,7 @@
 // ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
 // ✅ STEP 3B.1 COMPLETE: All context calls now go through ContextManager
 // ✅ STEP 4.1.4 COMPLETE: Sofia BaseAgent Integration - Updated getAgent method
+// ✅ PHASE 4.2 COMPLETE: Maya BaseAgent Integration - Updated getAgent method for reservations
 // ✅ FIXES IMPLEMENTED: Natural explicit confirmations + Zero-assumption special requests + Enhanced debug logging
 // 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
 // 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
@@ -19,8 +20,10 @@ import { DateTime } from 'luxon';
 import { contextManager } from './context-manager';
 
 // ✅ STEP 4.1.4: Import BaseAgent components for Sofia integration
+// ✅ PHASE 4.2: Import Maya BaseAgent components for reservation management
 import { BaseAgent } from './agents/base-agent';
 import { SofiaAgent } from './agents/sofia-agent';
+import { MayaAgent } from './agents/maya-agent'; // ✅ NEW: Import Maya BaseAgent
 import { AgentFactory } from './agents/agent-factory';
 
 // ✅ APOLLO: Updated AgentType to include availability agent
@@ -111,6 +114,7 @@ interface TimeParsingResult {
  * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
  * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and preservation
  * ✅ STEP 4.1.4 INTEGRATION: Sofia BaseAgent pattern with backward compatibility
+ * ✅ PHASE 4.2 INTEGRATION: Maya BaseAgent pattern for reservation management
  * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
  * 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
  * 🐛 BUG FIX #2: Fixed time parsing priority order to handle typos before ambiguity detection
@@ -125,7 +129,7 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + Sofia BaseAgent + OpenAI GPT fallback + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order');
+        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + Sofia BaseAgent + Maya BaseAgent + OpenAI GPT fallback + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order');
     }
 
     /**
@@ -1317,219 +1321,185 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ FIX #1 & #2: Generate personalized system prompt section with NATURAL EXPLICIT CONFIRMATION + ZERO-ASSUMPTION SPECIAL REQUESTS
+     * Create session with context detection and agent type
      */
-    private getPersonalizedPromptSection(guestHistory: GuestHistory | null, language: Language): string {
-        if (!guestHistory || guestHistory.total_bookings === 0) {
-            return '';
+    createSession(config: {
+        restaurantId: number;
+        platform: 'web' | 'telegram';
+        language?: Language;
+        telegramUserId?: string;
+        webSessionId?: string;
+    }): string {
+        const session = createBookingSession(config) as BookingSessionWithAgent;
+
+        session.context = this.detectContext(config.platform);
+        session.currentAgent = 'booking'; // Default to Sofia
+        session.agentHistory = [];
+        session.guestHistory = null;
+        session.turnCount = 0;
+        session.agentTurnCount = 0;
+        // ✅ NEW: Language locking mechanism
+        session.languageLocked = false;
+
+        this.sessions.set(session.sessionId, session);
+
+        console.log(`[EnhancedConversationManager] Created ${session.context} session ${session.sessionId} for restaurant ${config.restaurantId} with Sofia (booking) agent`);
+
+        return session.sessionId;
+    }
+
+    /**
+     * Context detection logic
+     */
+    private detectContext(platform: 'web' | 'telegram'): 'hostess' | 'guest' {
+        return platform === 'web' ? 'hostess' : 'guest';
+    }
+
+    /**
+     * ✅ PHASE 4.2 COMPLETE: Updated getAgent method to use both Sofia and Maya BaseAgents
+     */
+    private async getAgent(restaurantId: number, agentType: AgentType = 'booking') {
+        const agentKey = `${restaurantId}_${agentType}`;
+
+        if (this.agents.has(agentKey)) {
+            return this.agents.get(agentKey);
         }
 
-        // ✅ PHONE FIX: Destructure guest_phone from history
-        const { guest_name, guest_phone, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
+        const restaurant = await storage.getRestaurant(restaurantId);
+        if (!restaurant) {
+            throw new Error(`Restaurant ${restaurantId} not found`);
+        }
 
-        const personalizedSections = {
-            en: `
-👤 GUEST HISTORY & PERSONALIZATION:
-- Guest Name: ${guest_name}
-- Guest Phone: ${guest_phone || 'Not available'}
-- Total Previous Bookings: ${total_bookings}
-- ${common_party_size ? `Common Party Size: ${common_party_size}` : 'No common party size pattern'}
-- ${frequent_special_requests.length > 0 ? `Frequent Requests: ${frequent_special_requests.join(', ')}` : 'No frequent special requests'}
-- ${last_visit_date ? `Last Visit: ${last_visit_date}` : 'No previous visits recorded'}
-
-💡 PERSONALIZATION GUIDELINES:
-- ${total_bookings >= 3 ? `RETURNING GUEST: Greet warmly as a valued returning customer! Say "Welcome back, ${guest_name}!" or similar.` : `NEW/INFREQUENT GUEST: Treat as a regular new guest, but you can mention "${guest_name}" once you know their name.`}
-- ${common_party_size ? `USUAL PARTY SIZE: You can proactively ask "Will it be for your usual party of ${common_party_size} today?" when they don't specify.` : ''}
-
-- **CONTACT CONFIRMATION (NATURAL EXPLICIT FORMAT):** When confirming details for returning guests, ask naturally but be specific about what information you intend to use.
-  - **Preferred Natural Formats:**
-    * "May I use your name **${guest_name}** for the booking?" 
-    * "May I use your phone number **${guest_phone}** to complete the booking?" 
-    * "Can I use **${guest_name}** and **${guest_phone}** for this booking?" 
-  - **Key Principle:** Always show the actual information you plan to use, but ask in a conversational way
-  - **Forbidden Patterns:** 
-    * "Do you want to use the same information?" (vague - what information?)
-    * "Should I use your usual details?" (vague - which details?)
-    * Any reference to "same" or "usual" without showing the actual data
-  - **Why This Works:** User sees exactly what will be used but the question feels natural and polite
-
-- **SPECIAL REQUESTS (ZERO-ASSUMPTION RULE):** You are STRICTLY FORBIDDEN from adding any frequent special request to a booking unless explicitly confirmed in the CURRENT conversation.
-  
-  **Mandatory Workflow:**
-  1. **After** confirming contact details (as separate step)
-  2. Ask naturally but specifically: "I also see you often request '${frequent_special_requests[0]}'. Add that to this booking?"
-  3. Wait for explicit "yes"/"confirm" response to THIS specific question
-  4. Only then add to create_reservation call
-  
-  **Forbidden Actions:**
-  - ❌ Assuming general "yes" applies to special requests
-  - ❌ Auto-adding requests based on history without current confirmation
-  - ❌ Bundling contact confirmation with special request confirmation
-  
-  **Critical Rule:** Contact confirmation and special request confirmation are COMPLETELY SEPARATE steps that cannot be combined.
-  
-  **Examples:**
-  - ✅ Good: "Contact confirmed. I also see you usually request tea on arrival. Add that too?"
-  - ✅ Good: "Great with contacts! By the way, add your usual window seat request?"
-  - ❌ Bad: "Use same contact info and usual requests?"
-  - ❌ Bad: "Everything as usual?" - too vague
-
-- Use this information naturally in conversation - don't just list their history!
-- Make the experience feel personal and welcoming for returning guests.`,
-
-            ru: `
-👤 ИСТОРИЯ ГОСТЯ И ПЕРСОНАЛИЗАЦИЯ:
-- Имя гостя: ${guest_name}
-- Телефон гостя: ${guest_phone || 'Недоступен'}
-- Всего предыдущих бронирований: ${total_bookings}
-- ${common_party_size ? `Обычное количество гостей: ${common_party_size}` : 'Нет постоянного количества гостей'}
-- ${frequent_special_requests.length > 0 ? `Частые просьбы: ${frequent_special_requests.join(', ')}` : 'Нет частых особых просьб'}
-- ${last_visit_date ? `Последний визит: ${last_visit_date}` : 'Нет записей о предыдущих визитах'}
-
-💡 РУКОВОДСТВО ПО ПЕРСОНАЛИЗАЦИИ:
-- ${total_bookings >= 3 ? `ВОЗВРАЩАЮЩИЙСЯ ГОСТЬ: Тепло встречайте как ценного постоянного клиента! Скажите "Добро пожаловать снова, ${guest_name}!" или подобное.` : `НОВЫЙ/РЕДКИЙ ГОСТЬ: Относитесь как к обычному новому гостю, но можете упомянуть "${guest_name}", когда узнаете имя.`}
-- ${common_party_size ? `ОБЫЧНОЕ КОЛИЧЕСТВО: Можете проактивно спросить "Будет ли как обычно на ${common_party_size} человек сегодня?" когда они не уточняют.` : ''}
-
-- **ПОДТВЕРЖДЕНИЕ КОНТАКТОВ (ЕСТЕСТВЕННЫЙ ЯВНЫЙ ФОРМАТ):** При подтверждении данных для возвращающихся гостей спрашивайте естественно, но конкретно о том, какую информацию собираетесь использовать.
-  - **Предпочтительные естественные форматы:**
-    * "Могу ли я использовать ваше имя **${guest_name}** для бронирования?"
-    * "Могу ли я использовать ваш номер телефона **${guest_phone}** для завершения бронирования?"
-    * "Можно использовать **${guest_name}** и **${guest_phone}** для этого бронирования?"
-  - **Ключевой принцип:** Всегда показывайте фактическую информацию, которую планируете использовать, но спрашивайте разговорным способом
-  - **Запрещенные паттерны:** 
-    * "Хотите использовать ту же информацию?" (неопределенно - какую информацию?)
-    * "Использовать ваши обычные данные?" (неопределенно - какие данные?)
-    * Любые ссылки на "то же" или "обычные" без показа фактических данных
-  - **Почему это работает:** Пользователь видит точно, что будет использовано, но вопрос звучит естественно и вежливо
-
-- **ОСОБЫЕ ПРОСЬБЫ (ПРАВИЛО НУЛЕВЫХ ПРЕДПОЛОЖЕНИЙ):** Вам СТРОГО ЗАПРЕЩЕНО добавлять любую частую особую просьбу к бронированию без явного подтверждения в ТЕКУЩЕМ разговоре.
-  
-  **Обязательный рабочий процесс:**
-  1. **После** подтверждения контактных данных (как отдельный шаг)
-  2. Спросите естественно, но конкретно: "Я также вижу, что вы часто просите '${frequent_special_requests[0]}'. Добавить это к бронированию?"
-  3. Ждите явного ответа "да"/"подтверждаю" на ЭТОТ конкретный вопрос
-  4. Только тогда добавляйте в вызов create_reservation
-  
-  **Запрещенные действия:**
-  - ❌ Предполагать, что общее "да" относится к особым просьбам
-  - ❌ Автодобавление просьб на основе истории без текущего подтверждения
-  - ❌ Объединение подтверждения контактов с подтверждением особых просьб
-  
-  **Критическое правило:** Подтверждение контактов и подтверждение особых просьб - это ПОЛНОСТЬЮ ОТДЕЛЬНЫЕ шаги, которые нельзя объединять.
-  
-  **Примеры:**
-  - ✅ Хорошо: "Контакт подтвержден. Я также вижу, что вы обычно просите чай к прибытию. Добавить это тоже?"
-  - ✅ Хорошо: "Отлично с контактами! Кстати, добавить ваш обычный запрос про столик у окна?"
-  - ❌ Плохо: "Использовать те же контакты и обычные просьбы?"
-  - ❌ Плохо: "Всё как обычно?" - слишком неопределенно
-
-- Используйте эту информацию естественно в разговоре - не просто перечисляйте историю!
-- Сделайте опыт личным и гостеприимным для возвращающихся гостей.`,
-
-            sr: `
-👤 ISTORIJA GOSTA I PERSONALIZACIJA:
-- Ime gosta: ${guest_name}
-- Telefon gosta: ${guest_phone || 'Nije dostupno'}
-- Ukupno prethodnih rezervacija: ${total_bookings}
-- ${common_party_size ? `Uobičajen broj gostiju: ${common_party_size}` : 'Nema stalnog broja gostiju'}
-- ${frequent_special_requests.length > 0 ? `Česti zahtevi: ${frequent_special_requests.join(', ')}` : 'Nema čestih posebnih zahteva'}
-- ${last_visit_date ? `Poslednja poseta: ${last_visit_date}` : 'Nema zapisnika o prethodnim posetama'}
-
-💡 SMERNICE ZA PERSONALIZACIJU:
-- ${total_bookings >= 3 ? `VRAĆAJUĆI SE GOST: Toplo pozdravite kao cenjenog stalnog klijenta! Recite "Dobrodošli ponovo, ${guest_name}!" ili slično.` : `NOVI/REDAK GOST: Tretirajte kao običnog novog gosta, ali možete spomenuti "${guest_name}" kada saznate ime.`}
-- ${common_party_size ? `UOBIČAJEN BROJ: Možete proaktivno pitati "Hoće li biti kao obično za ${common_party_size} osoba danas?" kada ne specificiraju.` : ''}
-
-- **POTVRDA KONTAKATA (PRIRODNI EKSPLICITNI FORMAT):** Kada potvrđujete detalje za goste koji se vraćaju, pitajte prirodno ali budite specifični o tome koje informacije nameravate da koristite.
-  - **Preferirani prirodni formati:**
-    * "Mogu li da koristim vaše ime **${guest_name}** za rezervaciju?"
-    * "Mogu li da koristim vaš broj telefona **${guest_phone}** da završim rezervaciju?"
-    * "Mogu li da koristim **${guest_name}** i **${guest_phone}** za ovu rezervaciju?"
-  - **Ključni princip:** Uvek pokažite stvarne informacije koje planirate da koristite, ali pitajte na razgovorni način
-  - **Zabranjeni obrasci:** 
-    * "Da li želite da koristite iste informacije?" (nejasno - koje informacije?)
-    * "Da koristim vaše uobičajene podatke?" (nejasno - koje podatke?)
-    * Bilo koje upućivanje na "isto" ili "uobičajeno" bez prikazivanja stvarnih podataka
-  - **Zašto ovo funkcioniše:** Korisnik vidi tačno šta će biti korišćeno, ali pitanje zvuči prirodno i pristojno
-
-- **POSEBNI ZAHTEVI (PRAVILO NULTE PRETPOSTAVKE):** STROGO vam je ZABRANJENO da dodate bilo koji čest posebni zahtev rezervaciji bez eksplicitne potvrde u TRENUTNOM razgovoru.
-  
-  **Obavezni tok rada:**
-  1. **Nakon** potvrde kontakt podataka (kao poseban korak)
-  2. Pitajte prirodno ali specifično: "Takođe vidim da često tražite '${frequent_special_requests[0]}'. Da dodam to ovoj rezervaciji?"
-  3. Sačekajte eksplicitan odgovor "da"/"potvrđujem" na OVO specifično pitanje
-  4. Tek tada dodajte u poziv create_reservation
-  
-  **Zabranjene radnje:**
-  - ❌ Pretpostavljanje da opšte "da" važi za posebne zahteve
-  - ❌ Auto-dodavanje zahteva na osnovu istorije bez trenutne potvrde
-  - ❌ Spajanje potvrde kontakata sa potvrdom posebnih zahteva
-  
-  **Kritično pravilo:** Potvrda kontakata i potvrda posebnih zahteva su POTPUNO ODVOJENI koraci koji se ne mogu kombinovati.
-  
-  **Primeri:**
-  - ✅ Dobro: "Kontakt potvrđen. Takođe vidim da obično tražite čaj po dolasku. Da dodam i to?"
-  - ✅ Dobro: "Odlično sa kontaktima! Usput, da dodam vaš uobičajeni zahtev za sto kod prozora?"
-  - ❌ Loše: "Koristiti iste kontakt informacije i uobičajene zahteve?"
-  - ❌ Loše: "Sve kao obično?" - previše nejasno
-
-- Koristite ove informacije prirodno u razgovoru - nemojte samo nabrajati istoriju!
-- Učinite iskustvo ličnim i gostoljubivim za goste koji se vraćaju.`,
-
-            hu: `
-👤 VENDÉG TÖRTÉNET ÉS SZEMÉLYRE SZABÁS:
-- Vendég neve: ${guest_name}
-- Vendég telefonja: ${guest_phone || 'Nem elérhető'}
-- Összes korábbi foglalás: ${total_bookings}
-- ${common_party_size ? `Szokásos létszám: ${common_party_size}` : 'Nincs állandó létszám minta'}
-- ${frequent_special_requests.length > 0 ? `Gyakori kérések: ${frequent_special_requests.join(', ')}` : 'Nincsenek gyakori különleges kérések'}
-- ${last_visit_date ? `Utolsó látogatás: ${last_visit_date}` : 'Nincs korábbi látogatás feljegyezve'}
-
-💡 SZEMÉLYRE SZABÁSI IRÁNYELVEK:
-- ${total_bookings >= 3 ? `VISSZATÉRŐ VENDÉG: Melegesen köszöntse mint értékes állandó ügyfelet! Mondja "Üdvözöljük vissza, ${guest_name}!" vagy hasonlót.` : `ÚJ/RITKA VENDÉG: Kezelje mint egy szokásos új vendéget, de megemlítheti "${guest_name}"-t amikor megismeri a nevét.`}
-- ${common_party_size ? `SZOKÁSOS LÉTSZÁM: Proaktívan kérdezheti "A szokásos ${common_party_size} főre lesz ma?" amikor nem specificálják.` : ''}
-
-- **KONTAKT MEGERŐSÍTÉS (TERMÉSZETES EXPLICIT FORMÁTUM):** Amikor visszatérő vendégek részleteit erősíti meg, kérdezzen természetesen, de legyen konkrét arról, milyen információkat szándékozik használni.
-  - **Előnyben részesített természetes formátumok:**
-    * "Használhatom a nevét **${guest_name}** a foglaláshoz?"
-    * "Használhatom a telefonszámát **${guest_phone}** a foglalás befejezéséhez?"
-    * "Használhatom **${guest_name}** és **${guest_phone}** ehhez a foglaláshoz?"
-  - **Kulcs elv:** Mindig mutassa meg a tényleges információt, amit használni tervez, de kérdezzen beszélgetős módon
-  - **Tiltott minták:** 
-    * "Ugyanazokat az információkat szeretné használni?" (homályos - milyen információkat?)
-    * "A szokásos adatait használjam?" (homályos - milyen adatokat?)
-    * Bármilyen hivatkozás "ugyanaz" vagy "szokásos" a tényleges adatok mutatása nélkül
-  - **Miért működik ez:** A felhasználó pontosan látja, mit fognak használni, de a kérdés természetesen és udvariasan hangzik
-
-- **KÜLÖNLEGES KÉRÉSEK (NULLA FELTÉTELEZÉS SZABÁLY):** SZIGORÚAN TILOS bármilyen gyakori különleges kérést hozzáadni a foglaláshoz anélkül, hogy azt kifejezetten megerősítenék a JELENLEGI beszélgetésben.
-  
-  **Kötelező munkafolyamat:**
-  1. **Miután** megerősítette a kontakt adatokat (külön lépésként)
-  2. Kérdezzen természetesen, de konkrétan: "Azt is látom, hogy gyakran kéri '${frequent_special_requests[0]}'. Hozzáadjam ehhez a foglaláshoz?"
-  3. Várjon kifejezett "igen"/"megerősítés" választ ERRE a konkrét kérdésre
-  4. Csak aztán adja hozzá a create_reservation híváshoz
-  
-  **Tiltott tevékenységek:**
-  - ❌ Feltételezni, hogy az általános "igen" a különleges kérésekre vonatkozik
-  - ❌ Automatikus hozzáadás a történet alapján aktuális megerősítés nélkül
-  - ❌ A kontakt megerősítés és különleges kérés megerősítés összevonása
-  
-  **Kritikus szabály:** A kontakt megerősítés és a különleges kérés megerősítés TELJESEN KÜLÖN lépések, amelyek nem kombinálhatók.
-  
-  **Példák:**
-  - ✅ Jó: "Kontakt megerősítve. Azt is látom, hogy általában teát kér érkezéskor. Azt is hozzáadjam?"
-  - ✅ Jó: "Remek a kontaktokkal! Egyébként, hozzáadjam a szokásos ablak melletti asztal kérését?"
-  - ❌ Rossz: "Ugyanazokat a kontakt információkat és szokásos kéréseket használja?"
-  - ❌ Rossz: "Minden a szokásos módon?" - túl homályos
-
-- Használja ezeket az információkat természetesen a beszélgetésben - ne csak sorolja fel a történetet!
-- Tegye a tapasztalatot személyessé és vendégszeretővé a visszatérő vendégek számára.`
+        const restaurantConfig = {
+            id: restaurant.id,
+            name: restaurant.name,
+            timezone: restaurant.timezone || 'Europe/Moscow',
+            openingTime: restaurant.openingTime || '09:00:00',
+            closingTime: restaurant.closingTime || '23:00:00',
+            maxGuests: restaurant.maxGuests || 12,
+            cuisine: restaurant.cuisine,
+            atmosphere: restaurant.atmosphere,
+            country: restaurant.country,
+            languages: restaurant.languages
         };
 
-        return personalizedSections[language as keyof typeof personalizedSections] || personalizedSections.en;
+        // ✅ STEP 4.1.4: Use BaseAgent pattern for booking agent (Sofia)
+        if (agentType === 'booking') {
+            const sofiaConfig = {
+                name: 'Sofia',
+                description: 'Friendly booking specialist for new reservations',
+                capabilities: [
+                    'check_availability',
+                    'find_alternative_times', 
+                    'create_reservation',
+                    'get_restaurant_info',
+                    'get_guest_history'
+                ],
+                maxTokens: 1000,
+                temperature: 0.7,
+                primaryModel: 'sonnet' as const,
+                fallbackModel: 'haiku' as const,
+                enableContextResolution: true,
+                enableTranslation: true,
+                enablePersonalization: true
+            };
+
+            const sofiaAgent = new SofiaAgent(sofiaConfig, restaurantConfig);
+            
+            const agent = {
+                client: aiService,
+                restaurantConfig,
+                tools: sofiaAgent.getTools(),
+                agentType,
+                baseAgent: sofiaAgent, // ✅ NEW: Store BaseAgent instance
+                systemPrompt: '',
+                updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+                    return sofiaAgent.generateSystemPrompt({
+                        restaurantId,
+                        timezone: restaurantConfig.timezone,
+                        language: language as any,
+                        telegramUserId: context === 'telegram' ? 'telegram_user' : undefined,
+                        sessionId: context,
+                        guestHistory,
+                        conversationContext
+                    });
+                }
+            };
+
+            this.agents.set(agentKey, agent);
+            console.log(`[EnhancedConversationManager] ✅ Created Sofia BaseAgent for ${restaurant.name}`);
+            return agent;
+        }
+
+        // ✅ PHASE 4.2 COMPLETE: Use BaseAgent pattern for reservation agent (Maya)
+        if (agentType === 'reservations') {
+            const mayaConfig = {
+                name: 'Maya',
+                description: 'Intelligent reservation management specialist for existing bookings',
+                capabilities: [
+                    'find_existing_reservation',
+                    'modify_reservation', 
+                    'cancel_reservation',
+                    'get_restaurant_info',
+                    'get_guest_history'
+                ],
+                maxTokens: 1200,
+                temperature: 0.3, // Lower temperature for more consistent reservation management
+                primaryModel: 'sonnet' as const,
+                fallbackModel: 'haiku' as const,
+                enableContextResolution: true,
+                enableTranslation: true,
+                enablePersonalization: true
+            };
+
+            const mayaAgent = new MayaAgent(mayaConfig, restaurantConfig);
+            
+            const agent = {
+                client: aiService,
+                restaurantConfig,
+                tools: mayaAgent.getTools(),
+                agentType,
+                baseAgent: mayaAgent, // ✅ NEW: Store Maya BaseAgent instance
+                systemPrompt: '',
+                updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+                    return mayaAgent.generateSystemPrompt({
+                        restaurantId,
+                        timezone: restaurantConfig.timezone,
+                        language: language as any,
+                        telegramUserId: context === 'telegram' ? 'telegram_user' : undefined,
+                        sessionId: context,
+                        guestHistory,
+                        conversationContext
+                    });
+                }
+            };
+
+            this.agents.set(agentKey, agent);
+            console.log(`[EnhancedConversationManager] ✅ Created Maya BaseAgent for ${restaurant.name} with tiered confidence model`);
+            return agent;
+        }
+
+        // ✅ KEEP: All existing logic for other agents (Apollo, Conductor) until they're refactored
+        const agent = {
+            client: aiService, // ✅ PHASE 1 FIX: Use AIService instead of separate OpenAI client
+            restaurantConfig,
+            tools: this.getToolsForAgent(agentType),
+            agentType,
+            systemPrompt: '',
+            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+                return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage, conversationContext);
+            }
+        };
+
+        this.agents.set(agentKey, agent);
+        console.log(`[EnhancedConversationManager] Created ${agentType} agent for ${restaurant.name}`);
+
+        return agent;
     }
 
     /**
      * ✅ 🚨 APOLLO: Enhanced agent personality system with Apollo specialist prompt
+     * ✅ KEPT FOR APOLLO AND CONDUCTOR: Maya's old system prompt logic removed as it's now handled by BaseAgent
      */
     private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false, conversationContext?: any): string {
         const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
@@ -1597,104 +1567,7 @@ ${contextAwarenessSection}
 This focused approach prevents availability hallucination and ensures accurate alternative suggestions.`;
         }
 
-        if (isFirstMessage && agentType === 'booking') {
-            const agent = createBookingAgent(restaurantConfig);
-            const personalizedGreeting = agent.getPersonalizedGreeting(
-                guestHistory || null,
-                language as Language,
-                'guest'
-            );
-
-            return `Your first response should start with this exact greeting: "${personalizedGreeting}"
-
-${languageInstruction}
-${contextAwarenessSection}
-
-Then continue with your normal helpful assistant behavior.`;
-        }
-
-        if (agentType === 'booking') {
-            return `You are Sofia, the friendly booking specialist for ${restaurantConfig.name}.
-
-${languageInstruction}
-
-🎯 YOUR ROLE:
-- Help guests make NEW reservations step by step
-- Ask for: date, time, party size, name, phone number
-- Check availability before collecting personal details
-- Always confirm all information before creating booking
-
-🏪 RESTAURANT INFO:
-- Name: ${restaurantConfig.name}
-- Hours: ${restaurantConfig.openingTime} - ${restaurantConfig.closingTime}
-- Current Date: ${currentTime.toFormat('yyyy-MM-dd')}
-- Timezone: ${restaurantConfig.timezone}
-
-💬 STYLE: Warm, efficient, step-by-step guidance
-
-${contextAwarenessSection}
-
-${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}`;
-        }
-
-        if (agentType === 'reservations') {
-            // ✅ PHASE 1 FIX: Enhanced Maya system prompt with critical action rules
-            const CRITICAL_ACTION_RULES = `
-🚨 **MAYA'S GOLDEN RULE OF EXECUTION** 🚨
-Your primary purpose is to use tools to modify or cancel reservations. You must act immediately once you have enough information. You are forbidden from announcing your intentions before you act.
-
-**Your Internal Monologue/Reasoning MUST Follow This Exact Sequence:**
-
-**Step 1: Find the Reservation**
-- My first step is always to use the \`find_existing_reservation\` tool to identify the user's booking(s).
-
-**Step 2: Analyze the Results & User's Original Request**
-- After the tool call is complete, I will analyze two things:
-    1. The reservation data returned by the tool.
-    2. The user's **original message** that started this process.
-
-**Step 3: Decide the VERY NEXT ACTION (Tool Call or Clarification)**
-
-- **SCENARIO A: I have everything I need.**
-    - **Condition:** The tool found a specific reservation (e.g., ID #1 for July 15th) AND the user's original message ALSO contained the specific change (e.g., "...change to 13-40").
-    - **ACTION:** I now have the Reservation ID and the Modification Details. My only possible next action is to **IMMEDIATELY call the \`modify_reservation\` tool**. I am strictly forbidden from talking to the user first. I will then return the final result of that tool call.
-
-- **SCENARIO B: I am missing the modification details.**
-    - **Condition:** The tool found a specific reservation (e.g., ID #1), but the user's original message was general (e.g., "I want to change my booking").
-    - **ACTION:** I have the Reservation ID but not the Modification Details. I must now ask the user a clarifying question, such as: "Okay, I've found your reservation for July 15th. What changes would you like to make?"
-
-- **SCENARIO C: I am missing the specific reservation (AMBIGUITY DETECTED).**
-    - **Condition:** The \`find_existing_reservation\` tool has just returned **more than one** reservation.
-    - **MANDATORY ACTION:** My only possible next action is to ask the user for clarification. I MUST list the reservations I found, including their real confirmation numbers (e.g., "#1", "#2"), dates, and times. I must ask the user to choose one.
-    - **🚨 FORBIDDEN ACTION:** I am strictly forbidden from choosing a reservation myself, even if one seems more likely based on the user's message. I cannot proceed with any other tool call (\`modify_reservation\`, \`cancel_reservation\`) until the user has explicitly selected one of the presented reservation IDs.
-
-**--- FORBIDDEN BEHAVIOR ---**
-- The phrase **"I will now change it..."** or any variation is BANNED. Do not describe your action. Execute it.
-- **NEVER** find a reservation and then wait for the user to tell you what to do if the information was already in their first message. You must be proactive and chain the tool calls.
-`;
-
-            return `You are Maya, the reservation management specialist for ${restaurantConfig.name}.
-
-${languageInstruction}
-
-🎯 **YOUR ROLE & CORE DIRECTIVE**
-- You are a task-oriented agent that helps guests with EXISTING reservations by using tools.
-- Your primary directive is to follow the **MAYA'S GOLDEN RULE OF EXECUTION** prompt at all times. This is your most important instruction.
-
-${CRITICAL_ACTION_RULES}
-
-✅ **CRITICAL RESERVATION DISPLAY RULES:**
-- When showing multiple reservations (Scenario C), ALWAYS display them with their real IDs: "Reservation #1: July 15th..."
-- NEVER use generic lists like "1, 2, 3". Always use "#1, #2".
-
-
-💬 STYLE: Understanding, efficient, secure
-
-${contextAwarenessSection}
-
-${this.getPersonalizedPromptSection(guestHistory || null, language as Language)}`;
-        }
-
+        // ✅ CONDUCTOR: Only agent left using traditional system prompt
         return `You are a helpful restaurant assistant.
 
 ${languageInstruction}
@@ -1813,134 +1686,10 @@ Respond with JSON only.`;
         }
     }
 
-    /**
-     * Create session with context detection and agent type
-     */
-    createSession(config: {
-        restaurantId: number;
-        platform: 'web' | 'telegram';
-        language?: Language;
-        telegramUserId?: string;
-        webSessionId?: string;
-    }): string {
-        const session = createBookingSession(config) as BookingSessionWithAgent;
-
-        session.context = this.detectContext(config.platform);
-        session.currentAgent = 'booking'; // Default to Sofia
-        session.agentHistory = [];
-        session.guestHistory = null;
-        session.turnCount = 0;
-        session.agentTurnCount = 0;
-        // ✅ NEW: Language locking mechanism
-        session.languageLocked = false;
-
-        this.sessions.set(session.sessionId, session);
-
-        console.log(`[EnhancedConversationManager] Created ${session.context} session ${session.sessionId} for restaurant ${config.restaurantId} with Sofia (booking) agent`);
-
-        return session.sessionId;
-    }
-
-    /**
-     * Context detection logic
-     */
-    private detectContext(platform: 'web' | 'telegram'): 'hostess' | 'guest' {
-        return platform === 'web' ? 'hostess' : 'guest';
-    }
-
-    /**
-     * ✅ STEP 4.1.4: Updated getAgent method to use Sofia BaseAgent while preserving all other functionality
-     */
-    private async getAgent(restaurantId: number, agentType: AgentType = 'booking') {
-        const agentKey = `${restaurantId}_${agentType}`;
-
-        if (this.agents.has(agentKey)) {
-            return this.agents.get(agentKey);
-        }
-
-        const restaurant = await storage.getRestaurant(restaurantId);
-        if (!restaurant) {
-            throw new Error(`Restaurant ${restaurantId} not found`);
-        }
-
-        const restaurantConfig = {
-            id: restaurant.id,
-            name: restaurant.name,
-            timezone: restaurant.timezone || 'Europe/Moscow',
-            openingTime: restaurant.openingTime || '09:00:00',
-            closingTime: restaurant.closingTime || '23:00:00',
-            maxGuests: restaurant.maxGuests || 12,
-            cuisine: restaurant.cuisine,
-            atmosphere: restaurant.atmosphere,
-            country: restaurant.country,
-            languages: restaurant.languages
-        };
-
-        // ✅ STEP 4.1.4: Use BaseAgent pattern for booking agent (Sofia)
-        if (agentType === 'booking') {
-            const sofiaConfig = {
-                name: 'Sofia',
-                description: 'Friendly booking specialist for new reservations',
-                capabilities: [
-                    'check_availability',
-                    'find_alternative_times', 
-                    'create_reservation',
-                    'get_restaurant_info',
-                    'get_guest_history'
-                ],
-                maxTokens: 1000,
-                temperature: 0.7,
-                primaryModel: 'sonnet' as const,
-                fallbackModel: 'haiku' as const,
-                enableContextResolution: true,
-                enableTranslation: true,
-                enablePersonalization: true
-            };
-
-            const sofiaAgent = new SofiaAgent(sofiaConfig, restaurantConfig);
-            
-            const agent = {
-                client: aiService,
-                restaurantConfig,
-                tools: sofiaAgent.getTools(),
-                agentType,
-                baseAgent: sofiaAgent, // ✅ NEW: Store BaseAgent instance
-                systemPrompt: '',
-                updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
-                    return sofiaAgent.generateSystemPrompt({
-                        restaurantId,
-                        timezone: restaurantConfig.timezone,
-                        language: language as any,
-                        telegramUserId: context === 'telegram' ? 'telegram_user' : undefined,
-                        sessionId: context,
-                        guestHistory,
-                        conversationContext
-                    });
-                }
-            };
-
-            this.agents.set(agentKey, agent);
-            console.log(`[EnhancedConversationManager] ✅ Created Sofia BaseAgent for ${restaurant.name}`);
-            return agent;
-        }
-
-        // ✅ KEEP: All existing logic for other agents (Maya, Apollo, Conductor) until they're refactored
-        const agent = {
-            client: aiService, // ✅ PHASE 1 FIX: Use AIService instead of separate OpenAI client
-            restaurantConfig,
-            tools: this.getToolsForAgent(agentType),
-            agentType,
-            systemPrompt: '',
-            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
-                return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage, conversationContext);
-            }
-        };
-
-        this.agents.set(agentKey, agent);
-        console.log(`[EnhancedConversationManager] Created ${agentType} agent for ${restaurant.name}`);
-
-        return agent;
-    }
+    // ===== REST OF THE CLASS METHODS REMAIN UNCHANGED =====
+    // (All the remaining methods from the original implementation stay exactly the same)
+    // This includes: handleMessage, executeConfirmedBooking, handleConfirmation, 
+    // extractGatheringInfo, getSession, updateSession, endSession, cleanupOldSessions, getStats, shutdown
 
     /**
      * ✅ PHASE 1 FIX: Main message handling with smart context preservation
@@ -3309,7 +3058,7 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Sofia BaseAgent + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order + BUG FIX #3: Reservation number in confirmations');
+        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Sofia BaseAgent + Maya BaseAgent + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order + BUG FIX #3: Reservation number in confirmations');
     }
 }
 

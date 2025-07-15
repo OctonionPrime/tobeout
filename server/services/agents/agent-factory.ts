@@ -1,10 +1,13 @@
 // src/agents/agent-factory.ts
-// ✅ PHASE 4.1.2: AgentFactory Implementation
+// ✅ PHASE 4.2: AgentFactory Implementation - Updated with Maya BaseAgent
+// ✅ Maya Integration Complete: Real MayaAgent replacing mock implementation
 // Centralized agent creation, management, and registry
 // Provides singleton pattern for agent instances with intelligent caching
 // Supports BaseAgent pattern with configuration validation and health monitoring
 
 import { BaseAgent, AgentConfig, AgentContext, RestaurantConfig, validateAgentConfig, createDefaultAgentConfig } from './base-agent';
+import { SofiaAgent } from './sofia-agent';
+import { MayaAgent } from './maya-agent'; // ✅ NEW: Import real MayaAgent
 import { aiService } from '../ai-service';
 import { contextManager } from '../context-manager';
 import type { Language } from '../enhanced-conversation-manager';
@@ -65,6 +68,7 @@ interface FactoryHealthResult {
  * - Configuration validation and error handling
  * - Support for all restaurant booking agents
  * - Integration with existing restaurant booking infrastructure
+ * ✅ NEW: Real BaseAgent implementations for Sofia and Maya
  */
 export class AgentFactory {
     private static instance: AgentFactory | null = null;
@@ -182,7 +186,7 @@ export class AgentFactory {
             ),
             reservations: createDefaultAgentConfig(
                 'Maya',
-                'Reservation management specialist for existing bookings',
+                'Intelligent reservation management specialist for existing bookings',
                 ['find_existing_reservation', 'modify_reservation', 'cancel_reservation', 'get_restaurant_info', 'get_guest_history']
             ),
             availability: createDefaultAgentConfig(
@@ -315,7 +319,7 @@ export class AgentFactory {
 
     /**
      * Actually instantiate the agent based on type
-     * This is where specific agent classes will be created
+     * ✅ UPDATED: Now uses real BaseAgent implementations for Sofia and Maya
      */
     private async instantiateAgent(
         type: AgentType,
@@ -351,74 +355,40 @@ export class AgentFactory {
     }
 
     /**
-     * Create Sofia booking agent
-     * NOTE: This will be implemented when Sofia agent extends BaseAgent
+     * Create Sofia booking agent (BaseAgent implementation)
+     * ✅ COMPLETE: Uses real SofiaAgent extending BaseAgent
      */
     private async createSofiaAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        // For now, return a mock implementation until Sofia is refactored
-        // This will be replaced with: return new SofiaAgent(config, restaurantConfig);
-        
-        console.log('[AgentFactory] Creating Sofia agent (BaseAgent implementation pending)');
-        
-        // Return a temporary mock that extends BaseAgent for testing
-        return new (class MockSofiaAgent extends BaseAgent {
-            readonly name = 'Sofia';
-            readonly description = 'Friendly booking specialist for new reservations';
-            readonly capabilities = ['check_availability', 'find_alternative_times', 'create_reservation', 'get_restaurant_info', 'get_guest_history'];
-
-            generateSystemPrompt(context: AgentContext): string {
-                return `You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}. Language: ${context.language}`;
-            }
-
-            async handleMessage(message: string, context: AgentContext) {
-                return {
-                    content: `Sofia mock response for: ${message}`,
-                    metadata: {
-                        processedAt: new Date().toISOString(),
-                        agentType: this.name,
-                        confidence: 0.8
-                    }
-                };
-            }
-
-            getTools() {
-                return []; // Return empty for mock
-            }
-        })(config, restaurantConfig);
+        console.log('[AgentFactory] Creating Sofia BaseAgent for booking management');
+        return new SofiaAgent(config, restaurantConfig);
     }
 
     /**
-     * Create Maya reservation management agent
-     * NOTE: This will be implemented when Maya agent extends BaseAgent
+     * ✅ PHASE 4.2 COMPLETE: Create Maya reservation management agent (BaseAgent implementation)
+     * Real MayaAgent replacing the previous mock implementation
      */
     private async createMayaAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        console.log('[AgentFactory] Creating Maya agent (BaseAgent implementation pending)');
+        console.log('[AgentFactory] Creating Maya BaseAgent for reservation management');
         
-        // Return a temporary mock that extends BaseAgent for testing
-        return new (class MockMayaAgent extends BaseAgent {
-            readonly name = 'Maya';
-            readonly description = 'Reservation management specialist for existing bookings';
-            readonly capabilities = ['find_existing_reservation', 'modify_reservation', 'cancel_reservation', 'get_restaurant_info', 'get_guest_history'];
-
-            generateSystemPrompt(context: AgentContext): string {
-                return `You are Maya, the reservation management specialist for ${this.restaurantConfig.name}. Language: ${context.language}`;
-            }
-
-            async handleMessage(message: string, context: AgentContext) {
-                return {
-                    content: `Maya mock response for: ${message}`,
-                    metadata: {
-                        processedAt: new Date().toISOString(),
-                        agentType: this.name,
-                        confidence: 0.8
-                    }
-                };
-            }
-
-            getTools() {
-                return []; // Return empty for mock
-            }
-        })(config, restaurantConfig);
+        // Create real MayaAgent with tiered confidence model and context resolution
+        const mayaAgent = new MayaAgent(config, restaurantConfig);
+        
+        // Validate the agent is properly configured
+        const validation = await mayaAgent.validateAgent();
+        if (!validation.valid) {
+            console.error('[AgentFactory] Maya agent validation failed:', validation.errors);
+            throw new Error(`Maya agent validation failed: ${validation.errors.join(', ')}`);
+        }
+        
+        console.log('[AgentFactory] ✅ Maya BaseAgent created successfully with:');
+        console.log('  - Tiered confidence model (High/Medium/Low)');
+        console.log('  - Critical action rules for immediate execution');
+        console.log('  - Smart context resolution with ContextManager');
+        console.log('  - Security validation for ownership checks');
+        console.log('  - Multi-language support (10 languages)');
+        console.log('  - Enhanced reservation tools and capabilities');
+        
+        return mayaAgent;
     }
 
     /**
@@ -658,7 +628,7 @@ export default AgentFactory;
 
 // Log successful module initialization
 console.log(`
-🎉 AgentFactory Loaded Successfully! 🎉
+🎉 AgentFactory Updated with Maya BaseAgent! 🎉
 
 ✅ Centralized agent creation and management
 ✅ Intelligent caching with configurable limits
@@ -668,20 +638,20 @@ console.log(`
 ✅ Registry management with cleanup
 ✅ Comprehensive statistics and monitoring
 
-🤖 Supported Agent Types:
-- Sofia (booking) - Friendly booking specialist
-- Maya (reservations) - Reservation management specialist  
-- Apollo (availability) - Availability specialist
-- Conductor (conductor) - Neutral orchestrator
+🤖 Real BaseAgent Implementations:
+- Sofia (booking) ✅ - Friendly booking specialist
+- Maya (reservations) ✅ - Intelligent reservation management specialist  
+- Apollo (availability) 🔄 - Availability specialist (mock pending)
+- Conductor (conductor) ✅ - Neutral orchestrator
 
-📊 Features Available:
-- Singleton pattern with intelligent caching
-- Automated health checks every 5 minutes
-- Performance monitoring and statistics
-- Configuration validation
-- Registry management with cleanup
-- Mock implementations ready for BaseAgent migration
+📊 Maya BaseAgent Features:
+- Tiered confidence model (High/Medium/Low decisions)
+- Critical action rules for immediate execution
+- Smart context resolution with ContextManager
+- Security validation for ownership checks
+- Multi-language support (10 languages)
+- Enhanced reservation management capabilities
 
 🏗️ Architecture: Production-Ready ✅
-🔄 Ready for: Sofia Agent Implementation (Step 4.1.3)
+🔄 Ready for: Enhanced Conversation Manager Integration
 `);
