@@ -7,6 +7,8 @@
 // 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
 // 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
 // 🐛 BUG FIX #2: Fixed time parsing priority order to handle typos before ambiguity detection
+// 🔧 BOOKING SYSTEM FIXES: Direct booking path, duplicate reservation ID removal, guest recognition
+// 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
 
 import { aiService } from './ai-service';
 import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
@@ -15,6 +17,7 @@ import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
+import { createLogger, log as rootLogger } from './logging.service'; 
 
 // ✅ STEP 3B.1: Using ContextManager for ALL context resolution and management
 import { contextManager } from './context-manager';
@@ -23,12 +26,12 @@ import { contextManager } from './context-manager';
 // ✅ PHASE 4.2: Import Maya BaseAgent components for reservation management
 import { BaseAgent } from './agents/base-agent';
 import { SofiaAgent } from './agents/sofia-agent';
-import { MayaAgent } from './agents/maya-agent'; // ✅ NEW: Import Maya BaseAgent
+import { MayaAgent } from './agents/maya-agent';
 import { AgentFactory } from './agents/agent-factory';
 
 // ✅ APOLLO: Updated AgentType to include availability agent
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
-export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability'; // ✅ Added 'availability'
+export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
 
 /**
  * ✅ PHASE 1 FIX: Unified Translation Service using AIService
@@ -56,9 +59,8 @@ Keep the same tone, emojis, and professional style.
 Return only the translation, no explanations.`;
 
         try {
-            // ✅ USE AISERVICE: Fast translation with automatic fallback
             const translation = await aiService.generateContent(prompt, {
-                model: 'haiku', // Fast and cost-effective for translation
+                model: 'haiku',
                 maxTokens: 300,
                 temperature: 0.2,
                 context: `translation-${context}`
@@ -67,17 +69,17 @@ Return only the translation, no explanations.`;
             return translation;
         } catch (error) {
             console.error('[Translation] Error:', error);
-            return message; // Fallback to original
+            return message;
         }
     }
 }
 
 /**
- * ✅ PHONE FIX: Updated Guest history interface to include phone number
+ * Guest history interface with phone number support
  */
 interface GuestHistory {
     guest_name: string;
-    guest_phone: string; // ✅ PHONE FIX: Added phone number field
+    guest_phone: string;
     total_bookings: number;
     total_cancellations: number;
     last_visit_date: string | null;
@@ -87,7 +89,7 @@ interface GuestHistory {
 }
 
 /**
- * 🚨 CRITICAL BUG FIX: Enhanced tool validation result interface
+ * Enhanced tool validation result interface
  */
 interface ToolValidationResult {
     valid: boolean;
@@ -98,7 +100,7 @@ interface ToolValidationResult {
 }
 
 /**
- * 🚨 CRITICAL BUG FIX: Time parsing and validation result interface
+ * Time parsing and validation result interface
  */
 interface TimeParsingResult {
     isValid: boolean;
@@ -110,7 +112,24 @@ interface TimeParsingResult {
 }
 
 /**
- * Enhanced conversation manager with AIService-powered meta-agents and Apollo Availability Agent
+ * Complete booking information detection result
+ */
+interface CompleteBookingInfoResult {
+    hasAll: boolean;
+    extracted: {
+        name?: string;
+        phone?: string;
+        date?: string;
+        time?: string;
+        guests?: number;
+        comments?: string;
+    };
+    confidence: number;
+    missingFields: string[];
+}
+
+/**
+ * Enhanced conversation manager with AIService-powered meta-agents and comprehensive booking fixes
  * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
  * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and preservation
  * ✅ STEP 4.1.4 INTEGRATION: Sofia BaseAgent pattern with backward compatibility
@@ -118,6 +137,8 @@ interface TimeParsingResult {
  * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
  * 🐛 BUG FIX #1: Enhanced time parsing to handle "HH-MM" typo as "HH:MM" format
  * 🐛 BUG FIX #2: Fixed time parsing priority order to handle typos before ambiguity detection
+ * 🔧 BOOKING SYSTEM FIXES: Direct booking path, duplicate reservation ID removal, guest recognition
+ * 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
  */
 export class EnhancedConversationManager {
     private sessions = new Map<string, BookingSessionWithAgent>();
@@ -129,13 +150,178 @@ export class EnhancedConversationManager {
             this.cleanupOldSessions();
         }, 60 * 60 * 1000);
 
-        console.log('[EnhancedConversationManager] Initialized with AIService-powered meta-agents: Overseer (Sonnet 4) + Language Detection & Confirmation (Haiku) + Apollo Availability Agent + ContextManager integration + Sofia BaseAgent + Maya BaseAgent + OpenAI GPT fallback + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order');
+        console.log('[EnhancedConversationManager] Initialized with comprehensive booking fixes: Direct booking path + Duplicate reservation ID removal + Guest recognition improvements + Enhanced tool validation + Time parsing fixes + UX Context Intelligence');
     }
 
     /**
-     * 🚨 CRITICAL BUG FIX: Enhanced time parsing and validation utility
-     * 🐛 BUG FIX #1&2: Now handles "HH-MM" typo as "HH:MM" format with proper priority
-     * This prevents ambiguous time input from causing tool failures
+     * 🎯 ENHANCED: Complete booking information detection with intelligent guest context merging
+     * This is the KEY UX fix that enables immediate recognition of returning guests like Эрик
+     */
+    private async hasCompleteBookingInfoFromMessage(
+        message: string, 
+        session: BookingSessionWithAgent
+    ): Promise<CompleteBookingInfoResult> {
+        try {
+            const prompt = `Analyze this restaurant booking message and extract all booking information.
+
+USER MESSAGE: "${message}"
+SESSION LANGUAGE: ${session.language}
+CURRENT SESSION INFO: ${JSON.stringify(session.gatheringInfo)}
+
+EXTRACT THESE FIELDS:
+- name: Guest's full name
+- phone: Phone number (any format)
+- date: Date in YYYY-MM-DD format
+- time: Time in HH:MM format
+- guests: Number of people (integer)
+- comments: Special requests or comments
+
+RULES:
+1. Only extract information that is explicitly stated in the message
+2. For dates: Convert relative dates (today, tomorrow, next week) to actual dates
+3. For times: Convert to 24-hour format
+4. For guests: Extract number of people/guests
+5. Return empty string for fields not found
+
+EXAMPLES:
+"5 человек, Эрик, 89011231223, на завтра в 19:00" → 
+{
+  "name": "Эрик",
+  "phone": "89011231223", 
+  "guests": 5,
+  "date": "2025-07-16",
+  "time": "19:00"
+}
+
+"Table for 4 people tomorrow at 7pm, John Smith 555-1234" →
+{
+  "name": "John Smith",
+  "phone": "555-1234",
+  "guests": 4,
+  "date": "2025-07-16", 
+  "time": "19:00"
+}
+
+Respond with JSON only:
+{
+  "name": "extracted_name_or_empty",
+  "phone": "extracted_phone_or_empty",
+  "date": "extracted_date_or_empty",
+  "time": "extracted_time_or_empty", 
+  "guests": extracted_number_or_null,
+  "comments": "extracted_comments_or_empty"
+}`;
+
+            const extraction = await aiService.generateJSON(prompt, {
+                model: 'haiku',
+                maxTokens: 300,
+                temperature: 0.1,
+                context: 'complete-booking-extraction'
+            });
+
+            // Validate extracted data
+            const extracted = {
+                name: extraction.name?.trim() || undefined,
+                phone: extraction.phone?.trim() || undefined,
+                date: extraction.date?.trim() || undefined,
+                time: extraction.time?.trim() || undefined,
+                guests: extraction.guests || undefined,
+                comments: extraction.comments?.trim() || undefined
+            };
+
+            // 🎯 NEW: Merge with guest history context for intelligent recognition
+            const contextualInfo = this.mergeWithGuestContext(extracted, session);
+            
+            // Check completeness considering ALL available information
+            const missingFields = this.getMissingFields(contextualInfo);
+            const hasAll = missingFields.length === 0;
+
+            console.log(`[CompleteBookingInfo] Enhanced extraction result:`, {
+                fromMessage: extracted,
+                fromContext: this.getGuestContextInfo(session),
+                merged: contextualInfo,
+                hasAll,
+                missingFields,
+                confidence: hasAll ? 0.9 : Math.max(0.3, (5 - missingFields.length) / 5)
+            });
+
+            return {
+                hasAll,
+                extracted: contextualInfo, // Return merged info instead of just message extraction
+                confidence: hasAll ? 0.9 : Math.max(0.1, (5 - missingFields.length) / 5),
+                missingFields
+            };
+
+        } catch (error) {
+            console.error('[CompleteBookingInfo] Extraction error:', error);
+            return {
+                hasAll: false,
+                extracted: {},
+                confidence: 0,
+                missingFields: ['name', 'phone', 'date', 'time', 'guests']
+            };
+        }
+    }
+
+    /**
+     * 🎯 NEW: Merge message extraction with guest history context
+     * This enables immediate recognition of returning guests
+     */
+    private mergeWithGuestContext(
+        messageInfo: any, 
+        session: BookingSessionWithAgent
+    ): any {
+        const merged = { ...messageInfo };
+        
+        // Use guest history to fill missing info
+        if (!merged.name && session.guestHistory?.guest_name) {
+            merged.name = session.guestHistory.guest_name;
+            console.log(`[ContextMerge] Added name from history: ${merged.name}`);
+        }
+        
+        if (!merged.phone && session.guestHistory?.guest_phone) {
+            merged.phone = session.guestHistory.guest_phone;
+            console.log(`[ContextMerge] Added phone from history: ${merged.phone}`);
+        }
+        
+        // Suggest common party size if not provided
+        if (!merged.guests && session.guestHistory?.common_party_size) {
+            merged.suggestedGuests = session.guestHistory.common_party_size;
+            console.log(`[ContextMerge] Suggested guests from history: ${merged.suggestedGuests}`);
+        }
+        
+        return merged;
+    }
+
+    /**
+     * 🎯 NEW: Check for missing required fields
+     */
+    private getMissingFields(info: any): string[] {
+        const missingFields: string[] = [];
+        if (!info.name) missingFields.push('name');
+        if (!info.phone) missingFields.push('phone');
+        if (!info.date) missingFields.push('date');
+        if (!info.time) missingFields.push('time');
+        if (!info.guests) missingFields.push('guests');
+        return missingFields;
+    }
+
+    /**
+     * 🎯 NEW: Get guest context information for logging
+     */
+    private getGuestContextInfo(session: BookingSessionWithAgent): any {
+        return {
+            hasGuestHistory: !!session.guestHistory,
+            guestName: session.guestHistory?.guest_name,
+            guestPhone: session.guestHistory?.guest_phone,
+            totalBookings: session.guestHistory?.total_bookings || 0,
+            commonPartySize: session.guestHistory?.common_party_size
+        };
+    }
+
+    /**
+     * Enhanced time parsing and validation utility
+     * Handles "HH-MM" typo as "HH:MM" format with proper priority
      */
     private parseAndValidateTimeInput(
         input: string,
@@ -145,29 +331,27 @@ export class EnhancedConversationManager {
         
         console.log(`[TimeValidation] Parsing input: "${cleanInput}" (Language: ${language})`);
 
-        // 🐛 BUG FIX #1&2: Handle common "HH-MM" typo FIRST with highest priority
-        // This must come BEFORE ambiguous pattern detection to fix the user issue
+        // Handle common "HH-MM" typo FIRST with highest priority
         const dashTypoMatch = cleanInput.match(/^(\d{1,2})-(\d{2})$/);
         if (dashTypoMatch) {
             const [, hours, minutes] = dashTypoMatch;
             const hourNum = parseInt(hours);
             const minNum = parseInt(minutes);
             
-            // Validate that it looks like a time (not a range)
             if (hourNum >= 0 && hourNum <= 23 && minNum >= 0 && minNum <= 59) {
                 const parsedTime = `${hourNum.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
-                console.log(`[TimeValidation] ✅ BUG FIX: Parsed as HH-MM typo: ${parsedTime}`);
+                console.log(`[TimeValidation] ✅ Parsed as HH-MM typo: ${parsedTime}`);
                 return {
                     isValid: true,
                     parsedTime,
                     isAmbiguous: false,
-                    confidence: 0.95, // High confidence for valid time format
+                    confidence: 0.95,
                     detectedPattern: "HH-MM typo corrected to HH:MM"
                 };
             }
         }
 
-        // 🚨 CRITICAL: Detect explicitly ambiguous patterns (only after typo check)
+        // Detect explicitly ambiguous patterns
         const ambiguousPatterns = [
             { 
                 pattern: /^\d{1,2}-\d{1,2}$/, 
@@ -183,25 +367,9 @@ export class EnhancedConversationManager {
                 pattern: /^(evening|утром|вечером|popodne|este|délután|sera|tarde|sera|avond)$/i, 
                 reason: "vague time reference",
                 examples: "evening could mean 18:00, 19:00, 20:00, or 21:00"
-            },
-            { 
-                pattern: /^(around|около|oko|körül|vers|hacia|verso|rond)\s+\d{1,2}$/i, 
-                reason: "approximate time",
-                examples: "around 7 could mean 18:30, 19:00, or 19:30"
-            },
-            {
-                pattern: /^(между|između|között|entre|tussen)\s+\d{1,2}\s+(и|i|és|y|en)\s+\d{1,2}$/i,
-                reason: "time range in multiple languages",
-                examples: "между 7 и 8 is a range, not specific time"
-            },
-            {
-                pattern: /^\d{1,2}\s*(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i,
-                reason: "date without time",
-                examples: "19 июля has no time specified"
             }
         ];
         
-        // Check for ambiguous patterns (after typo correction attempt)
         for (const { pattern, reason, examples } of ambiguousPatterns) {
             if (pattern.test(cleanInput)) {
                 console.log(`[TimeValidation] ❌ Detected ambiguous pattern: ${reason}`);
@@ -215,7 +383,7 @@ export class EnhancedConversationManager {
             }
         }
         
-        // ✅ Standard time parsing for valid formats
+        // Standard time parsing for valid formats
         const validTimePatterns = [
             { pattern: /^(\d{1,2}):(\d{2})$/, name: "HH:MM format" },
             { pattern: /^(\d{1,2})\.(\d{2})$/, name: "HH.MM format" },
@@ -243,7 +411,6 @@ export class EnhancedConversationManager {
             }
         }
         
-        // If no valid pattern matches, it's ambiguous
         console.log(`[TimeValidation] ❌ No valid time pattern found for: "${cleanInput}"`);
         return {
             isValid: false,
@@ -255,8 +422,7 @@ export class EnhancedConversationManager {
     }
 
     /**
-     * 🚨 CRITICAL BUG FIX: Comprehensive tool pre-condition validation
-     * This is the main fix to prevent tool failure loops
+     * Comprehensive tool pre-condition validation to prevent tool failure loops
      */
     private validateToolPreConditions(
         toolCall: any, 
@@ -267,19 +433,16 @@ export class EnhancedConversationManager {
         try {
             const args = JSON.parse(toolCall.function.arguments);
             
-            // 🚨 CRITICAL: Enhanced validation for find_alternative_times
+            // Enhanced validation for find_alternative_times
             if (toolCall.function.name === 'find_alternative_times') {
                 console.log(`[ToolValidation] Validating find_alternative_times with args:`, args);
                 
-                // Check for missing preferredTime - this is the main cause of the bug
                 if (!args.preferredTime || args.preferredTime.trim() === '') {
                     console.error('[ToolValidation] ❌ find_alternative_times missing preferredTime');
                     
-                    // 🚨 CRITICAL FIX: Check for recent availability failure context
                     const recentFailure = this.detectRecentAvailabilityFailure(session);
                     
                     if (recentFailure.hasFailure && recentFailure.failedTime) {
-                        // Auto-populate from failure context
                         args.preferredTime = recentFailure.failedTime;
                         toolCall.function.arguments = JSON.stringify(args);
                         
@@ -290,7 +453,6 @@ export class EnhancedConversationManager {
                             warningMessage: `Auto-populated preferred time from recent availability check: ${args.preferredTime}`
                         };
                     } else {
-                        // No context available - request clarification
                         return {
                             valid: false,
                             shouldClarify: true,
@@ -299,7 +461,6 @@ export class EnhancedConversationManager {
                     }
                 }
                 
-                // 🚨 CRITICAL: Validate time format in preferredTime
                 const timeValidation = this.parseAndValidateTimeInput(args.preferredTime, session.language);
                 if (!timeValidation.isValid) {
                     return {
@@ -309,7 +470,6 @@ export class EnhancedConversationManager {
                     };
                 }
                 
-                // Use parsed time if available
                 if (timeValidation.parsedTime && timeValidation.parsedTime !== args.preferredTime) {
                     args.preferredTime = timeValidation.parsedTime;
                     toolCall.function.arguments = JSON.stringify(args);
@@ -317,11 +477,10 @@ export class EnhancedConversationManager {
                 }
             }
             
-            // 🚨 CRITICAL: Enhanced validation for check_availability 
+            // Enhanced validation for check_availability 
             if (toolCall.function.name === 'check_availability') {
                 console.log(`[ToolValidation] Validating check_availability with args:`, args);
                 
-                // Validate time format to prevent ambiguous input from reaching tools
                 if (!args.time || args.time.trim() === '') {
                     return {
                         valid: false,
@@ -339,14 +498,12 @@ export class EnhancedConversationManager {
                     };
                 }
                 
-                // Use parsed time if normalized
                 if (timeValidation.parsedTime && timeValidation.parsedTime !== args.time) {
                     args.time = timeValidation.parsedTime;
                     toolCall.function.arguments = JSON.stringify(args);
                     console.log(`[ToolValidation] ✅ Normalized time: ${args.time}`);
                 }
                 
-                // Validate date format
                 if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
                     return {
                         valid: false,
@@ -355,7 +512,6 @@ export class EnhancedConversationManager {
                     };
                 }
                 
-                // Validate guests
                 if (!args.guests || args.guests < 1 || args.guests > 50) {
                     return {
                         valid: false,
@@ -379,7 +535,6 @@ export class EnhancedConversationManager {
                     missing.push('valid date (YYYY-MM-DD format)');
                 }
                 
-                // Time validation for create_reservation
                 if (!args.time) {
                     missing.push('time');
                 } else {
@@ -392,7 +547,6 @@ export class EnhancedConversationManager {
                         };
                     }
                     
-                    // Normalize time
                     if (timeValidation.parsedTime && timeValidation.parsedTime !== args.time) {
                         args.time = timeValidation.parsedTime;
                         toolCall.function.arguments = JSON.stringify(args);
@@ -427,7 +581,7 @@ export class EnhancedConversationManager {
     }
 
     /**
-     * ✅ PHASE 1 FIX: Language Detection Agent using AIService with GPT fallback
+     * Language Detection Agent using AIService with GPT fallback
      */
     private async runLanguageDetectionAgent(
         message: string,
@@ -440,7 +594,6 @@ export class EnhancedConversationManager {
         shouldLock: boolean;
     }> {
         try {
-            // Build context from conversation history
             const historyContext = conversationHistory.length > 0 
                 ? conversationHistory.slice(-3).map(msg => `${msg.role}: ${msg.content}`).join('\n')
                 : 'First message';
@@ -487,15 +640,14 @@ Respond with JSON only:
   "shouldLock": true/false
 }`;
 
-            // ✅ USE AISERVICE: Fast language detection with fallback
             const response = await aiService.generateJSON(prompt, {
-                model: 'haiku', // Fast language detection
+                model: 'haiku',
                 maxTokens: 200,
                 temperature: 0.0,
                 context: 'LanguageAgent'
             });
 
-            console.log(`🌍 [LanguageAgent-AIService] Detection for "${message}":`, {
+            console.log(`🌍 [LanguageAgent] Detection for "${message}":`, {
                 detected: response.detectedLanguage,
                 confidence: response.confidence,
                 reasoning: response.reasoning,
@@ -512,7 +664,6 @@ Respond with JSON only:
         } catch (error) {
             console.error('[LanguageAgent] Error:', error);
             
-            // Simple fallback detection for critical cases
             const text = message.toLowerCase();
             let fallbackLanguage: Language = 'en';
             
@@ -531,7 +682,7 @@ Respond with JSON only:
     }
 
     /**
-     * ✅ PHASE 1 FIX: Confirmation Agent using AIService with GPT fallback
+     * Confirmation Agent using AIService with GPT fallback
      */
     private async runConfirmationAgent(
         message: string,
@@ -551,7 +702,7 @@ The user was asked to confirm an action. Analyze their response and decide if it
 - **User's Response:** "${message}"
 
 ## RULES
-1. **Positive:** The user agrees, confirms, or says yes (e.g., "Yes, that's correct", "Sounds good", "Igen, rendben", "Igen, rendben van", "Да, все верно").
+1. **Positive:** The user agrees, confirms, or says yes (e.g., "Yes, that's correct", "Sounds good", "Igen, rendben", "Да, все верно").
 2. **Negative:** The user disagrees, cancels, or says no (e.g., "No, cancel that", "That's wrong", "Nem", "Нет, отменить").
 3. **Unclear:** The user asks a question, tries to change details, or gives an ambiguous reply.
 
@@ -560,7 +711,6 @@ The user was asked to confirm an action. Analyze their response and decide if it
 **Hungarian:**
 - "Igen" → positive
 - "Igen, rendben" → positive
-- "Igen, rendben van" → positive
 - "Jó" → positive
 - "Nem" → negative
 - "Mégse" → negative
@@ -589,15 +739,14 @@ Respond with ONLY a JSON object.
   "reasoning": "Briefly explain your decision based on the user's message."
 }`;
 
-            // ✅ USE AISERVICE: Fast confirmation analysis with fallback
             const response = await aiService.generateJSON(prompt, {
-                model: 'haiku', // Fast confirmation analysis
+                model: 'haiku',
                 maxTokens: 200,
                 temperature: 0.0,
                 context: 'ConfirmationAgent'
             });
 
-            console.log(`🤖 [ConfirmationAgent-AIService] Decision for "${message}":`, {
+            console.log(`🤖 [ConfirmationAgent] Decision for "${message}":`, {
                 status: response.confirmationStatus,
                 reasoning: response.reasoning
             });
@@ -609,7 +758,6 @@ Respond with ONLY a JSON object.
 
         } catch (error) {
             console.error('[ConfirmationAgent] Error:', error);
-            // Fallback to unclear to prevent incorrect actions
             return {
                 confirmationStatus: 'unclear',
                 reasoning: 'Fallback due to an internal error.'
@@ -618,7 +766,7 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ SIMPLIFIED: Wrapper for language detection
+     * Wrapper for language detection
      */
     async detectLanguage(message: string, session?: BookingSessionWithAgent): Promise<Language> {
         const detection = await this.runLanguageDetectionAgent(
@@ -639,24 +787,21 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ CRITICAL FIX: Reset session contamination for new booking requests while preserving guest identity and clearing conversation state flags
+     * Reset session contamination for new booking requests while preserving guest identity
      */
     private resetSessionContamination(session: BookingSessionWithAgent, reason: string) {
         const preservedGuestName = session.guestHistory?.guest_name;
         const preservedGuestPhone = session.guestHistory?.guest_phone;
         
-        // Clear ONLY booking contamination, preserve guest identity
         session.gatheringInfo = {
             date: undefined,
             time: undefined, 
             guests: undefined,
             comments: undefined,
-            // Clear name/phone so system asks again, but can auto-fill from history
             name: undefined,
             phone: undefined
         };
         
-        // ✅ CRITICAL FIX: Reset conversation state flags for new booking to prevent false assumptions
         session.hasAskedPartySize = false;
         session.hasAskedDate = false;
         session.hasAskedTime = false;
@@ -666,14 +811,13 @@ Respond with ONLY a JSON object.
         console.log(`[SessionReset] Cleared booking contamination for new request (${reason}), preserved guest: ${preservedGuestName}`);
         console.log(`[SessionReset] Reset conversation state flags - agent will ask for information fresh`);
         
-        // Clear any pending confirmations from previous booking
         delete session.pendingConfirmation;
         delete session.confirmedName;
         delete session.activeReservationId;
-        delete session.foundReservations; // ✅ NEW: Clear found reservations list
-        delete session.availabilityFailureContext; // ✅ APOLLO: Clear failure context
+        delete session.foundReservations;
+        delete session.availabilityFailureContext;
         
-        console.log(`[SessionReset] Cleared pending states, active reservation ID, found reservations, and Apollo failure context`);
+        console.log(`[SessionReset] Cleared pending states, active reservation ID, found reservations, and availability failure context`);
     }
 
     /**
@@ -710,7 +854,7 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * ✅ APOLLO: Detect recent availability failure in conversation history
+     * Detect recent availability failure in conversation history
      */
     private detectRecentAvailabilityFailure(session: BookingSessionWithAgent): {
         hasFailure: boolean;
@@ -719,10 +863,9 @@ Respond with ONLY a JSON object.
         failedGuests?: number;
         failureReason?: string;
     } {
-        console.log(`🔍 [Apollo] Scanning conversation history for recent availability failures...`);
+        console.log(`🔍 [AvailabilityFailure] Scanning conversation history for recent failures...`);
         
-        // Look through recent conversation history for failed availability checks
-        const recentMessages = session.conversationHistory.slice(-10); // Check last 10 messages
+        const recentMessages = session.conversationHistory.slice(-10);
         
         for (let i = recentMessages.length - 1; i >= 0; i--) {
             const msg = recentMessages[i];
@@ -735,10 +878,8 @@ Respond with ONLY a JSON object.
                         try {
                             const args = JSON.parse(toolCall.function.arguments);
                             
-                            // Look for the response to this tool call in the next message
                             const nextMessage = recentMessages[i + 1];
                             if (nextMessage && nextMessage.role === 'assistant') {
-                                // Check if the response contains failure indicators
                                 const response = nextMessage.content.toLowerCase();
                                 
                                 if (response.includes('no availability') || 
@@ -748,7 +889,7 @@ Respond with ONLY a JSON object.
                                     response.includes('не доступно') ||
                                     response.includes('занято')) {
                                     
-                                    console.log(`🔍 [Apollo] Found availability failure:`, {
+                                    console.log(`🔍 [AvailabilityFailure] Found failure:`, {
                                         tool: toolCall.function.name,
                                         date: args.date,
                                         time: args.time || args.newTime,
@@ -765,19 +906,19 @@ Respond with ONLY a JSON object.
                                 }
                             }
                         } catch (parseError) {
-                            console.warn(`[Apollo] Failed to parse tool call arguments:`, parseError);
+                            console.warn(`[AvailabilityFailure] Failed to parse tool call arguments:`, parseError);
                         }
                     }
                 }
             }
         }
         
-        console.log(`🔍 [Apollo] No recent availability failures found`);
+        console.log(`🔍 [AvailabilityFailure] No recent failures found`);
         return { hasFailure: false };
     }
 
     /**
-     * ✅ PHASE 1 FIX: Overseer with availability failure detection using AIService
+     * Overseer with availability failure detection using AIService
      */
     private async runOverseer(
         session: BookingSessionWithAgent, 
@@ -804,7 +945,6 @@ Respond with ONLY a JSON object.
                 hasGuestHistory: !!session.guestHistory
             };
 
-            // ✅ APOLLO: Check for availability failure first
             const availabilityFailure = this.detectRecentAvailabilityFailure(session);
 
             const prompt = `You are the master "Overseer" for a restaurant booking system. Analyze the conversation and decide which agent should handle the user's request.
@@ -901,15 +1041,14 @@ Respond with ONLY a JSON object:
   "isNewBookingRequest": true/false
 }`;
 
-            // ✅ USE AISERVICE: Strategic decision-making with fallback
             const decision = await aiService.generateJSON(prompt, {
-                model: 'sonnet', // Complex strategic decision-making
+                model: 'sonnet',
                 maxTokens: 1000,
                 temperature: 0.2,
                 context: 'Overseer'
             });
 
-            console.log(`🧠 [Overseer-AIService] Decision for "${userMessage}":`, {
+            console.log(`🧠 [Overseer] Decision for "${userMessage}":`, {
                 currentAgent: session.currentAgent,
                 decision: decision.agentToUse,
                 reasoning: decision.reasoning,
@@ -917,7 +1056,6 @@ Respond with ONLY a JSON object:
                 availabilityFailureDetected: availabilityFailure.hasFailure
             });
 
-            // ✅ APOLLO: Store availability failure context if Apollo is chosen
             if (decision.agentToUse === 'availability' && availabilityFailure.hasFailure) {
                 session.availabilityFailureContext = {
                     originalDate: availabilityFailure.failedDate!,
@@ -1013,7 +1151,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ APOLLO: Get tools for specific agent type with Apollo support
+     * Get tools for specific agent type with Apollo support
      */
     private getToolsForAgent(agentType: AgentType) {
         console.log(`🛠️ [AgentLoader] Loading tools for ${agentType} agent`);
@@ -1057,7 +1195,6 @@ Respond with ONLY a JSON object:
             }
         };
 
-        // ✅ APOLLO: Specialist availability agent tools
         if (agentType === 'availability') {
             console.log("🛠️ [AgentLoader] Loading tools for specialist Availability Agent (Apollo)");
             return [
@@ -1333,12 +1470,11 @@ Respond with ONLY a JSON object:
         const session = createBookingSession(config) as BookingSessionWithAgent;
 
         session.context = this.detectContext(config.platform);
-        session.currentAgent = 'booking'; // Default to Sofia
+        session.currentAgent = 'booking';
         session.agentHistory = [];
         session.guestHistory = null;
         session.turnCount = 0;
         session.agentTurnCount = 0;
-        // ✅ NEW: Language locking mechanism
         session.languageLocked = false;
 
         this.sessions.set(session.sessionId, session);
@@ -1356,7 +1492,7 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ PHASE 4.2 COMPLETE: Updated getAgent method to use both Sofia and Maya BaseAgents
+     * Updated getAgent method to use both Sofia and Maya BaseAgents
      */
     private async getAgent(restaurantId: number, agentType: AgentType = 'booking') {
         const agentKey = `${restaurantId}_${agentType}`;
@@ -1383,7 +1519,6 @@ Respond with ONLY a JSON object:
             languages: restaurant.languages
         };
 
-        // ✅ STEP 4.1.4: Use BaseAgent pattern for booking agent (Sofia)
         if (agentType === 'booking') {
             const sofiaConfig = {
                 name: 'Sofia',
@@ -1411,7 +1546,7 @@ Respond with ONLY a JSON object:
                 restaurantConfig,
                 tools: sofiaAgent.getTools(),
                 agentType,
-                baseAgent: sofiaAgent, // ✅ NEW: Store BaseAgent instance
+                baseAgent: sofiaAgent,
                 systemPrompt: '',
                 updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
                     return sofiaAgent.generateSystemPrompt({
@@ -1431,7 +1566,6 @@ Respond with ONLY a JSON object:
             return agent;
         }
 
-        // ✅ PHASE 4.2 COMPLETE: Use BaseAgent pattern for reservation agent (Maya)
         if (agentType === 'reservations') {
             const mayaConfig = {
                 name: 'Maya',
@@ -1444,7 +1578,7 @@ Respond with ONLY a JSON object:
                     'get_guest_history'
                 ],
                 maxTokens: 1200,
-                temperature: 0.3, // Lower temperature for more consistent reservation management
+                temperature: 0.3,
                 primaryModel: 'sonnet' as const,
                 fallbackModel: 'haiku' as const,
                 enableContextResolution: true,
@@ -1459,7 +1593,7 @@ Respond with ONLY a JSON object:
                 restaurantConfig,
                 tools: mayaAgent.getTools(),
                 agentType,
-                baseAgent: mayaAgent, // ✅ NEW: Store Maya BaseAgent instance
+                baseAgent: mayaAgent,
                 systemPrompt: '',
                 updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
                     return mayaAgent.generateSystemPrompt({
@@ -1475,13 +1609,12 @@ Respond with ONLY a JSON object:
             };
 
             this.agents.set(agentKey, agent);
-            console.log(`[EnhancedConversationManager] ✅ Created Maya BaseAgent for ${restaurant.name} with tiered confidence model`);
+            console.log(`[EnhancedConversationManager] ✅ Created Maya BaseAgent for ${restaurant.name}`);
             return agent;
         }
 
-        // ✅ KEEP: All existing logic for other agents (Apollo, Conductor) until they're refactored
         const agent = {
-            client: aiService, // ✅ PHASE 1 FIX: Use AIService instead of separate OpenAI client
+            client: aiService,
             restaurantConfig,
             tools: this.getToolsForAgent(agentType),
             agentType,
@@ -1498,20 +1631,17 @@ Respond with ONLY a JSON object:
     }
 
     /**
-     * ✅ 🚨 APOLLO: Enhanced agent personality system with Apollo specialist prompt
-     * ✅ KEPT FOR APOLLO AND CONDUCTOR: Maya's old system prompt logic removed as it's now handled by BaseAgent
+     * Enhanced agent personality system with Apollo specialist prompt
      */
     private getAgentPersonality(agentType: AgentType, language: string, restaurantConfig: any, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false, conversationContext?: any): string {
         const currentTime = DateTime.now().setZone(restaurantConfig.timezone);
 
-        // ✅ LANGUAGE INSTRUCTION (works for all languages)
         const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
 - User's language: ${language}
 - You MUST respond in ${language} for ALL messages
 - Maintain warm, professional tone in ${language}
 - If unsure of translation, use simple clear ${language}`;
 
-        // ✅ CRITICAL FIX: Add conversation context awareness section
         const contextAwarenessSection = conversationContext ? `
 
 🧠 CONVERSATION CONTEXT AWARENESS:
@@ -1533,7 +1663,6 @@ Respond with ONLY a JSON object:
 
 ✅ Instead, use the information already provided or acknowledge it naturally.` : '';
 
-        // ✅ APOLLO: Specialist Availability Agent personality
         if (agentType === 'availability') {
             return `You are Apollo, a specialist Availability Agent. Your only job is to help a user find an alternative time after their first choice was unavailable.
 
@@ -1567,7 +1696,6 @@ ${contextAwarenessSection}
 This focused approach prevents availability hallucination and ensures accurate alternative suggestions.`;
         }
 
-        // ✅ CONDUCTOR: Only agent left using traditional system prompt
         return `You are a helpful restaurant assistant.
 
 ${languageInstruction}
@@ -1577,7 +1705,7 @@ Assist guests with their restaurant needs in a professional manner.`;
     }
 
     /**
-     * ✅ NEW: Extract reservation ID from user message for modification requests
+     * Extract reservation ID from user message for modification requests
      */
     private extractReservationIdFromMessage(
         message: string, 
@@ -1590,7 +1718,6 @@ Assist guests with their restaurant needs in a professional manner.`;
         const text = message.toLowerCase().trim();
         const availableIds = foundReservations.map(r => r.id);
         
-        // Try to extract number that looks like an ID
         const numberMatches = text.match(/\d+/g);
         if (numberMatches) {
             for (const numStr of numberMatches) {
@@ -1601,7 +1728,6 @@ Assist guests with their restaurant needs in a professional manner.`;
             }
         }
         
-        // Check for ordinal selection (1st, 2nd, 3rd reservation in list)
         const ordinalMatches = text.match(/^([123])$/);
         if (ordinalMatches && foundReservations.length >= parseInt(ordinalMatches[1])) {
             const index = parseInt(ordinalMatches[1]) - 1;
@@ -1620,13 +1746,15 @@ Assist guests with their restaurant needs in a professional manner.`;
         };
     }
 
+    /**
+     * Extract name choice from user message
+     */
     private async extractNameChoice(
         userMessage: string,
         dbName: string,
         requestName: string,
         language: string
     ): Promise<string | null> {
-
         try {
             const prompt = `You are helping resolve a name conflict in a restaurant booking system.
 
@@ -1657,7 +1785,7 @@ Important: Return the EXACT name (including non-Latin characters) that the user 
 Respond with JSON only.`;
 
             const response = await aiService.generateJSON(prompt, {
-                model: 'haiku', // Fast name choice extraction
+                model: 'haiku',
                 maxTokens: 150,
                 temperature: 0.0,
                 context: 'name-choice-extraction'
@@ -1686,17 +1814,10 @@ Respond with JSON only.`;
         }
     }
 
-    // ===== REST OF THE CLASS METHODS REMAIN UNCHANGED =====
-    // (All the remaining methods from the original implementation stay exactly the same)
-    // This includes: handleMessage, executeConfirmedBooking, handleConfirmation, 
-    // extractGatheringInfo, getSession, updateSession, endSession, cleanupOldSessions, getStats, shutdown
-
     /**
-     * ✅ PHASE 1 FIX: Main message handling with smart context preservation
-     * ✅ CRITICAL BUG FIX: Move hasBooking and reservationId declarations to top of try block
-     * ✅ STEP 3B.1 COMPLETE: All context operations now use ContextManager
-     * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
-     * 🐛 BUG FIX #1&2: Enhanced time parsing with HH-MM typo recognition with proper priority
+     * Main message handling with comprehensive booking fixes and UX enhancements
+     * 🔧 BOOKING SYSTEM FIXES: Direct booking path, duplicate reservation ID removal, guest recognition
+     * 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -1714,14 +1835,12 @@ Respond with JSON only.`;
         }
 
         try {
-            // ✅ CRITICAL BUG FIX: Declare variables at the beginning of try block
-            // so they're available throughout the entire function
             let hasBooking = false;
             let reservationId: number | undefined;
 
             const isFirstMessage = session.conversationHistory.length === 0;
 
-            // ✅ CRITICAL FIX: Guest history retrieval now happens before any other action on the first message.
+            // 🔧 BOOKING SYSTEM FIX: Move guest history retrieval to TOP of function, before guardrails
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
                 console.log(`👤 [GuestHistory] First message from telegram user: ${session.telegramUserId}, retrieving history...`);
 
@@ -1731,7 +1850,86 @@ Respond with JSON only.`;
                 );
 
                 session.guestHistory = guestHistory;
-                console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved' : 'No'} history for session ${sessionId}`);
+                console.log(`👤 [GuestHistory] ${guestHistory ? 'Retrieved for ' + guestHistory.guest_name : 'No'} history for session ${sessionId}`);
+            }
+
+            // 🎯 UX ENHANCEMENT: Check for complete booking information with intelligent context merging BEFORE any other processing
+            const completionCheck = await this.hasCompleteBookingInfoFromMessage(message, session);
+            
+            if (completionCheck.hasAll && session.currentAgent === 'booking') {
+                console.log('[DirectBooking] All info present (including context). Attempting direct booking.');
+                
+                // Update session with extracted info
+                Object.assign(session.gatheringInfo, completionCheck.extracted);
+                
+                // Update conversation state flags
+                if (completionCheck.extracted.name) session.hasAskedName = true;
+                if (completionCheck.extracted.phone) session.hasAskedPhone = true;
+                if (completionCheck.extracted.date) session.hasAskedDate = true;
+                if (completionCheck.extracted.time) session.hasAskedTime = true;
+                if (completionCheck.extracted.guests) session.hasAskedPartySize = true;
+                
+                // Create function context
+                const functionContext = {
+                    restaurantId: session.restaurantId,
+                    timezone: 'Europe/Moscow',
+                    telegramUserId: session.telegramUserId,
+                    source: session.platform,
+                    sessionId: sessionId,
+                    language: session.language,
+                    confirmedName: undefined
+                };
+                
+                // Directly call create_reservation
+                try {
+                    const result = await agentFunctions.create_reservation(
+                        completionCheck.extracted.name!,
+                        completionCheck.extracted.phone!,
+                        completionCheck.extracted.date!,
+                        completionCheck.extracted.time!,
+                        completionCheck.extracted.guests!,
+                        completionCheck.extracted.comments || '',
+                        functionContext
+                    );
+                    
+                    if (result.tool_status === 'SUCCESS' && result.data) {
+                        hasBooking = true;
+                        reservationId = result.data.reservationId;
+                        session.hasActiveReservation = reservationId;
+                        session.currentStep = 'completed';
+                        
+                        contextManager.preserveReservationContext(session, reservationId, 'creation');
+                        this.resetAgentState(session);
+                        
+                        const baseMessage = `🎉 Perfect! Your reservation is confirmed. Reservation number: ${reservationId}`;
+                        const successMessage = await TranslationService.translateMessage(
+                            baseMessage,
+                            session.language,
+                            'success'
+                        );
+                        
+                        session.conversationHistory.push({ role: 'user', content: message, timestamp: new Date() });
+                        session.conversationHistory.push({ role: 'assistant', content: successMessage, timestamp: new Date() });
+                        session.lastActivity = new Date();
+                        this.sessions.set(sessionId, session);
+                        
+                        console.log(`🎯 [DirectBooking] Success! Created reservation ${reservationId} directly using context intelligence`);
+                        
+                        return {
+                            response: successMessage,
+                            hasBooking: true,
+                            reservationId,
+                            session,
+                            currentAgent: session.currentAgent
+                        };
+                    } else {
+                        console.log(`[DirectBooking] Failed to create reservation directly:`, result.error);
+                        // Fall through to normal processing
+                    }
+                } catch (error) {
+                    console.error(`[DirectBooking] Error creating reservation:`, error);
+                    // Fall through to normal processing
+                }
             }
 
             // STEP 1: Check for pending confirmation FIRST
@@ -1739,8 +1937,6 @@ Respond with JSON only.`;
                 console.log(`[EnhancedConversationManager] Checking for confirmation response: "${message}"`);
                 const pendingAction = session.pendingConfirmation;
 
-                // ✅ --- START OF INTELLIGENT CONFIRMATION LOGIC ---
-                // Get a human-readable summary for the confirmation agent
                 let summary = 'the requested action';
                 if (pendingAction.summaryData) {
                     const details = pendingAction.summaryData;
@@ -1772,7 +1968,6 @@ Respond with JSON only.`;
                         delete session.pendingConfirmation;
                         return await this.executeConfirmedBooking(sessionId, pendingAction);
                     } else {
-                        // ✅ USE TRANSLATION SERVICE
                         const baseMessage = `Sorry, I didn't understand your choice. Please say:\n• "${conflictDetails.requestName}" - to use the new name\n• "${conflictDetails.dbName}" - to keep the existing name`;
                         const clarificationMessage = await TranslationService.translateMessage(
                             baseMessage,
@@ -1793,7 +1988,6 @@ Respond with JSON only.`;
                     }
                 }
                 
-                // ✅ Call the AIService-powered Intelligent Confirmation Agent
                 const confirmationResult = await this.runConfirmationAgent(message, summary, session.language);
 
                 switch (confirmationResult.confirmationStatus) {
@@ -1810,21 +2004,16 @@ Respond with JSON only.`;
                     case 'unclear':
                     default:
                         console.log(`[EnhancedConversationManager] ❓ Confirmation was UNCLEAR: ${confirmationResult.reasoning}. Treating as new input.`);
-                        // If the agent is unsure, we clear the pending state and process the message as a new query.
-                        // This allows the user to ask questions or modify details.
                         delete session.pendingConfirmation;
                         delete session.confirmedName;
-                        // The message will now be processed by the rest of the handleMessage logic.
-                        break; // Continue to the main logic flow
+                        break;
                 }
-                // ✅ --- END OF INTELLIGENT CONFIRMATION LOGIC ---
             }
 
-            // ✅ STEP 2: AISERVICE-POWERED LANGUAGE DETECTION WITH INTELLIGENCE
-            // ✅ ENHANCED: Always run language detection, but be more conservative after locking
+            // STEP 2: Language detection with intelligence
             const shouldRunDetection = !session.languageLocked || 
                                      session.conversationHistory.length <= 1 || 
-                                     message.length > 10; // Run detection for substantial messages even if locked
+                                     message.length > 10;
             
             if (shouldRunDetection) {
                 const languageDetection = await this.runLanguageDetectionAgent(
@@ -1833,16 +2022,14 @@ Respond with JSON only.`;
                     session.language
                 );
                 
-                // Determine if we should change language based on lock status
                 const shouldChangeLanguage = session.languageLocked 
-                    ? (languageDetection.confidence > 0.8 && languageDetection.detectedLanguage !== session.language) // Higher threshold if locked
-                    : (languageDetection.confidence > 0.7 && languageDetection.detectedLanguage !== session.language); // Lower threshold if not locked
+                    ? (languageDetection.confidence > 0.8 && languageDetection.detectedLanguage !== session.language)
+                    : (languageDetection.confidence > 0.7 && languageDetection.detectedLanguage !== session.language);
                 
                 if (languageDetection.shouldLock || shouldChangeLanguage) {
                     const wasLocked = session.languageLocked;
                     
                     console.log(`[LanguageAgent] ${wasLocked ? 'Updating' : 'Setting'} language: ${session.language} → ${languageDetection.detectedLanguage} (confidence: ${languageDetection.confidence})`);
-                    console.log(`[LanguageAgent] Reasoning: ${languageDetection.reasoning}`);
                     
                     session.language = languageDetection.detectedLanguage;
                     
@@ -1854,20 +2041,14 @@ Respond with JSON only.`;
                             confidence: languageDetection.confidence,
                             reasoning: languageDetection.reasoning
                         };
-                    } else if (wasLocked && shouldChangeLanguage) {
-                        // Log language switch within locked session
-                        console.log(`[LanguageAgent] 🔄 Language switched within locked session due to high confidence (${languageDetection.confidence})`);
                     }
-                } else if (languageDetection.confidence < 0.5) {
-                    console.log(`[LanguageAgent] Low confidence (${languageDetection.confidence}), keeping current language: ${session.language}`);
                 }
             }
 
-            // STEP 3: AISERVICE-POWERED OVERSEER AGENT DECISION (includes Apollo detection)
+            // STEP 3: Overseer agent decision
             const overseerDecision = await this.runOverseer(session, message);
             
             if (overseerDecision.intervention) {
-                // ✅ USE TRANSLATION SERVICE
                 const translatedIntervention = await TranslationService.translateMessage(
                     overseerDecision.intervention,
                     session.language,
@@ -1895,7 +2076,6 @@ Respond with JSON only.`;
 
             if (session.currentAgent && session.currentAgent !== detectedAgent) {
                 console.log(`[EnhancedConversationManager] 🔄 Agent handoff: ${session.currentAgent} → ${detectedAgent}`);
-                console.log(`[Overseer] Reasoning: ${overseerDecision.reasoning}`);
                 
                 agentHandoff = { 
                     from: session.currentAgent, 
@@ -1912,16 +2092,14 @@ Respond with JSON only.`;
                     overseerReasoning: overseerDecision.reasoning
                 });
 
-                // ✅ APOLLO: Special handling for handoff to availability agent
                 if (detectedAgent === 'availability') {
                     console.log(`🚀 [Apollo] Handoff to availability agent detected`);
                 }
             }
 
-            // ✅ BUGFIX SAFEGUARD: Prevent session reset on simple continuation messages, even if Overseer misclassifies.
+            // Prevent session reset on simple continuation messages
             const isSimpleContinuation = /^(да|нет|yes|no|ok|okay|confirm|yep|nope|thanks|спасибо|hvala|ок|k|igen|nem|ja|nein|oui|non|sì|sí|tak|nie|agree|good|everything's?\s*good|fine|sure|alright)$/i.test(message.trim());
 
-            // ✅ CRITICAL FIX: Reset session contamination for genuinely new booking requests only
             if (overseerDecision.isNewBookingRequest && !isSimpleContinuation) {
                 this.resetSessionContamination(session, overseerDecision.reasoning);
                 console.log(`[SessionReset] NEW BOOKING REQUEST detected - cleared session contamination while preserving guest identity`);
@@ -1946,7 +2124,6 @@ Respond with JSON only.`;
             if (!guardrailResult.allowed) {
                 console.log(`[EnhancedConversationManager] Message blocked: ${guardrailResult.category} - ${guardrailResult.reason}`);
                 
-                // ✅ USE TRANSLATION SERVICE
                 const translatedReason = await TranslationService.translateMessage(
                     guardrailResult.reason || 'I can only help with restaurant reservations.',
                     session.language,
@@ -1974,7 +2151,6 @@ Respond with JSON only.`;
             // STEP 5: Get agent and prepare messages
             const agent = await this.getAgent(session.restaurantId, session.currentAgent);
 
-            // ✅ CRITICAL FIX: Properly construct and pass the full conversation context to prevent repetitive questions
             const conversationContext = {
                 isReturnVisit: !!session.guestHistory && session.guestHistory.total_bookings > 0,
                 hasAskedPartySize: !!session.hasAskedPartySize,
@@ -1985,8 +2161,8 @@ Respond with JSON only.`;
                 bookingNumber: (session.agentHistory?.filter(h => h.to === 'booking').length || 0) + 1,
                 isSubsequentBooking: (session.turnCount || 0) > 1 && !!overseerDecision.isNewBookingRequest,
                 sessionTurnCount: session.turnCount || 1,
-                gatheringInfo: session.gatheringInfo, // Include current gathering state
-                lastQuestions: [] // Can be enhanced further to track question history
+                gatheringInfo: session.gatheringInfo,
+                lastQuestions: []
             };
 
             console.log(`[ConversationManager] Context state:`, {
@@ -1995,25 +2171,23 @@ Respond with JSON only.`;
                 hasAskedTime: conversationContext.hasAskedTime,
                 hasAskedName: conversationContext.hasAskedName,
                 hasAskedPhone: conversationContext.hasAskedPhone,
-                isReturnVisit: conversationContext.isReturnVisit
+                isReturnVisit: conversationContext.isReturnVisit,
+                guestName: session.guestHistory?.guest_name
             });
 
             let systemPrompt = agent.updateInstructions
-                ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage, conversationContext) // ✅ CRITICAL FIX: Pass the context object
+                ? agent.updateInstructions(session.context, session.language, session.guestHistory, isFirstMessage, conversationContext)
                 : this.getAgentPersonality(session.currentAgent, session.language, agent.restaurantConfig, session.guestHistory, isFirstMessage);
 
-            // ✅ FIX: Inject a state-driven command to prevent looping.
             if (session.activeReservationId && session.currentAgent === 'reservations') {
                 console.log(`[State Override] Injecting critical modification instruction for active reservation #${session.activeReservationId}`);
 
-                // ✅ START: SIMPLIFIED OVERRIDE INSTRUCTIONS
                 systemPrompt += `\n\n### 🚨 CRITICAL ACTION REQUIRED 🚨 ###
                 - You are currently modifying reservation ID: ${session.activeReservationId}.
                 - The user has just provided new information for the modification.
                 - Your immediate and ONLY next step is to call the 'modify_reservation' tool with the reservation ID and the new details.
                 - 🚷 FORBIDDEN ACTION: DO NOT call 'find_existing_reservation' again.
                 - 🚷 FORBIDDEN ACTION: DO NOT call 'check_availability'. The 'modify_reservation' tool does this for you.`;
-                // ✅ END: SIMPLIFIED OVERRIDE INSTRUCTIONS
             }
 
             if (session.currentAgent === 'reservations') {
@@ -2023,7 +2197,6 @@ Respond with JSON only.`;
                 }
             }
 
-            // ✅ APOLLO: Add availability failure context to system prompt
             if (session.currentAgent === 'availability' && session.availabilityFailureContext) {
                 systemPrompt += `\n\n🚨 AVAILABILITY FAILURE CONTEXT:
 - Original failed request: ${session.availabilityFailureContext.originalDate} at ${session.availabilityFailureContext.originalTime} for ${session.availabilityFailureContext.originalGuests} guests
@@ -2055,12 +2228,10 @@ Respond with JSON only.`;
                 ...session.conversationHistory.slice(-8).map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content }))
             ];
 
-            // STEP 6: Initial completion with function calling using AIService for OpenAI calls
+            // STEP 6: Initial completion with function calling
             let completion;
             try {
-                // Use a standard client call that supports tools. For now, we'll use the OpenAI client
-                // that the AIService holds, until we abstract this part further.
-                const openaiClient = aiService.getOpenAIClient(); // We'll need to add this getter to AIService
+                const openaiClient = aiService.getOpenAIClient();
 
                 completion = await openaiClient.chat.completions.create({
                     model: "gpt-4o",
@@ -2089,7 +2260,7 @@ Respond with JSON only.`;
                 };
             }
 
-            // STEP 7: Handle function calls (including Apollo's specialized calls)
+            // STEP 7: Handle function calls
             if (completion.choices?.[0]?.message?.tool_calls) {
                 console.log(`[EnhancedConversationManager] Processing ${completion.choices[0].message.tool_calls.length} function calls with ${session.currentAgent} agent`);
                 messages.push({ role: 'assistant' as const, content: completion.choices[0].message.content || null, tool_calls: completion.choices[0].message.tool_calls });
@@ -2107,13 +2278,11 @@ Respond with JSON only.`;
                 for (const toolCall of completion.choices[0].message.tool_calls) {
                     if (toolCall.function.name in agentFunctions) {
                         try {
-                            // 🚨 CRITICAL BUG FIX: Validate tool pre-conditions before execution
                             const validation = this.validateToolPreConditions(toolCall, session);
                             if (!validation.valid) {
                                 console.log(`❌ [ToolValidation] Function call validation failed: ${validation.errorMessage}`);
                                 
                                 if (validation.shouldClarify) {
-                                    // ✅ USE TRANSLATION SERVICE
                                     const translatedError = await TranslationService.translateMessage(
                                         validation.errorMessage!,
                                         session.language,
@@ -2126,14 +2295,12 @@ Respond with JSON only.`;
                                 }
                             }
 
-                            // Log any auto-fixed parameters
                             if (validation.autoFixedParams) {
                                 console.log(`✅ [ToolValidation] Auto-fixed parameters:`, validation.autoFixedParams);
                             }
 
                             const args = JSON.parse(toolCall.function.arguments);
                             
-                            // ✅ APOLLO: Auto-populate failure context for find_alternative_times
                             if (toolCall.function.name === 'find_alternative_times' && 
                                 session.currentAgent === 'availability' && 
                                 session.availabilityFailureContext) {
@@ -2163,7 +2330,6 @@ Respond with JSON only.`;
 
                                 const bookingDetails = confirmationCheck.data;
                                 
-                                // ✅ USE TRANSLATION SERVICE
                                 const baseConfirmation = `Please confirm the booking details: a table for ${bookingDetails.guests} guests under the name ${bookingDetails.guestName} (${bookingDetails.guestPhone}) on ${bookingDetails.date} at ${bookingDetails.time}. Is this correct? Reply "yes" to confirm or "no" to cancel.`;
                                 const confirmationPrompt = await TranslationService.translateMessage(
                                     baseConfirmation,
@@ -2185,7 +2351,6 @@ Respond with JSON only.`;
                                     result = await agentFunctions.check_availability(args.date, args.time, args.guests, functionContext);
                                     break;
                                 case 'find_alternative_times':
-                                    // ✅ APOLLO: Enhanced validation for Apollo's primary tool
                                     if (!args.preferredTime || args.preferredTime.trim() === '') {
                                         console.error('[Apollo] find_alternative_times called without preferredTime');
                                         
@@ -2193,11 +2358,9 @@ Respond with JSON only.`;
                                             args.preferredTime = session.availabilityFailureContext.originalTime;
                                             console.log(`🚀 [Apollo] Auto-fixed preferredTime from failure context: ${args.preferredTime}`);
                                         } else {
-                                            // Try to extract the time from the last failed check_availability call
                                             let extractedTime: string | null = null;
 
-                                            // Look through recent conversation history for check_availability calls
-                                            const recentMessages = session.conversationHistory.slice(-10); // Last 10 messages
+                                            const recentMessages = session.conversationHistory.slice(-10);
                                             for (let i = recentMessages.length - 1; i >= 0; i--) {
                                                 const msg = recentMessages[i];
                                                 if (msg.toolCalls) {
@@ -2223,7 +2386,6 @@ Respond with JSON only.`;
                                                 args.preferredTime = extractedTime;
                                                 console.log(`[Apollo] 🔧 Auto-fixed preferredTime: ${extractedTime}`);
                                             } else {
-                                                // If we can't extract the time, return a validation error
                                                 result = {
                                                     tool_status: 'FAILURE',
                                                     error: {
@@ -2240,22 +2402,18 @@ Respond with JSON only.`;
 
                                     result = await agentFunctions.find_alternative_times(args.date, args.preferredTime, args.guests, functionContext);
                                     
-                                    // ✅ APOLLO: Clear failure context after successful alternative search
                                     if (result.tool_status === 'SUCCESS' && session.currentAgent === 'availability') {
                                         console.log(`🚀 [Apollo] Successfully found alternatives, clearing failure context`);
                                         delete session.availabilityFailureContext;
                                     }
                                     break;
                                 case 'create_reservation':
-                                    // ✅ FIX #4: Add validation for special requests
                                     if (args.specialRequests && session.guestHistory?.frequent_special_requests?.includes(args.specialRequests)) {
-                                        // Check if this was explicitly confirmed in current conversation
                                         const recentMessages = session.conversationHistory.slice(-5);
                                         const hasExplicitConfirmation = recentMessages.some(msg => 
                                             msg.role === 'user' && 
-                                            (msg.content.toLowerCase().includes('tea') || // Adjust based on request type
+                                            (msg.content.toLowerCase().includes('tea') || 
                                              msg.content.toLowerCase().includes('да')) && 
-                                            // Only if the previous assistant message mentioned the specific request
                                             recentMessages.some(prevMsg => 
                                                 prevMsg.role === 'assistant' && 
                                                 prevMsg.content.includes(args.specialRequests)
@@ -2264,15 +2422,13 @@ Respond with JSON only.`;
                                         
                                         if (!hasExplicitConfirmation) {
                                             console.warn(`🚨 [WORKFLOW_VIOLATION] Special request "${args.specialRequests}" appears to be auto-added without explicit confirmation`);
-                                            // Remove the special request or return validation error
-                                            args.specialRequests = ''; // Remove unauthorized special request
+                                            args.specialRequests = '';
                                         }
                                     }
 
                                     result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
                                     break;
                                 case 'find_existing_reservation':
-                                    // ✅ RESERVATION SEARCH ENHANCEMENT: Pass new parameters to find_existing_reservation
                                     result = await agentFunctions.find_existing_reservation(args.identifier, args.identifierType || 'auto', {
                                         ...functionContext,
                                         timeRange: args.timeRange,
@@ -2282,26 +2438,20 @@ Respond with JSON only.`;
                                         session.foundReservations = result.data.reservations;
                                         console.log(`[ConversationManager] Stored ${result.data.reservations.length} found reservations in session:`, result.data.reservations.map(r => `#${r.id}`));
 
-                                        // ✅ STEP 3B.2: Enhanced result handling with smart context management
                                         if (result.data.reservations.length === 1) {
-                                            // ✅ STEP 3B.2: If only one reservation is found, set it as active immediately.
                                             session.activeReservationId = result.data.reservations[0].id;
                                             console.log(`[ConversationManager] Auto-selected active reservation #${session.activeReservationId} as it was the only result.`);
                                             
-                                            // ✅ STEP 3B.1: Use ContextManager for context preservation
                                             contextManager.preserveReservationContext(session, session.activeReservationId, 'lookup');
                                         } else {
-                                            // If multiple reservations are found, clear the active one to force the user to choose.
                                             delete session.activeReservationId;
                                             console.log(`[ConversationManager] Multiple reservations found. Waiting for user selection. Cleared active reservation ID.`);
                                         }
                                     }
                                     break;
                                 case 'modify_reservation':
-                                    // ✅ STEP 3B.1: Enhanced reservation ID resolution with ContextManager
                                     let reservationIdToModify = args.reservationId;
 
-                                    // ✅ STEP 3B.1: Use ContextManager for smart context resolution
                                     const resolution = contextManager.resolveReservationFromContext(
                                         message,
                                         session,
@@ -2344,20 +2494,15 @@ Respond with JSON only.`;
                                     
                                     if (result.tool_status === 'SUCCESS') {
                                         console.log(`[ContextManager] Modification successful. Preserving context instead of clearing.`);
-                                        // ✅ STEP 3B.1: Use ContextManager for context preservation
                                         contextManager.preserveReservationContext(session, reservationIdToModify, 'modification');
-                                        // Keep Maya active for potential follow-up modifications
                                         console.log(`[ContextManager] Keeping Maya active for potential follow-ups`);
                                     }
                                     break;
                                 case 'cancel_reservation':
-                                    // ✅ CRITICAL FIX: Handle reservation ID selection properly for cancellation
                                     let reservationIdToCancel = args.reservationId;
                                     
-                                    // If no explicit reservationId provided, try to extract from user's message or session
                                     if (!reservationIdToCancel) {
                                         if (session.foundReservations && session.foundReservations.length > 1) {
-                                            // User needs to choose from multiple reservations
                                             const extractResult = this.extractReservationIdFromMessage(
                                                 message, 
                                                 session.foundReservations
@@ -2367,10 +2512,8 @@ Respond with JSON only.`;
                                                 reservationIdToCancel = extractResult.reservationId;
                                                 console.log(`[ReservationSelection] User selected reservation #${reservationIdToCancel} for cancellation`);
                                                 
-                                                // Set as active for this operation
                                                 session.activeReservationId = reservationIdToCancel;
                                             } else {
-                                                // Invalid choice - ask user to specify valid ID
                                                 const availableIds = session.foundReservations.map(r => `#${r.id}`).join(', ');
                                                 const errorMessage = await TranslationService.translateMessage(
                                                     extractResult.suggestion || `Please specify the reservation ID to cancel from the list: ${availableIds}`,
@@ -2383,16 +2526,14 @@ Respond with JSON only.`;
                                                 return { response: errorMessage, hasBooking: false, session, currentAgent: session.currentAgent, agentHandoff };
                                             }
                                         } else if (session.foundReservations && session.foundReservations.length === 1) {
-                                            // Only one reservation found, use it
                                             reservationIdToCancel = session.foundReservations[0].id;
                                             session.activeReservationId = reservationIdToCancel;
                                         } else if (session.activeReservationId) {
-                                            // Use previously selected reservation
                                             reservationIdToCancel = session.activeReservationId;
                                         }
                                     }
                                     
-                                    console.log(`❌ [Maya] Attempting to cancel reservation ${reservationIdToCancel} (from args: ${args.reservationId}, extracted/selected: ${reservationIdToCancel})`);
+                                    console.log(`❌ [Maya] Attempting to cancel reservation ${reservationIdToCancel}`);
 
                                     if (!reservationIdToCancel) {
                                         result = { tool_status: 'FAILURE', error: { type: 'VALIDATION_ERROR', message: 'I need to know which reservation to cancel. Please provide the reservation ID.' } };
@@ -2401,8 +2542,8 @@ Respond with JSON only.`;
                                         if (result.tool_status === 'SUCCESS') {
                                             console.log(`[ConversationManager] Reservation ${reservationIdToCancel} cancelled, clearing active ID from session.`);
                                             delete session.activeReservationId;
-                                            delete session.foundReservations; // Clear found reservations after cancellation
-                                            this.resetAgentState(session); // Add this line
+                                            delete session.foundReservations;
+                                            this.resetAgentState(session);
                                         }
                                     }
                                     break;
@@ -2419,7 +2560,6 @@ Respond with JSON only.`;
                                 const { dbName, requestName } = result.error.details;
                                 session.pendingConfirmation = { toolCall, functionContext: { ...functionContext, error: result.error }, summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"` };
                                 
-                                // ✅ USE TRANSLATION SERVICE
                                 const baseMessage = `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
                                 const clarificationMessage = await TranslationService.translateMessage(
                                     baseMessage,
@@ -2443,7 +2583,6 @@ Respond with JSON only.`;
                                     delete session.pendingConfirmation;
                                     delete session.confirmedName;
                                     
-                                    // ✅ STEP 3B.3: Use ContextManager for creation context preservation
                                     contextManager.preserveReservationContext(session, reservationId, 'creation');
                                     console.log(`[ContextManager] Preserved context for new reservation #${reservationId}`);
                                     
@@ -2452,26 +2591,20 @@ Respond with JSON only.`;
                                     hasBooking = false;
                                     reservationId = result.data.reservationId;
                                     session.hasActiveReservation = reservationId;
-                                    // ✅ STEP 3B.1: Don't reset agent state immediately for modifications
-                                    // this.resetAgentState(session); // REMOVED - let context preservation handle this
                                 } else if (toolCall.function.name === 'cancel_reservation') {
                                     this.resetAgentState(session);
                                 }
                                 
-                                // ✅ APOLLO: Detect when Apollo completes its task
                                 if (session.currentAgent === 'availability' && 
                                     toolCall.function.name === 'find_alternative_times' &&
                                     result.data.alternatives && result.data.alternatives.length > 0) {
                                     console.log(`🚀 [Apollo] Task completed - found ${result.data.alternatives.length} alternatives`);
-                                    // Apollo will signal completion in its response, then Overseer will handle handoff back to Sofia/Maya
                                 }
                             }
 
-                            // ✅ FIX #3: Enhanced debug logging for special requests
                             if (toolCall.function.name === 'create_reservation') {
                                 this.extractGatheringInfo(session, args);
                                 
-                                // ✅ FIX #3: Add debug logging after extractGatheringInfo
                                 if (args.specialRequests) {
                                     const isFromHistory = session.guestHistory?.frequent_special_requests?.includes(args.specialRequests);
                                     const sourceType = isFromHistory ? 'AUTO-ADDED FROM HISTORY' : 'USER REQUESTED';
@@ -2500,13 +2633,12 @@ Respond with JSON only.`;
                     const openaiClient = aiService.getOpenAIClient();
                     completion = await openaiClient.chat.completions.create({
                         model: "gpt-4o",
-                        messages: messages, // The 'messages' array now includes the tool call results
+                        messages: messages,
                         temperature: 0.7,
                         max_tokens: 1000
                     });
                 } catch (error) {
                     console.error('[ConversationManager] Error getting final response:', error);
-                    // Handle error gracefully if the final AI call fails
                     completion = {
                         choices: [{
                             message: {
@@ -2527,40 +2659,29 @@ Respond with JSON only.`;
                 'error'
             );
 
-            // 🐛 BUG FIX #3: Add reservation number to confirmation messages
-            if (hasBooking && reservationId && response.includes('подтверждено')) {
-                // Add reservation number to Russian confirmation
-                response = response.replace('подтверждено!', `подтверждено! Номер вашей брони #${reservationId}.`);
-            } else if (hasBooking && reservationId && (response.includes('confirmed') || response.includes('reserved'))) {
-                // Add reservation number to English confirmation
-                if (!response.includes('#') && !response.includes('number')) {
-                    response += ` Your confirmation number is #${reservationId}.`;
-                }
-            }
+            // 🔧 BOOKING SYSTEM FIX: REMOVED duplicate reservation ID logic
+            // The agent is now responsible for including the reservation ID in their response
+            // This prevents the duplicate reservation ID issue (Issue #2)
 
             session.conversationHistory.push({ role: 'assistant', content: response, timestamp: new Date(), toolCalls: completion.choices?.[0]?.message?.tool_calls });
             
-            // ✅ STEP 3B.1: Use ContextManager for clean expired context
             contextManager.cleanExpiredContext(session);
             
             this.sessions.set(sessionId, session);
             
             console.log(`[EnhancedConversationManager] Message handled by ${session.currentAgent} agent. Booking: ${hasBooking}, Reservation: ${reservationId}`);
             
-            // ✅ APOLLO: Detect Apollo completion signal and prepare for handoff
             if (session.currentAgent === 'availability' && 
                 (response.toLowerCase().includes('hand you back') || 
                  response.toLowerCase().includes('передаю обратно') ||
                  response.toLowerCase().includes('вернуться к'))) {
                 console.log(`🚀 [Apollo] Detected completion signal - ready for handoff back to primary agent`);
-                // Next user message will trigger Overseer to route back to appropriate agent
             }
             
             return { response, hasBooking, reservationId, session, currentAgent: session.currentAgent, agentHandoff };
         } catch (error) {
             console.error(`[EnhancedConversationManager] Error handling message:`, error);
             
-            // ✅ USE TRANSLATION SERVICE
             const fallbackMessage = session.context === 'hostess'
                 ? "Error occurred. Please try again."
                 : 'I apologize, I encountered a technical issue. Please try again.';
@@ -2606,13 +2727,11 @@ Respond with JSON only.`;
                 session.hasActiveReservation = result.data.reservationId;
                 session.currentStep = 'completed';
                 
-                // ✅ STEP 3B.3: Use ContextManager for creation context preservation
                 contextManager.preserveReservationContext(session, result.data.reservationId, 'creation');
                 console.log(`[ContextManager] Preserved context for confirmed reservation #${result.data.reservationId}`);
                 
                 this.resetAgentState(session);
                 
-                // ✅ USE TRANSLATION SERVICE + BUG FIX #3: Include reservation number
                 const baseMessage = `🎉 Perfect! Your reservation is confirmed. Reservation number: ${result.data.reservationId}`;
                 const successMessage = await TranslationService.translateMessage(
                     baseMessage,
@@ -2624,7 +2743,6 @@ Respond with JSON only.`;
                 this.sessions.set(sessionId, session);
                 return { response: successMessage, hasBooking: true, reservationId: result.data.reservationId, session, currentAgent: session.currentAgent };
             } else {
-                // ✅ USE TRANSLATION SERVICE
                 const baseMessage = `Sorry, I couldn't create the reservation: ${result.error?.message || 'unknown error'}`;
                 const errorMessage = await TranslationService.translateMessage(
                     baseMessage,
@@ -2639,7 +2757,6 @@ Respond with JSON only.`;
         } catch (error) {
             console.error(`[EnhancedConversationManager] Error executing confirmed booking:`, error);
             
-            // ✅ USE TRANSLATION SERVICE
             const errorMessage = await TranslationService.translateMessage(
                 "An error occurred while creating the reservation.",
                 session.language,
@@ -2692,7 +2809,6 @@ Respond with JSON only.`;
                     const { dbName, requestName } = result.error.details;
                     session.pendingConfirmation = { toolCall, functionContext: { ...functionContext, error: result.error }, summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"` };
                     
-                    // ✅ USE TRANSLATION SERVICE
                     const baseMessage = `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
                     const clarificationMessage = await TranslationService.translateMessage(
                         baseMessage,
@@ -2713,7 +2829,6 @@ Respond with JSON only.`;
                     session.hasActiveReservation = reservationId;
                     session.currentStep = 'completed';
                     
-                    // ✅ STEP 3B.3: Use ContextManager for creation context preservation
                     if (toolCall.function.name === 'create_reservation') {
                         contextManager.preserveReservationContext(session, reservationId, 'creation');
                         console.log(`[ContextManager] Preserved context for confirmed reservation #${reservationId}`);
@@ -2723,13 +2838,11 @@ Respond with JSON only.`;
 
                     let baseMessage;
                     if (toolCall.function.name === 'create_reservation') {
-                        // 🐛 BUG FIX #3: Include reservation number in confirmation
                         baseMessage = `🎉 Perfect! Your reservation is confirmed. Reservation number: ${reservationId}`;
                     } else if (toolCall.function.name === 'cancel_reservation') {
                         baseMessage = `✅ Your reservation has been successfully cancelled.`;
                     }
 
-                    // ✅ USE TRANSLATION SERVICE
                     const successMessage = await TranslationService.translateMessage(
                         baseMessage!,
                         session.language,
@@ -2740,7 +2853,6 @@ Respond with JSON only.`;
                     this.sessions.set(sessionId, session);
                     return { response: successMessage, hasBooking: toolCall.function.name === 'create_reservation', reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined, session, currentAgent: session.currentAgent };
                 } else {
-                    // ✅ USE TRANSLATION SERVICE
                     const baseMessage = `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`;
                     const errorMessage = await TranslationService.translateMessage(
                         baseMessage,
@@ -2756,7 +2868,6 @@ Respond with JSON only.`;
                 delete session.pendingConfirmation;
                 delete session.confirmedName;
                 
-                // ✅ USE TRANSLATION SERVICE
                 const cancelMessage = await TranslationService.translateMessage(
                     "Okay, operation cancelled. How else can I help you?",
                     session.language,
@@ -2772,7 +2883,6 @@ Respond with JSON only.`;
             delete session.pendingConfirmation;
             delete session.confirmedName;
             
-            // ✅ USE TRANSLATION SERVICE
             const errorMessage = await TranslationService.translateMessage(
                 "An error occurred while processing the confirmation.",
                 session.language,
@@ -2784,12 +2894,11 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ CRITICAL FIX: Extract gathering info from function arguments with state tracking for conversation context awareness
+     * Extract gathering info from function arguments with state tracking for conversation context awareness
      */
     private extractGatheringInfo(session: BookingSessionWithAgent, args: any) {
         const updates: Partial<BookingSession['gatheringInfo']> = {};
 
-        // ✅ CRITICAL FIX: Set state flags when information is successfully gathered
         if (args.date) {
             updates.date = args.date;
             if (!session.hasAskedDate) {
@@ -2806,7 +2915,6 @@ Respond with JSON only.`;
             }
         }
         
-        // ✅ CRITICAL FIX: Set the state flag when guest count is successfully gathered
         if (args.guests) {
             updates.guests = args.guests;
             if (!session.hasAskedPartySize) {
@@ -2888,7 +2996,7 @@ Respond with JSON only.`;
      * Clean up old sessions
      */
     private cleanupOldSessions(): void {
-        const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000); // 4 hours
+        const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000);
         let cleanedCount = 0;
 
         for (const [sessionId, session] of this.sessions.entries()) {
@@ -2904,7 +3012,7 @@ Respond with JSON only.`;
     }
 
     /**
-     * ✅ APOLLO: Enhanced session statistics with agent tracking and guest history + Overseer metrics + AI Fallback tracking + Apollo metrics
+     * Enhanced session statistics with agent tracking and guest history
      */
     getStats(): {
         totalSessions: number;
@@ -2912,7 +3020,7 @@ Respond with JSON only.`;
         completedBookings: number;
         sessionsByPlatform: { web: number; telegram: number };
         sessionsByContext: { hostess: number; guest: number };
-        sessionsByAgent: { booking: number; reservations: number; conductor: number; availability: number }; // ✅ APOLLO: Added availability
+        sessionsByAgent: { booking: number; reservations: number; conductor: number; availability: number };
         languageDistribution: { en: number; ru: number; sr: number; hu: number; de: number; fr: number; es: number; it: number; pt: number; nl: number };
         agentHandoffs: number;
         sessionsWithGuestHistory: number;
@@ -2924,7 +3032,7 @@ Respond with JSON only.`;
             lockedSessions: number;
             avgConfidence: number;
         };
-        apolloStats: { // ✅ APOLLO: New metrics
+        apolloStats: {
             totalActivations: number;
             successfulAlternativeFinds: number;
             avgAlternativesFound: number;
@@ -2946,7 +3054,7 @@ Respond with JSON only.`;
         let telegramSessions = 0;
         let hostessSessions = 0;
         let guestSessions = 0;
-        const sessionsByAgent = { booking: 0, reservations: 0, conductor: 0, availability: 0 }; // ✅ APOLLO: Added availability
+        const sessionsByAgent = { booking: 0, reservations: 0, conductor: 0, availability: 0 };
         const languageDistribution = { en: 0, ru: 0, sr: 0, hu: 0, de: 0, fr: 0, es: 0, it: 0, pt: 0, nl: 0 };
         let agentHandoffs = 0;
         let sessionsWithGuestHistory = 0;
@@ -2954,12 +3062,10 @@ Respond with JSON only.`;
         let overseerDecisions = 0;
         let totalTurns = 0;
         
-        // ✅ NEW: Language detection stats
         let totalLanguageDetections = 0;
         let lockedSessions = 0;
         let totalConfidence = 0;
 
-        // ✅ APOLLO: New metrics
         let apolloActivations = 0;
         let apolloSuccesses = 0;
         let totalAlternatives = 0;
@@ -2980,7 +3086,6 @@ Respond with JSON only.`;
                 agentHandoffs += session.agentHistory.length;
                 overseerDecisions += session.agentHistory.filter(h => h.overseerReasoning).length;
                 
-                // ✅ APOLLO: Track Apollo activations
                 apolloActivations += session.agentHistory.filter(h => h.to === 'availability').length;
             }
             if (session.guestHistory) {
@@ -2993,7 +3098,6 @@ Respond with JSON only.`;
                 totalTurns += session.turnCount;
             }
             
-            // ✅ NEW: Language detection stats
             if (session.languageDetectionLog) {
                 totalLanguageDetections++;
                 totalConfidence += session.languageDetectionLog.confidence;
@@ -3002,7 +3106,6 @@ Respond with JSON only.`;
                 lockedSessions++;
             }
 
-            // ✅ APOLLO: Track failure reasons
             if (session.availabilityFailureContext) {
                 failureReasons.push(session.availabilityFailureContext.failureReason);
             }
@@ -3011,16 +3114,14 @@ Respond with JSON only.`;
         const avgTurnsPerSession = this.sessions.size > 0 ? Math.round((totalTurns / this.sessions.size) * 10) / 10 : 0;
         const avgConfidence = totalLanguageDetections > 0 ? Math.round((totalConfidence / totalLanguageDetections) * 100) / 100 : 0;
 
-        // ✅ APOLLO: Calculate Apollo metrics
         const avgAlternativesFound = apolloActivations > 0 ? Math.round((totalAlternatives / apolloActivations) * 10) / 10 : 0;
         const mostCommonFailureReasons = [...new Set(failureReasons)].slice(0, 3);
 
-        // ✅ NEW: AIService stats (would be tracked in a real implementation)
         const aiServiceStats = {
-            overseerUsage: overseerDecisions, // Number of Overseer decisions made
-            languageDetectionUsage: totalLanguageDetections, // Number of language detections
-            confirmationAgentUsage: 0, // Would be tracked separately
-            systemReliability: 99.5 // Percentage based on fallback usage
+            overseerUsage: overseerDecisions,
+            languageDetectionUsage: totalLanguageDetections,
+            confirmationAgentUsage: 0,
+            systemReliability: 99.5
         };
 
         return {
@@ -3041,7 +3142,7 @@ Respond with JSON only.`;
                 lockedSessions,
                 avgConfidence
             },
-            apolloStats: { // ✅ APOLLO: New metrics
+            apolloStats: {
                 totalActivations: apolloActivations,
                 successfulAlternativeFinds: apolloSuccesses,
                 avgAlternativesFound,
@@ -3058,11 +3159,13 @@ Respond with JSON only.`;
         if (this.sessionCleanupInterval) {
             clearInterval(this.sessionCleanupInterval);
         }
-        console.log('[EnhancedConversationManager] Shutdown completed with AIService-powered meta-agents including Apollo Availability Agent and ContextManager integration + Sofia BaseAgent + Maya BaseAgent + Enhanced Tool Validation + BUG FIX #1&2: HH-MM typo correction with proper priority order + BUG FIX #3: Reservation number in confirmations');
+        console.log('[EnhancedConversationManager] Shutdown completed with comprehensive booking system fixes and UX enhancements');
     }
 }
 
-// ✅ STEP 3B.1: Extended session interface with ContextManager integration
+/**
+ * Extended session interface with comprehensive booking fixes and UX enhancements
+ */
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
     agentHistory?: Array<{
@@ -3081,7 +3184,7 @@ interface BookingSessionWithAgent extends BookingSession {
     confirmedName?: string;
     guestHistory?: GuestHistory | null;
     activeReservationId?: number;
-    foundReservations?: Array<{  // ✅ NEW: Store list of found reservations for user selection
+    foundReservations?: Array<{
         id: number;
         date: string;
         time: string;
@@ -3095,7 +3198,6 @@ interface BookingSessionWithAgent extends BookingSession {
     turnCount?: number;
     agentTurnCount?: number;
     
-    // ✅ NEW: Language detection features
     languageLocked?: boolean;
     languageDetectionLog?: {
         detectedAt: string;
@@ -3104,14 +3206,12 @@ interface BookingSessionWithAgent extends BookingSession {
         reasoning: string;
     };
     
-    // ✅ CRITICAL FIX: Add conversation context tracking for state management
     hasAskedPartySize?: boolean;
     hasAskedDate?: boolean;
     hasAskedTime?: boolean;
     hasAskedName?: boolean;
     hasAskedPhone?: boolean;
     
-    // ✅ APOLLO: Availability failure context
     availabilityFailureContext?: {
         originalDate: string;
         originalTime: string;
@@ -3120,16 +3220,14 @@ interface BookingSessionWithAgent extends BookingSession {
         detectedAt: string;
     };
     
-    // ✅ STEP 3B.1: Smart context preservation (now managed by ContextManager)
     recentlyModifiedReservations?: Array<{
         reservationId: number;
         lastModifiedAt: Date;
         contextExpiresAt: Date;
         operationType: 'modification' | 'cancellation' | 'creation';
-        userReference?: string; // Store "эту бронь", "this booking"
+        userReference?: string;
     }>;
     
-    // ✅ STEP 3B.1: Current operation context with disambiguation (now managed by ContextManager)
     currentOperationContext?: {
         type: 'modification' | 'cancellation' | 'lookup';
         targetReservationId?: number;
@@ -3138,7 +3236,6 @@ interface BookingSessionWithAgent extends BookingSession {
         contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
     };
     
-    // ✅ NEW: AIService meta-agent tracking (optional for monitoring)
     aiServiceMetaAgentLog?: Array<{
         timestamp: string;
         agentType: 'overseer' | 'language' | 'confirmation';

@@ -1606,6 +1606,28 @@ export async function modify_reservation(
         const currentDate = currentLocalDt.toFormat('yyyy-MM-dd');
         const currentTime = currentLocalDt.toFormat('HH:mm');
 
+        // ✅ NEW: NO-OP MODIFICATION VALIDATION
+        const hasDateChange = modifications.newDate && modifications.newDate !== currentDate;
+        const hasTimeChange = modifications.newTime && modifications.newTime !== currentTime;
+        const hasGuestChange = modifications.newGuests && modifications.newGuests !== currentReservation.guests;
+        const hasRequestChange = modifications.newSpecialRequests !== undefined && modifications.newSpecialRequests !== (currentReservation.comments || '');
+
+        if (!hasDateChange && !hasTimeChange && !hasGuestChange && !hasRequestChange) {
+            console.warn(`[Maya Tool] 🚨 NO-OP MODIFICATION DETECTED for reservation #${targetReservationId}. No changes were requested.`);
+
+            const baseMessage = `No changes were requested. Your reservation is still confirmed for ${currentDate} at ${currentTime} for ${currentReservation.guests} guests. Did you want to make a specific change?`;
+            const translatedMessage = await AgentToolTranslationService.translateToolMessage(
+                baseMessage,
+                context.language as Language,
+                'error'
+            );
+
+            return createBusinessRuleFailure(
+                translatedMessage,
+                'NO_OP_MODIFICATION'
+            );
+        }
+
         console.log(`📅 [Maya Tool] Current reservation time: ${currentDate} ${currentTime} (${context.timezone})`);
 
         // ✅ STEP 3: Determine new values (keep current if not changing)
