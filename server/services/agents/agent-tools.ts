@@ -9,6 +9,7 @@
 // 🚨 NEW: Enhanced past-date validation with grace period
 // 🚨 NEW: Complete input sanitization for all booking parameters
 // 🐛 BUG FIX: Modified validateBookingInput to conditionally skip name/phone checks for availability calls.
+// 🚀 REDIS PHASE 3: Guest history caching with cache invalidation and performance monitoring
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -28,6 +29,9 @@ import {
     isOvernightOperation
 } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
+
+// 🚀 REDIS PHASE 3: Import Redis service for guest history caching
+import { redisService } from '../redis-service';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
@@ -299,6 +303,27 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
     }
 }
 
+// 🚀 REDIS PHASE 3: Cache invalidation helper function
+async function invalidateGuestHistoryCache(
+    context: { restaurantId: number; telegramUserId?: string }
+): Promise<void> {
+    if (context.telegramUserId) {
+        const cacheKey = `guest-history:${context.restaurantId}:${context.telegramUserId}`;
+
+        try {
+            const deleted = await redisService.del(cacheKey);
+
+            if (deleted) {
+                console.log(`🗑️ [Cache Invalidation] Guest history cache invalidated successfully: ${cacheKey}`);
+            } else {
+                console.log(`🗑️ [Cache Invalidation] Guest history cache key not found or already expired: ${cacheKey}`);
+            }
+        } catch (error) {
+            console.error(`❌ [Cache Invalidation] Failed to invalidate guest history cache: ${cacheKey}`, error);
+        }
+    }
+}
+
 // ✅ NEW: Standardized tool response interface
 interface ToolResponse<T = any> {
     tool_status: 'SUCCESS' | 'FAILURE';
@@ -313,6 +338,7 @@ interface ToolResponse<T = any> {
         execution_time_ms?: number;
         fallback_used?: boolean;
         warnings?: string[];
+        cached?: boolean; // 🚀 REDIS PHASE 3: Cache status indicator
     };
 }
 
@@ -778,16 +804,26 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
     return normalized;
 }
 
-// ===== 🆕 NEW: GUEST HISTORY TOOL =====
+// ===== 🚀 REDIS PHASE 3: ENHANCED GUEST HISTORY TOOL WITH CACHING =====
 
 /**
+ * 🚀 REDIS PHASE 3: Get guest history with Redis caching and cache invalidation
  * ✅ PHASE 1 FIX: Get guest history with AIService-powered analysis (now returns English patterns)
+ * * Features:
+ * - Redis caching with 1-hour TTL
+ * - Automatic fallback to memory cache when Redis is down
+ * - Cache hit/miss logging and performance monitoring
+ * - Compression for large objects
+ * - Cache invalidation triggered by booking changes
  */
 export async function get_guest_history(
     telegramUserId: string,
     context: { restaurantId: number; language?: string }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
+    const cacheKey = `guest-history:${context.restaurantId}:${telegramUserId}`;
+    const cacheTTL = 3600; // 1 hour
+
     console.log(`👤 [Guest History] Getting history for telegram user: ${telegramUserId} at restaurant ${context.restaurantId}`);
 
     try {
@@ -795,6 +831,32 @@ export async function get_guest_history(
             return createValidationFailure('Missing required parameters: telegramUserId or restaurantId');
         }
 
+        // 🚀 REDIS PHASE 3: Try to get from Redis cache first
+        console.log(`🔍 [Cache] Checking Redis cache for key: ${cacheKey}`);
+        const cachedResponse = await redisService.get<ToolResponse>(cacheKey, {
+            fallbackToMemory: true
+        });
+
+        if (cachedResponse) {
+            const cacheAge = cachedResponse.metadata?.execution_time_ms
+                ? Date.now() - cachedResponse.metadata.execution_time_ms
+                : 'unknown';
+
+            console.log(`✅ [Cache HIT] Guest history retrieved from cache: ${cacheKey} (age: ${cacheAge}ms)`);
+
+            // Update metadata to indicate cache hit
+            cachedResponse.metadata = {
+                ...cachedResponse.metadata,
+                cached: true,
+                cache_hit_time_ms: Date.now() - startTime
+            };
+
+            return cachedResponse;
+        }
+
+        console.log(`❌ [Cache MISS] Guest history not in cache, querying database: ${cacheKey}`);
+
+        // 2. If not in cache, execute the existing database logic
         // 1. Find the guest by telegram user ID
         const [guest] = await db
             .select()
@@ -828,7 +890,7 @@ export async function get_guest_history(
         console.log(`👤 [Guest History] Found ${allReservations.length} total reservations for guest`);
 
         if (allReservations.length === 0) {
-            return createSuccessResponse({
+            const response = createSuccessResponse({
                 guest_name: guest.name,
                 guest_phone: guest.phone || '',
                 total_bookings: 0,
@@ -837,8 +899,18 @@ export async function get_guest_history(
                 common_party_size: null,
                 frequent_special_requests: []
             }, {
-                execution_time_ms: Date.now() - startTime
+                execution_time_ms: Date.now() - startTime,
+                cached: false
             });
+
+            // 🚀 REDIS PHASE 3: Cache empty result too (shorter TTL)
+            await redisService.set(cacheKey, response, {
+                ttl: cacheTTL / 2, // 30 minutes for empty results
+                compress: false,
+                fallbackToMemory: true
+            });
+
+            return response;
         }
 
         // 3. Analyze reservation data
@@ -914,9 +986,26 @@ export async function get_guest_history(
 
         console.log(`👤 [Guest History] Final history data with fixed AIService analysis:`, historyData);
 
-        return createSuccessResponse(historyData, {
-            execution_time_ms: Date.now() - startTime
+        // 🚀 REDIS PHASE 3: Store result in cache with TTL
+        const response = createSuccessResponse(historyData, {
+            execution_time_ms: Date.now() - startTime,
+            cached: false
         });
+
+        console.log(`💾 [Cache] Storing guest history in Redis cache: ${cacheKey}`);
+        const cacheSuccess = await redisService.set(cacheKey, response, {
+            ttl: cacheTTL,
+            compress: true, // Enable compression for large guest history objects
+            fallbackToMemory: true
+        });
+
+        if (cacheSuccess) {
+            console.log(`✅ [Cache] Guest history cached successfully: ${cacheKey} (TTL: ${cacheTTL}s)`);
+        } else {
+            console.warn(`⚠️ [Cache] Failed to cache guest history: ${cacheKey}`);
+        }
+
+        return response;
 
     } catch (error) {
         console.error(`❌ [Guest History] Error getting guest history:`, error);
@@ -1208,6 +1297,7 @@ export async function find_alternative_times(
 
 /**
  * 🚨 COMPLETELY ENHANCED: Create reservation with comprehensive validation pipeline as per original plan
+ * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful booking
  * This implements ALL the validation enhancements specified in the original plan
  */
 export async function create_reservation(
@@ -1404,6 +1494,12 @@ export async function create_reservation(
         if (result.success && result.reservation && result.reservation.id) {
             console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
 
+            // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful booking
+            await invalidateGuestHistoryCache({
+                restaurantId: context.restaurantId,
+                telegramUserId: context.telegramUserId
+            });
+
             // ✅ FIX #4: Add comprehensive validation metadata to response
             const metadata: any = {
                 execution_time_ms: executionTime,
@@ -1413,7 +1509,8 @@ export async function create_reservation(
                     'business_hours_validation',
                     'input_sanitization',
                     'workflow_validation'
-                ]
+                ],
+                cacheInvalidated: !!context.telegramUserId // 🚀 REDIS PHASE 3: Indicate cache invalidation
             };
 
             if (specialRequests !== validatedSpecialRequests) {
@@ -1891,6 +1988,7 @@ export async function find_existing_reservation(
 
 /**
  * ✅ STEP 3A COMPLETE: Enhanced modify_reservation with ContextManager integration
+ * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful modification
  * This is the CRITICAL function that was causing the context loss problem
  */
 export async function modify_reservation(
@@ -2014,7 +2112,6 @@ export async function modify_reservation(
                     'UNAUTHORIZED_MODIFICATION'
                 );
             }
-
             console.log(`✅ [Security] Ownership validated for reservation ${targetReservationId}`);
         }
 
@@ -2274,6 +2371,12 @@ export async function modify_reservation(
 
         console.log(`✅ [Maya Tool] Successfully modified reservation ${targetReservationId} and logged ${modificationLogs.length} changes.`);
 
+        // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful modification
+        await invalidateGuestHistoryCache({
+            restaurantId: context.restaurantId,
+            telegramUserId: context.telegramUserId
+        });
+
         // ✅ STEP 7: Return success response (NO STATE CLEANUP - this was the bug!)
         const changes = [];
         if (newGuests !== currentReservation.guests) {
@@ -2317,7 +2420,8 @@ export async function modify_reservation(
             changes: changes,
             message: translatedMessage
         }, {
-            execution_time_ms: Date.now() - startTime
+            execution_time_ms: Date.now() - startTime,
+            cacheInvalidated: !!context.telegramUserId // 🚀 REDIS PHASE 3: Indicate cache invalidation
         });
 
     } catch (error) {
@@ -2328,6 +2432,7 @@ export async function modify_reservation(
 
 /**
  * ✅ BUG FIX: Enhanced cancel_reservation with optional confirmCancellation parameter
+ * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful cancellation
  */
 export async function cancel_reservation(
     reservationId: number,
@@ -2485,6 +2590,12 @@ export async function cancel_reservation(
 
         console.log(`✅ [Maya Tool] Successfully cancelled reservation ${reservationId}`);
 
+        // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful cancellation
+        await invalidateGuestHistoryCache({
+            restaurantId: context.restaurantId,
+            telegramUserId: context.telegramUserId
+        });
+
         // ✅ STEP 4: Calculate refund eligibility (basic logic)
         const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
         const reservationDt = DateTime.fromISO(normalizedTimestamp);
@@ -2514,7 +2625,8 @@ export async function cancel_reservation(
             refundPercentage: refundPercentage,
             hoursUntilReservation: Math.round(hoursUntilReservation * 10) / 10
         }, {
-            execution_time_ms: Date.now() - startTime
+            execution_time_ms: Date.now() - startTime,
+            cacheInvalidated: !!context.telegramUserId // 🚀 REDIS PHASE 3: Indicate cache invalidation
         });
 
     } catch (error) {
@@ -2529,7 +2641,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "get_guest_history",
-            description: "Get guest's booking history for personalized service. Use this to welcome returning guests and suggest their usual preferences.",
+            description: "🚀 REDIS CACHED: Get guest's booking history for personalized service with 1-hour Redis caching. Use this to welcome returning guests and suggest their usual preferences. Cache automatically invalidated when bookings change.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2596,7 +2708,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "create_reservation",
-            description: "🚨 COMPLETELY ENHANCED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation supporting overnight operations, (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Returns standardized response indicating success with reservation details or failure with categorized error.",
+            description: "🚨 COMPLETELY ENHANCED + 🚀 REDIS CACHED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation supporting overnight operations, (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Automatically invalidates guest history cache after successful booking. Returns standardized response indicating success with reservation details or failure with categorized error.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2648,7 +2760,7 @@ export const agentTools = [
             }
         }
     },
-    // ===== 🆕 MAYA'S TOOLS WITH ENHANCED SEARCH =====
+    // ===== 🆕 MAYA'S TOOLS WITH ENHANCED SEARCH + 🚀 REDIS CACHE INVALIDATION =====
     {
         type: "function" as const,
         function: {
@@ -2688,7 +2800,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "modify_reservation",
-            description: "🎯 PRIMARY MODIFICATION TOOL: Your FIRST choice for any reservation modification. AUTOMATICALLY resolves reservation ID from recent context (e.g., 'this booking', recent search results). Call this DIRECTLY when user intent is clear - don't search first. The ContextManager handles ambiguity resolution internally. SECURITY VALIDATED: Only allows guests to modify their own reservations. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution.",
+            description: "🎯 PRIMARY MODIFICATION TOOL + 🚀 REDIS CACHED: Your FIRST choice for any reservation modification. AUTOMATICALLY resolves reservation ID from recent context (e.g., 'this booking', recent search results). Call this DIRECTLY when user intent is clear - don't search first. The ContextManager handles ambiguity resolution internally. SECURITY VALIDATED: Only allows guests to modify their own reservations. AUTOMATICALLY REASSIGNS TABLES when needed to ensure capacity requirements are met. NOW SUPPORTS OPTIONAL RESERVATION ID with context-aware resolution. Automatically invalidates guest history cache after successful modification.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2731,7 +2843,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "cancel_reservation",
-            description: "🔧 BUG FIX: Cancel an existing reservation. The system will prompt for confirmation if not provided. SECURITY VALIDATED: Only allows guests to cancel their own reservations.",
+            description: "🔧 BUG FIX + 🚀 REDIS CACHED: Cancel an existing reservation. The system will prompt for confirmation if not provided. SECURITY VALIDATED: Only allows guests to cancel their own reservations. Automatically invalidates guest history cache after successful cancellation.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2757,18 +2869,19 @@ export const agentTools = [
 
 // ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
 // 🚨 COMPLETELY ENHANCED: All functions now include comprehensive validation pipeline
+// 🚀 REDIS PHASE 3: All booking functions now include guest history cache invalidation
 export const agentFunctions = {
-    // ✅ PHASE 1 FIX: Guest memory tool with AIService-powered analysis and translation (now returns English patterns)
+    // 🚀 REDIS PHASE 3: Guest memory tool with Redis caching, cache invalidation, and performance monitoring
     get_guest_history,
 
     // 🚨 ENHANCED: Sofia's tools with comprehensive validation pipeline
     check_availability, // ✅ Now includes: basic validation + business hours + past-date validation
     find_alternative_times, // ✅ Now includes: basic validation + past-date validation
-    create_reservation, // 🚨 COMPLETELY ENHANCED: 5-layer validation pipeline as per original plan
+    create_reservation, // 🚨 COMPLETELY ENHANCED: 5-layer validation pipeline + Redis cache invalidation
     get_restaurant_info,
 
-    // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration for smart context resolution
+    // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration + Redis cache invalidation
     find_existing_reservation,
-    modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution
-    cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter
+    modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution + Redis cache invalidation
+    cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter + Redis cache invalidation
 };
