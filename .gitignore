@@ -6,3 +6,6 @@ vite.config.ts.*
 *.tar.gz.env
 .env
 *.save
+logs/
+analytics/
+performance/
