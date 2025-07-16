@@ -31,7 +31,7 @@ import { DateTime } from 'luxon';
 // ✅ NEW IMPORT: Sofia AI Enhanced Conversation Manager
 import { enhancedConversationManager } from "./services/enhanced-conversation-manager";
 // ✅ NEW IMPORT: Booking Agent for Restaurant Greeting
-import { createBookingAgent } from "./services/agents/booking-agent";
+// OBSOLETE: import { createBookingAgent } from "./services/agents/booking-agent";
 
 // ✅ DYNAMIC: PostgreSQL timestamp parser that handles both formats
 function parsePostgresTimestamp(timestamp: string): DateTime {

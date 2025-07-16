@@ -11,7 +11,7 @@
 // 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
 
 import { aiService } from './ai-service';
-import { createBookingAgent, type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './agents/booking-agent';
+import { type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './session-manager';
 import { agentFunctions } from './agents/agent-tools';
 import { storage } from '../storage';
 import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';

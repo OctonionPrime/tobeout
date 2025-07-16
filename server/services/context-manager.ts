@@ -5,7 +5,7 @@
 // ✅ COMPLETE: 100% Phase 3 Context Manager Implementation
 // ✅ BUG FIX: Added natural language resolution to prevent AI failure on ambiguous modification requests.
 
-import type { BookingSession } from './agents/booking-agent';
+import type { BookingSession } from './session-manager';
 import type { Language } from './enhanced-conversation-manager';
 
 /**

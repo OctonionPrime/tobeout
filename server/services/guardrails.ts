@@ -6,7 +6,7 @@
 // 4. Improved safety and multilingual support
 
 import { aiService } from './ai-service';
-import type { BookingSession } from './agents/booking-agent';
+import type { BookingSession } from './session-manager';
 import type { Language } from './enhanced-conversation-manager';
 
 export interface GuardrailResult {
