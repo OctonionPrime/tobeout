@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-07-16T12:07:54.530Z",
+  "hour": "12",
+  "metrics": {
+    "claude_generation": {
+      "count": 1,
+      "avg": 1155,
+      "min": 1155,
+      "max": 1155,
+      "p50": 1155,
+      "p95": 1155
+    },
+    "openai_generation": {
+      "count": 1,
+      "avg": 1186,
+      "min": 1186,
+      "max": 1186,
+      "p50": 1186,
+      "p95": 1186
+    },
+    "ai_health_check": {
+      "count": 1,
+      "avg": 2343,
+      "min": 2343,
+      "max": 2343,
+      "p50": 2343,
+      "p95": 2343
+    }
+  },
+  "system": {
+    "memory": {
+      "rss": 130187264,
+      "heapTotal": 48340992,
+      "heapUsed": 41733432,
+      "external": 3929316,
+      "arrayBuffers": 87984
+    },
+    "uptime": 3602.181162011,
+    "version": "v22.16.0"
+  }
+}

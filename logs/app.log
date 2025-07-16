@@ -1,0 +1,19 @@
+{"claudeAvailable":true,"fallbackSystem":"Claude -> OpenAI","level":"info","message":"AIService initialized","openaiAvailable":true,"timestamp":"2025-07-16 20:15:23"}
+{"features":["Claude + OpenAI fallback system","Performance monitoring","Error tracking","Health checks","Periodic reporting","Business event logging"],"level":"info","message":"AIService loaded with Smart Logging integration","timestamp":"2025-07-16 20:15:23"}
+{"features":["AI Hallucination Prevention","Direct booking path","Duplicate reservation ID removal","Guest recognition improvements","Enhanced tool validation","Time parsing fixes","UX Context Intelligence","Smart Logging Integration"],"level":"info","message":"EnhancedConversationManager initialized","timestamp":"2025-07-16 20:15:23"}
+{"environment":"production","level":"info","message":"Application startup initiated","nodeVersion":"v22.16.0","startupTime":"2025-07-16T20:15:23.202Z","timestamp":"2025-07-16 20:15:23"}
+{"level":"info","message":"AI service health check started","timestamp":"2025-07-16 20:15:23"}
+{"context":"health-check-claude","level":"info","maxTokens":10,"message":"Claude API call started","model":"claude-3-haiku-20240307","promptLength":8,"timeout":5000,"timestamp":"2025-07-16 20:15:23"}
+{"durationMs":705,"level":"info","message":"Performance: claude_generation","operation":"claude_generation","timestamp":"2025-07-16 20:15:23"}
+{"context":"health-check-claude","executionTime":705,"level":"info","message":"Claude generation completed successfully","model":"claude-3-haiku-20240307","processingTime":705,"responseLength":2,"timestamp":"2025-07-16 20:15:23"}
+{"context":"health-check-openai","level":"info","maxTokens":10,"message":"OpenAI API call started","model":"gpt-4o-mini","promptLength":8,"timeout":5000,"timestamp":"2025-07-16 20:15:23"}
+{"durationMs":658,"level":"info","message":"Performance: openai_generation","operation":"openai_generation","timestamp":"2025-07-16 20:15:24"}
+{"context":"health-check-openai","executionTime":658,"level":"info","message":"OpenAI generation completed successfully","model":"gpt-4o-mini","processingTime":658,"responseLength":2,"timestamp":"2025-07-16 20:15:24"}
+{"durationMs":1370,"level":"info","message":"Performance: ai_health_check","operation":"ai_health_check","timestamp":"2025-07-16 20:15:24"}
+{"claude":true,"level":"info","message":"AI service health check completed","openai":true,"overall":"healthy","processingTime":1370,"timestamp":"2025-07-16 20:15:24"}
+{"level":"info","message":"Health check test","timestamp":"2025-07-16 20:15:24"}
+{"aiService":{"claude":true,"openai":true,"overall":"healthy"},"level":"info","logging":{"checks":{"analytics":true,"datadog":false,"fileLogging":true,"performance":true},"details":["File logging operational","Datadog integration disabled","Performance monitoring active","Analytics active: 0 events today"],"status":"degraded"},"message":"Startup health check completed","timestamp":"2025-07-16 20:15:24"}
+{"data":{"aiServiceHealth":"healthy","claudeAvailable":true,"dashboardEnabled":true,"datadogEnabled":false,"environment":"production","loggingHealth":"degraded","openaiAvailable":true},"event":"business.application_started","level":"info","message":"BUSINESS_EVENT: application_started","timestamp":"2025-07-16 20:15:24"}
+{"level":"info","message":"Initializing Telegram bots","timestamp":"2025-07-16 20:15:24"}
+{"level":"info","message":"Telegram bots initialized successfully","timestamp":"2025-07-16 20:15:24"}
+{"dashboardUrl":"http://localhost:5000/dashboard","environment":"production","healthUrl":"http://localhost:5000/health","host":"0.0.0.0","level":"info","message":"Server started successfully","port":5000,"timestamp":"2025-07-16 20:15:24"}

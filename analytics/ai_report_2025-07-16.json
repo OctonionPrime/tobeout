@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-07-16T18:53:38.023Z",
+  "claude": {
+    "requests": 96,
+    "failures": 1,
+    "totalTime": 179157,
+    "successfulRequests": 95,
+    "avgResponseTime": 1866,
+    "successRate": 0.99,
+    "failureRate": 0.01
+  },
+  "openai": {
+    "requests": 2,
+    "failures": 0,
+    "totalTime": 2758,
+    "successfulRequests": 2,
+    "avgResponseTime": 1379,
+    "successRate": 1,
+    "failureRate": 0
+  }
+}

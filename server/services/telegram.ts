@@ -251,24 +251,23 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
 };
 
 async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: number, text: string, restaurant: Restaurant) {
-    const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
+    const restaurantTimezone = restaurant.timezone || 'Europe/Belgrade'; // Use correct default
     let currentLang: Language = 'en';
     const defaultRestaurantName = restaurant.name || (currentLang === 'ru' ? "Наш Ресторан" : currentLang === 'sr' ? "Naš Restoran" : "Our Restaurant");
 
     // Get or create session
     let sessionId = telegramSessions.get(chatId);
     if (!sessionId) {
-        // ✅ CRITICAL: Use Language Detection Agent instead of hardcoded detection
-        // The Language Detection Agent will be called within handleMessage automatically
-        currentLang = 'auto'; // Let the Language Detection Agent decide
+        currentLang = 'auto';
 
-        sessionId = enhancedConversationManager.createSession({
+        // 🚨 ASYNC FIX: Add 'await' here because createSession is now an async function
+        sessionId = await enhancedConversationManager.createSession({
             restaurantId,
             platform: 'telegram',
             language: currentLang,
             telegramUserId: chatId.toString()
         });
-        
+
         telegramSessions.set(chatId, sessionId);
         console.log(`🎯 [Sofia AI] Created new Telegram session ${sessionId} for chat ${chatId} with language: auto-detect, timezone: ${restaurantTimezone}`);
     }
@@ -287,7 +286,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
 
         // Handle message with enhanced conversation manager
         const result = await enhancedConversationManager.handleMessage(sessionId, text);
-        
+
         // Update language from session (may have changed during processing)
         const updatedSession = enhancedConversationManager.getSession(sessionId);
         if (updatedSession) {
@@ -305,9 +304,9 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
 
         // ✅ ENHANCED: Check for name clarification needed
         const pendingConfirmation = result.session.pendingConfirmation;
-        if (pendingConfirmation?.functionContext?.error?.details?.dbName && 
+        if (pendingConfirmation?.functionContext?.error?.details?.dbName &&
             pendingConfirmation?.functionContext?.error?.details?.requestName) {
-            
+
             const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
             const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
@@ -317,19 +316,19 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
                 reply_markup: {
                     inline_keyboard: [
                         [
-                            { 
-                                text: locale.useNewNameButton(requestName), 
-                                callback_data: `confirm_name:new:${requestName}` 
+                            {
+                                text: locale.useNewNameButton(requestName),
+                                callback_data: `confirm_name:new:${requestName}`
                             },
-                            { 
-                                text: locale.useDbNameButton(dbName), 
-                                callback_data: `confirm_name:db:${dbName}` 
+                            {
+                                text: locale.useDbNameButton(dbName),
+                                callback_data: `confirm_name:db:${dbName}`
                             }
                         ]
                     ]
                 }
             });
-            
+
             console.log(`✅ [Sofia AI] Sent name clarification request with buttons to ${chatId}`);
             return;
         }
@@ -382,27 +381,27 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             return false;
         }
 
-        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
-        const initialBotLang = (settings.settings as any)?.language === 'ru' ? 'ru' : 
-                             (settings.settings as any)?.language === 'sr' ? 'sr' : 
-                             (settings.settings as any)?.language === 'hu' ? 'hu' : 
-                             (settings.settings as any)?.language === 'de' ? 'de' : 
-                             (settings.settings as any)?.language === 'fr' ? 'fr' : 
-                             (settings.settings as any)?.language === 'es' ? 'es' : 
-                             (settings.settings as any)?.language === 'it' ? 'it' : 
-                             (settings.settings as any)?.language === 'pt' ? 'pt' : 
-                             (settings.settings as any)?.language === 'nl' ? 'nl' : 'en';
+        const restaurantTimezone = restaurant.timezone || 'Europe/Belgrade'; // Use correct default
+        const initialBotLang = (settings.settings as any)?.language === 'ru' ? 'ru' :
+            (settings.settings as any)?.language === 'sr' ? 'sr' :
+                (settings.settings as any)?.language === 'hu' ? 'hu' :
+                    (settings.settings as any)?.language === 'de' ? 'de' :
+                        (settings.settings as any)?.language === 'fr' ? 'fr' :
+                            (settings.settings as any)?.language === 'es' ? 'es' :
+                                (settings.settings as any)?.language === 'it' ? 'it' :
+                                    (settings.settings as any)?.language === 'pt' ? 'pt' :
+                                        (settings.settings as any)?.language === 'nl' ? 'nl' : 'en';
         const actualRestaurantName = restaurant.name || (
-            initialBotLang === 'ru' ? "Наш Ресторан" : 
-            initialBotLang === 'sr' ? "Naš Restoran" : 
-            initialBotLang === 'hu' ? "Éttermünk" :
-            initialBotLang === 'de' ? "Unser Restaurant" :
-            initialBotLang === 'fr' ? "Notre Restaurant" :
-            initialBotLang === 'es' ? "Nuestro Restaurante" :
-            initialBotLang === 'it' ? "Il nostro Ristorante" :
-            initialBotLang === 'pt' ? "Nosso Restaurante" :
-            initialBotLang === 'nl' ? "Ons Restaurant" :
-            "Our Restaurant"
+            initialBotLang === 'ru' ? "Наш Ресторан" :
+                initialBotLang === 'sr' ? "Naš Restoran" :
+                    initialBotLang === 'hu' ? "Éttermünk" :
+                        initialBotLang === 'de' ? "Unser Restaurant" :
+                            initialBotLang === 'fr' ? "Notre Restaurant" :
+                                initialBotLang === 'es' ? "Nuestro Restaurante" :
+                                    initialBotLang === 'it' ? "Il nostro Ristorante" :
+                                        initialBotLang === 'pt' ? "Nosso Restaurante" :
+                                            initialBotLang === 'nl' ? "Ons Restaurant" :
+                                                "Our Restaurant"
         );
 
         console.log(`🚀 [Sofia AI] Initializing enhanced bot for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}, default language: ${initialBotLang}`);
@@ -418,10 +417,10 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 enhancedConversationManager.endSession(existingSessionId);
                 telegramSessions.delete(chatId);
             }
-            
+
             // ✅ ENHANCED: Use Telegram language hint but let Language Detection Agent decide
             let userLang: Language = initialBotLang; // Default to restaurant's configured language
-            
+
             // Use Telegram language code as a hint for the Language Detection Agent
             if (msg.from?.language_code) {
                 if (msg.from.language_code.startsWith('ru')) {
@@ -447,7 +446,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 }
                 // If no clear match, keep restaurant default (initialBotLang)
             }
-            
+
             console.log(`🌍 [Sofia AI] /start language detection: Telegram=${msg.from?.language_code}, Hint=${userLang}, RestaurantDefault=${initialBotLang}`);
             await sendWelcomeMessage(bot, chatId, actualRestaurantName, userLang);
         });
@@ -456,7 +455,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             const chatId = msg.chat.id;
             const sessionId = telegramSessions.get(chatId);
             let lang = initialBotLang;
-            
+
             if (sessionId) {
                 const session = enhancedConversationManager.getSession(sessionId);
                 lang = session?.language || initialBotLang;
@@ -484,7 +483,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                     lang = initialBotLang; // Use restaurant default
                 }
             }
-            
+
             const locale = telegramLocaleStrings[lang] || telegramLocaleStrings.en;
             await bot.sendMessage(chatId, locale.helpMessage, { parse_mode: 'Markdown' });
         });
@@ -493,7 +492,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             const chatId = msg.chat.id;
             const sessionId = telegramSessions.get(chatId);
             let lang = initialBotLang;
-            
+
             if (sessionId) {
                 const session = enhancedConversationManager.getSession(sessionId);
                 lang = session?.language || initialBotLang;
@@ -523,7 +522,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                     lang = initialBotLang; // Use restaurant default
                 }
             }
-            
+
             const locale = telegramLocaleStrings[lang] || telegramLocaleStrings.en;
             await bot.sendMessage(chatId, locale.cancelMessage);
         });
@@ -540,7 +539,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             const chatId = callbackQuery.message?.chat.id;
             const messageId = callbackQuery.message?.message_id;
             const data = callbackQuery.data;
-            
+
             if (!chatId || !messageId || !data) {
                 console.warn('[Telegram] Invalid callback_query');
                 if (callbackQuery.id) await bot.answerCallbackQuery(callbackQuery.id);
@@ -570,31 +569,31 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 const parts = data.split(':');
                 const choiceType = parts[1]; // 'new' or 'db'
                 const chosenName = parts[2]; // The actual name
-                
+
                 console.log(`[Telegram] ✅ Name choice received: ${choiceType} -> "${chosenName}"`);
 
                 try {
                     // Answer the callback query immediately
-                    await bot.answerCallbackQuery(callbackQuery.id, { 
-                        text: locale.nameConfirmationUsed(chosenName) 
+                    await bot.answerCallbackQuery(callbackQuery.id, {
+                        text: locale.nameConfirmationUsed(chosenName)
                     });
-                    
+
                     // Remove the buttons by editing the message
-                    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { 
-                        chat_id: chatId, 
-                        message_id: messageId 
+                    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+                        chat_id: chatId,
+                        message_id: messageId
                     });
-                    
+
                     // Send confirmation message
                     await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
-                    
+
                     // ✅ CRITICAL: Send the name choice as a regular message to conversation manager
                     // This will trigger the name choice extraction logic in enhanced-conversation-manager.ts
                     await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
-                    
+
                 } catch (editError: any) {
                     console.warn(`[Telegram] Could not edit message or answer callback query: ${editError.message || editError}`);
-                    
+
                     // Fallback: still try to process the name choice
                     try {
                         await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
@@ -616,12 +615,12 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 stopTelegramBot(restaurantId);
             }
         });
-        
+
         bot.on('error', (error) => console.error(`❌ [Sofia AI] General Bot error for restaurant ${restaurantId} (${actualRestaurantName}, ${restaurantTimezone}):`, error.message));
 
         console.log(`✅ [Sofia AI] Enhanced conversation bot initialized and listening for restaurant ${restaurantId} (${actualRestaurantName}) with timezone: ${restaurantTimezone}, default language: ${initialBotLang}`);
         return true;
-        
+
     } catch (error) {
         console.error(`❌ [Telegram] Failed to initialize enhanced bot for restaurant ${restaurantId}:`, error);
         if (activeBots.has(restaurantId)) {
@@ -639,7 +638,7 @@ export function stopTelegramBot(restaurantId: number): void {
             .then(() => { console.log(`🛑 [Telegram] Enhanced bot stopped for restaurant ${restaurantId}`); })
             .catch(err => console.error(`Error stopping enhanced bot for restaurant ${restaurantId}:`, err.message || err));
         activeBots.delete(restaurantId);
-        
+
         // Clear all sessions for this restaurant
         for (const [chatId, sessionId] of telegramSessions.entries()) {
             const session = enhancedConversationManager.getSession(sessionId);
@@ -723,7 +722,7 @@ export function getConversationStats(): {
 } {
     const stats = enhancedConversationManager.getStats();
     const conversationsByStage: Record<string, number> = {};
-    
+
     // Count Telegram sessions by stage
     for (const sessionId of telegramSessions.values()) {
         const session = enhancedConversationManager.getSession(sessionId);
@@ -731,7 +730,7 @@ export function getConversationStats(): {
             conversationsByStage[session.currentStep] = (conversationsByStage[session.currentStep] || 0) + 1;
         }
     }
-    
+
     return {
         activeConversations: telegramSessions.size,
         activeBots: activeBots.size,

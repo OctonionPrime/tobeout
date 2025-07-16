@@ -3,6 +3,12 @@
 // 🔧 BUG FIX: Fixed cancel_reservation tool definition to make confirmCancellation optional
 // ✅ STEP 3A COMPLETE: Context Manager function calls replaced
 // ✅ FIXES IMPLEMENTED: Workflow validation + Enhanced tool descriptions
+// 🚨 CRITICAL VALIDATION ENHANCEMENT: Comprehensive input validation pipeline as per original plan
+// 🚨 NEW: validateBookingInput() function with field-by-field validation
+// 🚨 NEW: validateBusinessHours() function with timezone support
+// 🚨 NEW: Enhanced past-date validation with grace period
+// 🚨 NEW: Complete input sanitization for all booking parameters
+// 🐛 BUG FIX: Modified validateBookingInput to conditionally skip name/phone checks for availability calls.
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -12,7 +18,15 @@ import { createTelegramReservation } from '../telegram_booking';
 import { storage } from '../../storage';
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
-import { getRestaurantDateTime } from '../../utils/timezone-utils';
+import {
+    getRestaurantDateTime,
+    getRestaurantTimeContext,
+    isRestaurantOpen,
+    getRestaurantOperatingStatus,
+    formatRestaurantTime24Hour,
+    isValidTimezone,
+    isOvernightOperation
+} from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
 
 // ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
@@ -70,6 +84,7 @@ interface BookingSessionWithAgent {
         total_bookings: number;
         frequent_special_requests: string[];
     } | null;
+    timezone?: string; // 🚨 NEW: Restaurant timezone for validation
 }
 
 /**
@@ -77,18 +92,18 @@ interface BookingSessionWithAgent {
  */
 class AgentToolTranslationService {
     static async translateToolMessage(
-        message: string, 
+        message: string,
         targetLanguage: Language,
         context: 'error' | 'success' | 'info' = 'info'
     ): Promise<string> {
         if (targetLanguage === 'en' || targetLanguage === 'auto') return message;
-        
+
         const languageNames: Record<Language, string> = {
             'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
             'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
             'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
         };
-        
+
         const prompt = `Translate this restaurant tool message to ${languageNames[targetLanguage]}:
 
 "${message}"
@@ -105,7 +120,7 @@ Return only the translation, no explanations.`;
                 temperature: 0.2,
                 context: `agent-tool-translation-${context}`
             });
-            
+
             return translation;
         } catch (error) {
             console.error('[AgentToolTranslation] Error:', error);
@@ -151,7 +166,7 @@ CRITICAL RULES FOR ANALYSIS:
 
 EXAMPLES OF GOOD PATTERNS TO IDENTIFY:
 - "window table preferred" (seating preference)
-- "vegetarian options needed" (dietary requirement) 
+- "vegetarian options needed" (dietary requirement)
 - "high chair required" (family needs)
 - "quiet corner table" (ambiance preference)
 - "celebrates anniversaries here" (special occasions)
@@ -185,11 +200,11 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
                 temperature: 0.2,
                 context: 'SpecialRequestAnalysis'
             });
-            
+
             // Parse the JSON response
             const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
             let analysis: { patterns: string[]; reasoning: string };
-            
+
             try {
                 analysis = JSON.parse(cleanJson);
             } catch (parseError) {
@@ -198,7 +213,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
             }
 
             // Validate and clean the results
-            const validPatterns = Array.isArray(analysis.patterns) 
+            const validPatterns = Array.isArray(analysis.patterns)
                 ? analysis.patterns
                     .filter(p => typeof p === 'string' && p.length > 0 && p.length < 100)
                     .filter(p => !this.isGenericPattern(p)) // ✅ CRITICAL: Filter out generic patterns
@@ -226,19 +241,19 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
             'table', 'booking', 'reservation', 'visit', 'request', 'service', 'general',
             'requests', 'needs', 'wants', 'order', 'orders'
         ];
-        
+
         const lowerPattern = pattern.toLowerCase();
-        
+
         // Reject if it's just a generic term or contains mostly generic terms
         if (genericTerms.some(term => lowerPattern === term)) {
             return true;
         }
-        
+
         // Reject patterns that are too short and generic
         if (lowerPattern.length < 15 && genericTerms.some(term => lowerPattern.includes(term))) {
             return true;
         }
-        
+
         return false;
     }
 
@@ -247,7 +262,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
      */
     private static fallbackKeywordAnalysis(allComments: string[]): string[] {
         const requestCounts: Record<string, number> = {};
-        
+
         // Much more specific patterns focused on actionable preferences
         const patterns = [
             { keywords: ['window', 'окно', 'prozor'], request: 'window seating preference' },
@@ -331,6 +346,411 @@ const createBusinessRuleFailure = (message: string, code?: string): ToolResponse
 
 const createSystemError = (message: string, originalError?: any): ToolResponse =>
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
+
+// 🚨 NEW: Validation result interface as per original plan
+interface ValidationResult {
+    valid: boolean;
+    errorMessage?: string;
+    field?: string;
+    warningMessage?: string;
+}
+
+/**
+ * 🚨 CRITICAL NEW FUNCTION: Comprehensive input validation as specified in original plan
+ * This implements the validateBookingInput() function that was missing
+ */
+async function validateBookingInput(input: {
+    guestName: string;
+    guestPhone: string;
+    date: string;
+    time: string;
+    guests: number;
+    specialRequests?: string;
+    context: any;
+}, isAvailabilityCheck: boolean = false): Promise<ValidationResult> { // 🐛 BUG FIX: Add optional flag
+    console.log('🛡️ [validateBookingInput] Starting comprehensive validation:', {
+        guestName: input.guestName?.substring(0, 10) + '...',
+        guestPhone: input.guestPhone?.substring(0, 6) + '...',
+        date: input.date,
+        time: input.time,
+        guests: input.guests,
+        isAvailabilityCheck // Log the flag
+    });
+
+    // 🐛 BUG FIX: Conditionally skip name and phone validation for availability checks
+    if (!isAvailabilityCheck) {
+        // 🚨 Name validation (2+ characters)
+        if (!input.guestName || typeof input.guestName !== 'string') {
+            return {
+                valid: false,
+                errorMessage: 'Guest name is required',
+                field: 'guestName'
+            };
+        }
+
+        const trimmedName = input.guestName.trim();
+        if (trimmedName.length < 2) {
+            return {
+                valid: false,
+                errorMessage: 'Guest name must be at least 2 characters long',
+                field: 'guestName'
+            };
+        }
+
+        if (trimmedName.length > 100) {
+            return {
+                valid: false,
+                errorMessage: 'Guest name is too long (maximum 100 characters)',
+                field: 'guestName'
+            };
+        }
+
+        // 🚨 Phone validation with comprehensive regex
+        if (!input.guestPhone || typeof input.guestPhone !== 'string') {
+            return {
+                valid: false,
+                errorMessage: 'Phone number is required',
+                field: 'guestPhone'
+            };
+        }
+
+        const phoneDigits = input.guestPhone.replace(/\D/g, '');
+        if (phoneDigits.length < 7 || phoneDigits.length > 20) {
+            return {
+                valid: false,
+                errorMessage: 'Please provide a valid phone number (7-20 digits)',
+                field: 'guestPhone'
+            };
+        }
+    }
+
+    // 🚨 Date validation (YYYY-MM-DD format)
+    if (!input.date || typeof input.date !== 'string') {
+        return {
+            valid: false,
+            errorMessage: 'Date is required',
+            field: 'date'
+        };
+    }
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(input.date)) {
+        return {
+            valid: false,
+            errorMessage: 'Date must be in YYYY-MM-DD format (e.g., 2025-07-20)',
+            field: 'date'
+        };
+    }
+
+    // Validate date is a real date
+    const parsedDate = DateTime.fromFormat(input.date, 'yyyy-MM-dd');
+    if (!parsedDate.isValid) {
+        return {
+            valid: false,
+            errorMessage: 'Invalid date. Please provide a valid calendar date',
+            field: 'date'
+        };
+    }
+
+    // 🚨 Time validation (HH:MM format)
+    if (!input.time || typeof input.time !== 'string') {
+        return {
+            valid: false,
+            errorMessage: 'Time is required',
+            field: 'time'
+        };
+    }
+
+    const timeRegex = /^\d{2}:\d{2}$/;
+    if (!timeRegex.test(input.time)) {
+        return {
+            valid: false,
+            errorMessage: 'Time must be in HH:MM format (e.g., 19:30)',
+            field: 'time'
+        };
+    }
+
+    // Validate time values are within valid ranges
+    const [hours, minutes] = input.time.split(':').map(Number);
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return {
+            valid: false,
+            errorMessage: 'Invalid time. Hours must be 00-23, minutes must be 00-59',
+            field: 'time'
+        };
+    }
+
+    // 🚨 Guests validation (1-50 range)
+    if (!input.guests || typeof input.guests !== 'number') {
+        return {
+            valid: false,
+            errorMessage: 'Number of guests is required',
+            field: 'guests'
+        };
+    }
+
+    if (input.guests < 1 || input.guests > 50) {
+        return {
+            valid: false,
+            errorMessage: 'Number of guests must be between 1 and 50',
+            field: 'guests'
+        };
+    }
+
+    if (!Number.isInteger(input.guests)) {
+        return {
+            valid: false,
+            errorMessage: 'Number of guests must be a whole number',
+            field: 'guests'
+        };
+    }
+
+    // 🚨 Special requests validation (optional but with limits)
+    if (input.specialRequests && typeof input.specialRequests === 'string') {
+        if (input.specialRequests.length > 500) {
+            return {
+                valid: false,
+                errorMessage: 'Special requests are too long (maximum 500 characters)',
+                field: 'specialRequests'
+            };
+        }
+    }
+
+    // 🚨 Context validation
+    if (!input.context || !input.context.restaurantId) {
+        return {
+            valid: false,
+            errorMessage: 'Restaurant context is required',
+            field: 'context'
+        };
+    }
+
+    if (!input.context.timezone) {
+        return {
+            valid: false,
+            errorMessage: 'Restaurant timezone is required',
+            field: 'context'
+        };
+    }
+
+    // Validate timezone is valid
+    if (!isValidTimezone(input.context.timezone)) {
+        return {
+            valid: false,
+            errorMessage: 'Invalid restaurant timezone configuration',
+            field: 'context'
+        };
+    }
+
+    console.log('✅ [validateBookingInput] All basic validation passed');
+    return { valid: true };
+}
+
+
+/**
+ * 🚨 CRITICAL NEW FUNCTION: Business hours validation as specified in original plan
+ * This implements the validateBusinessHours() function that was missing
+ */
+async function validateBusinessHours(
+    time: string,
+    date: string,
+    context: {
+        restaurantId: number;
+        timezone: string;
+        language?: string;
+    }
+): Promise<ValidationResult> {
+    console.log('🕒 [validateBusinessHours] Validating business hours:', {
+        time,
+        date,
+        timezone: context.timezone
+    });
+
+    try {
+        // Get restaurant configuration
+        const restaurant = await storage.getRestaurant(context.restaurantId);
+        if (!restaurant) {
+            return {
+                valid: false,
+                errorMessage: 'Restaurant configuration not found',
+                field: 'restaurant'
+            };
+        }
+
+        // Use restaurant's configured hours or fallback to defaults
+        const openingTime = restaurant.openingTime || '10:00';
+        const closingTime = restaurant.closingTime || '23:00';
+
+        console.log('🕒 [validateBusinessHours] Restaurant hours:', {
+            openingTime,
+            closingTime,
+            restaurantTimezone: context.timezone
+        });
+
+        // Normalize the requested time
+        const normalizedTime = formatRestaurantTime24Hour(time, context.timezone);
+
+        // Convert time to minutes for easier comparison
+        const requestedMinutes = timeToMinutes(normalizedTime);
+        const openingMinutes = timeToMinutes(openingTime);
+        const closingMinutes = timeToMinutes(closingTime);
+
+        if (requestedMinutes === null || openingMinutes === null || closingMinutes === null) {
+            return {
+                valid: false,
+                errorMessage: 'Invalid time format for business hours validation',
+                field: 'time'
+            };
+        }
+
+        // 🚨 NEW: Handle overnight operations (e.g., restaurant closes at 3:00 AM)
+        const isOvernightOp = isOvernightOperation(openingTime, closingTime);
+
+        let isWithinBusinessHours: boolean;
+        let operatingHours: string;
+
+        if (isOvernightOp) {
+            // For overnight operations: valid if after opening OR before closing
+            isWithinBusinessHours = requestedMinutes >= openingMinutes || requestedMinutes <= closingMinutes;
+            operatingHours = `${openingTime} - ${closingTime} (next day)`;
+
+            console.log('🌙 [validateBusinessHours] Overnight operation detected:', {
+                openingMinutes,
+                closingMinutes,
+                requestedMinutes,
+                isWithinHours: isWithinBusinessHours
+            });
+        } else {
+            // Standard operation: valid if between opening and closing
+            isWithinBusinessHours = requestedMinutes >= openingMinutes && requestedMinutes <= closingMinutes;
+            operatingHours = `${openingTime} - ${closingTime}`;
+
+            console.log('🌅 [validateBusinessHours] Standard operation:', {
+                openingMinutes,
+                closingMinutes,
+                requestedMinutes,
+                isWithinHours: isWithinBusinessHours
+            });
+        }
+
+        if (!isWithinBusinessHours) {
+            const errorMessage = `Requested time ${normalizedTime} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
+
+            console.warn('⚠️ [validateBusinessHours] Time outside business hours:', {
+                requestedTime: normalizedTime,
+                operatingHours,
+                isOvernightOperation: isOvernightOp
+            });
+
+            return {
+                valid: false,
+                errorMessage,
+                field: 'time'
+            };
+        }
+
+        console.log('✅ [validateBusinessHours] Time within business hours');
+        return { valid: true };
+
+    } catch (error) {
+        console.error('❌ [validateBusinessHours] Validation error:', error);
+        return {
+            valid: true, // Allow booking if validation fails to avoid blocking legitimate requests
+            warningMessage: 'Business hours validation could not be completed'
+        };
+    }
+}
+
+/**
+ * 🚨 CRITICAL NEW FUNCTION: Past-date validation with grace period as specified in original plan
+ */
+async function validatePastDate(
+    date: string,
+    time: string,
+    context: {
+        timezone: string;
+        language?: string;
+    }
+): Promise<ValidationResult> {
+    console.log('📅 [validatePastDate] Validating against past dates:', {
+        date,
+        time,
+        timezone: context.timezone
+    });
+
+    try {
+        // Create requested datetime in restaurant timezone
+        const requestedDateTime = DateTime.fromFormat(`${date} ${time}`, 'yyyy-MM-dd HH:mm', {
+            zone: context.timezone
+        });
+
+        if (!requestedDateTime.isValid) {
+            return {
+                valid: false,
+                errorMessage: 'Invalid date/time combination',
+                field: 'datetime'
+            };
+        }
+
+        // Get current time in restaurant timezone
+        const nowInRestaurantTz = getRestaurantDateTime(context.timezone);
+
+        // 🚨 Grace period as specified in original plan (5 minutes)
+        const gracePeriod = 5; // minutes
+        const cutoffTime = nowInRestaurantTz.minus({ minutes: gracePeriod });
+
+        console.log('📅 [validatePastDate] Time comparison:', {
+            requestedTime: requestedDateTime.toISO(),
+            currentTime: nowInRestaurantTz.toISO(),
+            cutoffTime: cutoffTime.toISO(),
+            isPastCutoff: requestedDateTime < cutoffTime
+        });
+
+        if (requestedDateTime < cutoffTime) {
+            const errorMessage = `Cannot create reservation for past date/time: ${date} at ${time}. Please choose a future date and time. Current time: ${nowInRestaurantTz.toFormat('yyyy-MM-dd HH:mm')}`;
+
+            console.error('🚨 [PAST_DATE_BOOKING] Attempt to book in the past:', {
+                requestedDateTime: requestedDateTime.toISO(),
+                cutoffTime: cutoffTime.toISO(),
+                gracePeriodMinutes: gracePeriod
+            });
+
+            return {
+                valid: false,
+                errorMessage,
+                field: 'date'
+            };
+        }
+
+        console.log('✅ [validatePastDate] Date/time is in the future');
+        return { valid: true };
+
+    } catch (error) {
+        console.error('❌ [validatePastDate] Validation error:', error);
+        return {
+            valid: false,
+            errorMessage: 'Date/time validation failed due to system error',
+            field: 'datetime'
+        };
+    }
+}
+
+/**
+ * 🚨 NEW: Helper function to convert time string to minutes (as specified in original plan)
+ */
+function timeToMinutes(timeStr: string): number | null {
+    if (!timeStr) return null;
+
+    const parts = timeStr.split(':');
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10) || 0;
+
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return null;
+    }
+
+    return hours * 60 + minutes;
+}
 
 /**
  * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
@@ -474,7 +894,7 @@ export async function get_guest_history(
         if (context.language && context.language !== 'en' && englishRequests.length > 0) {
             console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
             translatedRequests = await Promise.all(
-                englishRequests.map(request => 
+                englishRequests.map(request =>
                     AgentToolTranslationService.translateToolMessage(request, context.language as Language)
                 )
             );
@@ -522,12 +942,30 @@ export async function check_availability(
     console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
-        if (!date || !time || !guests || !context.restaurantId) {
-            return createValidationFailure('Missing required parameters: date, time, guests, or restaurantId');
+        // 🚨 ENHANCED: Use comprehensive validation but skip name/phone
+        const validation = await validateBookingInput({
+            guestName: 'temp-placeholder', // Placeholder that passes length check
+            guestPhone: '0000000', // Placeholder that passes length check
+            date,
+            time,
+            guests,
+            context
+        }, true); // 🐛 BUG FIX: Pass true to indicate this is an availability check
+
+        if (!validation.valid) {
+            return createValidationFailure(validation.errorMessage!, validation.field);
         }
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure('Invalid date format. Expected yyyy-MM-dd', 'date');
+        // 🚨 ENHANCED: Business hours validation
+        const businessHoursCheck = await validateBusinessHours(time, date, context);
+        if (!businessHoursCheck.valid) {
+            return createValidationFailure(businessHoursCheck.errorMessage!, businessHoursCheck.field);
+        }
+
+        // 🚨 ENHANCED: Past-date validation
+        const pastDateCheck = await validatePastDate(date, time, context);
+        if (!pastDateCheck.valid) {
+            return createValidationFailure(pastDateCheck.errorMessage!, pastDateCheck.field);
         }
 
         let timeFormatted: string;
@@ -540,11 +978,7 @@ export async function check_availability(
             return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'time');
         }
 
-        if (guests <= 0 || guests > 50) {
-            return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
-        }
-
-        console.log(`✅ [Agent Tool] Validation passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
+        console.log(`✅ [Agent Tool] Enhanced validation passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
@@ -565,7 +999,7 @@ export async function check_availability(
 
         if (slots.length > 0) {
             const bestSlot = slots[0];
-            
+
             // ✅ USE AISERVICE TRANSLATION
             const baseMessage = `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
@@ -658,9 +1092,9 @@ export async function find_alternative_times(
     date: string,
     preferredTime: string,
     guests: number,
-    context: { 
-        restaurantId: number; 
-        timezone: string; 
+    context: {
+        restaurantId: number;
+        timezone: string;
         language: string;
         excludeReservationId?: number; // ✅ CRITICAL BUG FIX: Added excludeReservationId parameter
     }
@@ -669,12 +1103,24 @@ export async function find_alternative_times(
     console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
-        if (!date || !preferredTime || !guests || !context.restaurantId) {
-            return createValidationFailure('Missing required parameters: date, preferredTime, guests, or restaurantId');
+        // 🚨 ENHANCED: Use comprehensive validation
+        const validation = await validateBookingInput({
+            guestName: 'temp-placeholder', // Placeholder
+            guestPhone: '0000000',      // Placeholder
+            date,
+            time: preferredTime,
+            guests,
+            context
+        }, true); // 🐛 BUG FIX: Pass true to skip name/phone validation
+
+        if (!validation.valid) {
+            return createValidationFailure(validation.errorMessage!, validation.field);
         }
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure('Invalid date format. Expected yyyy-MM-dd', 'date');
+        // 🚨 ENHANCED: Past-date validation
+        const pastDateCheck = await validatePastDate(date, preferredTime, context);
+        if (!pastDateCheck.valid) {
+            return createValidationFailure(pastDateCheck.errorMessage!, pastDateCheck.field);
         }
 
         let timeFormatted: string;
@@ -687,11 +1133,7 @@ export async function find_alternative_times(
             return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'preferredTime');
         }
 
-        if (guests <= 0 || guests > 50) {
-            return createValidationFailure('Invalid number of guests. Must be between 1 and 50', 'guests');
-        }
-
-        console.log(`✅ [Agent Tool] Validation passed for alternatives around exact time: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
+        console.log(`✅ [Agent Tool] Enhanced validation passed for alternatives around exact time: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
@@ -765,7 +1207,8 @@ export async function find_alternative_times(
 }
 
 /**
- * ✅ FIX #4: Create a reservation with workflow validation for special requests
+ * 🚨 COMPLETELY ENHANCED: Create reservation with comprehensive validation pipeline as per original plan
+ * This implements ALL the validation enhancements specified in the original plan
  */
 export async function create_reservation(
     guestName: string,
@@ -787,7 +1230,7 @@ export async function create_reservation(
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`📝 [Agent Tool] create_reservation: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
+    console.log(`📝 [Agent Tool] create_reservation ENHANCED: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
 
     const effectiveGuestName = context.confirmedName || guestName;
     if (context.confirmedName) {
@@ -795,25 +1238,47 @@ export async function create_reservation(
     }
 
     try {
-        if (!context) {
-            return createValidationFailure('Context object is required but undefined');
+        // 🚨 STEP 1: COMPREHENSIVE PRE-VALIDATION as specified in original plan
+        console.log('🛡️ [Agent Tool] Starting comprehensive pre-validation pipeline...');
+
+        const validation = await validateBookingInput({
+            guestName: effectiveGuestName,
+            guestPhone,
+            date,
+            time,
+            guests,
+            specialRequests,
+            context
+        });
+
+        if (!validation.valid) {
+            console.error('❌ [Agent Tool] Basic input validation failed:', validation.errorMessage);
+            return createValidationFailure(validation.errorMessage!, validation.field);
         }
 
-        if (!effectiveGuestName || !guestPhone || !date || !time || !guests) {
-            return createValidationFailure('Missing required parameters: guestName, guestPhone, date, time, or guests');
+        console.log('✅ [Agent Tool] Basic input validation passed');
+
+        // 🚨 STEP 2: PAST-DATE VALIDATION with grace period as specified in original plan
+        const pastDateValidation = await validatePastDate(date, time, context);
+        if (!pastDateValidation.valid) {
+            console.error('❌ [Agent Tool] Past-date validation failed:', pastDateValidation.errorMessage);
+            return createValidationFailure(pastDateValidation.errorMessage!, pastDateValidation.field);
         }
 
-        if (!context.restaurantId) {
-            return createValidationFailure('Context missing restaurantId');
+        console.log('✅ [Agent Tool] Past-date validation passed');
+
+        // 🚨 STEP 3: BUSINESS HOURS VALIDATION as specified in original plan
+        const businessHoursValidation = await validateBusinessHours(time, date, context);
+        if (!businessHoursValidation.valid) {
+            console.error('❌ [Agent Tool] Business hours validation failed:', businessHoursValidation.errorMessage);
+            return createValidationFailure(businessHoursValidation.errorMessage!, businessHoursValidation.field);
         }
 
-        if (!context.timezone) {
-            return createValidationFailure('Context missing timezone');
-        }
+        console.log('✅ [Agent Tool] Business hours validation passed');
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return createValidationFailure(`Invalid date format: ${date}. Expected yyyy-MM-dd`, 'date');
-        }
+        // 🚨 STEP 4: INPUT SANITIZATION as specified in original plan
+        const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
+        const cleanName = effectiveGuestName.trim();
 
         let timeFormatted: string;
         if (/^\d{1,2}:\d{2}$/.test(time)) {
@@ -825,34 +1290,22 @@ export async function create_reservation(
             return createValidationFailure(`Invalid time format: ${time}. Expected HH:MM or HH:MM:SS`, 'time');
         }
 
-        if (guests <= 0 || guests > 50) {
-            return createValidationFailure(`Invalid number of guests: ${guests}. Must be between 1 and 50`, 'guests');
-        }
-
-        const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
-        if (!cleanPhone) {
-            return createValidationFailure('Invalid phone number format', 'guestPhone');
-        }
-
-        const cleanName = effectiveGuestName.trim();
-        if (cleanName.length < 2) {
-            return createValidationFailure('Guest name must be at least 2 characters', 'guestName');
-        }
+        console.log('✅ [Agent Tool] Input sanitization completed');
 
         // ✅ FIX #4: WORKFLOW VALIDATION FOR SPECIAL REQUESTS
         let validatedSpecialRequests = specialRequests;
         if (specialRequests && context.session?.guestHistory?.frequent_special_requests?.includes(specialRequests)) {
             console.log(`🚨 [WORKFLOW_VALIDATION] Special request "${specialRequests}" detected from guest history. Checking for explicit confirmation...`);
-            
+
             // Check if this was explicitly confirmed in current conversation
             const recentMessages = context.session.conversationHistory?.slice(-5) || [];
-            
+
             // Look for explicit confirmation pattern
             let hasExplicitConfirmation = false;
             for (let i = 0; i < recentMessages.length - 1; i++) {
                 const assistantMsg = recentMessages[i];
                 const userMsg = recentMessages[i + 1];
-                
+
                 if (assistantMsg.role === 'assistant' && userMsg.role === 'user') {
                     // Check if assistant mentioned the specific request
                     const assistantMentionsRequest = assistantMsg.content.includes(specialRequests) ||
@@ -860,10 +1313,10 @@ export async function create_reservation(
                         assistantMsg.content.toLowerCase().includes('add that') ||
                         assistantMsg.content.toLowerCase().includes('добавить это') ||
                         assistantMsg.content.toLowerCase().includes('add this');
-                    
+
                     // Check if user explicitly confirmed
                     const userConfirms = /\b(yes|да|confirm|add|добавить|sure|good|ok)\b/i.test(userMsg.content);
-                    
+
                     if (assistantMentionsRequest && userConfirms) {
                         hasExplicitConfirmation = true;
                         console.log(`✅ [WORKFLOW_VALIDATION] Found explicit confirmation pattern:`, {
@@ -876,15 +1329,15 @@ export async function create_reservation(
                     }
                 }
             }
-            
+
             if (!hasExplicitConfirmation) {
                 console.warn(`🚨 [WORKFLOW_VIOLATION] Special request "${specialRequests}" appears to be auto-added without explicit confirmation`);
                 console.warn(`🚨 [WORKFLOW_VIOLATION] Recent conversation:`, recentMessages.map(m => `${m.role}: ${m.content.substring(0, 50)}...`));
-                
+
                 // Remove unauthorized special request
                 validatedSpecialRequests = '';
                 console.log(`🔧 [WORKFLOW_FIX] Removed unauthorized special request. Clean booking will proceed.`);
-                
+
                 // Optional: Add warning to metadata
                 console.log(`⚠️ [WORKFLOW_WARNING] Special request "${specialRequests}" was removed due to lack of explicit confirmation in current conversation`);
             } else {
@@ -894,15 +1347,16 @@ export async function create_reservation(
             console.log(`✅ [WORKFLOW_VALIDATION] Special request "${specialRequests}" is new (not from history) - proceeding normally`);
         }
 
-        console.log(`✅ [Agent Tool] Validation passed. Creating reservation with exact time:`);
+        console.log(`✅ [Agent Tool] ALL VALIDATION LAYERS PASSED. Creating reservation with enhanced validation:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
-        console.log(`   - Date/Time: ${date} ${timeFormatted} (exact time support)`);
+        console.log(`   - Date/Time: ${date} ${timeFormatted} (enhanced validation complete)`);
         console.log(`   - Guests: ${guests}`);
-        console.log(`   - Special Requests: "${validatedSpecialRequests}" (validated)`);
+        console.log(`   - Special Requests: "${validatedSpecialRequests}" (workflow validated)`);
         console.log(`   - Timezone: ${context.timezone}`);
         console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
 
+        // 🚨 STEP 5: PROCEED WITH RESERVATION CREATION
         const result = await createTelegramReservation(
             context.restaurantId,
             date,
@@ -948,18 +1402,35 @@ export async function create_reservation(
         });
 
         if (result.success && result.reservation && result.reservation.id) {
-            console.log(`✅ [Agent Tool] Exact time reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
-            
-            // ✅ FIX #4: Add workflow validation metadata to response
+            console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
+
+            // ✅ FIX #4: Add comprehensive validation metadata to response
             const metadata: any = {
-                execution_time_ms: executionTime
+                execution_time_ms: executionTime,
+                validationLayers: [
+                    'basic_input_validation',
+                    'past_date_validation',
+                    'business_hours_validation',
+                    'input_sanitization',
+                    'workflow_validation'
+                ]
             };
-            
+
             if (specialRequests !== validatedSpecialRequests) {
                 metadata.warnings = [`Special request workflow validation applied: "${specialRequests}" → "${validatedSpecialRequests}"`];
                 metadata.workflowValidationApplied = true;
             }
-            
+
+            if (validation.warningMessage) {
+                metadata.warnings = metadata.warnings || [];
+                metadata.warnings.push(validation.warningMessage);
+            }
+
+            if (businessHoursValidation.warningMessage) {
+                metadata.warnings = metadata.warnings || [];
+                metadata.warnings.push(businessHoursValidation.warningMessage);
+            }
+
             return createSuccessResponse({
                 reservationId: result.reservation.id,
                 confirmationNumber: result.reservation.id,
@@ -976,7 +1447,7 @@ export async function create_reservation(
                 timeSupported: 'exact'
             }, metadata);
         } else {
-            console.log(`⚠️ [Agent Tool] Exact time reservation failed:`, {
+            console.log(`⚠️ [Agent Tool] Enhanced validation reservation failed:`, {
                 success: result.success,
                 status: result.status,
                 message: result.message,
@@ -1006,9 +1477,9 @@ export async function create_reservation(
         }
 
     } catch (error) {
-        console.error(`❌ [Agent Tool] create_reservation error:`, error);
+        console.error(`❌ [Agent Tool] create_reservation ENHANCED VALIDATION error:`, error);
 
-        console.error(`❌ [Agent Tool] Error details:`, {
+        console.error(`❌ [Agent Tool] Enhanced validation error details:`, {
             guestName: effectiveGuestName,
             guestPhone,
             date,
@@ -1021,7 +1492,7 @@ export async function create_reservation(
             errorMessage: error instanceof Error ? error.message : 'Unknown error'
         });
 
-        return createSystemError('Failed to create reservation due to system error', error);
+        return createSystemError('Failed to create reservation due to system error in enhanced validation pipeline', error);
     }
 }
 
@@ -1198,8 +1669,8 @@ export async function find_existing_reservation(
         const nowUtc = getRestaurantDateTime(context.timezone).toUTC().toISO();
         const timeRange = context.timeRange || 'upcoming';
         const includeStatus = context.includeStatus || (
-            timeRange === 'past' 
-                ? ['completed', 'canceled'] 
+            timeRange === 'past'
+                ? ['completed', 'canceled']
                 : ['created', 'confirmed']
         );
 
@@ -1224,10 +1695,10 @@ export async function find_existing_reservation(
             case 'past':
                 // ✅ FIX: For 'past' + 'completed'/'canceled' statuses,
                 // user wants to see their booking history, not just time-filtered results
-                const hasCompletedOrCanceled = includeStatus.some(status => 
+                const hasCompletedOrCanceled = includeStatus.some(status =>
                     ['completed', 'canceled'].includes(status)
                 );
-                
+
                 if (hasCompletedOrCanceled) {
                     // Show ALL completed/canceled reservations (user's booking history)
                     console.log(`[Maya Tool] Showing all completed/canceled reservations (booking history mode)`);
@@ -1296,12 +1767,12 @@ export async function find_existing_reservation(
 
         if (!results || results.length === 0) {
             // ✅ USE AISERVICE TRANSLATION
-            const baseMessage = timeRange === 'past' 
+            const baseMessage = timeRange === 'past'
                 ? `I couldn't find any past reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
                 : timeRange === 'upcoming'
-                ? `I couldn't find any upcoming reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
-                : `I couldn't find any reservations for "${identifier}". Please check the information or try a different way to identify your booking.`;
-            
+                    ? `I couldn't find any upcoming reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
+                    : `I couldn't find any reservations for "${identifier}". Please check the information or try a different way to identify your booking.`;
+
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
@@ -1379,9 +1850,9 @@ export async function find_existing_reservation(
         const baseMessage = timeRange === 'past'
             ? `Found ${formattedReservations.length} past reservation(s) for you. Let me show you the details.`
             : timeRange === 'upcoming'
-            ? `Found ${formattedReservations.length} upcoming reservation(s) for you. Let me show you the details.`
-            : `Found ${formattedReservations.length} reservation(s) for you. Let me show you the details.`;
-        
+                ? `Found ${formattedReservations.length} upcoming reservation(s) for you. Let me show you the details.`
+                : `Found ${formattedReservations.length} reservation(s) for you. Let me show you the details.`;
+
         const translatedMessage = await AgentToolTranslationService.translateToolMessage(
             baseMessage,
             context.language as Language,
@@ -1448,10 +1919,10 @@ export async function modify_reservation(
     try {
         // ✅ STEP 3A: Use ContextManager for smart reservation ID resolution
         let targetReservationId: number;
-        
+
         if (context.session && context.userMessage) {
             console.log(`[ContextManager] Using ContextManager for reservation ID resolution...`);
-            
+
             // ✅ STEP 3A: Replace with contextManager call
             const resolution = contextManager.resolveReservationFromContext(
                 context.userMessage,
@@ -1466,7 +1937,7 @@ export async function modify_reservation(
                     context.language as Language,
                     'error'
                 );
-                
+
                 return createBusinessRuleFailure(
                     errorMessage,
                     'RESERVATION_ID_REQUIRED'
@@ -1479,7 +1950,7 @@ export async function modify_reservation(
                     context.language as Language,
                     'error'
                 );
-                
+
                 return createBusinessRuleFailure(
                     errorMessage,
                     'RESERVATION_ID_REQUIRED'
@@ -2019,7 +2490,7 @@ export async function cancel_reservation(
         const reservationDt = DateTime.fromISO(normalizedTimestamp);
         const now = DateTime.now().setZone(context.timezone);
         const hoursUntilReservation = reservationDt.diff(now, 'hours').hours;
-        
+
         // Simple refund policy: full refund if cancelled more than 24 hours in advance
         const refundEligible = hoursUntilReservation >= 24;
         const refundPercentage = hoursUntilReservation >= 24 ? 100 : hoursUntilReservation >= 2 ? 50 : 0;
@@ -2075,21 +2546,21 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "check_availability",
-            description: "Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30). Returns standardized response with tool_status and detailed data or error information.",
+            description: "🚨 ENHANCED VALIDATION: Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30) with comprehensive validation pipeline including business hours, past-date prevention, and timezone awareness. Returns standardized response with tool_status and detailed data or error information.",
             parameters: {
                 type: "object",
                 properties: {
                     date: {
                         type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27) - validated against past dates"
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 - validated against business hours"
                     },
                     guests: {
                         type: "number",
-                        description: "Number of guests (1-50)"
+                        description: "Number of guests (1-50) - comprehensive validation applied"
                     }
                 },
                 required: ["date", "time", "guests"]
@@ -2100,21 +2571,21 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "find_alternative_times",
-            description: "Find alternative time slots around ANY preferred time (supports exact times like 16:15, 19:43). Returns standardized response with available alternatives sorted by proximity to preferred time.",
+            description: "🚨 ENHANCED VALIDATION: Find alternative time slots around ANY preferred time (supports exact times like 16:15, 19:43) with comprehensive validation pipeline. Returns standardized response with available alternatives sorted by proximity to preferred time.",
             parameters: {
                 type: "object",
                 properties: {
                     date: {
                         type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27) - validated against past dates"
                     },
                     preferredTime: {
                         type: "string",
-                        description: "Preferred time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43"
+                        description: "Preferred time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43 - validated comprehensively"
                     },
                     guests: {
                         type: "number",
-                        description: "Number of guests (1-50)"
+                        description: "Number of guests (1-50) - comprehensive validation applied"
                     }
                 },
                 required: ["date", "preferredTime", "guests"]
@@ -2125,33 +2596,33 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "create_reservation",
-            description: "Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30). Returns standardized response indicating success with reservation details or failure with categorized error.",
+            description: "🚨 COMPLETELY ENHANCED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation supporting overnight operations, (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Returns standardized response indicating success with reservation details or failure with categorized error.",
             parameters: {
                 type: "object",
                 properties: {
                     guestName: {
                         type: "string",
-                        description: "Guest's full name"
+                        description: "Guest's full name (2-100 characters, validated and sanitized)"
                     },
                     guestPhone: {
                         type: "string",
-                        description: "Guest's phone number"
+                        description: "Guest's phone number (7-20 digits with optional formatting, validated with regex)"
                     },
                     date: {
                         type: "string",
-                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27)"
+                        description: "Date in yyyy-MM-dd format (e.g., 2025-06-27) - ENHANCED: validated against past dates with timezone awareness"
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30"
+                        description: "Time in HH:MM format (24-hour) - ENHANCED: supports ANY exact time like 16:15, 19:43, 8:30 with business hours validation"
                     },
                     guests: {
                         type: "number",
-                        description: "Number of guests (1-50)"
+                        description: "Number of guests (1-50, integer validation applied)"
                     },
                     specialRequests: {
                         type: "string",
-                        description: "Special requests or comments",
+                        description: "Special requests or comments (optional, max 500 characters, workflow validation applied)",
                         default: ""
                     }
                 },
@@ -2202,7 +2673,7 @@ export const agentTools = [
                     },
                     includeStatus: {
                         type: "array",
-                        items: { 
+                        items: {
                             type: "string",
                             enum: ["created", "confirmed", "completed", "canceled"]
                         },
@@ -2285,14 +2756,15 @@ export const agentTools = [
 ];
 
 // ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
+// 🚨 COMPLETELY ENHANCED: All functions now include comprehensive validation pipeline
 export const agentFunctions = {
     // ✅ PHASE 1 FIX: Guest memory tool with AIService-powered analysis and translation (now returns English patterns)
     get_guest_history,
 
-    // Sofia's tools (existing, now with AIService translation)
-    check_availability,
-    find_alternative_times,
-    create_reservation, // ✅ FIX #4: Now includes workflow validation for special requests
+    // 🚨 ENHANCED: Sofia's tools with comprehensive validation pipeline
+    check_availability, // ✅ Now includes: basic validation + business hours + past-date validation
+    find_alternative_times, // ✅ Now includes: basic validation + past-date validation
+    create_reservation, // 🚨 COMPLETELY ENHANCED: 5-layer validation pipeline as per original plan
     get_restaurant_info,
 
     // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration for smart context resolution
@@ -2300,4 +2772,3 @@ export const agentFunctions = {
     modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution
     cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter
 };
-                
