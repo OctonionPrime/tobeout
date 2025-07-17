@@ -10,6 +10,7 @@
 // 🚨 NEW: Complete input sanitization for all booking parameters
 // 🐛 BUG FIX: Modified validateBookingInput to conditionally skip name/phone checks for availability calls.
 // 🚀 REDIS PHASE 3: Guest history caching with cache invalidation and performance monitoring
+// 🐞 BUG FIX (OVERNIGHT BOOKING): Corrected the logic in validateBusinessHours to properly handle overnight operations.
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -44,6 +45,27 @@ import {
     reservationModifications,
     reservationCancellations
 } from '@shared/schema';
+
+// =================================================================================
+// 🐞 BUG FIX: ADDED HELPER FUNCTION
+// The 'parseTimeToMinutes' function was needed by the corrected business hours
+// validation but was not available in this file. It has been added here.
+// =================================================================================
+function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
+    if (!timeStr) return null;
+    const parts = timeStr.split(':');
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10) || 0;
+
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return null;
+    }
+    return hours * 60 + minutes;
+}
+// =================================================================================
+// END OF HELPER FUNCTION
+// =================================================================================
+
 
 /**
  * ✅ PHASE 1 FIX: Extended session interface for context resolution
@@ -575,7 +597,6 @@ async function validateBookingInput(input: {
 
 /**
  * 🚨 CRITICAL NEW FUNCTION: Business hours validation as specified in original plan
- * This implements the validateBusinessHours() function that was missing
  */
 async function validateBusinessHours(
     time: string,
@@ -586,7 +607,7 @@ async function validateBusinessHours(
         language?: string;
     }
 ): Promise<ValidationResult> {
-    console.log('🕒 [validateBusinessHours] Validating business hours:', {
+    console.log('🕒 [validateBusinessHours] Validating business hours (CORRECTED LOGIC):', {
         time,
         date,
         timezone: context.timezone
@@ -595,79 +616,75 @@ async function validateBusinessHours(
     try {
         // Get restaurant configuration
         const restaurant = await storage.getRestaurant(context.restaurantId);
-        if (!restaurant) {
+
+        if (!restaurant || !restaurant.openingTime || !restaurant.closingTime) {
             return {
                 valid: false,
-                errorMessage: 'Restaurant configuration not found',
+                errorMessage: 'Restaurant business hours are not configured correctly.',
                 field: 'restaurant'
             };
         }
 
-        // Use restaurant's configured hours or fallback to defaults
-        const openingTime = restaurant.openingTime || '10:00';
-        const closingTime = restaurant.closingTime || '23:00';
+        const { openingTime, closingTime } = restaurant;
 
-        console.log('🕒 [validateBusinessHours] Restaurant hours:', {
-            openingTime,
-            closingTime,
-            restaurantTimezone: context.timezone
+        // Create a full DateTime object for the user's request in the restaurant's timezone
+        const requestedDateTime = DateTime.fromFormat(`${date} ${time}`, 'yyyy-MM-dd HH:mm', {
+            zone: context.timezone
         });
 
-        // Normalize the requested time
-        const normalizedTime = formatRestaurantTime24Hour(time, context.timezone);
-
-        // Convert time to minutes for easier comparison
-        const requestedMinutes = timeToMinutes(normalizedTime);
-        const openingMinutes = timeToMinutes(openingTime);
-        const closingMinutes = timeToMinutes(closingTime);
-
-        if (requestedMinutes === null || openingMinutes === null || closingMinutes === null) {
-            return {
-                valid: false,
-                errorMessage: 'Invalid time format for business hours validation',
-                field: 'time'
-            };
+        if (!requestedDateTime.isValid) {
+            return { valid: false, errorMessage: 'Invalid date or time provided.', field: 'datetime' };
         }
 
-        // 🚨 NEW: Handle overnight operations (e.g., restaurant closes at 3:00 AM)
         const isOvernightOp = isOvernightOperation(openingTime, closingTime);
-
+        const operatingHours = `${openingTime} - ${closingTime}${isOvernightOp ? ' (next day)' : ''}`;
         let isWithinBusinessHours: boolean;
-        let operatingHours: string;
 
+        // ===================================================================
+        // 🐞 BUG FIX: REVISED OVERNIGHT LOGIC
+        // This new block correctly handles overnight operations by creating a
+        // continuous time window and avoids the "anchor date" complexity.
+        // ===================================================================
         if (isOvernightOp) {
-            // For overnight operations: valid if after opening OR before closing
-            isWithinBusinessHours = requestedMinutes >= openingMinutes || requestedMinutes <= closingMinutes;
-            operatingHours = `${openingTime} - ${closingTime} (next day)`;
+            // For overnight operations, a time is valid if it's either:
+            // 1. In the "late part" of the day (from opening time until midnight).
+            // 2. In the "early part" of the day (from midnight until closing time).
+            const requestedTimeMinutes = requestedDateTime.hour * 60 + requestedDateTime.minute;
+            const openingTimeMinutes = parseTimeToMinutes(openingTime);
+            const closingTimeMinutes = parseTimeToMinutes(closingTime);
 
-            console.log('🌙 [validateBusinessHours] Overnight operation detected:', {
-                openingMinutes,
-                closingMinutes,
-                requestedMinutes,
-                isWithinHours: isWithinBusinessHours
+            if (openingTimeMinutes !== null && closingTimeMinutes !== null) {
+                // The time is valid if it's after opening OR before closing.
+                isWithinBusinessHours = (requestedTimeMinutes >= openingTimeMinutes) || (requestedTimeMinutes < closingTimeMinutes);
+            } else {
+                // Fallback if time parsing fails
+                isWithinBusinessHours = false;
+            }
+
+            console.log('🌙 [validateBusinessHours] Corrected Overnight Check:', {
+                requested: requestedDateTime.toISO(),
+                requestedMinutes: requestedTimeMinutes,
+                openingMinutes: openingTimeMinutes,
+                closingMinutes: closingTimeMinutes,
+                isWithin: isWithinBusinessHours
             });
-        } else {
-            // Standard operation: valid if between opening and closing
-            isWithinBusinessHours = requestedMinutes >= openingMinutes && requestedMinutes <= closingMinutes;
-            operatingHours = `${openingTime} - ${closingTime}`;
 
-            console.log('🌅 [validateBusinessHours] Standard operation:', {
-                openingMinutes,
-                closingMinutes,
-                requestedMinutes,
-                isWithinHours: isWithinBusinessHours
+        } else {
+            // ---- STANDARD (Non-Overnight) LOGIC (Remains the same) ----
+            const openingDateTime = DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
+            const closingDateTime = DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
+            isWithinBusinessHours = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
+
+            console.log('🌅 [validateBusinessHours] Standard operation check:', {
+                isWithin: isWithinBusinessHours
             });
         }
+        // ===================================================================
+        // END OF BUG FIX
+        // ===================================================================
 
         if (!isWithinBusinessHours) {
-            const errorMessage = `Requested time ${normalizedTime} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
-
-            console.warn('⚠️ [validateBusinessHours] Time outside business hours:', {
-                requestedTime: normalizedTime,
-                operatingHours,
-                isOvernightOperation: isOvernightOp
-            });
-
+            const errorMessage = `Requested time ${time} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
             return {
                 valid: false,
                 errorMessage,
@@ -675,17 +692,18 @@ async function validateBusinessHours(
             };
         }
 
-        console.log('✅ [validateBusinessHours] Time within business hours');
+        console.log('✅ [validateBusinessHours] Time is within business hours.');
         return { valid: true };
 
     } catch (error) {
         console.error('❌ [validateBusinessHours] Validation error:', error);
         return {
-            valid: true, // Allow booking if validation fails to avoid blocking legitimate requests
-            warningMessage: 'Business hours validation could not be completed'
+            valid: true, // Fail open to avoid blocking legitimate requests
+            warningMessage: 'Business hours validation could not be completed due to a system error.'
         };
     }
 }
+
 
 /**
  * 🚨 CRITICAL NEW FUNCTION: Past-date validation with grace period as specified in original plan
@@ -1031,6 +1049,7 @@ export async function check_availability(
     console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
+        const restaurant = await storage.getRestaurant(context.restaurantId);
         // 🚨 ENHANCED: Use comprehensive validation but skip name/phone
         const validation = await validateBookingInput({
             guestName: 'temp-placeholder', // Placeholder that passes length check

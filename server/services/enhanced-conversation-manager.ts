@@ -12,6 +12,10 @@
 // 📊 SMART LOGGING INTEGRATION: Complete visibility into conversations, AI decisions, and performance
 // 🚨 CRITICAL HALLUCINATION FIX: Completely prevent AI from inventing dates, times, or any booking information
 // 🚀 REDIS INTEGRATION: Session persistence, caching, and scalability
+// 🛠️ BUG FIX: Guest identity preservation during session reset
+// 🏗️ ARCHITECTURAL FIX: Pass restaurantConfig directly to tools to prevent re-fetching and ensure data consistency
+// 🚨 BUG-00178 FIX: Removed duplicate business hours validation - now relies solely on agent-tools.ts validation
+// 🔧 BUG-00181 FIX: Provided date context to hallucination-proof extraction to correctly resolve relative dates like "tomorrow".
 
 import { aiService } from './ai-service';
 import { type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './session-manager';
@@ -151,8 +155,23 @@ interface CompleteBookingInfoResult {
 }
 
 /**
- * Availability validation state interface
+ * Function context interface for tool calls
  */
+interface ToolFunctionContext {
+    restaurantId: number;
+    timezone: string;
+    telegramUserId?: string;
+    source: string;
+    sessionId: string;
+    language: string;
+    confirmedName?: string;
+    restaurantConfig?: any; // Restaurant configuration to prevent re-fetching
+    userMessage?: string;
+    session?: BookingSessionWithAgent;
+    timeRange?: string;
+    includeStatus?: string[];
+    excludeReservationId?: number;
+}
 interface AvailabilityValidationState {
     date: string;
     time: string;
@@ -165,7 +184,7 @@ interface AvailabilityValidationState {
  * Enhanced conversation manager with Redis session persistence and AIService-powered meta-agents
  * 🚀 REDIS INTEGRATION: Sessions now persisted in Redis with TTL, fallback cache, and error handling
  * ✅ PHASE 1 INTEGRATION: AIService (Claude Sonnet 4 Overseer + Claude Haiku Language/Confirmation + OpenAI GPT fallback)
- * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and preservation
+ * ✅ STEP 3B.1 INTEGRATION: ContextManager for all context resolution and management
  * ✅ STEP 4.1.4 INTEGRATION: Sofia BaseAgent pattern with backward compatibility
  * ✅ PHASE 4.2 INTEGRATION: Maya BaseAgent pattern for reservation management
  * 🚨 CRITICAL BUG FIX: Enhanced tool pre-condition validation to prevent conversation loops
@@ -175,11 +194,14 @@ interface AvailabilityValidationState {
  * 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
  * 📊 SMART LOGGING INTEGRATION: Complete conversation and performance monitoring
  * 🚨 CRITICAL HALLUCINATION FIX: Completely prevent AI from inventing dates, times, or any booking information
+ * 🛠️ BUG FIX: Guest identity preservation during session reset
+ * 🏗️ ARCHITECTURAL FIX: Pass restaurantConfig directly to tools to prevent re-fetching and ensure data consistency
+ * 🚨 BUG-00178 FIX: Removed duplicate business hours validation - now relies solely on agent-tools.ts validation
  */
 export class EnhancedConversationManager {
     // 🚀 REDIS INTEGRATION: Removed in-memory Map - sessions now stored in Redis
     // private sessions = new Map<string, BookingSessionWithAgent>(); // REMOVED
-    
+
     private agents = new Map<string, any>();
     // 🚀 REDIS INTEGRATION: Removed session cleanup interval - Redis TTL handles expiration
     // private sessionCleanupInterval: NodeJS.Timeout; // REMOVED
@@ -202,11 +224,13 @@ export class EnhancedConversationManager {
                 'Enhanced tool validation',
                 'Time parsing fixes',
                 'UX Context Intelligence',
-                'Smart Logging Integration'
+                'Smart Logging Integration',
+                'Guest Identity Preservation', // 🛠️ NEW
+                'BUG-00178 Fix: Removed duplicate business hours validation' // 🚨 NEW
             ]
         });
 
-        console.log('[EnhancedConversationManager] Initialized with REDIS INTEGRATION + CRITICAL HALLUCINATION FIX + comprehensive booking system fixes, UX enhancements, and Smart Logging');
+        console.log('[EnhancedConversationManager] Initialized with REDIS INTEGRATION + CRITICAL HALLUCINATION FIX + comprehensive booking system fixes, UX enhancements, Smart Logging, Guest Identity Preservation, and BUG-00178 fix (removed duplicate business hours validation)');
     }
 
     /**
@@ -215,17 +239,17 @@ export class EnhancedConversationManager {
     private async saveSession(session: BookingSessionWithAgent): Promise<void> {
         const sessionKey = `session:${session.sessionId}`;
         session.lastActivity = new Date();
-        
+
         try {
-            const success = await redisService.set(sessionKey, session, { 
+            const success = await redisService.set(sessionKey, session, {
                 ttl: 4 * 3600, // 4 hours
                 compress: true,
-                fallbackToMemory: true 
+                fallbackToMemory: true
             });
-            
+
             if (!success) {
-                smartLog.warn('Failed to save session to Redis', { 
-                    sessionId: session.sessionId 
+                smartLog.warn('Failed to save session to Redis', {
+                    sessionId: session.sessionId
                 });
             } else {
                 smartLog.info('Session saved to Redis', {
@@ -251,37 +275,42 @@ export class EnhancedConversationManager {
         const timerId = smartLog.startTimer('hallucination_proof_extraction');
 
         try {
+            // 🔧 BUG-00181 FIX: Provide current date context to the AI
+            const dateContext = getRestaurantTimeContext(session.timezone);
+
             // 🚨 CRITICAL: New hallucination-proof prompt that NEVER allows invention
             const prompt = `CRITICAL INFORMATION EXTRACTION - ZERO HALLUCINATION POLICY:
 
 USER MESSAGE: "${message}"
 SESSION LANGUAGE: ${session.language}
-CURRENT SESSION INFO: ${JSON.stringify(session.gatheringInfo)}
+
+DATE CONTEXT (CRITICAL FOR RELATIVE DATES):
+- Today's Date: ${dateContext.todayDate}
+- Tomorrow's Date: ${dateContext.tomorrowDate}
 
 ABSOLUTE EXTRACTION RULES (NEVER VIOLATE):
-1. ONLY extract information EXPLICITLY stated in the user's message
-2. If ANY field is not explicitly mentioned, return null/"" for that field
-3. DO NOT infer, guess, assume, or invent ANY information
-4. DO NOT convert relative dates unless user explicitly states them
-5. DO NOT add default values or fill in missing information
-6. DO NOT use information from session context to fill gaps
+1. ONLY extract information EXPLICITLY stated in the user's message.
+2. If ANY field is not explicitly mentioned, return null or an empty string for that field.
+3. DO NOT infer, guess, assume, or invent ANY information.
+4. **RELATIVE DATE CONVERSION:**
+   - If user says "today" or "сегодня", use today's date: "${dateContext.todayDate}".
+   - If user says "tomorrow" or "завтра", use tomorrow's date: "${dateContext.tomorrowDate}".
+   - For all other date references, extract them as-is. If you cannot determine a YYYY-MM-DD date, return an empty string.
+5. DO NOT use information from previous session context to fill gaps.
 
 CRITICAL EXAMPLES:
-❌ BAD: "нет на 3 можно?" → {"date": "2025-07-03", "time": "15:00", "guests": 3}
-✅ GOOD: "нет на 3 можно?" → {"date": "", "time": "", "guests": 3, "name": "", "phone": ""}
+- User says: "table tomorrow" -> CORRECT EXTRACTION: {"date": "${dateContext.tomorrowDate}", "time": "", "guests": null}
+- User says: "стол на завтра" -> CORRECT EXTRACTION: {"date": "${dateContext.tomorrowDate}", "time": "", "guests": null}
+- User says: "сегодня в 5" -> CORRECT EXTRACTION: {"date": "${dateContext.todayDate}", "time": "17:00", "guests": null}
+- User says: "John Smith table" -> CORRECT EXTRACTION: {"date": "", "time": "", "guests": null, "name": "John Smith"}
+- User says: "нет на 3 можно?" -> CORRECT EXTRACTION: {"date": "", "time": "", "guests": 3}
 
-❌ BAD: "table tomorrow" → {"date": "2025-07-17", "time": "19:00", "guests": 2}
-✅ GOOD: "table tomorrow" → {"date": "2025-07-17", "time": "", "guests": null, "name": "", "phone": ""}
+VALIDATION CHECKPOINT: If you find yourself adding information not in the user's message or the provided date context, STOP and return empty fields instead.
 
-❌ BAD: "John Smith table" → {"date": "2025-07-16", "time": "19:00", "guests": 2, "name": "John Smith", "phone": ""}
-✅ GOOD: "John Smith table" → {"date": "", "time": "", "guests": null, "name": "John Smith", "phone": ""}
-
-VALIDATION CHECKPOINT: If you find yourself adding information not in the user's message, STOP and return empty fields instead.
-
-EXTRACT THESE FIELDS ONLY IF EXPLICITLY STATED:
+EXTRACT THESE FIELDS ONLY IF EXPLICITLY STATED OR RESOLVED FROM CONTEXT:
 - name: Guest's full name (only if mentioned)
 - phone: Phone number (only if mentioned)
-- date: Date in YYYY-MM-DD format (only if mentioned)
+- date: Date in YYYY-MM-DD format (resolve "today"/"tomorrow" using context, otherwise only if explicitly mentioned)
 - time: Time in HH:MM format (only if mentioned)
 - guests: Number of people (only if mentioned)
 - comments: Special requests (only if mentioned)
@@ -429,7 +458,11 @@ Return JSON with only explicitly stated information:
             /\d{1,2}\s+(янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)/i // 15 июл
         ];
 
-        const hasDateIndicator = dateIndicators.some(indicator => {
+        // For relative dates like "tomorrow", the AI is now instructed to convert it, so we trust it.
+        // For other dates, we still check for indicators.
+        const isRelative = cleanMessage.includes('tomorrow') || cleanMessage.includes('завтра') || cleanMessage.includes('today') || cleanMessage.includes('сегодня');
+
+        const hasDateIndicator = isRelative || dateIndicators.some(indicator => {
             if (typeof indicator === 'string') {
                 return cleanMessage.includes(indicator);
             } else {
@@ -504,7 +537,15 @@ Return JSON with only explicitly stated information:
      * 🚨 CRITICAL: Validate guests field to prevent hallucination
      */
     private validateGuestsField(value: any, originalMessage: string): number | undefined {
-        if (!value || typeof value !== 'number' || isNaN(value)) {
+        // Allow numeric strings and convert them
+        if (typeof value === 'string') {
+            const numValue = parseInt(value, 10);
+            if (!isNaN(numValue)) {
+                value = numValue;
+            }
+        }
+
+        if (typeof value !== 'number' || isNaN(value)) {
             return undefined;
         }
 
@@ -641,7 +682,7 @@ Return JSON with only explicitly stated information:
             }
         }
 
-        // 🚨 ENHANCED: Validate time format and business hours
+        // 🚨 ENHANCED: Validate time format (basic check only - business hours will be checked by agent tools)
         if (extracted.time) {
             const timeRegex = /^\d{2}:\d{2}$/;
             if (!timeRegex.test(extracted.time)) {
@@ -652,20 +693,6 @@ Return JSON with only explicitly stated information:
                 );
 
                 return { valid: false, errorMessage };
-            }
-
-            // 🚨 NEW: Business hours validation for direct bookings
-            if (extracted.date) {
-                const businessHoursCheck = this.validateBusinessHours(extracted.time, extracted.date, session);
-                if (!businessHoursCheck.valid) {
-                    const errorMessage = await TranslationService.translateMessage(
-                        businessHoursCheck.errorMessage!,
-                        session.language,
-                        'error'
-                    );
-
-                    return { valid: false, errorMessage };
-                }
             }
         }
 
@@ -810,7 +837,8 @@ Return JSON with only explicitly stated information:
     }
 
     /**
-     * 🚨 CRITICAL: Enhanced pre-condition validation with date/time checks
+     * 🚨 BUG-00178 FIX: Simplified pre-condition validation - removed duplicate business hours validation
+     * Now only performs basic format validation and defers business logic to agent tools
      */
     private validateToolPreConditions(
         toolCall: any,
@@ -818,7 +846,7 @@ Return JSON with only explicitly stated information:
     ): ToolValidationResult {
         const toolName = toolCall.function.name;
 
-        smartLog.info('Tool validation started', {
+        smartLog.info('Tool validation started (BUG-00178 fixed version)', {
             sessionId: session.sessionId,
             toolName,
             currentAgent: session.currentAgent
@@ -827,13 +855,8 @@ Return JSON with only explicitly stated information:
         try {
             const args = JSON.parse(toolCall.function.arguments);
 
-            // 🚨 CRITICAL: Universal date/time validation for all tools
-            if (args.date || args.time) {
-                const dateTimeValidation = this.validateDateTimeArgs(args, session);
-                if (!dateTimeValidation.valid) {
-                    return dateTimeValidation;
-                }
-            }
+            // 🚨 BUG-00178 FIX: Removed validateDateTimeArgs call completely
+            // Only basic format validation remains - no business hours or complex logic
 
             // Enhanced validation for find_alternative_times
             if (toolName === 'find_alternative_times') {
@@ -926,6 +949,7 @@ Return JSON with only explicitly stated information:
                     });
                 }
 
+                // 🚨 BUG-00178 FIX: Only basic format validation - no business hours check
                 if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
                     return {
                         valid: false,
@@ -997,7 +1021,7 @@ Return JSON with only explicitly stated information:
                 }
             }
 
-            smartLog.info('Tool validation passed', {
+            smartLog.info('Tool validation passed (BUG-00178 fixed - no business hours validation)', {
                 sessionId: session.sessionId,
                 toolName
             });
@@ -1018,369 +1042,15 @@ Return JSON with only explicitly stated information:
     }
 
     /**
-     * 🚨 CRITICAL: Enhanced date/time validation helper with timezone support
+     * 🚨 CRITICAL: Check if validation still valid (for availability re-validation)
      */
-    private validateDateTimeArgs(args: any, session: BookingSessionWithAgent): ToolValidationResult {
-        // Get restaurant timezone context
-        const restaurantTimezone = session.timezone || 'Europe/Belgrade'; // FIX: Use correct default
-
-        // Date validation
-        if (args.date) {
-            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-            if (!dateRegex.test(args.date)) {
-                return {
-                    valid: false,
-                    errorMessage: 'Date must be in YYYY-MM-DD format',
-                    shouldClarify: true
-                };
-            }
-
-            // 🚨 CRITICAL: Future date validation using restaurant timezone
-            const requestedDate = DateTime.fromFormat(args.date, 'yyyy-MM-dd', {
-                zone: restaurantTimezone
-            });
-            const restaurantToday = getRestaurantDateTime(restaurantTimezone).startOf('day');
-
-            if (requestedDate < restaurantToday) {
-                smartLog.error('Past date validation failed', new Error('PAST_DATE_BOOKING'), {
-                    sessionId: session.sessionId,
-                    requestedDate: args.date,
-                    restaurantToday: restaurantToday.toFormat('yyyy-MM-dd'),
-                    restaurantTimezone
-                });
-
-                return {
-                    valid: false,
-                    errorMessage: `Cannot book for past date: ${args.date}. Please choose a future date.`,
-                    shouldClarify: true
-                };
-            }
-        }
-
-        // 🚨 ENHANCED: Time validation with business hours support
-        if (args.time) {
-            const timeRegex = /^\d{2}:\d{2}$/;
-            if (!timeRegex.test(args.time)) {
-                return {
-                    valid: false,
-                    errorMessage: 'Time must be in HH:MM format',
-                    shouldClarify: true
-                };
-            }
-
-            // 🚨 NEW: Business hours validation
-            if (args.date) {
-                const businessHoursCheck = this.validateBusinessHours(args.time, args.date, session);
-                if (!businessHoursCheck.valid) {
-                    return businessHoursCheck;
-                }
-            }
-        }
-
-        return { valid: true };
-    }
-
-    /**
-     * 🚨 NEW: Business hours validation using timezone utilities
-     */
-    private validateBusinessHours(time: string, date: string, session: BookingSessionWithAgent): ToolValidationResult {
-        try {
-            // Get restaurant configuration (would need to be passed from context)
-            const restaurantTimezone = session.timezone || 'Europe/Belgrade'; // FIX: Use correct default
-            const openingTime = '10:00'; // Default, should come from restaurant config
-            const closingTime = '23:00'; // Default, should come from restaurant config
-
-            // Normalize time format
-            const normalizedTime = formatRestaurantTime24Hour(time, restaurantTimezone);
-
-            // For basic validation, check if time is within reasonable restaurant hours
-            const requestedMinutes = this.timeToMinutes(normalizedTime);
-            const openingMinutes = this.timeToMinutes(openingTime);
-            const closingMinutes = this.timeToMinutes(closingTime);
-
-            if (requestedMinutes === null || openingMinutes === null || closingMinutes === null) {
-                return { valid: true }; // Skip validation if parsing fails
-            }
-
-            // Handle overnight operations (e.g., restaurant closes at 3:00 AM)
-            const isOvernightOperation = closingMinutes < openingMinutes;
-
-            let isWithinBusinessHours: boolean;
-            let operatingHours: string;
-
-            if (isOvernightOperation) {
-                // For overnight operations: valid if after opening OR before closing
-                isWithinBusinessHours = requestedMinutes >= openingMinutes || requestedMinutes <= closingMinutes;
-                operatingHours = `${openingTime} - ${closingTime} (next day)`;
-            } else {
-                // Standard operation: valid if between opening and closing
-                isWithinBusinessHours = requestedMinutes >= openingMinutes && requestedMinutes <= closingMinutes;
-                operatingHours = `${openingTime} - ${closingTime}`;
-            }
-
-            if (!isWithinBusinessHours) {
-                const errorMessage = `Requested time ${normalizedTime} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
-
-                smartLog.warn('Time outside business hours', {
-                    sessionId: session.sessionId,
-                    requestedTime: normalizedTime,
-                    operatingHours,
-                    isOvernightOperation
-                });
-
-                return {
-                    valid: false,
-                    errorMessage,
-                    shouldClarify: true
-                };
-            }
-
-            return { valid: true };
-
-        } catch (error) {
-            smartLog.error('Business hours validation error', error as Error, {
-                sessionId: session.sessionId,
-                time,
-                date
-            });
-            return { valid: true }; // Allow booking if validation fails
-        }
-    }
-
-    /**
-     * 🚨 NEW: Helper function to convert time string to minutes
-     */
-    private timeToMinutes(timeStr: string): number | null {
-        if (!timeStr) return null;
-
-        const parts = timeStr.split(':');
-        const hours = parseInt(parts[0], 10);
-        const minutes = parseInt(parts[1], 10) || 0;
-
-        if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-            return null;
-        }
-
-        return hours * 60 + minutes;
-    }
-
-    /**
-     * Language Detection Agent using AIService with GPT fallback
-     */
-    private async runLanguageDetectionAgent(
-        message: string,
-        conversationHistory: Array<{ role: string, content: string }> = [],
-        currentLanguage?: Language
-    ): Promise<{
-        detectedLanguage: Language;
-        confidence: number;
-        reasoning: string;
-        shouldLock: boolean;
-    }> {
-        const timerId = smartLog.startTimer('language_detection');
-
-        try {
-            const historyContext = conversationHistory.length > 0
-                ? conversationHistory.slice(-3).map(msg => `${msg.role}: ${msg.content}`).join('\n')
-                : 'First message';
-
-            const prompt = `You are a Language Detection Agent for a restaurant booking system. Analyze the user's message and determine the language.
-
-CONVERSATION HISTORY:
-${historyContext}
-
-USER'S CURRENT MESSAGE: "${message}"
-CURRENT SESSION LANGUAGE: ${currentLanguage || 'none set'}
-
-SUPPORTED LANGUAGES:
-- en (English)
-- ru (Russian)
-- sr (Serbian)
-- hu (Hungarian)
-- de (German)
-- fr (French)
-- es (Spanish)
-- it (Italian)
-- pt (Portuguese)
-- nl (Dutch)
-
-ANALYSIS RULES:
-1. If this is the first substantive message (not just "hi"), detect primary language
-2. Handle typos and variations gracefully (e.g., "helo" = "hello")
-3. For mixed languages, choose the dominant one
-4. For ambiguous short messages ("ok", "yes"), keep current language if set
-5. Consider context from conversation history
-6. shouldLock = true for first language detection, false for confirmations/short responses
-
-EXAMPLES:
-- "Szia! Szeretnék asztalt foglalni" → Hungarian (high confidence, lock)
-- "Helo, I want table" → English (medium confidence, lock)
-- "ok" → keep current (low confidence, don't lock)
-- "да, подтверждаю" → Russian (high confidence, lock)
-
-Respond with JSON only:
-{
-  "detectedLanguage": "language_code",
-  "confidence": 0.0-1.0,
-  "reasoning": "explanation of decision",
-  "shouldLock": true/false
-}`;
-
-            const response = await aiService.generateJSON(prompt, {
-                model: 'haiku',
-                maxTokens: 200,
-                temperature: 0.0,
-                context: 'LanguageAgent'
-            });
-
-            const result = {
-                detectedLanguage: response.detectedLanguage || 'en',
-                confidence: response.confidence || 0.5,
-                reasoning: response.reasoning || 'AIService detection',
-                shouldLock: response.shouldLock || false
-            };
-
-            smartLog.info('Language detection completed', {
-                message: message.substring(0, 100),
-                detected: result.detectedLanguage,
-                confidence: result.confidence,
-                reasoning: result.reasoning,
-                shouldLock: result.shouldLock,
-                processingTime: smartLog.endTimer(timerId)
-            });
-
-            // Log this as a business event for Datadog if it's a language change
-            if (currentLanguage && currentLanguage !== result.detectedLanguage && result.confidence > 0.8) {
-                smartLog.businessEvent('language_changed', {
-                    fromLanguage: currentLanguage,
-                    toLanguage: result.detectedLanguage,
-                    confidence: result.confidence,
-                    reasoning: result.reasoning
-                });
-            }
-
-            return result;
-
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Language detection failed', error as Error, {
-                message: message.substring(0, 100),
-                currentLanguage
-            });
-
-            const text = message.toLowerCase();
-            let fallbackLanguage: Language = 'en';
-
-            if (/[\u0400-\u04FF]/.test(message)) fallbackLanguage = 'ru';
-            else if (text.includes('szia') || text.includes('szeretnék')) fallbackLanguage = 'hu';
-            else if (text.includes('hallo') || text.includes('ich')) fallbackLanguage = 'de';
-            else if (text.includes('bonjour') || text.includes('je')) fallbackLanguage = 'fr';
-
-            return {
-                detectedLanguage: fallbackLanguage,
-                confidence: 0.3,
-                reasoning: 'Fallback detection due to error',
-                shouldLock: true
-            };
-        }
-    }
-
-    /**
-     * Confirmation Agent using AIService with GPT fallback
-     */
-    private async runConfirmationAgent(
-        message: string,
-        pendingActionSummary: string,
-        language: Language
-    ): Promise<{
-        confirmationStatus: 'positive' | 'negative' | 'unclear';
-        reasoning: string;
-    }> {
-        const timerId = smartLog.startTimer('confirmation_analysis');
-
-        try {
-            const prompt = `You are a Confirmation Agent for a restaurant booking system.
-The user was asked to confirm an action. Analyze their response and decide if it's a "positive" or "negative" confirmation.
-
-## CONTEXT
-- **Language:** ${language}
-- **Action Requiring Confirmation:** ${pendingActionSummary}
-- **User's Response:** "${message}"
-
-## RULES
-1. **Positive:** The user agrees, confirms, or says yes (e.g., "Yes, that's correct", "Sounds good", "Igen, rendben", "Да, все верно").
-2. **Negative:** The user disagrees, cancels, or says no (e.g., "No, cancel that", "That's wrong", "Nem", "Нет, отменить").
-3. **Unclear:** The user asks a question, tries to change details, or gives an ambiguous reply.
-
-## EXAMPLES BY LANGUAGE:
-
-**Hungarian:**
-- "Igen" → positive
-- "Igen, rendben" → positive
-- "Jó" → positive
-- "Nem" → negative
-- "Mégse" → negative
-- "Változtatni szeretnék" → unclear
-
-**English:**
-- "Yes" → positive
-- "Yes, that's right" → positive
-- "Sounds good" → positive
-- "No" → negative
-- "Cancel" → negative
-- "Can I change the time?" → unclear
-
-**Russian:**
-- "Да" → positive
-- "Да, все правильно" → positive
-- "Нет" → negative
-- "Отменить" → negative
-- "А можно поменять время?" → unclear
-
-## RESPONSE FORMAT
-Respond with ONLY a JSON object.
-
-{
-  "confirmationStatus": "positive" | "negative" | "unclear",
-  "reasoning": "Briefly explain your decision based on the user's message."
-}`;
-
-            const response = await aiService.generateJSON(prompt, {
-                model: 'haiku',
-                maxTokens: 200,
-                temperature: 0.0,
-                context: 'ConfirmationAgent'
-            });
-
-            const result = {
-                confirmationStatus: response.confirmationStatus || 'unclear',
-                reasoning: response.reasoning || 'AIService confirmation analysis.'
-            };
-
-            smartLog.info('Confirmation analysis completed', {
-                userMessage: message,
-                language,
-                pendingAction: pendingActionSummary.substring(0, 100),
-                status: result.confirmationStatus,
-                reasoning: result.reasoning,
-                processingTime: smartLog.endTimer(timerId)
-            });
-
-            return result;
-
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Confirmation analysis failed', error as Error, {
-                userMessage: message.substring(0, 100),
-                language,
-                pendingAction: pendingActionSummary.substring(0, 100)
-            });
-
-            return {
-                confirmationStatus: 'unclear',
-                reasoning: 'Fallback due to an internal error.'
-            };
-        }
+    private isValidationStillValid(
+        validation: AvailabilityValidationState,
+        currentInfo: { date: string, time: string, guests: number }
+    ): boolean {
+        return validation.date === currentInfo.date &&
+            validation.time === currentInfo.time &&
+            validation.guests === currentInfo.guests;
     }
 
     /**
@@ -1410,27 +1080,32 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * Reset session contamination for new booking requests while preserving guest identity
+     * 🛠️ BUG FIX: Reset session contamination for new booking requests while preserving guest identity
+     * This fixes the issue where returning guests are asked for their name and phone again
      */
     private resetSessionContamination(session: BookingSessionWithAgent, reason: string) {
         const preservedGuestName = session.guestHistory?.guest_name;
         const preservedGuestPhone = session.guestHistory?.guest_phone;
 
+        // 🛠️ FIX: Reset only the details of a specific booking, not the guest's identity
         session.gatheringInfo = {
             date: undefined,
             time: undefined,
             guests: undefined,
             comments: undefined,
-            name: undefined,
-            phone: undefined
+            // ✅ FIX: Pre-populate name and phone if the guest is known
+            name: preservedGuestName,
+            phone: preservedGuestPhone
         };
 
+        // 🛠️ FIX: Reset conversation state flags, but mark name/phone as already "asked" if they were preserved
         session.hasAskedPartySize = false;
         session.hasAskedDate = false;
         session.hasAskedTime = false;
-        session.hasAskedName = false;
-        session.hasAskedPhone = false;
+        session.hasAskedName = !!preservedGuestName; // ✅ FIX: Mark as asked if preserved
+        session.hasAskedPhone = !!preservedGuestPhone; // ✅ FIX: Mark as asked if preserved
 
+        // Clear other operational state as before
         delete session.pendingConfirmation;
         delete session.confirmedName;
         delete session.activeReservationId;
@@ -1438,13 +1113,16 @@ Respond with ONLY a JSON object.
         delete session.availabilityFailureContext;
         delete session.availabilityValidated;
 
-        smartLog.info('Session contamination reset', {
+        smartLog.info('Session contamination reset with guest identity preservation', {
             sessionId: session.sessionId,
             reason,
             preservedGuest: preservedGuestName,
+            preservedPhone: preservedGuestPhone ? 'yes' : 'no',
+            namePreserved: !!preservedGuestName,
+            phonePreserved: !!preservedGuestPhone,
             clearedStates: [
-                'gatheringInfo',
-                'conversation flags',
+                'gatheringInfo (booking details only)',
+                'conversation flags (except preserved identity)',
                 'pendingConfirmation',
                 'activeReservationId',
                 'foundReservations',
@@ -1816,6 +1494,225 @@ Respond with ONLY a JSON object:
     }
 
     /**
+     * Language Detection Agent using AIService with GPT fallback
+     */
+    private async runLanguageDetectionAgent(
+        message: string,
+        conversationHistory: Array<{ role: string, content: string }> = [],
+        currentLanguage?: Language
+    ): Promise<{
+        detectedLanguage: Language;
+        confidence: number;
+        reasoning: string;
+        shouldLock: boolean;
+    }> {
+        const timerId = smartLog.startTimer('language_detection');
+
+        try {
+            const historyContext = conversationHistory.length > 0
+                ? conversationHistory.slice(-3).map(msg => `${msg.role}: ${msg.content}`).join('\n')
+                : 'First message';
+
+            const prompt = `You are a Language Detection Agent for a restaurant booking system. Analyze the user's message and determine the language.
+
+CONVERSATION HISTORY:
+${historyContext}
+
+USER'S CURRENT MESSAGE: "${message}"
+CURRENT SESSION LANGUAGE: ${currentLanguage || 'none set'}
+
+SUPPORTED LANGUAGES:
+- en (English)
+- ru (Russian)
+- sr (Serbian)
+- hu (Hungarian)
+- de (German)
+- fr (French)
+- es (Spanish)
+- it (Italian)
+- pt (Portuguese)
+- nl (Dutch)
+
+ANALYSIS RULES:
+1. If this is the first substantive message (not just "hi"), detect primary language
+2. Handle typos and variations gracefully (e.g., "helo" = "hello")
+3. For mixed languages, choose the dominant one
+4. For ambiguous short messages ("ok", "yes"), keep current language if set
+5. Consider context from conversation history
+6. shouldLock = true for first language detection, false for confirmations/short responses
+
+EXAMPLES:
+- "Szia! Szeretnék asztalt foglalni" → Hungarian (high confidence, lock)
+- "Helo, I want table" → English (medium confidence, lock)
+- "ok" → keep current (low confidence, don't lock)
+- "да, подтверждаю" → Russian (high confidence, lock)
+
+Respond with JSON only:
+{
+  "detectedLanguage": "language_code",
+  "confidence": 0.0-1.0,
+  "reasoning": "explanation of decision",
+  "shouldLock": true/false
+}`;
+
+            const response = await aiService.generateJSON(prompt, {
+                model: 'haiku',
+                maxTokens: 200,
+                temperature: 0.0,
+                context: 'LanguageAgent'
+            });
+
+            const result = {
+                detectedLanguage: response.detectedLanguage || 'en',
+                confidence: response.confidence || 0.5,
+                reasoning: response.reasoning || 'AIService detection',
+                shouldLock: response.shouldLock || false
+            };
+
+            smartLog.info('Language detection completed', {
+                message: message.substring(0, 100),
+                detected: result.detectedLanguage,
+                confidence: result.confidence,
+                reasoning: result.reasoning,
+                shouldLock: result.shouldLock,
+                processingTime: smartLog.endTimer(timerId)
+            });
+
+            // Log this as a business event for Datadog if it's a language change
+            if (currentLanguage && currentLanguage !== result.detectedLanguage && result.confidence > 0.8) {
+                smartLog.businessEvent('language_changed', {
+                    fromLanguage: currentLanguage,
+                    toLanguage: result.detectedLanguage,
+                    confidence: result.confidence,
+                    reasoning: result.reasoning
+                });
+            }
+
+            return result;
+
+        } catch (error) {
+            smartLog.endTimer(timerId);
+            smartLog.error('Language detection failed', error as Error, {
+                message: message.substring(0, 100),
+                currentLanguage
+            });
+
+            const text = message.toLowerCase();
+            let fallbackLanguage: Language = 'en';
+
+            if (/[\u0400-\u04FF]/.test(message)) fallbackLanguage = 'ru';
+            else if (text.includes('szia') || text.includes('szeretnék')) fallbackLanguage = 'hu';
+            else if (text.includes('hallo') || text.includes('ich')) fallbackLanguage = 'de';
+            else if (text.includes('bonjour') || text.includes('je')) fallbackLanguage = 'fr';
+
+            return {
+                detectedLanguage: fallbackLanguage,
+                confidence: 0.3,
+                reasoning: 'Fallback detection due to error',
+                shouldLock: true
+            };
+        }
+    }
+
+    /**
+     * Confirmation Agent using AIService with GPT fallback
+     */
+    private async runConfirmationAgent(
+        message: string,
+        pendingActionSummary: string,
+        language: Language
+    ): Promise<{
+        confirmationStatus: 'positive' | 'negative' | 'unclear';
+        reasoning: string;
+    }> {
+        const timerId = smartLog.startTimer('confirmation_analysis');
+
+        try {
+            const prompt = `You are a Confirmation Agent for a restaurant booking system.
+The user was asked to confirm an action. Analyze their response and decide if it's a "positive" or "negative" confirmation.
+
+## CONTEXT
+- **Language:** ${language}
+- **Action Requiring Confirmation:** ${pendingActionSummary}
+- **User's Response:** "${message}"
+
+## RULES
+1. **Positive:** The user agrees, confirms, or says yes (e.g., "Yes, that's correct", "Sounds good", "Igen, rendben", "Да, все верно").
+2. **Negative:** The user disagrees, cancels, or says no (e.g., "No, cancel that", "That's wrong", "Nem", "Нет, отменить").
+3. **Unclear:** The user asks a question, tries to change details, or gives an ambiguous reply.
+
+## EXAMPLES BY LANGUAGE:
+
+**Hungarian:**
+- "Igen" → positive
+- "Igen, rendben" → positive
+- "Jó" → positive
+- "Nem" → negative
+- "Mégse" → negative
+- "Változtatni szeretnék" → unclear
+
+**English:**
+- "Yes" → positive
+- "Yes, that's right" → positive
+- "Sounds good" → positive
+- "No" → negative
+- "Cancel" → negative
+- "Can I change the time?" → unclear
+
+**Russian:**
+- "Да" → positive
+- "Да, все правильно" → positive
+- "Нет" → negative
+- "Отменить" → negative
+- "А можно поменять время?" → unclear
+
+## RESPONSE FORMAT
+Respond with ONLY a JSON object.
+
+{
+  "confirmationStatus": "positive" | "negative" | "unclear",
+  "reasoning": "Briefly explain your decision based on the user's message."
+}`;
+
+            const response = await aiService.generateJSON(prompt, {
+                model: 'haiku',
+                maxTokens: 200,
+                temperature: 0.0,
+                context: 'ConfirmationAgent'
+            });
+
+            const result = {
+                confirmationStatus: response.confirmationStatus || 'unclear',
+                reasoning: response.reasoning || 'AIService confirmation analysis.'
+            };
+
+            smartLog.info('Confirmation analysis completed', {
+                userMessage: message,
+                language,
+                pendingAction: pendingActionSummary.substring(0, 100),
+                status: result.confirmationStatus,
+                reasoning: result.reasoning,
+                processingTime: smartLog.endTimer(timerId)
+            });
+
+            return result;
+
+        } catch (error) {
+            smartLog.endTimer(timerId);
+            smartLog.error('Confirmation analysis failed', error as Error, {
+                userMessage: message.substring(0, 100),
+                language,
+                pendingAction: pendingActionSummary.substring(0, 100)
+            });
+
+            return {
+                confirmationStatus: 'unclear',
+                reasoning: 'Fallback due to an internal error.'
+            };
+        }
+    }
+
+    /**
      * 🚨 ENHANCED: Natural date parsing with timezone support
      */
     private parseNaturalDate(message: string, language: string, timezone: string): string | null {
@@ -2078,7 +1975,7 @@ Respond with ONLY a JSON object:
                                     description: "Explicit confirmation from guest that they want to cancel"
                                 }
                             },
-                            required: ["reservationId", "confirmCancellation"]
+                            required: ["reservationId"]
                         }
                     }
                 }
@@ -2219,12 +2116,12 @@ Respond with ONLY a JSON object:
 
         // 🚀 REDIS INTEGRATION: Store session in Redis with TTL
         const sessionKey = `session:${session.sessionId}`;
-        const success = await redisService.set(sessionKey, session, { 
+        const success = await redisService.set(sessionKey, session, {
             ttl: 4 * 3600, // 4 hours
             compress: true,
-            fallbackToMemory: true 
+            fallbackToMemory: true
         });
-        
+
         if (!success) {
             smartLog.error('Failed to store session in Redis', new Error('SESSION_STORAGE_FAILED'), {
                 sessionId: session.sessionId
@@ -2397,7 +2294,7 @@ Respond with ONLY a JSON object:
             tools: this.getToolsForAgent(agentType),
             agentType,
             systemPrompt: '',
-            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: any) => {
+            updateInstructions: (context: string, language: string, guestHistory?: GuestHistory | null, isFirstMessage: boolean = false, conversationContext?: any) => {
                 return this.getAgentPersonality(agentType, language, restaurantConfig, guestHistory, isFirstMessage, conversationContext);
             }
         };
@@ -2607,44 +2504,32 @@ Respond with JSON only.`;
     }
 
     /**
-     * 🚨 CRITICAL: Check if validation still valid (for availability re-validation)
-     */
-    private isValidationStillValid(
-        validation: AvailabilityValidationState,
-        currentInfo: { date: string, time: string, guests: number }
-    ): boolean {
-        return validation.date === currentInfo.date &&
-            validation.time === currentInfo.time &&
-            validation.guests === currentInfo.guests;
-    }
-
-    /**
      * 🚀 REDIS INTEGRATION: Get session from Redis with fallback handling
      */
     async getSession(sessionId: string): Promise<BookingSessionWithAgent | undefined> {
         const sessionKey = `session:${sessionId}`;
-        
+
         try {
             const session = await redisService.get<BookingSessionWithAgent>(sessionKey, {
                 fallbackToMemory: true
             });
-            
+
             if (session) {
-                smartLog.info('Session retrieved from Redis', { 
+                smartLog.info('Session retrieved from Redis', {
                     sessionId,
                     storage: 'redis'
                 });
                 return session;
             }
-            
-            smartLog.info('Session not found in Redis', { 
+
+            smartLog.info('Session not found in Redis', {
                 sessionId
             });
             return undefined;
-            
+
         } catch (error) {
-            smartLog.error('Error retrieving session from Redis', error as Error, { 
-                sessionId 
+            smartLog.error('Error retrieving session from Redis', error as Error, {
+                sessionId
             });
             return undefined;
         }
@@ -2657,6 +2542,8 @@ Respond with JSON only.`;
      * 🎯 UX ENHANCEMENT: Intelligent guest context merging for immediate recognition
      * 📊 SMART LOGGING INTEGRATION: Complete conversation and performance monitoring
      * 🚨 CRITICAL HALLUCINATION FIX: Completely prevent AI from inventing dates, times, or any booking information
+     * 🛠️ BUG FIX: Guest identity preservation during session reset
+     * 🚨 BUG-00178 FIX: Removed duplicate business hours validation - now relies solely on agent-tools.ts validation
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -2765,15 +2652,20 @@ Respond with JSON only.`;
                 if (completionCheck.extracted.time) session.hasAskedTime = true;
                 if (completionCheck.extracted.guests) session.hasAskedPartySize = true;
 
-                // Create function context with proper timezone
-                const functionContext = {
+                // ✅ ARCHITECTURAL FIX: Load agent early to get restaurantConfig for direct booking
+                const directBookingAgent = await this.getAgent(session.restaurantId, session.currentAgent);
+
+                // Create function context with proper timezone and restaurantConfig
+                const functionContext: ToolFunctionContext = {
                     restaurantId: session.restaurantId,
                     timezone: session.timezone || 'Europe/Belgrade', // FIX: Use correct timezone
                     telegramUserId: session.telegramUserId,
                     source: session.platform,
                     sessionId: sessionId,
                     language: session.language,
-                    confirmedName: undefined
+                    confirmedName: undefined,
+                    // ✅ ARCHITECTURAL FIX: Pass the config directly to prevent re-fetching
+                    restaurantConfig: directBookingAgent.restaurantConfig
                 };
 
                 // Directly call create_reservation
@@ -3317,14 +3209,18 @@ Respond with JSON only.`;
 
                 messages.push({ role: 'assistant' as const, content: completion.choices[0].message.content || null, tool_calls: toolCalls });
 
-                const functionContext = {
+                // ✅ ARCHITECTURAL FIX: Pass restaurantConfig directly to tools to prevent re-fetching
+                // This ensures the agent's understanding and tool validation operate on the same data
+                const functionContext: ToolFunctionContext = {
                     restaurantId: session.restaurantId,
                     timezone: session.timezone || agent.restaurantConfig?.timezone || 'Europe/Belgrade', // FIX: Use correct default
                     telegramUserId: session.telegramUserId,
                     source: session.platform,
                     sessionId: sessionId,
                     language: session.language,
-                    confirmedName: session.confirmedName
+                    confirmedName: session.confirmedName,
+                    // ✅ ARCHITECTURAL FIX: Pass the config directly to prevent re-fetching
+                    restaurantConfig: agent.restaurantConfig
                 };
 
                 for (const toolCall of toolCalls) {
@@ -3530,7 +3426,7 @@ Respond with JSON only.`;
                                     result = await agentFunctions.find_alternative_times(args.date, args.preferredTime, args.guests, functionContext);
 
                                     if (result.tool_status === 'SUCCESS' && session.currentAgent === 'availability') {
-                                        smartLog.info('Apollo successfully found alternatives', {
+                                        smartLog.info('Apollo task completed - alternatives found', {
                                             sessionId,
                                             alternativeCount: result.data?.alternatives?.length || 0
                                         });
@@ -4057,7 +3953,7 @@ Respond with JSON only.`;
         if (!session) {
             throw new Error(`Session ${sessionId} not found`);
         }
-        
+
         const timerId = smartLog.startTimer('confirmed_booking_execution');
 
         try {
@@ -4074,6 +3970,12 @@ Respond with JSON only.`;
                 confirmedName: session.confirmedName,
                 args
             });
+
+            // ✅ ARCHITECTURAL FIX: Get agent to ensure restaurantConfig is available
+            const agent = await this.getAgent(session.restaurantId, session.currentAgent);
+
+            // Add restaurantConfig to functionContext to prevent re-fetching
+            (functionContext as ToolFunctionContext).restaurantConfig = agent.restaurantConfig;
 
             const result = await agentFunctions.create_reservation(args.guestName, args.guestPhone, args.date, args.time, args.guests, args.specialRequests || '', functionContext);
             delete session.confirmedName;
@@ -4193,6 +4095,14 @@ Respond with JSON only.`;
                     action: toolCall.function.name,
                     confirmedName: session.confirmedName
                 });
+
+                // ✅ ARCHITECTURAL FIX: Get agent to ensure restaurantConfig is available
+                const agent = await this.getAgent(session.restaurantId, session.currentAgent);
+
+                // Add restaurantConfig to functionContext to prevent re-fetching
+                if (functionContext) {
+                    (functionContext as ToolFunctionContext).restaurantConfig = agent.restaurantConfig;
+                }
 
                 let result;
                 switch (toolCall.function.name) {
@@ -4589,16 +4499,16 @@ Respond with JSON only.`;
         try {
             // 🚀 REDIS INTEGRATION: Get Redis statistics
             const redisStats = redisService.getStats();
-            
+
             // Note: For production, you might want to implement a more efficient way
             // to gather session statistics without scanning all Redis keys
             // Consider using separate Redis counters or periodic aggregation
-            
+
             // For now, we'll provide estimated stats based on Redis cache statistics
             // In a real implementation, you might want to maintain session counters
             totalSessions = redisStats.totalRequests > 0 ? Math.floor(redisStats.totalRequests / 10) : 0;
             activeSessions = Math.floor(totalSessions * 0.3); // Estimate based on typical activity
-            
+
             // Default values for demonstration - in production, implement proper Redis-based tracking
             const avgTurnsPerSession = totalSessions > 0 ? Math.round((totalTurns / totalSessions) * 10) / 10 : 0;
             const avgConfidence = totalLanguageDetections > 0 ? Math.round((totalConfidence / totalLanguageDetections) * 100) / 100 : 0;
@@ -4670,7 +4580,7 @@ Respond with JSON only.`;
 
         } catch (error) {
             smartLog.error('Error generating session statistics', error as Error);
-            
+
             // Return basic stats if Redis scanning fails
             return {
                 totalSessions: 0,
@@ -4743,17 +4653,21 @@ Respond with JSON only.`;
                 'Business analytics',
                 'Error tracking',
                 'Booking system fixes',
-                'UX enhancements'
+                'UX enhancements',
+                'Guest Identity Preservation', // 🛠️ NEW
+                'BUG-00178 Fix: Removed duplicate business hours validation' // 🚨 NEW
             ]
         });
 
-        console.log('[EnhancedConversationManager] Shutdown completed with REDIS INTEGRATION + CRITICAL HALLUCINATION FIX + comprehensive booking system fixes, UX enhancements, and Smart Logging Integration');
+        console.log('[EnhancedConversationManager] Shutdown completed with REDIS INTEGRATION + CRITICAL HALLUCINATION FIX + comprehensive booking system fixes, UX enhancements, Smart Logging Integration, Guest Identity Preservation, and BUG-00178 fix (removed duplicate business hours validation)');
     }
 }
 
 /**
  * Extended session interface with comprehensive booking fixes, UX enhancements, and hallucination prevention
  * 🚀 REDIS INTEGRATION: Sessions now stored in Redis instead of in-memory Map
+ * 🛠️ BUG FIX: Guest identity preservation during session reset
+ * 🚨 BUG-00178 FIX: Removed duplicate business hours validation - now relies solely on agent-tools.ts validation
  */
 interface BookingSessionWithAgent extends BookingSession {
     currentAgent: AgentType;
