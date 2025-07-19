@@ -2,6 +2,7 @@
 // storage.ts (Complete Enhanced Version with All New Features)
 // ✅ ENHANCED: Complete timezone-aware system with menu management and guest analytics
 // ✅ MAYA FIX: Added excludeReservationId parameter to prevent reservation conflicts during modifications
+// ✅ BUG 2 FIX: Added missing menu item storage methods
 //
 
 import {
@@ -112,8 +113,26 @@ export interface IStorage {
         availableOnly?: boolean;
         searchQuery?: string;
         popularOnly?: boolean;
+        limit?: number;
     }): Promise<any[]>;
     createMenuItem(data: InsertMenuItem): Promise<MenuItem>;
+    
+    // ✅ BUG 2 FIX: Add missing menu item CRUD methods to interface
+    getMenuItem(id: number): Promise<MenuItem | undefined>;
+    updateMenuItem(id: number, data: Partial<InsertMenuItem>): Promise<MenuItem>;
+    deleteMenuItem(id: number): Promise<void>;
+    
+    // ✅ BUG 1 FIX: Add helper method for category name lookup
+    getMenuCategoryByName(restaurantId: number, name: string): Promise<RestaurantMenuCategory | undefined>;
+    
+    // ✅ BUG 2 FIX: Add unified search method used by routes.ts
+    searchMenuItems(restaurantId: number, options: {
+        query: string;
+        category?: string;
+        dietaryRestrictions?: string[];
+        priceRange?: { min?: number; max?: number };
+    }): Promise<MenuItem[]>;
+    
     bulkUpdateMenuItems(restaurantId: number, items: any[], action: string): Promise<any[]>;
     searchMenuItemsByName(restaurantId: number, query: string): Promise<MenuItem[]>;
     searchMenuItemsByDescription(restaurantId: number, query: string): Promise<MenuItem[]>;
@@ -853,6 +872,7 @@ export class DatabaseStorage implements IStorage {
         availableOnly?: boolean;
         searchQuery?: string;
         popularOnly?: boolean;
+        limit?: number;
     }): Promise<any[]> {
         const whereConditions = [eq(menuItems.restaurantId, restaurantId)];
         
@@ -891,7 +911,7 @@ export class DatabaseStorage implements IStorage {
             );
         }
         
-        const results = await db
+        let query = db
             .select({
                 item: menuItems,
                 category: restaurantMenuCategories
@@ -900,6 +920,12 @@ export class DatabaseStorage implements IStorage {
             .innerJoin(restaurantMenuCategories, eq(menuItems.categoryId, restaurantMenuCategories.id))
             .where(and(...whereConditions))
             .orderBy(restaurantMenuCategories.displayOrder, menuItems.displayOrder);
+            
+        if (filters?.limit) {
+            query = query.limit(filters.limit) as any;
+        }
+            
+        const results = await query;
             
         return results.map(r => ({
             ...r.item,
@@ -911,6 +937,136 @@ export class DatabaseStorage implements IStorage {
     async createMenuItem(data: InsertMenuItem): Promise<MenuItem> {
         const [newItem] = await db.insert(menuItems).values(data).returning();
         return newItem;
+    }
+
+    // ✅ BUG 2 FIX: Add missing getMenuItem method
+    async getMenuItem(id: number): Promise<MenuItem | undefined> {
+        const [item] = await db
+            .select({
+                item: menuItems,
+                category: restaurantMenuCategories
+            })
+            .from(menuItems)
+            .innerJoin(restaurantMenuCategories, eq(menuItems.categoryId, restaurantMenuCategories.id))
+            .where(eq(menuItems.id, id));
+        
+        if (!item) return undefined;
+        
+        return {
+            ...item.item,
+            categoryName: item.category.name,
+            categorySlug: item.category.slug
+        } as MenuItem;
+    }
+
+    // ✅ BUG 2 FIX: Add missing updateMenuItem method
+    async updateMenuItem(id: number, data: Partial<InsertMenuItem>): Promise<MenuItem> {
+        const [updatedItem] = await db
+            .update(menuItems)
+            .set({ ...data, updatedAt: new Date() })
+            .where(eq(menuItems.id, id))
+            .returning();
+        return updatedItem;
+    }
+
+    // ✅ BUG 2 FIX: Add missing deleteMenuItem method
+    async deleteMenuItem(id: number): Promise<void> {
+        await db.delete(menuItems).where(eq(menuItems.id, id));
+    }
+
+    // ✅ BUG 1 FIX: Add helper method to get menu category by name
+    async getMenuCategoryByName(restaurantId: number, name: string): Promise<RestaurantMenuCategory | undefined> {
+        const [category] = await db
+            .select()
+            .from(restaurantMenuCategories)
+            .where(
+                and(
+                    eq(restaurantMenuCategories.restaurantId, restaurantId),
+                    eq(restaurantMenuCategories.name, name)
+                )
+            );
+        return category;
+    }
+
+    // ✅ BUG 2 FIX: Add unified search method used by routes.ts
+    async searchMenuItems(restaurantId: number, options: {
+        query: string;
+        category?: string;
+        dietaryRestrictions?: string[];
+        priceRange?: { min?: number; max?: number };
+    }): Promise<MenuItem[]> {
+        console.log(`🔍 [Storage] Searching menu items for restaurant ${restaurantId} with options:`, options);
+        
+        // Combine multiple search strategies for better results
+        const searchPromises = [
+            this.searchMenuItemsByName(restaurantId, options.query),
+            this.searchMenuItemsByDescription(restaurantId, options.query),
+            this.fuzzySearchMenuItems(restaurantId, options.query)
+        ];
+        
+        // Add dietary tags search if applicable
+        if (options.dietaryRestrictions && options.dietaryRestrictions.length > 0) {
+            for (const restriction of options.dietaryRestrictions) {
+                searchPromises.push(this.searchMenuItemsByDietaryTags(restaurantId, restriction));
+            }
+        }
+        
+        const searchResults = await Promise.all(searchPromises);
+        
+        // Merge and deduplicate results
+        const allResults: MenuItem[] = [];
+        const seenIds = new Set<number>();
+        
+        for (const results of searchResults) {
+            for (const item of results) {
+                if (!seenIds.has(item.id)) {
+                    seenIds.add(item.id);
+                    allResults.push(item);
+                }
+            }
+        }
+        
+        // Apply additional filters
+        let filteredResults = allResults;
+        
+        // Filter by category if specified
+        if (options.category) {
+            const categoryFilter = await db
+                .select({ id: restaurantMenuCategories.id })
+                .from(restaurantMenuCategories)
+                .where(
+                    and(
+                        eq(restaurantMenuCategories.restaurantId, restaurantId),
+                        eq(restaurantMenuCategories.slug, options.category)
+                    )
+                );
+            
+            if (categoryFilter.length > 0) {
+                const categoryId = categoryFilter[0].id;
+                filteredResults = filteredResults.filter(item => item.categoryId === categoryId);
+            }
+        }
+        
+        // Filter by price range if specified
+        if (options.priceRange) {
+            filteredResults = filteredResults.filter(item => {
+                const price = parseFloat(item.price);
+                if (options.priceRange!.min && price < options.priceRange!.min) return false;
+                if (options.priceRange!.max && price > options.priceRange!.max) return false;
+                return true;
+            });
+        }
+        
+        console.log(`✅ [Storage] Found ${filteredResults.length} items matching search criteria`);
+        
+        // Sort by relevance (popular items first, then new items)
+        return filteredResults.sort((a, b) => {
+            if (a.isPopular && !b.isPopular) return -1;
+            if (!a.isPopular && b.isPopular) return 1;
+            if (a.isNew && !b.isNew) return -1;
+            if (!a.isNew && b.isNew) return 1;
+            return a.name.localeCompare(b.name);
+        });
     }
 
     async bulkUpdateMenuItems(restaurantId: number, items: any[], action: string): Promise<any[]> {

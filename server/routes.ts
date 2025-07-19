@@ -1192,17 +1192,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 existingReservation.duration || 120
             );
 
-            if (validatedData.date && validatedData.time) {
-                const newLocalDateTime = DateTime.fromISO(`${validatedData.date}T${validatedData.time}`, { zone: restaurant.timezone });
-                validatedData.reservation_utc = newLocalDateTime.toUTC().toISO();
-                
-                CacheInvalidation.onReservationUtcChange(
-                    restaurant.id,
-                    validatedData.reservation_utc,
-                    restaurant.timezone,
-                    validatedData.duration || existingReservation.duration || 120
-                );
-            }
+            // ✅ BUG 3 FIX: REMOVED DEAD CODE BLOCK
+            // The dead code that checked for validatedData.date && validatedData.time has been removed
+            // because the validation schema only supports reservation_utc, not separate date/time fields
 
             const updatedReservation = await storage.updateReservation(reservationId, validatedData);
 
@@ -1550,7 +1542,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Create new menu item
+    // ✅ BUG 1 FIX: Create new menu item with category name lookup
     app.post("/api/menu-items", isAuthenticated, async (req, res, next) => {
         try {
             const user = req.user as any;
@@ -1574,20 +1566,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 spicyLevel: z.number().min(0).max(5).default(0)
             });
 
-            const validatedData = menuItemSchema.parse({
-                ...req.body,
-                restaurantId: restaurant.id
-            });
+            const validatedData = menuItemSchema.parse(req.body);
+
+            // ✅ BUG 1 FIX: Look up the category ID from the category name
+            const category = await storage.getMenuCategoryByName(restaurant.id, validatedData.category);
+
+            if (!category) {
+                return res.status(400).json({ message: `Category '${validatedData.category}' not found.` });
+            }
 
             const newItem = await storage.createMenuItem({
-                ...validatedData,
-                restaurantId: restaurant.id
+                name: validatedData.name,
+                price: validatedData.price,
+                description: validatedData.description,
+                isAvailable: validatedData.isAvailable,
+                isPopular: validatedData.isPopular,
+                isNew: validatedData.isNew,
+                preparationTime: validatedData.preparationTime,
+                spicyLevel: validatedData.spicyLevel,
+                allergens: validatedData.allergens,
+                dietaryTags: validatedData.dietaryTags,
+                restaurantId: restaurant.id,
+                categoryId: category.id  // ✅ BUG 1 FIX: Use the correct numeric categoryId
             });
             
             // Invalidate menu cache
             cache.invalidatePattern(`menu_items_${restaurant.id}`);
             
-            console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${newItem.category}) - $${newItem.price}`);
+            console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${validatedData.category}) - $${newItem.price}`);
 
             res.status(201).json({
                 ...newItem,
