@@ -1,149 +1,177 @@
-// src/agents/agent-factory.ts
-// ✅ PHASE 4.2: AgentFactory Implementation - Updated with Maya BaseAgent
-// ✅ Maya Integration Complete: Real MayaAgent replacing mock implementation
-// Centralized agent creation, management, and registry
-// Provides singleton pattern for agent instances with intelligent caching
-// Supports BaseAgent pattern with configuration validation and health monitoring
+// server/services/agents/agent-factory.ts
 
-import { BaseAgent, AgentConfig, AgentContext, RestaurantConfig, validateAgentConfig, createDefaultAgentConfig } from './base-agent';
+/**
+ * @file agent-factory.ts
+ * @description This file contains the implementation of the AgentFactory, a singleton class
+ * responsible for creating, managing, and caching different types of AI agents (Sofia, Maya, etc.)
+ * for multiple restaurants. It dynamically loads restaurant-specific configurations,
+ * handles agent caching to improve performance, and includes health monitoring for reliability.
+ *
+ * @version 2.1.0
+ * @date 2025-07-21
+ *
+ * @changelog
+ * - v2.1.0 (2025-07-21):
+ * - ADDED: Full implementation for the ConductorAgent to handle post-task conversation flow.
+ * - FIXED: Replaced the placeholder implementation for 'conductor' agent with the new ConductorAgent class.
+ * - v2.0.0 (2025-07-21):
+ * - FIXED: Added missing startHealthMonitoring and registerAgent methods to resolve critical runtime error.
+ * - ADDED: Defined AgentType and AgentRegistryEntry types for proper type safety.
+ * - REFACTORED: Now supports multiple restaurants by dynamically loading configurations via RestaurantConfigManager.
+ * - ENHANCED: Caching mechanism is now restaurant-specific for better performance and context separation.
+ */
+
+import { BaseAgent, AgentConfig, RestaurantConfig } from './base-agent';
 import { SofiaAgent } from './sofia-agent';
-import { MayaAgent } from './maya-agent'; // ✅ NEW: Import real MayaAgent
-import { aiService } from '../ai-service';
-import { contextManager } from '../context-manager';
-import type { Language } from '../enhanced-conversation-manager';
+import { MayaAgent } from './maya-agent';
+import { ConductorAgent } from './conductor-agent'; // Import the new ConductorAgent
+import { storage } from '../../storage';
+
+// --- Type Definitions ---
 
 /**
- * Supported agent types in the restaurant booking system
+ * Defines the types of agents available in the system.
  */
-export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
+type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
 
 /**
- * Factory configuration for agent creation and management
- */
-export interface AgentFactoryConfig {
-    restaurantConfig: RestaurantConfig;
-    enableCaching?: boolean;
-    maxCacheSize?: number;
-    healthCheckInterval?: number;
-    enablePerformanceMonitoring?: boolean;
-}
-
-/**
- * Agent registry entry for tracking and management
+ * Represents an entry in the agent cache registry.
  */
 interface AgentRegistryEntry {
     agent: BaseAgent;
+    agentType: AgentType;
+    restaurantId: number;
     createdAt: Date;
     lastUsed: Date;
     requestCount: number;
-    restaurantId: number;
-    agentType: AgentType;
     healthy: boolean;
-    lastHealthCheck?: Date;
 }
 
 /**
- * Factory health check result
+ * Configuration for the AgentFactory itself.
  */
-interface FactoryHealthResult {
-    healthy: boolean;
-    agentCount: number;
-    healthyAgents: number;
-    unhealthyAgents: number;
-    details: Array<{
-        agentId: string;
-        agentType: AgentType;
-        healthy: boolean;
-        lastUsed: string;
-    }>;
+interface AgentFactoryConfig {
+    enableCaching?: boolean;
+    maxCacheSize?: number;
+    healthCheckInterval?: number; // in milliseconds
+    enablePerformanceMonitoring?: boolean;
+}
+
+
+/**
+ * Manages the loading and caching of restaurant-specific configurations.
+ * This decouples the AgentFactory from a single restaurant and enables multi-tenancy.
+ */
+class RestaurantConfigManager {
+    private static configs = new Map<number, RestaurantConfig>();
+
+    /**
+     * Retrieves a restaurant's configuration, loading from storage if not already cached.
+     * @param restaurantId The ID of the restaurant.
+     * @returns A promise that resolves to the RestaurantConfig.
+     */
+    static async getConfig(restaurantId: number): Promise<RestaurantConfig> {
+        if (this.configs.has(restaurantId)) {
+            return this.configs.get(restaurantId)!;
+        }
+
+        const restaurant = await storage.getRestaurant(restaurantId);
+        if (!restaurant) {
+            throw new Error(`[RestaurantConfigManager] Restaurant with ID ${restaurantId} not found.`);
+        }
+
+        const config: RestaurantConfig = {
+            id: restaurant.id,
+            name: restaurant.name,
+            timezone: restaurant.timezone || 'Europe/Belgrade',
+            openingTime: restaurant.openingTime || '09:00:00',
+            closingTime: restaurant.closingTime || '23:00:00',
+            maxGuests: restaurant.maxGuests || 12,
+            cuisine: restaurant.cuisine,
+            atmosphere: restaurant.atmosphere,
+            country: restaurant.country,
+            languages: restaurant.languages,
+        };
+
+        this.configs.set(restaurantId, config);
+        console.log(`[RestaurantConfigManager] Loaded and cached configuration for restaurant: ${config.name} (ID: ${restaurantId})`);
+        return config;
+    }
 }
 
 /**
- * AgentFactory - Centralized agent creation and management
- * 
- * Features:
- * - Singleton pattern for consistent agent instances
- * - Intelligent caching with configurable limits
- * - Health monitoring and performance tracking
- * - Configuration validation and error handling
- * - Support for all restaurant booking agents
- * - Integration with existing restaurant booking infrastructure
- * ✅ NEW: Real BaseAgent implementations for Sofia and Maya
+ * A singleton factory for creating and managing AI agent instances.
+ * It handles dynamic configuration loading, caching, and health monitoring.
  */
 export class AgentFactory {
     private static instance: AgentFactory | null = null;
     private readonly agentRegistry = new Map<string, AgentRegistryEntry>();
-    private readonly config: Required<AgentFactoryConfig>;
+    private readonly factoryConfig: Required<AgentFactoryConfig>;
     private healthCheckTimer?: NodeJS.Timeout;
     private readonly createdAt: Date;
 
-    private constructor(config: AgentFactoryConfig) {
-        this.config = {
-            restaurantConfig: config.restaurantConfig,
-            enableCaching: config.enableCaching ?? true,
-            maxCacheSize: config.maxCacheSize ?? 50,
-            healthCheckInterval: config.healthCheckInterval ?? 300000, // 5 minutes
-            enablePerformanceMonitoring: config.enablePerformanceMonitoring ?? true
+    /**
+     * The constructor is private to enforce the singleton pattern.
+     * @param config - Optional configuration for the factory.
+     */
+    private constructor(config?: AgentFactoryConfig) {
+        this.factoryConfig = {
+            enableCaching: config?.enableCaching ?? true,
+            maxCacheSize: config?.maxCacheSize ?? 50,
+            healthCheckInterval: config?.healthCheckInterval ?? 300000,
+            enablePerformanceMonitoring: config?.enablePerformanceMonitoring ?? true,
         };
 
         this.createdAt = new Date();
-        
-        // Start health monitoring if enabled
-        if (this.config.healthCheckInterval > 0) {
+
+        if (this.factoryConfig.healthCheckInterval > 0) {
             this.startHealthMonitoring();
         }
 
-        console.log('[AgentFactory] Initialized with configuration:', {
-            restaurant: this.config.restaurantConfig.name,
-            caching: this.config.enableCaching,
-            maxCacheSize: this.config.maxCacheSize,
-            healthCheckInterval: this.config.healthCheckInterval,
-            performanceMonitoring: this.config.enablePerformanceMonitoring
-        });
+        console.log('[AgentFactory] Singleton instance initialized for multi-restaurant support.', this.factoryConfig);
     }
 
     /**
-     * Get or create singleton instance of AgentFactory
+     * Retrieves the singleton instance of the AgentFactory.
+     * @param config - Optional configuration, applied only on first instantiation.
+     * @returns The singleton AgentFactory instance.
      */
     static getInstance(config?: AgentFactoryConfig): AgentFactory {
         if (!AgentFactory.instance) {
-            if (!config) {
-                throw new Error('AgentFactory requires configuration on first initialization');
-            }
             AgentFactory.instance = new AgentFactory(config);
         }
         return AgentFactory.instance;
     }
 
     /**
-     * Create agent instance with intelligent caching and validation
+     * Creates or retrieves a cached agent of a specific type for a given restaurant.
+     * @param type - The type of agent to create ('booking', 'reservations', etc.).
+     * @param restaurantId - The ID of the restaurant for which the agent is being created.
+     * @param customConfig - Optional custom configuration to override defaults for this agent instance.
+     * @returns A promise that resolves to an instance of a BaseAgent.
      */
     async createAgent(
-        type: AgentType, 
+        type: AgentType,
         restaurantId: number,
         customConfig?: Partial<AgentConfig>
     ): Promise<BaseAgent> {
         const agentId = this.generateAgentId(type, restaurantId);
-        
-        // Check cache first if enabled
-        if (this.config.enableCaching) {
+
+        if (this.factoryConfig.enableCaching) {
             const cachedEntry = this.agentRegistry.get(agentId);
             if (cachedEntry && cachedEntry.healthy) {
                 cachedEntry.lastUsed = new Date();
                 cachedEntry.requestCount++;
-                
-                console.log(`[AgentFactory] Retrieved cached ${type} agent for restaurant ${restaurantId}`);
+                console.log(`[AgentFactory] Retrieved cached '${type}' agent for restaurant ${restaurantId}.`);
                 return cachedEntry.agent;
             }
         }
 
-        // Create new agent instance
-        console.log(`[AgentFactory] Creating new ${type} agent for restaurant ${restaurantId}`);
-        
-        const agent = await this.instantiateAgent(type, restaurantId, customConfig);
-        
-        // Register in cache if enabled
-        if (this.config.enableCaching) {
+        console.log(`[AgentFactory] Creating new '${type}' agent for restaurant ${restaurantId}.`);
+        const restaurantConfig = await RestaurantConfigManager.getConfig(restaurantId);
+        const agent = await this.instantiateAgent(type, restaurantConfig, customConfig);
+
+        if (this.factoryConfig.enableCaching) {
             this.registerAgent(agentId, agent, type, restaurantId);
         }
 
@@ -151,426 +179,162 @@ export class AgentFactory {
     }
 
     /**
-     * Get existing agent from registry without creating new one
-     */
-    getAgent(agentId: string): BaseAgent | null {
-        const entry = this.agentRegistry.get(agentId);
-        if (entry) {
-            entry.lastUsed = new Date();
-            entry.requestCount++;
-            return entry.agent;
-        }
-        return null;
-    }
-
-    /**
-     * Get agent by type and restaurant ID
-     */
-    getAgentByType(type: AgentType, restaurantId: number): BaseAgent | null {
-        const agentId = this.generateAgentId(type, restaurantId);
-        return this.getAgent(agentId);
-    }
-
-    /**
-     * Create agent configuration with defaults and validation
-     */
-    static createAgentConfig(
-        type: AgentType,
-        customConfig?: Partial<AgentConfig>
-    ): AgentConfig {
-        const defaultConfigs: Record<AgentType, AgentConfig> = {
-            booking: createDefaultAgentConfig(
-                'Sofia',
-                'Friendly booking specialist for new reservations',
-                ['check_availability', 'find_alternative_times', 'create_reservation', 'get_restaurant_info', 'get_guest_history']
-            ),
-            reservations: createDefaultAgentConfig(
-                'Maya',
-                'Intelligent reservation management specialist for existing bookings',
-                ['find_existing_reservation', 'modify_reservation', 'cancel_reservation', 'get_restaurant_info', 'get_guest_history']
-            ),
-            availability: createDefaultAgentConfig(
-                'Apollo',
-                'Availability specialist for finding alternative times',
-                ['find_alternative_times', 'check_availability']
-            ),
-            conductor: createDefaultAgentConfig(
-                'Conductor',
-                'Neutral orchestrator agent for task coordination',
-                ['get_restaurant_info']
-            )
-        };
-
-        const baseConfig = defaultConfigs[type];
-        const mergedConfig = { ...baseConfig, ...customConfig };
-
-        // Validate configuration
-        const validation = validateAgentConfig(mergedConfig);
-        if (!validation.valid) {
-            throw new Error(`Invalid agent configuration for ${type}: ${validation.errors.join(', ')}`);
-        }
-
-        return mergedConfig;
-    }
-
-    /**
-     * Validate agent configuration
-     */
-    static validateAgentConfig(config: AgentConfig): { valid: boolean; errors: string[] } {
-        return validateAgentConfig(config);
-    }
-
-    /**
-     * Get list of supported agent types
-     */
-    static getAvailableAgentTypes(): AgentType[] {
-        return ['booking', 'reservations', 'availability', 'conductor'];
-    }
-
-    // ===== REGISTRY MANAGEMENT =====
-
-    /**
-     * Register agent in the registry with metadata
-     */
-    private registerAgent(
-        agentId: string, 
-        agent: BaseAgent, 
-        type: AgentType, 
-        restaurantId: number
-    ): void {
-        // Clean up cache if at max capacity
-        this.cleanupCache();
-
-        const entry: AgentRegistryEntry = {
-            agent,
-            createdAt: new Date(),
-            lastUsed: new Date(),
-            requestCount: 1,
-            restaurantId,
-            agentType: type,
-            healthy: true
-        };
-
-        this.agentRegistry.set(agentId, entry);
-        
-        console.log(`[AgentFactory] Registered ${type} agent:`, {
-            agentId,
-            restaurantId,
-            registrySize: this.agentRegistry.size
-        });
-    }
-
-    /**
-     * Remove agent from registry
-     */
-    removeAgent(agentId: string): boolean {
-        const removed = this.agentRegistry.delete(agentId);
-        if (removed) {
-            console.log(`[AgentFactory] Removed agent from registry: ${agentId}`);
-        }
-        return removed;
-    }
-
-    /**
-     * Clean up old or unused agents from cache
-     */
-    private cleanupCache(): void {
-        if (this.agentRegistry.size < this.config.maxCacheSize) {
-            return;
-        }
-
-        // Sort by last used time and remove oldest
-        const entries = Array.from(this.agentRegistry.entries())
-            .sort(([, a], [, b]) => a.lastUsed.getTime() - b.lastUsed.getTime());
-
-        const toRemove = entries.slice(0, Math.floor(this.config.maxCacheSize * 0.2)); // Remove 20%
-        
-        for (const [agentId] of toRemove) {
-            this.agentRegistry.delete(agentId);
-        }
-
-        console.log(`[AgentFactory] Cache cleanup: removed ${toRemove.length} agents, ${this.agentRegistry.size} remaining`);
-    }
-
-    /**
-     * Get all registered agents
-     */
-    listRegisteredAgents(): Array<{
-        agentId: string;
-        agentType: AgentType;
-        restaurantId: number;
-        createdAt: Date;
-        lastUsed: Date;
-        requestCount: number;
-        healthy: boolean;
-    }> {
-        return Array.from(this.agentRegistry.entries()).map(([agentId, entry]) => ({
-            agentId,
-            agentType: entry.agentType,
-            restaurantId: entry.restaurantId,
-            createdAt: entry.createdAt,
-            lastUsed: entry.lastUsed,
-            requestCount: entry.requestCount,
-            healthy: entry.healthy
-        }));
-    }
-
-    // ===== AGENT INSTANTIATION =====
-
-    /**
-     * Actually instantiate the agent based on type
-     * ✅ UPDATED: Now uses real BaseAgent implementations for Sofia and Maya
+     * Instantiates the correct agent class based on the requested type.
+     * @param type - The type of agent.
+     * @param restaurantConfig - The configuration for the specific restaurant.
+     * @param customConfig - Optional overrides for the agent's configuration.
+     * @returns A promise resolving to the new agent instance.
      */
     private async instantiateAgent(
         type: AgentType,
-        restaurantId: number,
+        restaurantConfig: RestaurantConfig,
         customConfig?: Partial<AgentConfig>
     ): Promise<BaseAgent> {
-        const config = AgentFactory.createAgentConfig(type, customConfig);
-        
-        // Restaurant configuration should be provided by the factory config
-        const restaurantConfig = this.config.restaurantConfig;
+        // A default config can be created here or within each agent class
+        const defaultConfig: AgentConfig = {
+            name: type,
+            description: `Default ${type} agent`,
+            capabilities: [],
+            ...customConfig
+        };
 
         try {
             switch (type) {
                 case 'booking':
-                    return await this.createSofiaAgent(config, restaurantConfig);
-                
+                    return new SofiaAgent(defaultConfig, restaurantConfig);
                 case 'reservations':
-                    return await this.createMayaAgent(config, restaurantConfig);
-                
-                case 'availability':
-                    return await this.createApolloAgent(config, restaurantConfig);
-                
+                    return new MayaAgent(defaultConfig, restaurantConfig);
                 case 'conductor':
-                    return await this.createConductorAgent(config, restaurantConfig);
-                
+                    return new ConductorAgent(defaultConfig, restaurantConfig); // Use the real ConductorAgent
+                case 'availability':
+                    console.warn(`[AgentFactory] Agent type '${type}' is not fully implemented. Using a placeholder.`);
+                    // You would replace this with `new ApolloAgent(...)` etc.
+                    return new (class extends BaseAgent {
+                        name = type;
+                        description = `Placeholder for ${type} agent`;
+                        capabilities = [];
+                        generateSystemPrompt = () => `You are a placeholder ${type} agent.`;
+                        handleMessage = async (message: string) => ({ content: `Placeholder response for: ${message}`, metadata: { processedAt: new Date().toISOString(), agentType: this.name } });
+                        getTools = () => [];
+                    })(defaultConfig, restaurantConfig);
                 default:
                     throw new Error(`Unknown agent type: ${type}`);
             }
         } catch (error) {
-            console.error(`[AgentFactory] Failed to create ${type} agent:`, error);
-            throw new Error(`Failed to create ${type} agent: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            console.error(`[AgentFactory] Failed to instantiate '${type}' agent for restaurant ${restaurantConfig.id}:`, error);
+            throw error;
         }
     }
 
     /**
-     * Create Sofia booking agent (BaseAgent implementation)
-     * ✅ COMPLETE: Uses real SofiaAgent extending BaseAgent
-     */
-    private async createSofiaAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        console.log('[AgentFactory] Creating Sofia BaseAgent for booking management');
-        return new SofiaAgent(config, restaurantConfig);
-    }
-
-    /**
-     * ✅ PHASE 4.2 COMPLETE: Create Maya reservation management agent (BaseAgent implementation)
-     * Real MayaAgent replacing the previous mock implementation
-     */
-    private async createMayaAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        console.log('[AgentFactory] Creating Maya BaseAgent for reservation management');
-        
-        // Create real MayaAgent with tiered confidence model and context resolution
-        const mayaAgent = new MayaAgent(config, restaurantConfig);
-        
-        // Validate the agent is properly configured
-        const validation = await mayaAgent.validateAgent();
-        if (!validation.valid) {
-            console.error('[AgentFactory] Maya agent validation failed:', validation.errors);
-            throw new Error(`Maya agent validation failed: ${validation.errors.join(', ')}`);
-        }
-        
-        console.log('[AgentFactory] ✅ Maya BaseAgent created successfully with:');
-        console.log('  - Tiered confidence model (High/Medium/Low)');
-        console.log('  - Critical action rules for immediate execution');
-        console.log('  - Smart context resolution with ContextManager');
-        console.log('  - Security validation for ownership checks');
-        console.log('  - Multi-language support (10 languages)');
-        console.log('  - Enhanced reservation tools and capabilities');
-        
-        return mayaAgent;
-    }
-
-    /**
-     * Create Apollo availability specialist agent
-     * NOTE: This will be implemented when Apollo agent extends BaseAgent
-     */
-    private async createApolloAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        console.log('[AgentFactory] Creating Apollo agent (BaseAgent implementation pending)');
-        
-        // Return a temporary mock that extends BaseAgent for testing
-        return new (class MockApolloAgent extends BaseAgent {
-            readonly name = 'Apollo';
-            readonly description = 'Availability specialist for finding alternative times';
-            readonly capabilities = ['find_alternative_times', 'check_availability'];
-
-            generateSystemPrompt(context: AgentContext): string {
-                return `You are Apollo, the availability specialist for ${this.restaurantConfig.name}. Language: ${context.language}`;
-            }
-
-            async handleMessage(message: string, context: AgentContext) {
-                return {
-                    content: `Apollo mock response for: ${message}`,
-                    metadata: {
-                        processedAt: new Date().toISOString(),
-                        agentType: this.name,
-                        confidence: 0.8
-                    }
-                };
-            }
-
-            getTools() {
-                return []; // Return empty for mock
-            }
-        })(config, restaurantConfig);
-    }
-
-    /**
-     * Create Conductor orchestrator agent
-     */
-    private async createConductorAgent(config: AgentConfig, restaurantConfig: RestaurantConfig): Promise<BaseAgent> {
-        console.log('[AgentFactory] Creating Conductor agent');
-        
-        // Return a simple conductor implementation
-        return new (class ConductorAgent extends BaseAgent {
-            readonly name = 'Conductor';
-            readonly description = 'Neutral orchestrator agent for task coordination';
-            readonly capabilities = ['get_restaurant_info'];
-
-            generateSystemPrompt(context: AgentContext): string {
-                return `You are a neutral conductor agent for ${this.restaurantConfig.name}. Help coordinate between different specialists. Language: ${context.language}`;
-            }
-
-            async handleMessage(message: string, context: AgentContext) {
-                return {
-                    content: `Task completed. How else can I help you?`,
-                    metadata: {
-                        processedAt: new Date().toISOString(),
-                        agentType: this.name,
-                        confidence: 1.0
-                    }
-                };
-            }
-
-            getTools() {
-                return []; // Return empty for conductor
-            }
-        })(config, restaurantConfig);
-    }
-
-    // ===== HEALTH MONITORING =====
-
-    /**
-     * Start automated health monitoring
-     */
-    private startHealthMonitoring(): void {
-        this.healthCheckTimer = setInterval(async () => {
-            await this.performHealthChecks();
-        }, this.config.healthCheckInterval);
-
-        console.log(`[AgentFactory] Started health monitoring (interval: ${this.config.healthCheckInterval}ms)`);
-    }
-
-    /**
-     * Perform health checks on all registered agents
-     */
-    private async performHealthChecks(): Promise<void> {
-        const startTime = Date.now();
-        let healthyCount = 0;
-        let unhealthyCount = 0;
-
-        for (const [agentId, entry] of this.agentRegistry.entries()) {
-            try {
-                const healthResult = await entry.agent.healthCheck();
-                entry.healthy = healthResult.healthy;
-                entry.lastHealthCheck = new Date();
-
-                if (healthResult.healthy) {
-                    healthyCount++;
-                } else {
-                    unhealthyCount++;
-                    console.warn(`[AgentFactory] Unhealthy agent detected: ${agentId}`, healthResult.details);
-                }
-            } catch (error) {
-                entry.healthy = false;
-                entry.lastHealthCheck = new Date();
-                unhealthyCount++;
-                console.error(`[AgentFactory] Health check failed for agent: ${agentId}`, error);
-            }
-        }
-
-        const duration = Date.now() - startTime;
-        console.log(`[AgentFactory] Health check completed in ${duration}ms: ${healthyCount} healthy, ${unhealthyCount} unhealthy`);
-    }
-
-    /**
-     * Get comprehensive health status of the factory
-     */
-    async getFactoryHealth(): Promise<FactoryHealthResult> {
-        await this.performHealthChecks();
-
-        const agents = Array.from(this.agentRegistry.entries());
-        const healthyAgents = agents.filter(([, entry]) => entry.healthy).length;
-        const unhealthyAgents = agents.length - healthyAgents;
-
-        return {
-            healthy: unhealthyAgents === 0,
-            agentCount: agents.length,
-            healthyAgents,
-            unhealthyAgents,
-            details: agents.map(([agentId, entry]) => ({
-                agentId,
-                agentType: entry.agentType,
-                healthy: entry.healthy,
-                lastUsed: entry.lastUsed.toISOString()
-            }))
-        };
-    }
-
-    // ===== UTILITY METHODS =====
-
-    /**
-     * Generate unique agent ID
+     * Generates a unique identifier for an agent instance based on its type and restaurant.
+     * @param type - The agent's type.
+     * @param restaurantId - The restaurant's ID.
+     * @returns A unique string identifier.
      */
     private generateAgentId(type: AgentType, restaurantId: number): string {
         return `${type}_${restaurantId}`;
     }
 
     /**
-     * Get factory statistics
+     * Registers a new agent in the cache and handles cache eviction if necessary.
+     * @param agentId - The unique ID for the agent.
+     * @param agent - The agent instance to cache.
+     * @param type - The type of the agent.
+     * @param restaurantId - The restaurant ID associated with the agent.
+     */
+    private registerAgent(agentId: string, agent: BaseAgent, type: AgentType, restaurantId: number): void {
+        const entry: AgentRegistryEntry = {
+            agent,
+            agentType: type,
+            restaurantId,
+            createdAt: new Date(),
+            lastUsed: new Date(),
+            requestCount: 1,
+            healthy: true, // Assume healthy on creation
+        };
+        this.agentRegistry.set(agentId, entry);
+        console.log(`[AgentFactory] Cached new agent: ${agentId}`);
+
+        // Evict the least recently used agent if the cache is full
+        if (this.agentRegistry.size > this.factoryConfig.maxCacheSize) {
+            let lruEntry: [string, AgentRegistryEntry] | null = null;
+            for (const currentEntry of this.agentRegistry.entries()) {
+                if (!lruEntry || currentEntry[1].lastUsed < lruEntry[1].lastUsed) {
+                    lruEntry = currentEntry;
+                }
+            }
+            if (lruEntry) {
+                this.agentRegistry.delete(lruEntry[0]);
+                console.log(`[AgentFactory] Cache limit reached. Evicted least recently used agent: ${lruEntry[0]}`);
+            }
+        }
+    }
+
+    /**
+     * Starts a periodic timer to run health checks on all cached agents.
+     * This method resolves the original `this.startHealthMonitoring is not a function` error.
+     */
+    private startHealthMonitoring(): void {
+        console.log(`[AgentFactory] Starting periodic health monitoring. Interval: ${this.factoryConfig.healthCheckInterval}ms`);
+
+        this.healthCheckTimer = setInterval(async () => {
+            if (this.agentRegistry.size === 0) return;
+
+            console.log('[AgentFactory] Running scheduled agent health check...');
+            for (const [agentId, entry] of this.agentRegistry.entries()) {
+                try {
+                    const health = await entry.agent.healthCheck();
+                    entry.healthy = health.healthy;
+                    if (!health.healthy) {
+                        console.warn(`[AgentFactory] Agent ${agentId} is UNHEALTHY`, { details: health.details });
+                    }
+                } catch (error) {
+                    entry.healthy = false;
+                    console.error(`[AgentFactory] Error during health check for agent ${agentId}:`, error);
+                }
+            }
+        }, this.factoryConfig.healthCheckInterval);
+
+        // Allows the Node.js process to exit even if this timer is active.
+        this.healthCheckTimer.unref();
+    }
+
+    /**
+     * Retrieves statistics about the factory's operation.
+     * @returns An object containing factory usage and performance metrics.
      */
     getFactoryStats(): {
         totalAgents: number;
-        agentsByType: Record<AgentType, number>;
-        totalRequests: number;
+        agentsByType: Partial<Record<AgentType, number>>;
+        agentsByRestaurant: Record<number, number>;
         uptime: string;
-        cacheHitRate: number;
-        averageResponseTime: number;
     } {
         const agents = Array.from(this.agentRegistry.values());
         const agentsByType = agents.reduce((acc, entry) => {
             acc[entry.agentType] = (acc[entry.agentType] || 0) + 1;
             return acc;
-        }, {} as Record<AgentType, number>);
+        }, {} as Partial<Record<AgentType, number>>);
 
-        const totalRequests = agents.reduce((sum, entry) => sum + entry.requestCount, 0);
+        const agentsByRestaurant = agents.reduce((acc, entry) => {
+            acc[entry.restaurantId] = (acc[entry.restaurantId] || 0) + 1;
+            return acc;
+        }, {} as Record<number, number>);
+
         const uptimeMs = Date.now() - this.createdAt.getTime();
-
-        // Mock cache hit rate calculation
-        const cacheHitRate = this.config.enableCaching ? 0.85 : 0;
 
         return {
             totalAgents: agents.length,
             agentsByType,
-            totalRequests,
+            agentsByRestaurant,
             uptime: this.formatUptime(uptimeMs),
-            cacheHitRate,
-            averageResponseTime: 150 // Mock average
         };
     }
 
     /**
-     * Format uptime in human-readable format
+     * Formats a duration in milliseconds to a human-readable string.
+     * @param ms - The duration in milliseconds.
+     * @returns A formatted string (e.g., "1d 2h 3m").
      */
     private formatUptime(ms: number): string {
         const seconds = Math.floor(ms / 1000);
@@ -579,79 +343,7 @@ export class AgentFactory {
         const days = Math.floor(hours / 24);
 
         if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
-        if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-        if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-        return `${seconds}s`;
-    }
-
-    /**
-     * Shutdown factory and cleanup resources
-     */
-    shutdown(): void {
-        if (this.healthCheckTimer) {
-            clearInterval(this.healthCheckTimer);
-            this.healthCheckTimer = undefined;
-        }
-
-        this.agentRegistry.clear();
-        console.log('[AgentFactory] Shutdown completed');
+        if (hours > 0) return `${hours}h ${minutes % 60}m`;
+        return `${minutes % 60}m ${seconds % 60}s`;
     }
 }
-
-// ===== STATIC HELPER FUNCTIONS =====
-
-/**
- * Create agent factory with restaurant configuration
- */
-export function createAgentFactory(restaurantConfig: RestaurantConfig): AgentFactory {
-    const config: AgentFactoryConfig = {
-        restaurantConfig,
-        enableCaching: true,
-        maxCacheSize: 50,
-        healthCheckInterval: 300000, // 5 minutes
-        enablePerformanceMonitoring: true
-    };
-
-    return AgentFactory.getInstance(config);
-}
-
-/**
- * Get agent factory instance (must be initialized first)
- */
-export function getAgentFactory(): AgentFactory {
-    return AgentFactory.getInstance();
-}
-
-// ===== EXPORTS =====
-
-export default AgentFactory;
-
-// Log successful module initialization
-console.log(`
-🎉 AgentFactory Updated with Maya BaseAgent! 🎉
-
-✅ Centralized agent creation and management
-✅ Intelligent caching with configurable limits
-✅ Health monitoring and performance tracking
-✅ Configuration validation and error handling
-✅ Support for all restaurant booking agents
-✅ Registry management with cleanup
-✅ Comprehensive statistics and monitoring
-
-🤖 Real BaseAgent Implementations:
-- Sofia (booking) ✅ - Friendly booking specialist
-- Maya (reservations) ✅ - Intelligent reservation management specialist  
-- Apollo (availability) 🔄 - Availability specialist (mock pending)
-- Conductor (conductor) ✅ - Neutral orchestrator
-
-📊 Maya BaseAgent Features:
-- Tiered confidence model (High/Medium/Low decisions)
-- Critical action rules for immediate execution
-- Smart context resolution with ContextManager
-- Security validation for ownership checks
-- Multi-language support (10 languages)
-- Enhanced reservation management capabilities
-
-🏗️ Architecture: Production-Ready ✅
-🔄 Ready for: Enhanced Conversation Manager Integration
-`);

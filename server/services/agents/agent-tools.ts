@@ -11,6 +11,7 @@
 // 🐛 BUG FIX: Modified validateBookingInput to conditionally skip name/phone checks for availability calls.
 // 🚀 REDIS PHASE 3: Guest history caching with cache invalidation and performance monitoring
 // 🐞 BUG FIX (OVERNIGHT BOOKING): Corrected the logic in validateBusinessHours to properly handle overnight operations.
+// 🚨 CRITICAL BUG FIX: Enhanced business hours validation to consider reservation DURATION and prevent bookings ending after closing time
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -596,7 +597,8 @@ async function validateBookingInput(input: {
 
 
 /**
- * 🚨 CRITICAL NEW FUNCTION: Business hours validation as specified in original plan
+ * 🚨 CRITICAL BUG FIX: Enhanced business hours validation that considers reservation DURATION
+ * This fixes the major bug where bookings could end after closing time
  */
 async function validateBusinessHours(
     time: string,
@@ -607,7 +609,7 @@ async function validateBusinessHours(
         language?: string;
     }
 ): Promise<ValidationResult> {
-    console.log('🕒 [validateBusinessHours] Validating business hours (CORRECTED LOGIC):', {
+    console.log('🕒 [validateBusinessHours] Validating business hours with DURATION check (CRITICAL BUG FIX):', {
         time,
         date,
         timezone: context.timezone
@@ -626,6 +628,14 @@ async function validateBusinessHours(
         }
 
         const { openingTime, closingTime } = restaurant;
+        
+        // 🚨 CRITICAL FIX: Get the reservation duration to check end time
+        const reservationDurationMinutes = restaurant.avgReservationDuration || 120; // Default 2 hours
+        
+        console.log('🚨 [CRITICAL FIX] Using reservation duration for validation:', {
+            reservationDurationMinutes,
+            willCheckEndTime: true
+        });
 
         // Create a full DateTime object for the user's request in the restaurant's timezone
         const requestedDateTime = DateTime.fromFormat(`${date} ${time}`, 'yyyy-MM-dd HH:mm', {
@@ -636,55 +646,85 @@ async function validateBusinessHours(
             return { valid: false, errorMessage: 'Invalid date or time provided.', field: 'datetime' };
         }
 
+        // 🚨 CRITICAL FIX: Calculate when the reservation would END
+        const reservationEndDateTime = requestedDateTime.plus({ minutes: reservationDurationMinutes });
+        const endTime = reservationEndDateTime.toFormat('HH:mm');
+
+        console.log('🚨 [CRITICAL FIX] Reservation timing validation:', {
+            startTime: time,
+            endTime: endTime,
+            duration: reservationDurationMinutes,
+            startDateTime: requestedDateTime.toISO(),
+            endDateTime: reservationEndDateTime.toISO()
+        });
+
         const isOvernightOp = isOvernightOperation(openingTime, closingTime);
         const operatingHours = `${openingTime} - ${closingTime}${isOvernightOp ? ' (next day)' : ''}`;
-        let isWithinBusinessHours: boolean;
 
-        // ===================================================================
-        // 🐞 BUG FIX: REVISED OVERNIGHT LOGIC
-        // This new block correctly handles overnight operations by creating a
-        // continuous time window and avoids the "anchor date" complexity.
-        // ===================================================================
+        // Validate START time is within business hours
+        let isStartTimeValid: boolean;
+        let isEndTimeValid: boolean;
+
         if (isOvernightOp) {
-            // For overnight operations, a time is valid if it's either:
-            // 1. In the "late part" of the day (from opening time until midnight).
-            // 2. In the "early part" of the day (from midnight until closing time).
+            // For overnight operations
             const requestedTimeMinutes = requestedDateTime.hour * 60 + requestedDateTime.minute;
+            const endTimeMinutes = reservationEndDateTime.hour * 60 + reservationEndDateTime.minute;
             const openingTimeMinutes = parseTimeToMinutes(openingTime);
             const closingTimeMinutes = parseTimeToMinutes(closingTime);
 
             if (openingTimeMinutes !== null && closingTimeMinutes !== null) {
-                // The time is valid if it's after opening OR before closing.
-                isWithinBusinessHours = (requestedTimeMinutes >= openingTimeMinutes) || (requestedTimeMinutes < closingTimeMinutes);
+                // Start time validation - valid if it's after opening OR before closing
+                isStartTimeValid = (requestedTimeMinutes >= openingTimeMinutes) || (requestedTimeMinutes < closingTimeMinutes);
+                
+                // 🚨 CRITICAL FIX: End time validation for overnight operations
+                // For overnight ops, end time must also respect the overnight window
+                if (reservationEndDateTime.day === requestedDateTime.day) {
+                    // Reservation starts and ends on same day
+                    isEndTimeValid = (endTimeMinutes >= openingTimeMinutes) || (endTimeMinutes <= closingTimeMinutes);
+                } else {
+                    // Reservation extends to next day
+                    const nextDayEndMinutes = endTimeMinutes; // Already converted to next day time
+                    isEndTimeValid = nextDayEndMinutes <= closingTimeMinutes;
+                }
             } else {
-                // Fallback if time parsing fails
-                isWithinBusinessHours = false;
+                isStartTimeValid = false;
+                isEndTimeValid = false;
             }
 
-            console.log('🌙 [validateBusinessHours] Corrected Overnight Check:', {
+            console.log('🌙 [validateBusinessHours] Overnight operation validation:', {
                 requested: requestedDateTime.toISO(),
                 requestedMinutes: requestedTimeMinutes,
+                endMinutes: endTimeMinutes,
                 openingMinutes: openingTimeMinutes,
                 closingMinutes: closingTimeMinutes,
-                isWithin: isWithinBusinessHours
+                isStartValid: isStartTimeValid,
+                isEndValid: isEndTimeValid,
+                reservationSpansMultipleDays: reservationEndDateTime.day !== requestedDateTime.day
             });
 
         } else {
-            // ---- STANDARD (Non-Overnight) LOGIC (Remains the same) ----
+            // Standard (non-overnight) operation
             const openingDateTime = DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
             const closingDateTime = DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
-            isWithinBusinessHours = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
+            
+            isStartTimeValid = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
+            
+            // 🚨 CRITICAL FIX: Check that reservation ENDS before closing time
+            isEndTimeValid = reservationEndDateTime <= closingDateTime;
 
-            console.log('🌅 [validateBusinessHours] Standard operation check:', {
-                isWithin: isWithinBusinessHours
+            console.log('🌅 [validateBusinessHours] Standard operation validation:', {
+                startValid: isStartTimeValid,
+                endValid: isEndTimeValid,
+                openingTime: openingDateTime.toISO(),
+                closingTime: closingDateTime.toISO(),
+                reservationStart: requestedDateTime.toISO(),
+                reservationEnd: reservationEndDateTime.toISO()
             });
         }
-        // ===================================================================
-        // END OF BUG FIX
-        // ===================================================================
 
-        if (!isWithinBusinessHours) {
-            const errorMessage = `Requested time ${time} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
+        // 🚨 CRITICAL FIX: Both start AND end times must be valid
+        if (!isStartTimeValid) {
+            const errorMessage = `Requested start time ${time} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
             return {
                 valid: false,
                 errorMessage,
@@ -692,7 +732,23 @@ async function validateBusinessHours(
             };
         }
 
-        console.log('✅ [validateBusinessHours] Time is within business hours.');
+        if (!isEndTimeValid) {
+            const errorMessage = `Your ${reservationDurationMinutes}-minute reservation starting at ${time} would end at ${endTime}, which is after our closing time. Please choose an earlier time so your reservation can be completed within business hours (${operatingHours}).`;
+            console.error('🚨 [CRITICAL BUG PREVENTED] Booking would end after closing time:', {
+                startTime: time,
+                endTime: endTime,
+                duration: reservationDurationMinutes,
+                closingTime: closingTime,
+                operatingHours
+            });
+            return {
+                valid: false,
+                errorMessage,
+                field: 'time'
+            };
+        }
+
+        console.log('✅ [validateBusinessHours] Both start and end times are within business hours (CRITICAL BUG FIXED)');
         return { valid: true };
 
     } catch (error) {
@@ -1064,7 +1120,7 @@ export async function check_availability(
             return createValidationFailure(validation.errorMessage!, validation.field);
         }
 
-        // 🚨 ENHANCED: Business hours validation
+        // 🚨 ENHANCED: Business hours validation with DURATION check (CRITICAL BUG FIX)
         const businessHoursCheck = await validateBusinessHours(time, date, context);
         if (!businessHoursCheck.valid) {
             return createValidationFailure(businessHoursCheck.errorMessage!, businessHoursCheck.field);
@@ -1086,7 +1142,7 @@ export async function check_availability(
             return createValidationFailure('Invalid time format. Expected HH:MM or HH:MM:SS', 'time');
         }
 
-        console.log(`✅ [Agent Tool] Enhanced validation passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
+        console.log(`✅ [Agent Tool] Enhanced validation with DURATION check passed. Using exact time checking for: ${timeFormatted}${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}...`);
 
         const slots = await getAvailableTimeSlots(
             context.restaurantId,
@@ -1318,6 +1374,7 @@ export async function find_alternative_times(
  * 🚨 COMPLETELY ENHANCED: Create reservation with comprehensive validation pipeline as per original plan
  * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful booking
  * This implements ALL the validation enhancements specified in the original plan
+ * 🚨 CRITICAL BUG FIX: Now includes proper business hours validation that considers reservation duration
  */
 export async function create_reservation(
     guestName: string,
@@ -1339,7 +1396,7 @@ export async function create_reservation(
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`📝 [Agent Tool] create_reservation ENHANCED: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
+    console.log(`📝 [Agent Tool] create_reservation ENHANCED with CRITICAL BUG FIX: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
 
     const effectiveGuestName = context.confirmedName || guestName;
     if (context.confirmedName) {
@@ -1376,14 +1433,14 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Past-date validation passed');
 
-        // 🚨 STEP 3: BUSINESS HOURS VALIDATION as specified in original plan
+        // 🚨 STEP 3: BUSINESS HOURS VALIDATION with DURATION check (CRITICAL BUG FIX)
         const businessHoursValidation = await validateBusinessHours(time, date, context);
         if (!businessHoursValidation.valid) {
-            console.error('❌ [Agent Tool] Business hours validation failed:', businessHoursValidation.errorMessage);
+            console.error('❌ [Agent Tool] Business hours validation failed (CRITICAL BUG PREVENTED):', businessHoursValidation.errorMessage);
             return createValidationFailure(businessHoursValidation.errorMessage!, businessHoursValidation.field);
         }
 
-        console.log('✅ [Agent Tool] Business hours validation passed');
+        console.log('✅ [Agent Tool] Business hours validation with DURATION check passed (CRITICAL BUG FIXED)');
 
         // 🚨 STEP 4: INPUT SANITIZATION as specified in original plan
         const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
@@ -1456,10 +1513,10 @@ export async function create_reservation(
             console.log(`✅ [WORKFLOW_VALIDATION] Special request "${specialRequests}" is new (not from history) - proceeding normally`);
         }
 
-        console.log(`✅ [Agent Tool] ALL VALIDATION LAYERS PASSED. Creating reservation with enhanced validation:`);
+        console.log(`✅ [Agent Tool] ALL VALIDATION LAYERS PASSED including CRITICAL BUG FIX. Creating reservation with enhanced validation:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
-        console.log(`   - Date/Time: ${date} ${timeFormatted} (enhanced validation complete)`);
+        console.log(`   - Date/Time: ${date} ${timeFormatted} (enhanced validation complete with DURATION check)`);
         console.log(`   - Guests: ${guests}`);
         console.log(`   - Special Requests: "${validatedSpecialRequests}" (workflow validated)`);
         console.log(`   - Timezone: ${context.timezone}`);
@@ -1511,7 +1568,7 @@ export async function create_reservation(
         });
 
         if (result.success && result.reservation && result.reservation.id) {
-            console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
+            console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation with CRITICAL BUG FIX created successfully: #${result.reservation.id} at ${timeFormatted}`);
 
             // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful booking
             await invalidateGuestHistoryCache({
@@ -1525,11 +1582,12 @@ export async function create_reservation(
                 validationLayers: [
                     'basic_input_validation',
                     'past_date_validation',
-                    'business_hours_validation',
+                    'business_hours_validation_with_duration_check', // 🚨 CRITICAL BUG FIX indicator
                     'input_sanitization',
                     'workflow_validation'
                 ],
-                cacheInvalidated: !!context.telegramUserId // 🚀 REDIS PHASE 3: Indicate cache invalidation
+                cacheInvalidated: !!context.telegramUserId, // 🚀 REDIS PHASE 3: Indicate cache invalidation
+                criticalBugFixed: 'business_hours_duration_check' // 🚨 Indicate critical bug was fixed
             };
 
             if (specialRequests !== validatedSpecialRequests) {
@@ -1563,7 +1621,7 @@ export async function create_reservation(
                 timeSupported: 'exact'
             }, metadata);
         } else {
-            console.log(`⚠️ [Agent Tool] Enhanced validation reservation failed:`, {
+            console.log(`⚠️ [Agent Tool] Enhanced validation reservation with CRITICAL BUG FIX failed:`, {
                 success: result.success,
                 status: result.status,
                 message: result.message,
@@ -1593,7 +1651,7 @@ export async function create_reservation(
         }
 
     } catch (error) {
-        console.error(`❌ [Agent Tool] create_reservation ENHANCED VALIDATION error:`, error);
+        console.error(`❌ [Agent Tool] create_reservation ENHANCED VALIDATION with CRITICAL BUG FIX error:`, error);
 
         console.error(`❌ [Agent Tool] Enhanced validation error details:`, {
             guestName: effectiveGuestName,
@@ -1608,7 +1666,7 @@ export async function create_reservation(
             errorMessage: error instanceof Error ? error.message : 'Unknown error'
         });
 
-        return createSystemError('Failed to create reservation due to system error in enhanced validation pipeline', error);
+        return createSystemError('Failed to create reservation due to system error in enhanced validation pipeline with critical bug fix', error);
     }
 }
 
@@ -2677,7 +2735,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "check_availability",
-            description: "🚨 ENHANCED VALIDATION: Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30) with comprehensive validation pipeline including business hours, past-date prevention, and timezone awareness. Returns standardized response with tool_status and detailed data or error information.",
+            description: "🚨 CRITICAL BUG FIXED: Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30) with comprehensive validation pipeline including business hours WITH DURATION CHECK to prevent bookings ending after closing time, past-date prevention, and timezone awareness. Returns standardized response with tool_status and detailed data or error information.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2687,7 +2745,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 - validated against business hours"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 - validated against business hours WITH DURATION CHECK (CRITICAL BUG FIX)"
                     },
                     guests: {
                         type: "number",
@@ -2727,7 +2785,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "create_reservation",
-            description: "🚨 COMPLETELY ENHANCED + 🚀 REDIS CACHED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation supporting overnight operations, (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Automatically invalidates guest history cache after successful booking. Returns standardized response indicating success with reservation details or failure with categorized error.",
+            description: "🚨 CRITICAL BUG FIXED + 🚀 REDIS CACHED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation WITH DURATION CHECK to prevent bookings ending after closing time (CRITICAL BUG FIX), (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Automatically invalidates guest history cache after successful booking. Returns standardized response indicating success with reservation details or failure with categorized error.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2745,7 +2803,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - ENHANCED: supports ANY exact time like 16:15, 19:43, 8:30 with business hours validation"
+                        description: "Time in HH:MM format (24-hour) - CRITICAL BUG FIX: supports ANY exact time like 16:15, 19:43, 8:30 with business hours validation INCLUDING DURATION CHECK to prevent bookings ending after closing time"
                     },
                     guests: {
                         type: "number",
@@ -2887,16 +2945,16 @@ export const agentTools = [
 ];
 
 // ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
-// 🚨 COMPLETELY ENHANCED: All functions now include comprehensive validation pipeline
+// 🚨 CRITICAL BUG FIXED: All functions now include comprehensive validation pipeline with duration check
 // 🚀 REDIS PHASE 3: All booking functions now include guest history cache invalidation
 export const agentFunctions = {
     // 🚀 REDIS PHASE 3: Guest memory tool with Redis caching, cache invalidation, and performance monitoring
     get_guest_history,
 
-    // 🚨 ENHANCED: Sofia's tools with comprehensive validation pipeline
-    check_availability, // ✅ Now includes: basic validation + business hours + past-date validation
+    // 🚨 CRITICAL BUG FIXED: Sofia's tools with comprehensive validation pipeline including duration check
+    check_availability, // ✅ Now includes: basic validation + business hours with DURATION CHECK + past-date validation
     find_alternative_times, // ✅ Now includes: basic validation + past-date validation
-    create_reservation, // 🚨 COMPLETELY ENHANCED: 5-layer validation pipeline + Redis cache invalidation
+    create_reservation, // 🚨 CRITICAL BUG FIXED: 5-layer validation pipeline with duration check + Redis cache invalidation
     get_restaurant_info,
 
     // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration + Redis cache invalidation
