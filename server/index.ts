@@ -14,6 +14,34 @@ import { aiService } from './services/ai-service';
 import fs from 'fs';
 import path from 'path';
 
+// 🔒 SUPER ADMIN: Authentication imports (moved from routes.ts)
+import bcrypt from "bcryptjs";
+import session from "express-session";
+import passport from "passport";
+import { Strategy as LocalStrategy } from "passport-local";
+import ConnectPgSimple from 'connect-pg-simple';
+import { storage } from "./storage";
+import { pool } from "./db";
+
+// 🔒 SUPER ADMIN: Enhanced user type interfaces
+interface BaseTenantUser {
+    id: number;
+    email: string;
+    name: string;
+    role: 'restaurant' | 'staff';
+    isSuperAdmin: false;
+}
+
+interface SuperAdminUser {
+    id: number;
+    email: string;
+    name: string;
+    role: 'super_admin';
+    isSuperAdmin: true;
+}
+
+type AuthenticatedUser = BaseTenantUser | SuperAdminUser;
+
 const app = express();
 
 // Set trust proxy to 1 to correctly handle information from our Nginx proxy
@@ -23,6 +51,205 @@ app.set('trust proxy', 1);
 // Standard middleware for parsing JSON and URL-encoded request bodies
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// ============================================================================
+// 🔒 AUTHENTICATION SETUP (moved from routes.ts)
+// ============================================================================
+
+const pgSession = ConnectPgSimple(session);
+
+// Session configuration
+app.use(
+    session({
+        store: new pgSession({
+            pool: pool,
+            tableName: 'user_sessions',
+            createTableIfMissing: true,
+        }),
+        secret: process.env.SESSION_SECRET || "tobeout-secret-key",
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+            secure: process.env.NODE_ENV === "production",
+            maxAge: 30 * 24 * 60 * 60 * 1000,
+            httpOnly: true,
+            sameSite: 'lax',
+        },
+    })
+);
+
+// Initialize Passport middleware
+app.use(passport.initialize());
+app.use(passport.session());
+
+// 🔒 SUPER ADMIN: Passport Strategies Configuration
+
+// Strategy 1: Regular tenant users
+passport.use('local-tenant', new LocalStrategy(
+    { usernameField: "email" },
+    async (email, password, done) => {
+        try {
+            console.log(`[Auth] Tenant login attempt for: ${email}`);
+            const user = await storage.getUserByEmail(email);
+            if (!user) {
+                console.log(`[Auth] Tenant user not found: ${email}`);
+                return done(null, false, { message: "Incorrect email." });
+            }
+            const isValidPassword = await bcrypt.compare(password, user.password);
+            if (!isValidPassword) {
+                console.log(`[Auth] Invalid password for tenant user: ${email}`);
+                return done(null, false, { message: "Incorrect password." });
+            }
+            
+            // Enhanced user object with isSuperAdmin flag
+            const authenticatedUser: BaseTenantUser = {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role as 'restaurant' | 'staff',
+                isSuperAdmin: false
+            };
+            
+            console.log(`✅ [Auth] Tenant user authenticated: ${email} (ID: ${user.id})`);
+            return done(null, authenticatedUser);
+        } catch (err) {
+            console.error(`[Auth] Error during tenant authentication:`, err);
+            return done(err);
+        }
+    }
+));
+
+// Strategy 2: Super admin users
+passport.use('local-superadmin', new LocalStrategy(
+    { usernameField: "email" },
+    async (email, password, done) => {
+        try {
+            console.log(`[SuperAdmin] Super admin login attempt for: ${email}`);
+            
+            const superAdmin = await storage.getSuperAdminByEmail(email);
+            if (!superAdmin) {
+                console.log(`[SuperAdmin] Super admin not found: ${email}`);
+                return done(null, false, { message: "Invalid super admin credentials." });
+            }
+            
+            // ✅ FIXED: Verify password against the correct 'passwordHash' property
+            const isValidPassword = await bcrypt.compare(password, superAdmin.passwordHash);
+            if (!isValidPassword) {
+                console.log(`[SuperAdmin] Invalid password for super admin: ${email}`);
+                return done(null, false, { message: "Invalid super admin credentials." });
+            }
+            
+            // Check if super admin account is active
+            if (superAdmin.isActive === false) { // Check for explicit false value
+                console.log(`[SuperAdmin] Inactive super admin attempted login: ${email}`);
+                return done(null, false, { message: "Super admin account is inactive." });
+            }
+            
+            const authenticatedSuperAdmin: SuperAdminUser = {
+                id: superAdmin.id,
+                email: superAdmin.email,
+                name: superAdmin.name,
+                role: 'super_admin',
+                isSuperAdmin: true
+            };
+            
+            console.log(`✅ [SuperAdmin] Super admin authenticated: ${email} (ID: ${superAdmin.id})`);
+            
+            // The logSuperAdminActivity function does not exist on the storage object yet.
+            // We can comment this out to allow login to succeed. We can add this feature back later.
+            // await storage.logSuperAdminActivity(superAdmin.id, 'login', {
+            //     userAgent: 'web-dashboard',
+            //     timestamp: new Date().toISOString()
+            // });
+            
+            return done(null, authenticatedSuperAdmin);
+        } catch (err) {
+            console.error(`[SuperAdmin] Error during super admin authentication:`, err);
+            return done(err);
+        }
+    }
+));
+
+// Default strategy for backward compatibility
+passport.use(new LocalStrategy(
+    { usernameField: "email" },
+    async (email, password, done) => {
+        try {
+            const user = await storage.getUserByEmail(email);
+            if (!user) {
+                return done(null, false, { message: "Incorrect email." });
+            }
+            const isValidPassword = await bcrypt.compare(password, user.password);
+            if (!isValidPassword) {
+                return done(null, false, { message: "Incorrect password." });
+            }
+            return done(null, user);
+        } catch (err) {
+            return done(err);
+        }
+    }
+));
+
+// 🔒 SUPER ADMIN: Enhanced User Serialization with Role Detection
+passport.serializeUser((user: any, done) => {
+    // Store both user ID and admin flag for session management
+    const sessionData = {
+        id: user.id,
+        isSuperAdmin: user.isSuperAdmin || false
+    };
+    console.log(`[Auth] Serializing user: ID=${user.id}, isSuperAdmin=${sessionData.isSuperAdmin}`);
+    done(null, sessionData);
+});
+
+// 🔒 SUPER ADMIN: Enhanced User Deserialization with Role-Based Loading
+passport.deserializeUser(async (sessionData: any, done) => {
+    try {
+        let user: AuthenticatedUser;
+        
+        if (sessionData.isSuperAdmin) {
+            // Load super admin user
+            const superAdmin = await storage.getSuperAdmin(sessionData.id);
+            if (!superAdmin || !superAdmin.isActive) {
+                console.log(`[Auth] Inactive or missing super admin during deserialization: ID=${sessionData.id}`);
+                return done(null, false);
+            }
+            
+            user = {
+                id: superAdmin.id,
+                email: superAdmin.email,
+                name: superAdmin.name,
+                role: 'super_admin',
+                isSuperAdmin: true
+            };
+            console.log(`[Auth] Deserialized super admin: ${superAdmin.email} (ID: ${superAdmin.id})`);
+        } else {
+            // Load regular tenant user
+            const tenantUser = await storage.getUser(sessionData.id);
+            if (!tenantUser) {
+                console.log(`[Auth] Missing tenant user during deserialization: ID=${sessionData.id}`);
+                return done(null, false);
+            }
+            
+            user = {
+                id: tenantUser.id,
+                email: tenantUser.email,
+                name: tenantUser.name,
+                role: tenantUser.role as 'restaurant' | 'staff',
+                isSuperAdmin: false
+            };
+            console.log(`[Auth] Deserialized tenant user: ${tenantUser.email} (ID: ${tenantUser.id})`);
+        }
+        
+        done(null, user);
+    } catch (err) {
+        console.error(`[Auth] Error during user deserialization:`, err);
+        done(err);
+    }
+});
+
+// ============================================================================
+// END AUTHENTICATION SETUP
+// ============================================================================
 
 // 📊 ENHANCED: Custom logging middleware with Smart Logging integration
 app.use((req, res, next) => {
@@ -261,7 +488,7 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
             dashboardEnabled: process.env.ENABLE_FREE_DASHBOARD === 'true'
         });
 
-        // Register all API routes and create the HTTP server
+        // 🔒 Register all API routes (authentication is now set up above)
         const server = await registerRoutes(app);
 
         // [FIX] Corrected global error handling middleware with Smart Logging.

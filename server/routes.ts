@@ -6,32 +6,56 @@ import {
     insertUserSchema, insertRestaurantSchema,
     insertTableSchema, insertGuestSchema,
     insertReservationSchema, insertIntegrationSettingSchema,
-    // ✅ REMOVED: timeslots import
     reservations,
     type Guest
 } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import session from "express-session";
-import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
-import ConnectPgSimple from 'connect-pg-simple';
 import { initializeTelegramBot } from "./services/telegram";
 import {
     createReservation,
     cancelReservation,
+    findAvailableTables,
+    findAlternativeSlots,
 } from "./services/booking";
-// ✅ FIXED: Import both functions from availability service
 import { getAvailableTimeSlots, isTableAvailableAtTimeSlot } from "./services/availability.service";
 import { cache, CacheKeys, CacheInvalidation, withCache } from "./cache";
 import { getPopularRestaurantTimezones, getRestaurantOperatingStatus } from "./utils/timezone-utils";
 import { eq, and, desc, sql, count, or, inArray, gt, ne, notExists } from "drizzle-orm";
 import { DateTime } from 'luxon';
-
-// ✅ NEW IMPORT: Sofia AI Enhanced Conversation Manager
+import passport from "passport";
+// Sofia AI Enhanced Conversation Manager
 import { enhancedConversationManager } from "./services/enhanced-conversation-manager";
-// ✅ NEW IMPORT: Booking Agent for Restaurant Greeting
-// OBSOLETE: import { createBookingAgent } from "./services/agents/booking-agent";
+
+// Multi-tenant security middleware
+import { tenantIsolation, strictTenantValidation, trackUsage, getTenantContext } from "./middleware/tenant-isolation";
+import { 
+    requireFeature, 
+    requireAiChat, 
+    requireMenuManagement, 
+    requireGuestAnalytics, 
+    requireAdvancedReporting,
+    requireTelegramBot
+} from "./middleware/feature-flags";
+
+// 🔒 SUPER ADMIN: User type interfaces (for TypeScript only - no auth setup)
+interface BaseTenantUser {
+    id: number;
+    email: string;
+    name: string;
+    role: 'restaurant' | 'staff';
+    isSuperAdmin: false;
+}
+
+interface SuperAdminUser {
+    id: number;
+    email: string;
+    name: string;
+    role: 'super_admin';
+    isSuperAdmin: true;
+}
+
+type AuthenticatedUser = BaseTenantUser | SuperAdminUser;
 
 // ✅ DYNAMIC: PostgreSQL timestamp parser that handles both formats
 function parsePostgresTimestamp(timestamp: string): DateTime {
@@ -96,64 +120,9 @@ function isOvernightOperation(openingTime: string, closingTime: string): boolean
 
 export async function registerRoutes(app: Express): Promise<Server> {
 
-    const pgSession = ConnectPgSimple(session);
-
-    app.use(
-        session({
-            store: new pgSession({
-                pool: pool,
-                tableName: 'user_sessions',
-                createTableIfMissing: true,
-            }),
-            secret: process.env.SESSION_SECRET || "tobeout-secret-key",
-            resave: false,
-            saveUninitialized: false,
-            cookie: {
-                secure: process.env.NODE_ENV === "production",
-                maxAge: 30 * 24 * 60 * 60 * 1000,
-                httpOnly: true,
-                sameSite: 'lax',
-            },
-        })
-    );
-
-    app.use(passport.initialize());
-    app.use(passport.session());
-
-    passport.use(
-        new LocalStrategy(
-            { usernameField: "email" },
-            async (email, password, done) => {
-                try {
-                    const user = await storage.getUserByEmail(email);
-                    if (!user) {
-                        return done(null, false, { message: "Incorrect email." });
-                    }
-                    const isValidPassword = await bcrypt.compare(password, user.password);
-                    if (!isValidPassword) {
-                        return done(null, false, { message: "Incorrect password." });
-                    }
-                    return done(null, user);
-                } catch (err) {
-                    return done(err);
-                }
-            }
-        )
-    );
-
-    passport.serializeUser((user: any, done) => {
-        done(null, user.id);
-    });
-
-    passport.deserializeUser(async (id: number, done) => {
-        try {
-            const user = await storage.getUser(id);
-            done(null, user);
-        } catch (err) {
-            done(err);
-        }
-    });
-
+    // 🔒 SUPER ADMIN: Authorization Middleware Functions
+    
+    // Basic authentication check (existing)
     const isAuthenticated = (req: Request, res: Response, next: Function) => {
         if (req.isAuthenticated()) {
             return next();
@@ -161,7 +130,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.status(401).json({ message: "Unauthorized" });
     };
 
-    // Auth routes
+    // 🔒 SUPER ADMIN: Super Admin Authorization Middleware (NEW)
+    const isSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
+        if (req.isAuthenticated()) {
+            const user = req.user as AuthenticatedUser;
+            if (user.isSuperAdmin && user.role === 'super_admin') {
+                console.log(`[SuperAdmin] Access granted to ${user.email} (ID: ${user.id})`);
+                return next();
+            }
+        }
+        
+        console.log(`[SuperAdmin] Access denied - user not authenticated as super admin`);
+        res.status(403).json({ 
+            message: "Super admin access required",
+            code: 'INSUFFICIENT_PERMISSIONS'
+        });
+    };
+
+    // 🔒 SUPER ADMIN: Super Admin Activity Logging Middleware (NEW)
+    const logSuperAdminActivity = (action: string) => {
+        return async (req: Request, res: Response, next: NextFunction) => {
+            const user = req.user as SuperAdminUser;
+            try {
+                await storage.logSuperAdminActivity(user.id, action, {
+                    method: req.method,
+                    path: req.path,
+                    params: req.params,
+                    query: req.query,
+                    timestamp: new Date().toISOString()
+                });
+            } catch (error) {
+                console.error(`[SuperAdmin] Failed to log activity:`, error);
+                // Don't block the request if logging fails
+            }
+            next();
+        };
+    };
+
+    // ============================================================================
+    // 🔒 SUPER ADMIN: Authentication Routes (Enhanced with Dual Strategies)
+    // ============================================================================
+
+    // Tenant user registration (existing, unchanged)
     app.post("/api/auth/register", async (req, res, next) => {
         try {
             const userSchema = insertUserSchema.extend({
@@ -211,17 +221,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.post("/api/auth/login", passport.authenticate("local"), (req, res) => {
-        const user = req.user as any;
+    // Tenant user login (enhanced to use specific strategy)
+    app.post("/api/auth/login", passport.authenticate("local-tenant"), (req, res) => {
+        const user = req.user as BaseTenantUser;
+        console.log(`✅ [Auth] Tenant login successful: ${user.email}`);
         res.json({
             id: user.id,
             email: user.email,
             name: user.name,
             role: user.role,
+            isSuperAdmin: false
         });
     });
 
+    // 🔒 SUPER ADMIN: Super Admin Login Route (NEW)
+    app.post("/api/superadmin/auth/login", passport.authenticate("local-superadmin"), (req, res) => {
+        const user = req.user as SuperAdminUser;
+        console.log(`✅ [SuperAdmin] Super admin login successful: ${user.email}`);
+        res.json({
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            isSuperAdmin: true,
+            loginTime: new Date().toISOString()
+        });
+    });
+
+    // Universal logout (works for both tenant users and super admins)
     app.post("/api/auth/logout", (req, res, next) => {
+        const user = req.user as AuthenticatedUser | undefined;
+        if (user) {
+            console.log(`[Auth] Logout: ${user.email} (${user.isSuperAdmin ? 'Super Admin' : 'Tenant User'})`);
+        }
+        
         req.logout((err) => {
             if (err) {
                 return next(err);
@@ -230,56 +263,515 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
     });
 
+    // Enhanced auth status endpoint (returns role information)
     app.get("/api/auth/me", (req, res) => {
         if (!req.user) {
             return res.status(401).json({ message: "Not authenticated" });
         }
-        const user = req.user as any;
+        const user = req.user as AuthenticatedUser;
         res.json({
             id: user.id,
             email: user.email,
             name: user.name,
             role: user.role,
+            isSuperAdmin: user.isSuperAdmin
         });
     });
 
-    // Restaurant routes
-    app.get("/api/restaurants/profile", isAuthenticated, async (req, res, next) => {
+    // ============================================================================
+    // 🔒 SUPER ADMIN: Tenant Management API Routes (NEW)
+    // ============================================================================
+
+    // 🔒 SUPER ADMIN: Get all tenants with filtering and pagination
+    app.get("/api/superadmin/tenants", isSuperAdmin, logSuperAdminActivity('list_tenants'), async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
+            const { 
+                page = 1, 
+                limit = 20, 
+                status, 
+                plan, 
+                search,
+                sortBy = 'created_at',
+                sortOrder = 'desc'
+            } = req.query;
+
+            console.log(`[SuperAdmin] Fetching tenants: page=${page}, limit=${limit}, status=${status}, plan=${plan}`);
+
+            const filters = {
+                status: status ? String(status) : undefined,
+                plan: plan ? String(plan) : undefined,
+                searchQuery: search ? String(search) : undefined,
+                page: parseInt(page as string),
+                limit: Math.min(parseInt(limit as string), 100), // Cap at 100 for performance
+                sortBy: String(sortBy),
+                sortOrder: String(sortOrder) as 'asc' | 'desc'
+            };
+
+            const result = await storage.getAllTenants(filters);
+
+            res.json({
+                tenants: result.tenants,
+                pagination: {
+                    currentPage: result.pagination.currentPage,
+                    totalPages: result.pagination.totalPages,
+                    totalTenants: result.pagination.totalCount,
+                    limit: result.pagination.limit,
+                    hasNextPage: result.pagination.hasNextPage,
+                    hasPreviousPage: result.pagination.hasPreviousPage
+                },
+                summary: {
+                    totalTenants: result.summary.totalTenants,
+                    activeTenants: result.summary.activeTenants,
+                    suspendedTenants: result.summary.suspendedTenants,
+                    planDistribution: result.summary.planDistribution
+                },
+                filters: filters,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error fetching tenants:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Get specific tenant details
+    app.get("/api/superadmin/tenants/:id", isSuperAdmin, logSuperAdminActivity('view_tenant'), async (req, res, next) => {
+        try {
+            const tenantId = parseInt(req.params.id);
+            
+            if (isNaN(tenantId)) {
+                return res.status(400).json({ message: "Invalid tenant ID" });
             }
-            res.json(restaurant);
+
+            console.log(`[SuperAdmin] Fetching tenant details: ${tenantId}`);
+
+            const tenant = await storage.getTenantById(tenantId);
+            if (!tenant) {
+                return res.status(404).json({ message: "Tenant not found" });
+            }
+
+            // Get additional tenant metrics and usage
+            const metrics = await storage.getTenantMetrics(tenantId);
+            const usage = await storage.getTenantUsage(tenantId);
+            const recentActivity = await storage.getTenantRecentActivity(tenantId, 10);
+
+            res.json({
+                tenant: tenant,
+                metrics: metrics,
+                usage: usage,
+                recentActivity: recentActivity,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error fetching tenant details:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Create new tenant
+    app.post("/api/superadmin/tenants", isSuperAdmin, logSuperAdminActivity('create_tenant'), async (req, res, next) => {
+        try {
+            // Validation schema for tenant creation
+            const createTenantSchema = z.object({
+                // Restaurant details
+                restaurantName: z.string().min(1, "Restaurant name is required"),
+                subdomain: z.string().min(2, "Subdomain must be at least 2 characters").regex(/^[a-z0-9-]+$/, "Subdomain can only contain lowercase letters, numbers, and hyphens"),
+                plan: z.enum(['starter', 'professional', 'enterprise']),
+                timezone: z.string().default('UTC'),
+                
+                // Owner details
+                ownerName: z.string().min(1, "Owner name is required"),
+                ownerEmail: z.string().email("Valid email is required"),
+                ownerPhone: z.string().optional(),
+                initialPassword: z.string().min(6, "Password must be at least 6 characters"),
+                
+                // Feature configuration
+                enableAiChat: z.boolean().default(true),
+                enableTelegramBot: z.boolean().default(false),
+                enableGuestAnalytics: z.boolean().default(true),
+                enableAdvancedReporting: z.boolean().default(false),
+                enableMenuManagement: z.boolean().default(true),
+                
+                // Optional settings
+                maxTables: z.number().optional(),
+                maxUsers: z.number().optional(),
+                customSettings: z.record(z.any()).optional()
+            });
+
+            const validatedData = createTenantSchema.parse(req.body);
+            
+            console.log(`[SuperAdmin] Creating new tenant: ${validatedData.restaurantName} (${validatedData.subdomain})`);
+
+            // Check if subdomain is already taken
+            const existingTenant = await storage.getTenantBySubdomain(validatedData.subdomain);
+            if (existingTenant) {
+                return res.status(409).json({ 
+                    message: "Subdomain already exists",
+                    field: "subdomain"
+                });
+            }
+
+            // Check if owner email is already used
+            const existingUser = await storage.getUserByEmail(validatedData.ownerEmail);
+            if (existingUser) {
+                return res.status(409).json({ 
+                    message: "Email address already registered",
+                    field: "ownerEmail"
+                });
+            }
+
+            // Create the tenant with owner account
+            const tenant = await storage.createTenantWithOwner({
+                restaurantName: validatedData.restaurantName,
+                subdomain: validatedData.subdomain,
+                plan: validatedData.plan,
+                timezone: validatedData.timezone,
+                ownerName: validatedData.ownerName,
+                ownerEmail: validatedData.ownerEmail,
+                ownerPhone: validatedData.ownerPhone,
+                initialPassword: validatedData.initialPassword,
+                features: {
+                    enableAiChat: validatedData.enableAiChat,
+                    enableTelegramBot: validatedData.enableTelegramBot,
+                    enableGuestAnalytics: validatedData.enableGuestAnalytics,
+                    enableAdvancedReporting: validatedData.enableAdvancedReporting,
+                    enableMenuManagement: validatedData.enableMenuManagement
+                },
+                limits: {
+                    maxTables: validatedData.maxTables,
+                    maxUsers: validatedData.maxUsers
+                },
+                customSettings: validatedData.customSettings
+            });
+
+            console.log(`✅ [SuperAdmin] Created tenant: ${tenant.restaurant.name} (ID: ${tenant.restaurant.id})`);
+
+            res.status(201).json({
+                tenant: tenant,
+                message: "Tenant created successfully",
+                loginInstructions: {
+                    url: `https://${validatedData.subdomain}.yourdomain.com/login`,
+                    email: validatedData.ownerEmail,
+                    password: "Use the provided initial password"
+                },
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error: any) {
+            console.error('[SuperAdmin] Error creating tenant:', error);
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ 
+                    message: "Validation failed", 
+                    errors: error.errors 
+                });
+            }
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Update tenant configuration
+    app.patch("/api/superadmin/tenants/:id", isSuperAdmin, logSuperAdminActivity('update_tenant'), async (req, res, next) => {
+        try {
+            const tenantId = parseInt(req.params.id);
+            
+            if (isNaN(tenantId)) {
+                return res.status(400).json({ message: "Invalid tenant ID" });
+            }
+
+            // Validation schema for tenant updates
+            const updateTenantSchema = z.object({
+                // Restaurant details
+                restaurantName: z.string().min(1).optional(),
+                subdomain: z.string().min(2).regex(/^[a-z0-9-]+$/).optional(),
+                plan: z.enum(['starter', 'professional', 'enterprise']).optional(),
+                status: z.enum(['active', 'suspended', 'terminated']).optional(),
+                timezone: z.string().optional(),
+                
+                // Feature flags
+                enableAiChat: z.boolean().optional(),
+                enableTelegramBot: z.boolean().optional(),
+                enableGuestAnalytics: z.boolean().optional(),
+                enableAdvancedReporting: z.boolean().optional(),
+                enableMenuManagement: z.boolean().optional(),
+                
+                // Limits
+                maxTables: z.number().optional(),
+                maxUsers: z.number().optional(),
+                maxReservationsPerMonth: z.number().optional(),
+                
+                // Settings
+                customSettings: z.record(z.any()).optional(),
+                adminNotes: z.string().optional()
+            });
+
+            const validatedData = updateTenantSchema.parse(req.body);
+            
+            console.log(`[SuperAdmin] Updating tenant ${tenantId}:`, Object.keys(validatedData));
+
+            // Check if tenant exists
+            const existingTenant = await storage.getTenantById(tenantId);
+            if (!existingTenant) {
+                return res.status(404).json({ message: "Tenant not found" });
+            }
+
+            // If subdomain is being changed, check availability
+            if (validatedData.subdomain && validatedData.subdomain !== existingTenant.subdomain) {
+                const subdomainTaken = await storage.getTenantBySubdomain(validatedData.subdomain);
+                if (subdomainTaken) {
+                    return res.status(409).json({ 
+                        message: "Subdomain already exists",
+                        field: "subdomain"
+                    });
+                }
+            }
+
+            // Update tenant
+            const updatedTenant = await storage.updateTenant(tenantId, validatedData);
+
+            // If status changed to suspended, log it specifically
+            if (validatedData.status === 'suspended') {
+                await storage.logTenantAudit(tenantId, 'suspended', 'Tenant suspended by super admin', {
+                    adminId: (req.user as SuperAdminUser).id,
+                    reason: validatedData.adminNotes || 'No reason provided'
+                });
+            }
+
+            console.log(`✅ [SuperAdmin] Updated tenant ${tenantId}: ${updatedTenant.name}`);
+
+            res.json({
+                tenant: updatedTenant,
+                message: "Tenant updated successfully",
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error: any) {
+            console.error('[SuperAdmin] Error updating tenant:', error);
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ 
+                    message: "Validation failed", 
+                    errors: error.errors 
+                });
+            }
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Suspend tenant
+    app.post("/api/superadmin/tenants/:id/suspend", isSuperAdmin, logSuperAdminActivity('suspend_tenant'), async (req, res, next) => {
+        try {
+            const tenantId = parseInt(req.params.id);
+            const { reason, notifyOwner = true } = req.body;
+
+            if (isNaN(tenantId)) {
+                return res.status(400).json({ message: "Invalid tenant ID" });
+            }
+
+            console.log(`[SuperAdmin] Suspending tenant ${tenantId}. Reason: ${reason || 'No reason provided'}`);
+
+            const tenant = await storage.getTenantById(tenantId);
+            if (!tenant) {
+                return res.status(404).json({ message: "Tenant not found" });
+            }
+
+            if (tenant.tenantStatus === 'suspended') {
+                return res.status(400).json({ message: "Tenant is already suspended" });
+            }
+
+            // Suspend the tenant
+            await storage.suspendTenant(tenantId, {
+                reason: reason || 'Suspended by administrator',
+                suspendedBy: (req.user as SuperAdminUser).id,
+                notifyOwner: notifyOwner
+            });
+
+            // Log the suspension
+            await storage.logTenantAudit(tenantId, 'suspended', reason || 'Suspended by administrator', {
+                adminId: (req.user as SuperAdminUser).id,
+                adminEmail: (req.user as SuperAdminUser).email,
+                notifyOwner: notifyOwner
+            });
+
+            console.log(`✅ [SuperAdmin] Tenant ${tenantId} suspended successfully`);
+
+            res.json({
+                success: true,
+                message: "Tenant suspended successfully",
+                tenantId: tenantId,
+                suspensionReason: reason || 'Suspended by administrator',
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error suspending tenant:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Reactivate tenant
+    app.post("/api/superadmin/tenants/:id/reactivate", isSuperAdmin, logSuperAdminActivity('reactivate_tenant'), async (req, res, next) => {
+        try {
+            const tenantId = parseInt(req.params.id);
+            const { notes, notifyOwner = true } = req.body;
+
+            if (isNaN(tenantId)) {
+                return res.status(400).json({ message: "Invalid tenant ID" });
+            }
+
+            console.log(`[SuperAdmin] Reactivating tenant ${tenantId}`);
+
+            const tenant = await storage.getTenantById(tenantId);
+            if (!tenant) {
+                return res.status(404).json({ message: "Tenant not found" });
+            }
+
+            if (tenant.tenantStatus === 'active') {
+                return res.status(400).json({ message: "Tenant is already active" });
+            }
+
+            // Reactivate the tenant
+            await storage.reactivateTenant(tenantId, {
+                notes: notes || 'Reactivated by administrator',
+                reactivatedBy: (req.user as SuperAdminUser).id,
+                notifyOwner: notifyOwner
+            });
+
+            // Log the reactivation
+            await storage.logTenantAudit(tenantId, 'reactivated', notes || 'Reactivated by administrator', {
+                adminId: (req.user as SuperAdminUser).id,
+                adminEmail: (req.user as SuperAdminUser).email,
+                notifyOwner: notifyOwner
+            });
+
+            console.log(`✅ [SuperAdmin] Tenant ${tenantId} reactivated successfully`);
+
+            res.json({
+                success: true,
+                message: "Tenant reactivated successfully",
+                tenantId: tenantId,
+                notes: notes || 'Reactivated by administrator',
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error reactivating tenant:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Get platform metrics and analytics
+    app.get("/api/superadmin/metrics", isSuperAdmin, logSuperAdminActivity('view_metrics'), async (req, res, next) => {
+        try {
+            const { timeframe = '30d', includeDetails = false } = req.query;
+
+            console.log(`[SuperAdmin] Fetching platform metrics: timeframe=${timeframe}`);
+
+            const metrics = await storage.getPlatformMetrics({
+                timeframe: timeframe as string,
+                includeDetails: includeDetails === 'true'
+            });
+
+            res.json({
+                metrics: metrics,
+                timeframe: timeframe,
+                generatedAt: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error fetching platform metrics:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Get tenant audit logs
+    app.get("/api/superadmin/tenants/:id/audit", isSuperAdmin, logSuperAdminActivity('view_audit_logs'), async (req, res, next) => {
+        try {
+            const tenantId = parseInt(req.params.id);
+            const { limit = 50, offset = 0 } = req.query;
+
+            if (isNaN(tenantId)) {
+                return res.status(400).json({ message: "Invalid tenant ID" });
+            }
+
+            console.log(`[SuperAdmin] Fetching audit logs for tenant ${tenantId}`);
+
+            const auditLogs = await storage.getTenantAuditLogs(tenantId, {
+                limit: Math.min(parseInt(limit as string), 200),
+                offset: parseInt(offset as string)
+            });
+
+            res.json({
+                tenantId: tenantId,
+                auditLogs: auditLogs,
+                pagination: {
+                    limit: parseInt(limit as string),
+                    offset: parseInt(offset as string),
+                    hasMore: auditLogs.length === parseInt(limit as string)
+                },
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[SuperAdmin] Error fetching audit logs:', error);
+            next(error);
+        }
+    });
+
+    // 🔒 SUPER ADMIN: Super admin profile and settings
+    app.get("/api/superadmin/profile", isSuperAdmin, async (req, res) => {
+        const user = req.user as SuperAdminUser;
+        
+        try {
+            const profile = await storage.getSuperAdminProfile(user.id);
+            
+            res.json({
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                role: user.role,
+                profile: profile,
+                permissions: ['manage_tenants', 'view_metrics', 'suspend_accounts', 'create_tenants'],
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[SuperAdmin] Error fetching profile:', error);
+            res.status(500).json({ message: "Error fetching profile" });
+        }
+    });
+
+    // ============================================================================
+    // 🔒 REGULAR TENANT ROUTES (Enhanced with tenant isolation)
+    // ============================================================================
+
+    // 🔒 Restaurant routes with tenant isolation
+    app.get("/api/restaurants/profile", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            res.json(context.restaurant);
         } catch (error) {
             next(error);
         }
     });
 
-    app.patch("/api/restaurants/profile", isAuthenticated, async (req, res, next) => {
+    app.patch("/api/restaurants/profile", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const validatedData = insertRestaurantSchema.partial().parse(req.body);
 
-            const oldTimezone = restaurant.timezone;
+            const oldTimezone = context.restaurant.timezone;
             const newTimezone = validatedData.timezone;
             const isTimezoneChanging = newTimezone && oldTimezone !== newTimezone;
 
             if (isTimezoneChanging) {
-                console.log(`🌍 [Profile] Restaurant ${restaurant.id} changing timezone: ${oldTimezone} → ${newTimezone}`);
+                console.log(`🌍 [Profile] Restaurant ${context.restaurant.id} changing timezone: ${oldTimezone} → ${newTimezone}`);
             }
 
-            const updatedRestaurant = await storage.updateRestaurant(restaurant.id, validatedData);
+            const updatedRestaurant = await storage.updateRestaurant(context.restaurant.id, validatedData);
 
             if (isTimezoneChanging) {
-                CacheInvalidation.onTimezoneChange(restaurant.id, oldTimezone, newTimezone);
-                console.log(`✅ [Profile] Timezone change complete for restaurant ${restaurant.id}`);
+                CacheInvalidation.onTimezoneChange(context.restaurant.id, oldTimezone, newTimezone);
+                console.log(`✅ [Profile] Timezone change complete for restaurant ${context.restaurant.id}`);
             }
 
             res.json(updatedRestaurant);
@@ -292,29 +784,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ✅ NEW: Restaurant Operating Status (Phase 3 Enhancement)
-    app.get("/api/restaurants/:id/status", isAuthenticated, async (req, res, next) => {
+    app.get("/api/restaurants/:id/status", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const restaurantId = parseInt(req.params.id);
-            if (restaurant.id !== restaurantId) {
+            
+            if (context.restaurant.id !== restaurantId) {
                 return res.status(403).json({ message: "Access denied" });
             }
 
             const operatingStatus = getRestaurantOperatingStatus(
-                restaurant.timezone,
-                restaurant.openingTime || '10:00:00',
-                restaurant.closingTime || '22:00:00'
+                context.restaurant.timezone,
+                context.restaurant.openingTime || '10:00:00',
+                context.restaurant.closingTime || '22:00:00'
             );
 
             res.json({
-                restaurantId: restaurant.id,
-                restaurantName: restaurant.name,
-                timezone: restaurant.timezone,
+                restaurantId: context.restaurant.id,
+                restaurantName: context.restaurant.name,
+                timezone: context.restaurant.timezone,
                 ...operatingStatus,
                 timestamp: new Date().toISOString()
             });
@@ -324,7 +812,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.get("/api/timezones", isAuthenticated, async (req, res, next) => {
+    app.get("/api/timezones", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const timezones = getPopularRestaurantTimezones();
             res.json(timezones);
@@ -334,16 +822,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Table routes
-    app.get("/api/tables", isAuthenticated, async (req, res, next) => {
+    // 🔒 Table routes with tenant isolation and usage tracking
+    app.get("/api/tables", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const tables = await storage.getTables(restaurant.id);
-            console.log(`🔍 [Tables] Found ${tables.length} tables for restaurant ${restaurant.id}`);
+            const context = getTenantContext(req);
+            const tables = await storage.getTables(context.restaurant.id);
+            console.log(`🔍 [Tables] Found ${tables.length} tables for restaurant ${context.restaurant.id}`);
             res.json(tables);
         } catch (error) {
             console.error('❌ [Tables] Error fetching tables:', error);
@@ -351,20 +835,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.post("/api/tables", isAuthenticated, async (req, res, next) => {
+    app.post("/api/tables", isAuthenticated, tenantIsolation, trackUsage('table_created'), async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const validatedData = insertTableSchema.parse({
                 ...req.body,
-                restaurantId: restaurant.id,
+                restaurantId: context.restaurant.id,
             });
-            const newTable = await storage.createTable(validatedData);
             
-            CacheInvalidation.onTableChange(restaurant.id);
+            // 🔒 Pass tenant context for limit checking
+            const newTable = await storage.createTable(validatedData, context);
+            
+            CacheInvalidation.onTableChange(context.restaurant.id);
             
             console.log(`✅ [Tables] Created new table: ${newTable.name} (ID: ${newTable.id})`);
             res.status(201).json(newTable);
@@ -373,26 +855,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: "Validation failed", errors: error.errors });
             }
+            // Handle tenant limit errors
+            if (error.message.includes('limit')) {
+                return res.status(402).json({ 
+                    message: error.message,
+                    code: 'LIMIT_EXCEEDED',
+                    upgradeRequired: true
+                });
+            }
             next(error);
         }
     });
 
-    app.patch("/api/tables/:id", isAuthenticated, async (req, res, next) => {
+    app.patch("/api/tables/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const tableId = parseInt(req.params.id);
             const table = await storage.getTable(tableId);
-            if (!table || table.restaurantId !== restaurant.id) {
+            
+            if (!table || table.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Table not found" });
             }
+            
             const validatedData = insertTableSchema.partial().parse(req.body);
             const updatedTable = await storage.updateTable(tableId, validatedData);
             
-            CacheInvalidation.onTableChange(restaurant.id);
+            CacheInvalidation.onTableChange(context.restaurant.id);
             
             res.json(updatedTable);
         } catch (error: any) {
@@ -403,21 +891,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.delete("/api/tables/:id", isAuthenticated, async (req, res, next) => {
+    app.delete("/api/tables/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const tableId = parseInt(req.params.id);
             const table = await storage.getTable(tableId);
-            if (!table || table.restaurantId !== restaurant.id) {
+            
+            if (!table || table.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Table not found" });
             }
+            
             await storage.deleteTable(tableId);
             
-            CacheInvalidation.onTableChange(restaurant.id);
+            CacheInvalidation.onTableChange(context.restaurant.id);
             
             res.json({ success: true });
         } catch (error) {
@@ -425,27 +911,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ REMOVED: All 3 timeslot endpoints
-    // - GET /api/timeslots
-    // - POST /api/timeslots/generate  
-    // - GET /api/timeslots/stats
-
-    // Guest routes
-    app.get("/api/guests", isAuthenticated, async (req, res, next) => {
+    // 🔒 Guest routes with tenant isolation and analytics feature gating
+    app.get("/api/guests", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const guestsData = await storage.getGuests(restaurant.id);
+            const context = getTenantContext(req);
+            const guestsData = await storage.getGuests(context.restaurant.id);
             res.json(guestsData);
         } catch (error) {
             next(error);
         }
     });
 
-    app.post("/api/guests", isAuthenticated, async (req, res, next) => {
+    app.post("/api/guests", isAuthenticated, tenantIsolation, trackUsage('guest_added'), async (req, res, next) => {
         try {
             const validatedData = insertGuestSchema.parse(req.body);
             let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string);
@@ -463,23 +940,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ NEW: Enhanced Guest Analytics (Phase 3)
-    app.get("/api/guests/:id/analytics", isAuthenticated, async (req, res, next) => {
+    // 🔒 Guest analytics with feature gate
+    app.get("/api/guests/:id/analytics", isAuthenticated, tenantIsolation, requireGuestAnalytics, async (req, res, next) => {
         try {
             const guestId = parseInt(req.params.id);
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
 
             const guest = await storage.getGuest(guestId);
             if (!guest) {
                 return res.status(404).json({ message: "Guest not found" });
             }
 
-            const reservationHistory = await storage.getGuestReservationHistory(guestId, restaurant.id);
+            const reservationHistory = await storage.getGuestReservationHistory(guestId, context.restaurant.id);
             
             // Calculate additional analytics
             const completedVisits = reservationHistory.filter(r => r.reservation.status === 'completed');
@@ -576,58 +1048,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ✅ FIXED: Table Availability with Centralized Logic from Service
-    app.get("/api/tables/availability", isAuthenticated, async (req, res, next) => {
+    app.get("/api/tables/availability", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const { date, time } = req.query;
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
+            
             if (!date || !time) {
                 return res.status(400).json({ message: "Date and time are required" });
             }
 
-            console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time} in timezone ${restaurant.timezone}`);
+            console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time} in timezone ${context.restaurant.timezone}`);
 
             // ✅ DYNAMIC: Check if restaurant operates overnight (works for ANY times)
-            const isOvernight = restaurant.openingTime && restaurant.closingTime && 
-                               isOvernightOperation(restaurant.openingTime, restaurant.closingTime);
+            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime && 
+                               isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
 
             if (isOvernight) {
-                console.log(`🌙 [Table Availability] Detected overnight operation: ${restaurant.openingTime} to ${restaurant.closingTime}`);
+                console.log(`🌙 [Table Availability] Detected overnight operation: ${context.restaurant.openingTime} to ${context.restaurant.closingTime}`);
             }
 
-            const cacheKey = CacheKeys.tableAvailability(restaurant.id, `${date}_${time}`);
+            const cacheKey = CacheKeys.tableAvailability(context.restaurant.id, `${date}_${time}`);
             const tableAvailabilityData = await withCache(cacheKey, async () => {
-                const tablesData = await storage.getTables(restaurant.id);
+                const tablesData = await storage.getTables(context.restaurant.id);
                 
                 if (tablesData.length === 0) {
-                    console.log(`⚠️ [Table Availability] No tables found for restaurant ${restaurant.id} - this might be why frontend shows empty arrays`);
+                    console.log(`⚠️ [Table Availability] No tables found for restaurant ${context.restaurant.id} - this might be why frontend shows empty arrays`);
                     return [];
                 }
                 
-                console.log(`📋 [Table Availability] Found ${tablesData.length} tables for restaurant ${restaurant.id}`);
+                console.log(`📋 [Table Availability] Found ${tablesData.length} tables for restaurant ${context.restaurant.id}`);
                 
                 // ✅ DYNAMIC: Enhanced reservation fetching for overnight operations
                 let reservationsData;
                 if (isOvernight) {
                     // Get reservations from current date
-                    const currentDateReservations = await storage.getReservations(restaurant.id, { 
+                    const currentDateReservations = await storage.getReservations(context.restaurant.id, { 
                         date: date as string,
-                        timezone: restaurant.timezone
+                        timezone: context.restaurant.timezone
                     });
                     
                     // For overnight operations, also check previous day if checking early morning hours
                     const checkHour = parseInt((time as string).split(':')[0]);
-                    const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
+                    const closingHour = parseInt((context.restaurant.closingTime || '0:00').split(':')[0]);
                     
                     if (checkHour < closingHour) { // Early morning hours (before closing time)
-                        const previousDate = DateTime.fromISO(date as string, { zone: restaurant.timezone })
+                        const previousDate = DateTime.fromISO(date as string, { zone: context.restaurant.timezone })
                             .minus({ days: 1 }).toISODate();
-                        const previousDateReservations = await storage.getReservations(restaurant.id, { 
+                        const previousDateReservations = await storage.getReservations(context.restaurant.id, { 
                             date: previousDate,
-                            timezone: restaurant.timezone
+                            timezone: context.restaurant.timezone
                         });
                         
                         reservationsData = [...currentDateReservations, ...previousDateReservations];
@@ -637,13 +1106,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     }
                 } else {
                     // Standard operation - just get current date reservations
-                    reservationsData = await storage.getReservations(restaurant.id, { 
+                    reservationsData = await storage.getReservations(context.restaurant.id, { 
                         date: date as string,
-                        timezone: restaurant.timezone
+                        timezone: context.restaurant.timezone
                     });
                 }
 
-                console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date} (${restaurant.timezone})`);
+                console.log(`📊 [Table Availability] Found ${tablesData.length} tables and ${reservationsData.length} reservations for ${date} (${context.restaurant.timezone})`);
 
                 // ✅ FIXED: Use centralized availability logic from service
                 const availabilityResult = tablesData.map(table => {
@@ -658,7 +1127,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     }
 
                     // Use a reasonable default for the slot duration check
-                    const slotDuration = restaurant.avgReservationDuration || 120;
+                    const slotDuration = context.restaurant.avgReservationDuration || 120;
 
                     // ✅ FIXED: Use centralized function from availability service
                     // isTableAvailableAtTimeSlot returns true if it's FREE
@@ -677,12 +1146,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
                             time as string,
                             [reservationDetails], // The function expects an array
                             slotDuration,
-                            restaurant.timezone,
+                            context.restaurant.timezone,
                             date as string,
                             isOvernight,
                             // Pass opening/closing times for proper overnight calculation
-                            restaurant.openingTime ? parseInt(restaurant.openingTime.split(':')[0]) * 60 + parseInt(restaurant.openingTime.split(':')[1] || '0') : 0,
-                            restaurant.closingTime ? parseInt(restaurant.closingTime.split(':')[0]) * 60 + parseInt(restaurant.closingTime.split(':')[1] || '0') : 1440
+                            context.restaurant.openingTime ? parseInt(context.restaurant.openingTime.split(':')[0]) * 60 + parseInt(context.restaurant.openingTime.split(':')[1] || '0') : 0,
+                            context.restaurant.closingTime ? parseInt(context.restaurant.closingTime.split(':')[0]) * 60 + parseInt(context.restaurant.closingTime.split(':')[1] || '0') : 1440
                         );
                     });
 
@@ -701,11 +1170,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                                 time as string,
                                 [reservationDetails],
                                 slotDuration,
-                                restaurant.timezone,
+                                context.restaurant.timezone,
                                 date as string,
                                 isOvernight,
-                                restaurant.openingTime ? parseInt(restaurant.openingTime.split(':')[0]) * 60 + parseInt(restaurant.openingTime.split(':')[1] || '0') : 0,
-                                restaurant.closingTime ? parseInt(restaurant.closingTime.split(':')[0]) * 60 + parseInt(restaurant.closingTime.split(':')[1] || '0') : 1440
+                                context.restaurant.openingTime ? parseInt(context.restaurant.openingTime.split(':')[0]) * 60 + parseInt(context.restaurant.openingTime.split(':')[1] || '0') : 0,
+                                context.restaurant.closingTime ? parseInt(context.restaurant.closingTime.split(':')[0]) * 60 + parseInt(context.restaurant.closingTime.split(':')[1] || '0') : 1440
                             );
                         });
 
@@ -716,7 +1185,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                             const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
                             
                             if (reservationDateTime.isValid) {
-                                const reservationLocal = reservationDateTime.setZone(restaurant.timezone);
+                                const reservationLocal = reservationDateTime.setZone(context.restaurant.timezone);
                                 const startTime = reservationLocal.toFormat('HH:mm:ss');
                                 const duration = actualReservation.duration || 120;
                                 const endTime = reservationLocal.plus({ minutes: duration }).toFormat('HH:mm:ss');
@@ -740,7 +1209,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     };
                 });
 
-                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${restaurant.timezone} (overnight: ${isOvernight})`);
+                console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${context.restaurant.timezone} (overnight: ${isOvernight})`);
                 
                 if (availabilityResult.length === 0) {
                     console.log(`❌ [Table Availability] RETURNING EMPTY ARRAY - Check table creation and restaurant association`);
@@ -760,17 +1229,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ✅ ENHANCED: Available Times with Exact Time Support
-    app.get("/api/booking/available-times", isAuthenticated, async (req: Request, res: Response, next) => {
+    app.get("/api/booking/available-times", isAuthenticated, tenantIsolation, async (req: Request, res: Response, next) => {
         try {
             const { restaurantId, date, guests, exactTime } = req.query; // NEW: exactTime param
-            const user = req.user as any;
+            const context = getTenantContext(req);
             
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            
-            if (parseInt(restaurantId as string) !== restaurant.id) {
+            if (parseInt(restaurantId as string) !== context.restaurant.id) {
                 return res.status(403).json({ message: "Access denied to this restaurant" });
             }
             
@@ -778,7 +1242,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Missing required parameters" });
             }
             
-            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${restaurant.timezone}${exactTime ? ` (exact time: ${exactTime})` : ''}`);
+            console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${context.restaurant.timezone}${exactTime ? ` (exact time: ${exactTime})` : ''}`);
             
             // ✅ NEW: Handle exact time checking
             if (exactTime) {
@@ -791,7 +1255,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     { 
                         requestedTime: exactTime as string,
                         exactTimeOnly: true, // NEW: Only check this exact time
-                        timezone: restaurant.timezone,
+                        timezone: context.restaurant.timezone,
                         allowCombinations: true
                     }
                 );
@@ -810,19 +1274,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         tablesCount: slot.isCombined ? slot.constituentTables?.length || 1 : 1,
                         message: `${slot.tableName} available at ${slot.timeDisplay}`
                     })),
-                    timezone: restaurant.timezone,
-                    slotInterval: restaurant.slotInterval || 30, // NEW: Include restaurant setting
-                    allowAnyTime: restaurant.allowAnyTime !== false, // NEW: Include restaurant setting
-                    minTimeIncrement: restaurant.minTimeIncrement || 15 // NEW: Include restaurant setting
+                    timezone: context.restaurant.timezone,
+                    slotInterval: context.restaurant.slotInterval || 30, // NEW: Include restaurant setting
+                    allowAnyTime: context.restaurant.allowAnyTime !== false, // NEW: Include restaurant setting
+                    minTimeIncrement: context.restaurant.minTimeIncrement || 15 // NEW: Include restaurant setting
                 });
             }
             
             // ✅ EXISTING LOGIC (enhanced with restaurant settings):
-            const isOvernight = restaurant.openingTime && restaurant.closingTime && 
-                               isOvernightOperation(restaurant.openingTime, restaurant.closingTime);
+            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime && 
+                               isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
             
             // Use restaurant's configured slot interval
-            const slotInterval = restaurant.slotInterval || 30; // NEW: Use restaurant setting
+            const slotInterval = context.restaurant.slotInterval || 30; // NEW: Use restaurant setting
             
             // ✅ ENHANCED: maxResults calculation for overnight operations
             let maxResults: number;
@@ -835,8 +1299,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
                 };
                 
-                const openingMinutes = parseTime(restaurant.openingTime || '10:00');
-                const closingMinutes = parseTime(restaurant.closingTime || '22:00');
+                const openingMinutes = parseTime(context.restaurant.openingTime || '10:00');
+                const closingMinutes = parseTime(context.restaurant.closingTime || '22:00');
                 
                 // ✅ DYNAMIC: For overnight operations, calculate correctly (works for ANY times)
                 operatingHours = (24 * 60 - openingMinutes + closingMinutes) / 60;
@@ -844,7 +1308,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 // ✅ DYNAMIC: More generous slot calculation for overnight operations
                 maxResults = Math.max(80, Math.floor(operatingHours * 2.5)); // Extra buffer for overnight
                 
-                console.log(`[Routes] 🌙 Overnight operation detected: ${restaurant.openingTime}-${restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
+                console.log(`[Routes] 🌙 Overnight operation detected: ${context.restaurant.openingTime}-${context.restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
             } else {
                 // Standard operation
                 const parseTime = (timeStr: string): number => {
@@ -852,13 +1316,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
                 };
                 
-                const openingMinutes = parseTime(restaurant.openingTime || '10:00');
-                const closingMinutes = parseTime(restaurant.closingTime || '22:00');
+                const openingMinutes = parseTime(context.restaurant.openingTime || '10:00');
+                const closingMinutes = parseTime(context.restaurant.closingTime || '22:00');
                 operatingHours = (closingMinutes - openingMinutes) / 60;
                 
                 maxResults = Math.max(30, Math.floor(operatingHours * 2));
                 
-                console.log(`[Routes] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
+                console.log(`[Routes] 📅 Standard operation: ${context.restaurant.openingTime}-${context.restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
             }
             
             // ✅ ENHANCED: Pass restaurant configuration to getAvailableTimeSlots
@@ -868,14 +1332,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 parseInt(guests as string),
                 { 
                     maxResults: maxResults,
-                    timezone: restaurant.timezone,
+                    timezone: context.restaurant.timezone,
                     lang: 'en',
                     allowCombinations: true,
                     slotIntervalMinutes: slotInterval, // NEW: Use restaurant setting
-                    slotDurationMinutes: restaurant.avgReservationDuration || 120,
+                    slotDurationMinutes: context.restaurant.avgReservationDuration || 120,
                     operatingHours: {
-                        open: restaurant.openingTime || '10:00:00',
-                        close: restaurant.closingTime || '22:00:00'
+                        open: context.restaurant.openingTime || '10:00:00',
+                        close: context.restaurant.closingTime || '22:00:00'
                     }
                 }
             );
@@ -896,8 +1360,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 slotType: (() => {
                     const hour = parseInt(slot.time.split(':')[0]);
                     if (isOvernight) {
-                        const closingHour = parseInt((restaurant.closingTime || '0:00').split(':')[0]);
-                        const openingHour = parseInt((restaurant.openingTime || '0:00').split(':')[0]);
+                        const closingHour = parseInt((context.restaurant.closingTime || '0:00').split(':')[0]);
+                        const openingHour = parseInt((context.restaurant.openingTime || '0:00').split(':')[0]);
                         if (hour >= 0 && hour < closingHour) return 'early_morning';
                         if (hour >= openingHour) return 'late_night';
                         return 'day';
@@ -906,33 +1370,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 })()
             }));
             
-            console.log(`[Routes] 📊 Found ${timeSlots.length} available time slots for ${restaurant.timezone} ${isOvernight ? '(overnight operation)' : '(standard operation)'}`);
+            console.log(`[Routes] 📊 Found ${timeSlots.length} available time slots for ${context.restaurant.timezone} ${isOvernight ? '(overnight operation)' : '(standard operation)'}`);
             
             // ✅ ENHANCED: Response with restaurant time configuration
             res.json({ 
                 availableSlots: timeSlots,
                 isOvernightOperation: isOvernight,
                 operatingHours: {
-                    opening: restaurant.openingTime,
-                    closing: restaurant.closingTime,
+                    opening: context.restaurant.openingTime,
+                    closing: context.restaurant.closingTime,
                     totalHours: operatingHours
                 },
-                timezone: restaurant.timezone,
+                timezone: context.restaurant.timezone,
                 
                 // ✅ NEW: Include restaurant's flexible time configuration
                 slotInterval: slotInterval, // Restaurant's preferred slot interval
-                allowAnyTime: restaurant.allowAnyTime !== false, // Whether any time booking is allowed
-                minTimeIncrement: restaurant.minTimeIncrement || 15, // Minimum time precision
+                allowAnyTime: context.restaurant.allowAnyTime !== false, // Whether any time booking is allowed
+                minTimeIncrement: context.restaurant.minTimeIncrement || 15, // Minimum time precision
                 
                 totalSlotsGenerated: timeSlots.length,
                 maxSlotsRequested: maxResults,
-                reservationDuration: restaurant.avgReservationDuration || 120,
+                reservationDuration: context.restaurant.avgReservationDuration || 120,
                 
                 debugInfo: {
-                    openingTime: restaurant.openingTime,
-                    closingTime: restaurant.closingTime,
+                    openingTime: context.restaurant.openingTime,
+                    closingTime: context.restaurant.closingTime,
                     isOvernight: isOvernight,
-                    avgDuration: restaurant.avgReservationDuration || 120,
+                    avgDuration: context.restaurant.avgReservationDuration || 120,
                     requestedDate: date,
                     requestedGuests: guests,
                     operatingHours: operatingHours,
@@ -940,9 +1404,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     actualSlotsReturned: timeSlots.length,
                     
                     // ✅ NEW: Debug info for time configuration
-                    restaurantSlotInterval: restaurant.slotInterval,
-                    restaurantAllowAnyTime: restaurant.allowAnyTime,
-                    restaurantMinTimeIncrement: restaurant.minTimeIncrement
+                    restaurantSlotInterval: context.restaurant.slotInterval,
+                    restaurantAllowAnyTime: context.restaurant.allowAnyTime,
+                    restaurantMinTimeIncrement: context.restaurant.minTimeIncrement
                 }
             });
         } catch (error) {
@@ -951,37 +1415,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Reservation routes
-    app.get("/api/reservations", isAuthenticated, async (req, res, next) => {
+    // 🔒 Reservation routes with tenant isolation and usage tracking
+    app.get("/api/reservations", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const filters = {
                 date: req.query.date as string,
                 status: req.query.status ? (req.query.status as string).split(',') : undefined,
                 upcoming: req.query.upcoming === 'true',
-                timezone: restaurant.timezone,
+                timezone: context.restaurant.timezone,
             };
-            const reservationsData = await storage.getReservations(restaurant.id, filters);
+            const reservationsData = await storage.getReservations(context.restaurant.id, filters);
             res.json(reservationsData);
         } catch (error) {
             next(error);
         }
     });
 
-    app.get("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
+    app.get("/api/reservations/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const reservationId = parseInt(req.params.id);
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+            
+            if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
             res.json(reservation);
@@ -990,15 +1447,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ DYNAMIC: Reservation creation with UTC timestamp support
-    app.post("/api/reservations", isAuthenticated, async (req, res, next) => {
+    // ✅ CRITICAL SECURITY FIX: Reservation creation with authenticated tenant ID
+    app.post("/api/reservations", isAuthenticated, tenantIsolation, trackUsage('reservation_created'), async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const { guestName, guestPhone, date, time, guests: numGuests } = req.body;
+            
             if (!guestName || !guestPhone || !date || !time || !numGuests) {
                 return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
             }
@@ -1016,7 +1470,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // ✅ DYNAMIC: Convert date/time to UTC timestamp before booking
-            const restaurantTimezone = req.body.timezone || restaurant.timezone;
+            const restaurantTimezone = req.body.timezone || context.restaurant.timezone;
             
             let localDateTime: DateTime;
             let reservation_utc: string;
@@ -1042,18 +1496,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             try {
-                const bookingResult = await createReservation({
-                    restaurantId: restaurant.id,
-                    guestId: guest.id,
-                    reservation_utc: reservation_utc,
-                    guests: parseInt(numGuests as string),
-                    timezone: restaurantTimezone,
-                    comments: req.body.comments || '',
-                    source: req.body.source || 'manual',
-                    booking_guest_name: guestName,
-                    lang: req.body.lang || restaurant.languages?.[0] || 'en',
-                    tableId: req.body.tableId || undefined,
-                });
+                // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first, remove restaurantId from request
+                const bookingResult = await createReservation(
+                    context.restaurant.id, // ✅ Authenticated tenant ID from middleware
+                    {
+                        // ❌ REMOVED: restaurantId - no longer accepted by booking service
+                        guestId: guest.id,
+                        reservation_utc: reservation_utc,
+                        guests: parseInt(numGuests as string),
+                        timezone: restaurantTimezone,
+                        comments: req.body.comments || '',
+                        source: req.body.source || 'manual',
+                        booking_guest_name: guestName,
+                        lang: req.body.lang || context.restaurant.languages?.[0] || 'en',
+                        tableId: req.body.tableId || undefined,
+                    }
+                );
 
                 if (!bookingResult.success || !bookingResult.reservation) {
                     let statusCode = 400;
@@ -1092,7 +1550,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
 
                 CacheInvalidation.onReservationUtcChange(
-                    restaurant.id,
+                    context.restaurant.id,
                     bookingResult.reservation.reservation_utc,
                     restaurantTimezone,
                     bookingResult.reservation.duration || 120
@@ -1111,6 +1569,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             } catch (bookingError: any) {
                 console.error('❌ [Reservation Creation] Unexpected booking service error:', bookingError);
+
+                // Handle tenant limit errors
+                if (bookingError.message.includes('limit exceeded')) {
+                    return res.status(402).json({
+                        message: bookingError.message,
+                        errorType: 'LIMIT_EXCEEDED',
+                        upgradeRequired: true,
+                        timestamp: new Date().toISOString()
+                    });
+                }
 
                 if (bookingError.code === '40P01') {
                     return res.status(503).json({
@@ -1168,17 +1636,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.patch("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
+    app.patch("/api/reservations/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const reservationId = parseInt(req.params.id);
             const existingResult = await storage.getReservation(reservationId);
 
-            if (!existingResult || existingResult.reservation.restaurantId !== restaurant.id) {
+            if (!existingResult || existingResult.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
@@ -1186,9 +1650,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const validatedData = insertReservationSchema.partial().parse(req.body);
 
             CacheInvalidation.onReservationUtcChange(
-                restaurant.id,
+                context.restaurant.id,
                 existingReservation.reservation_utc,
-                restaurant.timezone,
+                context.restaurant.timezone,
                 existingReservation.duration || 120
             );
 
@@ -1207,28 +1671,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.delete("/api/reservations/:id", isAuthenticated, async (req, res, next) => {
+    // ✅ CRITICAL SECURITY FIX: Reservation cancellation with authenticated tenant ID
+    app.delete("/api/reservations/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const reservationId = parseInt(req.params.id);
             const existingResult = await storage.getReservation(reservationId);
 
-            if (!existingResult || existingResult.reservation.restaurantId !== restaurant.id) {
+            if (!existingResult || existingResult.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
             const existingReservation = existingResult.reservation;
 
-            await cancelReservation(reservationId, restaurant.languages?.[0] || 'en');
+            // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first
+            await cancelReservation(
+                context.restaurant.id, // ✅ Authenticated tenant ID from middleware
+                reservationId, 
+                context.restaurant.languages?.[0] || 'en'
+            );
 
             CacheInvalidation.onReservationUtcChange(
-                restaurant.id,
+                context.restaurant.id,
                 existingReservation.reservation_utc,
-                restaurant.timezone,
+                context.restaurant.timezone,
                 existingReservation.duration || 120
             );
 
@@ -1242,20 +1708,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // ✅ NEW: PHASE 3 - ENHANCED RESERVATION STATUS MANAGEMENT
     
     // Seat guests - transition from confirmed to seated
-    app.post("/api/reservations/:id/seat", isAuthenticated, async (req, res, next) => {
+    app.post("/api/reservations/:id/seat", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const { tableNotes, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             
             // Validate current status
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+            if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
             
@@ -1272,7 +1733,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }, {
                 changedBy: 'staff',
                 changeReason: 'Manual seating by staff',
-                metadata: { staffMember: staffMember || user.name }
+                metadata: { staffMember: staffMember || 'Unknown staff' }
             });
 
             // Update table status if there's a table assigned
@@ -1282,10 +1743,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 });
                 
                 // Invalidate table cache
-                CacheInvalidation.onTableChange(restaurant.id);
+                CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
-            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || user.name}`);
+            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'}`);
 
             res.json({ 
                 success: true, 
@@ -1301,19 +1762,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Complete visit - transition from seated/in_progress to completed
-    app.post("/api/reservations/:id/complete", isAuthenticated, async (req, res, next) => {
+    app.post("/api/reservations/:id/complete", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const { feedback, totalAmount, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+            if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
@@ -1338,7 +1794,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 changedBy: 'staff',
                 changeReason: 'Visit completed by staff',
                 metadata: { 
-                    staffMember: staffMember || user.name, 
+                    staffMember: staffMember || 'Unknown staff', 
                     actualDuration: duration,
                     totalAmount: totalAmount ? parseFloat(totalAmount) : null
                 }
@@ -1358,7 +1814,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 });
                 
                 // Invalidate table cache
-                CacheInvalidation.onTableChange(restaurant.id);
+                CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
             console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0}`);
@@ -1379,19 +1835,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Mark as no-show
-    app.post("/api/reservations/:id/no-show", isAuthenticated, async (req, res, next) => {
+    app.post("/api/reservations/:id/no-show", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const { reason, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+            if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
@@ -1408,7 +1859,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 changedBy: 'staff',
                 changeReason: 'Marked as no-show by staff',
                 metadata: { 
-                    staffMember: staffMember || user.name, 
+                    staffMember: staffMember || 'Unknown staff', 
                     reason: reason || 'No reason provided'
                 }
             });
@@ -1425,7 +1876,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 });
                 
                 // Invalidate table cache
-                CacheInvalidation.onTableChange(restaurant.id);
+                CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
             console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'}`);
@@ -1445,19 +1896,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Get reservation status history
-    app.get("/api/reservations/:id/history", isAuthenticated, async (req, res, next) => {
+    app.get("/api/reservations/:id/history", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const reservationId = parseInt(req.params.id);
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             
             // Verify reservation belongs to this restaurant
             const reservation = await storage.getReservation(reservationId);
-            if (!reservation || reservation.reservation.restaurantId !== restaurant.id) {
+            if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
             
@@ -1484,17 +1930,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ NEW: PHASE 3 - MENU MANAGEMENT SYSTEM
+    // ✅ NEW: PHASE 3 - MENU MANAGEMENT SYSTEM with feature gate
 
     // Get menu items with advanced filtering
-    app.get("/api/menu-items", isAuthenticated, async (req, res, next) => {
+    app.get("/api/menu-items", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const { category, available, search, popular, limit } = req.query;
             
             const filters = {
@@ -1505,9 +1946,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 limit: limit ? parseInt(limit as string) : undefined
             };
 
-            console.log(`🍽️ [Menu Items] Fetching menu items for restaurant ${restaurant.id} with filters:`, filters);
+            console.log(`🍽️ [Menu Items] Fetching menu items for restaurant ${context.restaurant.id} with filters:`, filters);
 
-            const menuItems = await storage.getMenuItems(restaurant.id, filters);
+            const menuItems = await storage.getMenuItems(context.restaurant.id, filters);
             
             // Group by category for better UI organization
             const groupedItems = menuItems.reduce((acc, item) => {
@@ -1543,13 +1984,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ✅ BUG 1 FIX: Create new menu item with category name lookup
-    app.post("/api/menu-items", isAuthenticated, async (req, res, next) => {
+    app.post("/api/menu-items", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
 
             // Basic validation schema for menu items
             const menuItemSchema = z.object({
@@ -1569,7 +2006,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const validatedData = menuItemSchema.parse(req.body);
 
             // ✅ BUG 1 FIX: Look up the category ID from the category name
-            const category = await storage.getMenuCategoryByName(restaurant.id, validatedData.category);
+            const category = await storage.getMenuCategoryByName(context.restaurant.id, validatedData.category);
 
             if (!category) {
                 return res.status(400).json({ message: `Category '${validatedData.category}' not found.` });
@@ -1586,14 +2023,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 spicyLevel: validatedData.spicyLevel,
                 allergens: validatedData.allergens,
                 dietaryTags: validatedData.dietaryTags,
-                restaurantId: restaurant.id,
+                restaurantId: context.restaurant.id,
                 categoryId: category.id  // ✅ BUG 1 FIX: Use the correct numeric categoryId
             });
             
             // Invalidate menu cache
-            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
             
-            console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${validatedData.category}) - $${newItem.price}`);
+            console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${validatedData.category}) - ${newItem.price}`);
 
             res.status(201).json({
                 ...newItem,
@@ -1612,26 +2049,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Update menu item
-    app.patch("/api/menu-items/:id", isAuthenticated, async (req, res, next) => {
+    app.patch("/api/menu-items/:id", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const itemId = parseInt(req.params.id);
             
             // Verify the item belongs to this restaurant
             const existingItem = await storage.getMenuItem(itemId);
-            if (!existingItem || existingItem.restaurantId !== restaurant.id) {
+            if (!existingItem || existingItem.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Menu item not found" });
             }
 
             const updatedItem = await storage.updateMenuItem(itemId, req.body);
             
             // Invalidate menu cache
-            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
             
             console.log(`✅ [Menu Items] Updated item ${itemId}: ${updatedItem.name}`);
 
@@ -1646,26 +2078,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Delete menu item
-    app.delete("/api/menu-items/:id", isAuthenticated, async (req, res, next) => {
+    app.delete("/api/menu-items/:id", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const itemId = parseInt(req.params.id);
             
             // Verify the item belongs to this restaurant
             const existingItem = await storage.getMenuItem(itemId);
-            if (!existingItem || existingItem.restaurantId !== restaurant.id) {
+            if (!existingItem || existingItem.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Menu item not found" });
             }
 
             await storage.deleteMenuItem(itemId);
             
             // Invalidate menu cache
-            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
             
             console.log(`🗑️ [Menu Items] Deleted item ${itemId}: ${existingItem.name}`);
 
@@ -1681,15 +2108,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Bulk update menu items
-    app.put("/api/menu-items/bulk", isAuthenticated, async (req, res, next) => {
+    app.put("/api/menu-items/bulk", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
             const { items, action } = req.body; // action: 'availability', 'prices', 'categories'
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
 
             if (!items || !Array.isArray(items) || items.length === 0) {
                 return res.status(400).json({ message: "Items array is required and must not be empty" });
@@ -1699,12 +2121,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Valid action is required: availability, prices, categories, or delete" });
             }
 
-            console.log(`🔄 [Menu Items] Bulk ${action} update for ${items.length} items in restaurant ${restaurant.id}`);
+            console.log(`🔄 [Menu Items] Bulk ${action} update for ${items.length} items in restaurant ${context.restaurant.id}`);
 
-            const results = await storage.bulkUpdateMenuItems(restaurant.id, items, action);
+            const results = await storage.bulkUpdateMenuItems(context.restaurant.id, items, action);
             
             // Invalidate cache
-            cache.invalidatePattern(`menu_items_${restaurant.id}`);
+            cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
             
             console.log(`✅ [Menu Items] Bulk ${action} completed: ${results.length} items processed`);
             
@@ -1722,24 +2144,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Search menu items (enhanced search)
-    app.get("/api/menu-items/search", isAuthenticated, async (req, res, next) => {
+    app.get("/api/menu-items/search", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const { q: query, category, dietary, priceMin, priceMax } = req.query;
             
             if (!query || typeof query !== 'string') {
                 return res.status(400).json({ message: "Search query is required" });
             }
 
-            console.log(`🔍 [Menu Search] Searching for "${query}" in restaurant ${restaurant.id}`);
+            console.log(`🔍 [Menu Search] Searching for "${query}" in restaurant ${context.restaurant.id}`);
 
             // Enhanced search with multiple strategies
-            const searchResults = await storage.searchMenuItems(restaurant.id, {
+            const searchResults = await storage.searchMenuItems(context.restaurant.id, {
                 query: query as string,
                 category: category as string,
                 dietaryRestrictions: dietary ? (dietary as string).split(',') : undefined,
@@ -1750,7 +2167,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             // Log search for analytics
-            await storage.logMenuSearch(restaurant.id, query as string, 'staff_search');
+            await storage.logMenuSearch(context.restaurant.id, query as string, 'staff_search');
 
             console.log(`✅ [Menu Search] Found ${searchResults.length} results for "${query}"`);
 
@@ -1771,62 +2188,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Dashboard data
-    app.get("/api/dashboard/stats", isAuthenticated, async (req, res, next) => {
+    // 🔒 Dashboard data with tenant isolation
+    app.get("/api/dashboard/stats", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const stats = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
+            const context = getTenantContext(req);
+            const stats = await storage.getReservationStatistics(context.restaurant.id, context.restaurant.timezone);
             res.json(stats);
         } catch (error) {
             next(error);
         }
     });
 
-    app.get("/api/dashboard/upcoming", isAuthenticated, async (req, res, next) => {
+    app.get("/api/dashboard/upcoming", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const hours = parseInt(req.query.hours as string) || 3;
-            const upcoming = await storage.getUpcomingReservations(restaurant.id, restaurant.timezone, hours);
+            const upcoming = await storage.getUpcomingReservations(context.restaurant.id, context.restaurant.timezone, hours);
             res.json(upcoming);
         } catch (error) {
             next(error);
         }
     });
 
-    // AI Assistant Activity
-    app.get("/api/ai/activities", isAuthenticated, async (req, res, next) => {
+    // 🔒 AI Assistant Activity with tenant isolation and usage tracking
+    app.get("/api/ai/activities", isAuthenticated, tenantIsolation, requireAiChat, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const limit = parseInt(req.query.limit as string) || 10;
-            const activities = await storage.getAiActivities(restaurant.id, limit);
+            const activities = await storage.getAiActivities(context.restaurant.id, limit);
             res.json(activities);
         } catch (error) {
             next(error);
         }
     });
 
-    // Integration settings
-    app.get("/api/integrations/:type", isAuthenticated, async (req, res, next) => {
+    // 🔒 Integration settings with tenant isolation
+    app.get("/api/integrations/:type", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const type = req.params.type;
-            const settings = await storage.getIntegrationSettings(restaurant.id, type);
+            
+            // Check feature access for telegram
+            if (type === 'telegram' && !context.features.telegramBot) {
+                return res.status(402).json({
+                    error: 'Telegram integration not available on your plan',
+                    upgradeRequired: true,
+                    feature: 'telegramBot'
+                });
+            }
+
+            const settings = await storage.getIntegrationSettings(context.restaurant.id, type);
             if (!settings) {
                 return res.json({ enabled: false });
             }
@@ -1836,17 +2247,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.get("/api/integrations/telegram/test", isAuthenticated, async (req, res, next) => {
+    app.get("/api/integrations/telegram/test", isAuthenticated, tenantIsolation, requireTelegramBot, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-            const settings = await storage.getIntegrationSettings(restaurant.id, 'telegram');
+            const context = getTenantContext(req);
+            const settings = await storage.getIntegrationSettings(context.restaurant.id, 'telegram');
+            
             if (!settings || !settings.enabled || !settings.token) {
                 return res.status(400).json({ message: "Telegram bot is not configured or enabled" });
             }
+            
             try {
                 const TelegramBot = require('node-telegram-bot-api');
                 const bot = new TelegramBot(settings.token);
@@ -1861,7 +2270,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 };
                 await storage.saveIntegrationSettings(updatedSettingsData);
                 await storage.logAiActivity({
-                    restaurantId: restaurant.id,
+                    restaurantId: context.restaurant.id,
                     type: 'telegram_test',
                     description: `Telegram bot connection test successful`,
                     data: { botInfo }
@@ -1882,14 +2291,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.post("/api/integrations/:type", isAuthenticated, async (req, res, next) => {
+    app.post("/api/integrations/:type", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             const type = req.params.type;
+            
+            // Check feature access for telegram
+            if (type === 'telegram' && !context.features.telegramBot) {
+                return res.status(402).json({
+                    error: 'Telegram integration not available on your plan',
+                    upgradeRequired: true,
+                    feature: 'telegramBot'
+                });
+            }
+
             let customSettings = {};
             if (req.body.botUsername) {
                 customSettings = { botUsername: req.body.botUsername };
@@ -1897,16 +2312,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             const validatedData = insertIntegrationSettingSchema.parse({
                 ...req.body,
-                restaurantId: restaurant.id,
+                restaurantId: context.restaurant.id,
                 type,
                 settings: customSettings
             });
             const savedSettings = await storage.saveIntegrationSettings(validatedData);
+            
             if (type === 'telegram' && savedSettings.enabled && savedSettings.token) {
                 try {
-                    await initializeTelegramBot(restaurant.id);
+                    await initializeTelegramBot(context.restaurant.id);
                     await storage.logAiActivity({
-                        restaurantId: restaurant.id,
+                        restaurantId: context.restaurant.id,
                         type: 'telegram_setup',
                         description: `Telegram bot successfully configured and activated`,
                         data: { token: savedSettings.token.substring(0, 10) + '...', enabled: savedSettings.enabled }
@@ -1925,68 +2341,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ===========================================
-    // ✅ NEW: SOFIA AI CHAT ENDPOINTS (Enhanced)
+    // ✅ NEW: SOFIA AI CHAT ENDPOINTS with tenant isolation and feature gates
     // ===========================================
 
-    // ✅ NEW: Helper function to get agent for restaurant greeting
-    const getAgentForRestaurant = async (restaurantId: number) => {
-        const restaurant = await storage.getRestaurant(restaurantId);
-        if (!restaurant) {
-            throw new Error(`Restaurant ${restaurantId} not found`);
-        }
-
-        return createBookingAgent({
-            id: restaurant.id,
-            name: restaurant.name,
-            timezone: restaurant.timezone || 'Europe/Moscow',
-            openingTime: restaurant.openingTime || '09:00:00',
-            closingTime: restaurant.closingTime || '23:00:00',
-            maxGuests: restaurant.maxGuests || 12,
-            cuisine: restaurant.cuisine,
-            atmosphere: restaurant.atmosphere,
-            country: restaurant.country,
-            languages: restaurant.languages
-        });
-    };
-
     // Create new chat session
-    app.post("/api/chat/session", isAuthenticated, async (req, res, next) => {
+    app.post("/api/chat/session", isAuthenticated, tenantIsolation, requireAiChat, trackUsage('ai_request'), async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const { platform = 'web', language = 'en' } = req.body;
 
             const sessionId = enhancedConversationManager.createSession({
-                restaurantId: restaurant.id,
+                restaurantId: context.restaurant.id,
                 platform,
                 language,
                 webSessionId: req.sessionID
             });
 
-            // ✅ NEW: Get restaurant greeting based on restaurant language/country
+            // ✅ Get restaurant greeting based on restaurant language/country
             let restaurantGreeting: string;
             try {
-                const agent = await getAgentForRestaurant(restaurant.id);
-                const context = platform === 'web' ? 'hostess' : 'guest';
-                restaurantGreeting = agent.getPersonalizedGreeting(null, language, context);
-
+                // Since createBookingAgent is not imported, we'll use a simple greeting
+                restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${context.restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
             } catch (error) {
                 console.error('[API] Error generating restaurant greeting:', error);
                 // Fallback greeting
-                restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
+                restaurantGreeting = `🌟 Hi! I'm Sofia, your AI booking assistant for ${context.restaurant.name}! I can help you check availability, make reservations quickly. Try: "Book Martinez for 4 tonight at 8pm, phone 555-1234"`;
             }
 
-            console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${restaurant.id} with greeting in ${restaurant.languages?.[0] || 'en'}`);
+            console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${context.restaurant.id} with greeting in ${context.restaurant.languages?.[0] || 'en'}`);
 
             res.json({
                 sessionId,
-                restaurantId: restaurant.id,
-                restaurantName: restaurant.name,
+                restaurantId: context.restaurant.id,
+                restaurantName: context.restaurant.name,
                 restaurantGreeting, // ✅ NEW: Send restaurant-specific greeting
                 language,
                 platform
@@ -1999,7 +2386,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Send message to Sofia AI
-    app.post("/api/chat/message", isAuthenticated, async (req, res, next) => {
+    app.post("/api/chat/message", isAuthenticated, tenantIsolation, requireAiChat, trackUsage('ai_request'), async (req, res, next) => {
         try {
             const { sessionId, message } = req.body;
 
@@ -2070,7 +2457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Get chat session information
-    app.get("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
+    app.get("/api/chat/session/:sessionId", isAuthenticated, tenantIsolation, requireAiChat, async (req, res, next) => {
         try {
             const { sessionId } = req.params;
             const session = enhancedConversationManager.getSession(sessionId);
@@ -2080,10 +2467,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Verify user has access to this restaurant
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
+            const context = getTenantContext(req);
             
-            if (!restaurant || restaurant.id !== session.restaurantId) {
+            if (context.restaurant.id !== session.restaurantId) {
                 return res.status(403).json({ message: "Access denied" });
             }
 
@@ -2107,19 +2493,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Get Sofia AI statistics
-    app.get("/api/chat/stats", isAuthenticated, async (req, res, next) => {
+    app.get("/api/chat/stats", isAuthenticated, tenantIsolation, requireAiChat, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
-
+            const context = getTenantContext(req);
             const stats = enhancedConversationManager.getStats();
 
             res.json({
-                restaurantId: restaurant.id,
+                restaurantId: context.restaurant.id,
                 ...stats,
                 timestamp: new Date().toISOString()
             });
@@ -2131,7 +2511,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // End chat session
-    app.delete("/api/chat/session/:sessionId", isAuthenticated, async (req, res, next) => {
+    app.delete("/api/chat/session/:sessionId", isAuthenticated, tenantIsolation, requireAiChat, async (req, res, next) => {
         try {
             const { sessionId } = req.params;
             const success = enhancedConversationManager.endSession(sessionId);
@@ -2153,7 +2533,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Monitoring Endpoints
+    // Monitoring Endpoints (no tenant isolation needed)
     app.get("/api/health", async (req, res) => {
         try {
             const startTime = Date.now();
@@ -2264,30 +2644,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Debug Routes
-    app.get("/api/debug/data-consistency", isAuthenticated, async (req, res, next) => {
+    // 🔒 Debug Routes with tenant isolation
+    app.get("/api/debug/data-consistency", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
 
-            console.log(`🔍 [DEBUG] Starting data consistency check for restaurant ${restaurant.id}`);
+            console.log(`🔍 [DEBUG] Starting data consistency check for restaurant ${context.restaurant.id}`);
 
-            const dashboardReservations = await storage.getReservationStatistics(restaurant.id, restaurant.timezone);
-            const allReservations = await storage.getReservations(restaurant.id, { timezone: restaurant.timezone });
-            const todayReservations = await storage.getReservations(restaurant.id, { date: new Date().toISOString().split('T')[0], timezone: restaurant.timezone });
-            const upcomingReservations = await storage.getUpcomingReservations(restaurant.id, restaurant.timezone, 3);
+            const dashboardReservations = await storage.getReservationStatistics(context.restaurant.id, context.restaurant.timezone);
+            const allReservations = await storage.getReservations(context.restaurant.id, { timezone: context.restaurant.timezone });
+            const todayReservations = await storage.getReservations(context.restaurant.id, { date: new Date().toISOString().split('T')[0], timezone: context.restaurant.timezone });
+            const upcomingReservations = await storage.getUpcomingReservations(context.restaurant.id, context.restaurant.timezone, 3);
 
-            const directSqlResult = await db.select().from(reservations).where(eq(reservations.restaurantId, restaurant.id)).orderBy(desc(reservations.createdAt));
+            const directSqlResult = await db.select().from(reservations).where(eq(reservations.restaurantId, context.restaurant.id)).orderBy(desc(reservations.createdAt));
             const cacheStats = cache.getStats();
 
-            const tables = await storage.getTables(restaurant.id);
+            const tables = await storage.getTables(context.restaurant.id);
 
             return res.json({
-                restaurantId: restaurant.id,
-                restaurantTimezone: restaurant.timezone,
+                restaurantId: context.restaurant.id,
+                restaurantTimezone: context.restaurant.timezone,
                 todayDate: new Date().toISOString().split('T')[0],
                 dashboardStats: dashboardReservations,
                 allReservationsCount: allReservations.length,
@@ -2301,7 +2677,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 todayReservationsSample: todayReservations.slice(0, 3),
                 upcomingReservationsSample: upcomingReservations.slice(0, 3),
                 cacheStats: cacheStats,
-                debugTimestamp: new Date().toISOString()
+                debugTimestamp: new Date().toISOString(),
+                tenantContext: {
+                    tenantPlan: context.restaurant.tenantPlan,
+                    tenantStatus: context.restaurant.tenantStatus,
+                    features: context.features,
+                    limits: context.limits,
+                    usage: context.usage
+                }
             });
 
         } catch (error) {
@@ -2310,15 +2693,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    app.post("/api/debug/clear-cache", isAuthenticated, async (req, res, next) => {
+    app.post("/api/debug/clear-cache", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
-            const user = req.user as any;
-            const restaurant = await storage.getRestaurantByUserId(user.id);
-            if (!restaurant) {
-                return res.status(404).json({ message: "Restaurant not found" });
-            }
+            const context = getTenantContext(req);
             cache.clear();
-            console.log(`🧹 [DEBUG] Cache cleared for restaurant ${restaurant.id}`);
+            console.log(`🧹 [DEBUG] Cache cleared for restaurant ${context.restaurant.id}`);
             return res.json({
                 success: true,
                 message: "Cache cleared",

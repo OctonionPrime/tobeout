@@ -1,5 +1,6 @@
 // server/services/booking.ts
-// ✅ PHASE 3: Legacy timeslot system completely removed
+// ✅ CRITICAL SECURITY FIX: All functions now receive authenticated tenant ID
+// ❌ NEVER trust client-provided restaurantId - always use server-validated tenant ID
 
 import { storage } from '../storage';
 import {
@@ -37,6 +38,7 @@ interface BookingServiceStrings {
     tableNoLongerAvailable: string;
     transactionConflict: string;
     deadlockDetected: string;
+    unauthorizedAccess: string;
 }
 
 const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
@@ -58,6 +60,7 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         tableNoLongerAvailable: 'This table was just booked by another customer. Please select a different time or table.',
         transactionConflict: 'Booking conflict detected. Please try again with a different time.',
         deadlockDetected: 'System busy - please try your booking again in a moment.',
+        unauthorizedAccess: 'You are not authorized to access this resource.',
     },
     ru: {
         restaurantNotFound: (restaurantId) => `Ресторан с ID ${restaurantId} не найден.`,
@@ -77,6 +80,7 @@ const bookingLocaleStrings: Record<Language, BookingServiceStrings> = {
         tableNoLongerAvailable: 'Этот столик только что был забронирован другим клиентом. Пожалуйста, выберите другое время или столик.',
         transactionConflict: 'Обнаружен конфликт бронирования. Пожалуйста, попробуйте еще раз с другим временем.',
         deadlockDetected: 'Система занята - пожалуйста, повторите бронирование через мгновение.',
+        unauthorizedAccess: 'У вас нет прав доступа к этому ресурсу.',
     }
 };
 
@@ -93,9 +97,9 @@ const logger = {
     }
 };
 
-// ✅ CRITICAL FIX: Updated interface to handle both legacy and new formats
+// ✅ CRITICAL SECURITY FIX: Removed restaurantId from interface (server provides it)
 export interface BookingRequest {
-    restaurantId: number;
+    // ❌ REMOVED: restaurantId - now provided by server from authenticated context
     guestId: number;
     
     // ✅ NEW: Support both legacy and UTC timestamp approaches
@@ -159,14 +163,21 @@ function detectConflictType(error: any): 'AVAILABILITY' | 'TRANSACTION' | 'DEADL
     return 'AVAILABILITY'; // Default fallback
 }
 
-export async function createReservation(bookingRequest: BookingRequest): Promise<BookingResponse> {
+// ✅ CRITICAL SECURITY FIX: Function now receives authenticated tenant ID
+export async function createReservation(
+    authenticatedTenantId: number, // ✅ From middleware - NEVER trust client
+    bookingRequest: BookingRequest
+): Promise<BookingResponse> {
     const locale = getLocale(bookingRequest.lang);
 
+    // ✅ SECURITY: Use authenticated tenant ID instead of client data
+    const restaurantId = authenticatedTenantId;
+
     // ✅ CRITICAL FIX: Updated validation to handle both formats
-    if (!bookingRequest.restaurantId || !bookingRequest.guestId || !bookingRequest.guests) {
+    if (!restaurantId || !bookingRequest.guestId || !bookingRequest.guests) {
         return {
             success: false,
-            message: locale.failedToCreateReservation('Missing required fields: restaurantId, guestId, or guests')
+            message: locale.failedToCreateReservation('Missing required fields: guestId or guests')
         };
     }
 
@@ -182,19 +193,26 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
     }
 
     try {
-        const { restaurantId, guests, guestId, comments, source, booking_guest_name, selected_slot_info, tableId } = bookingRequest;
+        const { guests, guestId, comments, source, booking_guest_name, selected_slot_info, tableId } = bookingRequest;
 
         logger.info(`Create reservation request: R${restaurantId}, G:${guests}, GuestID:${guestId}, BookingName: ${booking_guest_name}, HasUTC: ${hasUtcTimestamp}, HasLegacy: ${hasLegacyFields}`);
 
-        // Fetch restaurant first to get timezone info
+        // ✅ SECURITY: Validate restaurant exists and belongs to authenticated tenant
         const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
         if (!restaurant) {
-            logger.error(`Restaurant ID ${restaurantId} not found.`);
+            logger.error(`Restaurant ID ${restaurantId} not found or unauthorized access.`);
             return { success: false, message: locale.restaurantNotFound(restaurantId) };
         }
 
         const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
         logger.info(`Using restaurant timezone: ${restaurantTimezone}`);
+
+        // ✅ SECURITY: Validate guest belongs to this restaurant
+        const guestInfo: Guest | undefined = await storage.getGuest(guestId);
+        if (!guestInfo || guestInfo.restaurantId !== restaurantId) {
+            logger.error(`Guest ID ${guestId} not found or doesn't belong to restaurant ${restaurantId}.`);
+            return { success: false, message: locale.guestNotFound(guestId) };
+        }
 
         // ✅ CRITICAL FIX: Handle both UTC timestamp and legacy date/time conversion
         let absoluteUtcTime: string;
@@ -231,23 +249,16 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             logger.info(`Using pre-selected slot: TableID ${selected_slot_info.tableId}, Name ${selected_slot_info.tableName}, Combined: ${selected_slot_info.isCombined}`);
         }
 
-        // Fetch guest with error handling
-        const guestInfo: Guest | undefined = await storage.getGuest(guestId);
-        if (!guestInfo) {
-            logger.error(`Guest ID ${guestId} not found.`);
-            return { success: false, message: locale.guestNotFound(guestId) };
-        }
-
         const nameForConfirmationMessage = booking_guest_name || guestInfo.name;
         const slotDurationMinutes = restaurant.avgReservationDuration || 120;
 
         let selectedSlot: ServiceAvailabilitySlot | undefined = selected_slot_info;
 
-        // ✅ COMPREHENSIVE FIX: Handle manual table selection from frontend
+        // ✅ SECURITY FIX: Handle manual table selection with tenant validation
         if (!selectedSlot && tableId) {
             logger.info(`Manual table selection detected: TableID ${tableId}`);
             
-            // Validate the manually selected table
+            // ✅ SECURITY: Validate the manually selected table belongs to this restaurant
             const selectedTable = await storage.getTable(tableId);
             if (!selectedTable || selectedTable.restaurantId !== restaurantId) {
                 logger.error(`Selected table ${tableId} not found or doesn't belong to restaurant ${restaurantId}`);
@@ -321,7 +332,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
             logger.info(`Proceeding with atomic single table booking for table ID: ${selectedSlot.tableId}`);
 
             const reservationData: InsertReservation = {
-                restaurantId,
+                restaurantId, // ✅ Uses authenticated tenant ID
                 guestId,
                 tableId: selectedSlot.tableId,
                 reservation_utc: absoluteUtcTime, // ✅ Always use UTC timestamp
@@ -394,7 +405,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
 
             try {
                 const primaryReservationData: InsertReservation = {
-                    restaurantId,
+                    restaurantId, // ✅ Uses authenticated tenant ID
                     guestId,
                     tableId: primaryTableInfo.id,
                     reservation_utc: absoluteUtcTime, // ✅ Always use UTC timestamp
@@ -427,7 +438,7 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
                 for (let i = 1; i < selectedSlot.constituentTables.length; i++) {
                     const linkedTableInfo = selectedSlot.constituentTables[i];
                     const linkedReservationData: InsertReservation = {
-                        restaurantId,
+                        restaurantId, // ✅ Uses authenticated tenant ID
                         guestId,
                         tableId: linkedTableInfo.id,
                         reservation_utc: absoluteUtcTime, // ✅ Always use UTC timestamp
@@ -560,7 +571,12 @@ export async function createReservation(bookingRequest: BookingRequest): Promise
     }
 }
 
-export async function cancelReservation(reservationId: number, lang?: Language): Promise<{
+// ✅ CRITICAL SECURITY FIX: Ensure user can only cancel their own restaurant's reservations
+export async function cancelReservation(
+    authenticatedTenantId: number, // ✅ From middleware
+    reservationId: number, 
+    lang?: Language
+): Promise<{
     success: boolean;
     message: string;
 }> {
@@ -571,7 +587,7 @@ export async function cancelReservation(reservationId: number, lang?: Language):
     }
 
     try {
-        logger.info(`Attempting to cancel reservation ID ${reservationId}`);
+        logger.info(`Attempting to cancel reservation ID ${reservationId} for tenant ${authenticatedTenantId}`);
 
         const reservationResult = await storage.getReservation(reservationId);
 
@@ -580,6 +596,12 @@ export async function cancelReservation(reservationId: number, lang?: Language):
         }
 
         const reservation: SchemaReservation = reservationResult.reservation;
+
+        // ✅ CRITICAL SECURITY FIX: Verify reservation belongs to authenticated tenant
+        if (reservation.restaurantId !== authenticatedTenantId) {
+            logger.error(`Unauthorized cancellation attempt: Reservation ${reservationId} belongs to restaurant ${reservation.restaurantId}, but user is authenticated for ${authenticatedTenantId}`);
+            return { success: false, message: locale.unauthorizedAccess };
+        }
 
         if (reservation.status === 'canceled') {
             return { success: false, message: locale.reservationAlreadyCancelled(reservationId) };
@@ -632,21 +654,27 @@ export async function cancelReservation(reservationId: number, lang?: Language):
     }
 }
 
-// ✅ CRITICAL FIX: Updated wrapper functions with timezone support
+// ✅ CRITICAL SECURITY FIX: Updated wrapper functions to receive authenticated tenant ID
 export async function findAvailableTables(
-    restaurantId: number,
+    authenticatedTenantId: number, // ✅ From middleware
     date: string,
     time: string,
     guests: number,
     lang: Language = 'en'
 ): Promise<ServiceAvailabilitySlot[]> {
     try {
-        logger.info(`findAvailableTables (new wrapper) called: R${restaurantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
+        logger.info(`findAvailableTables (secure wrapper) called: R${authenticatedTenantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
         
-        const restaurant = await storage.getRestaurant(restaurantId);
-        const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+        // ✅ SECURITY: Verify restaurant exists and belongs to authenticated tenant
+        const restaurant = await storage.getRestaurant(authenticatedTenantId);
+        if (!restaurant) {
+            logger.error(`Restaurant ${authenticatedTenantId} not found or unauthorized`);
+            return [];
+        }
         
-        return await getAvailableTimeSlots(restaurantId, date, guests, {
+        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
+        
+        return await getAvailableTimeSlots(authenticatedTenantId, date, guests, {
             requestedTime: time,
             maxResults: 10,
             lang: lang,
@@ -654,25 +682,31 @@ export async function findAvailableTables(
             timezone: restaurantTimezone
         });
     } catch (error) {
-        logger.error('Error in findAvailableTables (new wrapper):', error);
+        logger.error('Error in findAvailableTables (secure wrapper):', error);
         return [];
     }
 }
 
 export async function findAlternativeSlots(
-    restaurantId: number,
+    authenticatedTenantId: number, // ✅ From middleware
     date: string,
     time: string,
     guests: number,
     lang: Language = 'en'
 ): Promise<ServiceAvailabilitySlot[]> {
     try {
-        logger.info(`findAlternativeSlots (new wrapper) called: R${restaurantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
+        logger.info(`findAlternativeSlots (secure wrapper) called: R${authenticatedTenantId}, D:${date}, T:${time}, G:${guests}, Lang:${lang}`);
         
-        const restaurant = await storage.getRestaurant(restaurantId);
-        const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+        // ✅ SECURITY: Verify restaurant exists and belongs to authenticated tenant
+        const restaurant = await storage.getRestaurant(authenticatedTenantId);
+        if (!restaurant) {
+            logger.error(`Restaurant ${authenticatedTenantId} not found or unauthorized`);
+            return [];
+        }
         
-        return await getAvailableTimeSlots(restaurantId, date, guests, {
+        const restaurantTimezone = restaurant.timezone || 'Europe/Moscow';
+        
+        return await getAvailableTimeSlots(authenticatedTenantId, date, guests, {
             requestedTime: time,
             maxResults: 5,
             lang: lang,
@@ -680,7 +714,7 @@ export async function findAlternativeSlots(
             timezone: restaurantTimezone
         });
     } catch (error) {
-        logger.error('Error in findAlternativeSlots (new wrapper):', error);
+        logger.error('Error in findAlternativeSlots (secure wrapper):', error);
         return [];
     }
 }

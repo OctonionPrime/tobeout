@@ -9,3 +9,6 @@ vite.config.ts.*
 logs/
 analytics/
 performance/
+scripts/
+reports/
+tests/

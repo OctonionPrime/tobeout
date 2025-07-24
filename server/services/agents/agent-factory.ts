@@ -6,11 +6,20 @@
  * responsible for creating, managing, and caching different types of AI agents (Sofia, Maya, etc.)
  * for multiple restaurants. It dynamically loads restaurant-specific configurations,
  * handles agent caching to improve performance, and includes health monitoring for reliability.
+ * 🔒 SECURITY ENHANCEMENT: Complete tenant isolation and feature validation added.
  *
- * @version 2.1.0
- * @date 2025-07-21
+ * @version 2.2.0
+ * @date 2025-07-23
  *
  * @changelog
+ * - v2.2.0 (2025-07-23):
+ * - 🔒 SECURITY FIX: Added complete tenant isolation and feature validation
+ * - 🔒 ADDED: Tenant context validation for all agent creation operations
+ * - 🔒 ADDED: Feature flag enforcement based on tenant plans
+ * - 🔒 ADDED: Usage tracking for billing and analytics
+ * - 🔒 ADDED: Plan-based agent restrictions and capabilities
+ * - 🔒 ADDED: Tenant-scoped agent caching to prevent cross-tenant sharing
+ * - 🔒 ADDED: Comprehensive security audit logging
  * - v2.1.0 (2025-07-21):
  * - ADDED: Full implementation for the ConductorAgent to handle post-task conversation flow.
  * - FIXED: Replaced the placeholder implementation for 'conductor' agent with the new ConductorAgent class.
@@ -24,7 +33,9 @@
 import { BaseAgent, AgentConfig, RestaurantConfig } from './base-agent';
 import { SofiaAgent } from './sofia-agent';
 import { MayaAgent } from './maya-agent';
-import { ConductorAgent } from './conductor-agent'; // Import the new ConductorAgent
+import { ConductorAgent } from './conductor-agent';
+import { TenantContext } from '../tenant-context';
+import { smartLog } from '../smart-logging.service';
 import { storage } from '../../storage';
 
 // --- Type Definitions ---
@@ -35,16 +46,24 @@ import { storage } from '../../storage';
 type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
 
 /**
- * Represents an entry in the agent cache registry.
+ * Represents an entry in the agent cache registry with tenant isolation.
  */
 interface AgentRegistryEntry {
     agent: BaseAgent;
     agentType: AgentType;
     restaurantId: number;
+    tenantId: number; // 🔒 NEW: Explicit tenant tracking
     createdAt: Date;
     lastUsed: Date;
     requestCount: number;
     healthy: boolean;
+    // 🔒 Security metadata
+    securityContext: {
+        createdBy: 'system' | 'user';
+        tenantPlan: string;
+        featuresEnabled: string[];
+        lastValidation: Date;
+    };
 }
 
 /**
@@ -57,6 +76,26 @@ interface AgentFactoryConfig {
     enablePerformanceMonitoring?: boolean;
 }
 
+/**
+ * 🔒 Agent feature requirements by type
+ */
+interface AgentFeatureRequirements {
+    [key: string]: {
+        requiredFeatures: string[];
+        planRestrictions?: string[];
+        description: string;
+    };
+}
+
+/**
+ * 🔒 Tenant agent usage tracking
+ */
+interface TenantAgentUsage {
+    monthlyAgentCreations: number;
+    totalAgentCreations: number;
+    lastCreationAt: Date;
+    agentTypeUsage: Record<AgentType, number>;
+}
 
 /**
  * Manages the loading and caching of restaurant-specific configurations.
@@ -94,14 +133,28 @@ class RestaurantConfigManager {
         };
 
         this.configs.set(restaurantId, config);
-        console.log(`[RestaurantConfigManager] Loaded and cached configuration for restaurant: ${config.name} (ID: ${restaurantId})`);
+        smartLog.info('Restaurant configuration loaded and cached', {
+            restaurantId,
+            restaurantName: config.name,
+            cachedConfigs: this.configs.size
+        });
         return config;
+    }
+
+    /**
+     * 🔒 Clear cached config for tenant (used during tenant updates)
+     */
+    static clearConfigCache(restaurantId: number): void {
+        if (this.configs.has(restaurantId)) {
+            this.configs.delete(restaurantId);
+            smartLog.info('Restaurant configuration cache cleared', { restaurantId });
+        }
     }
 }
 
 /**
- * A singleton factory for creating and managing AI agent instances.
- * It handles dynamic configuration loading, caching, and health monitoring.
+ * A singleton factory for creating and managing AI agent instances with complete tenant isolation.
+ * It handles dynamic configuration loading, caching, health monitoring, and security validation.
  */
 export class AgentFactory {
     private static instance: AgentFactory | null = null;
@@ -109,6 +162,32 @@ export class AgentFactory {
     private readonly factoryConfig: Required<AgentFactoryConfig>;
     private healthCheckTimer?: NodeJS.Timeout;
     private readonly createdAt: Date;
+
+    // 🔒 Tenant usage tracking for billing
+    private static tenantUsage = new Map<number, TenantAgentUsage>();
+
+    // 🔒 Agent feature requirements
+    private static readonly agentFeatureRequirements: AgentFeatureRequirements = {
+        booking: {
+            requiredFeatures: [], // Basic feature - available to all plans
+            description: 'Basic booking agent - available on all plans'
+        },
+        reservations: {
+            requiredFeatures: ['advancedReporting'], // Requires advanced features
+            planRestrictions: ['professional', 'enterprise'],
+            description: 'Advanced reservation management - Professional+ plans only'
+        },
+        conductor: {
+            requiredFeatures: ['aiChat', 'advancedReporting'], // Requires AI and advanced features
+            planRestrictions: ['professional', 'enterprise'],
+            description: 'AI conversation conductor - Professional+ plans only'
+        },
+        availability: {
+            requiredFeatures: ['advancedReporting'], // Requires advanced analytics
+            planRestrictions: ['starter', 'professional', 'enterprise'],
+            description: 'Advanced availability analysis - Starter+ plans only'
+        }
+    };
 
     /**
      * The constructor is private to enforce the singleton pattern.
@@ -128,7 +207,12 @@ export class AgentFactory {
             this.startHealthMonitoring();
         }
 
-        console.log('[AgentFactory] Singleton instance initialized for multi-restaurant support.', this.factoryConfig);
+        smartLog.info('AgentFactory initialized with tenant isolation', {
+            config: this.factoryConfig,
+            securityLevel: 'HIGH',
+            tenantIsolationEnabled: true,
+            featureValidationEnabled: true
+        });
     }
 
     /**
@@ -143,39 +227,288 @@ export class AgentFactory {
         return AgentFactory.instance;
     }
 
+    // ===== 🔒 TENANT VALIDATION AND SECURITY =====
+
     /**
-     * Creates or retrieves a cached agent of a specific type for a given restaurant.
+     * 🔒 Validates tenant has access to create the requested agent type
+     */
+    private validateTenantAgentAccess(
+        type: AgentType, 
+        tenantContext: TenantContext, 
+        operation: string
+    ): boolean {
+        if (!tenantContext) {
+            smartLog.error('Agent creation attempted without tenant context', new Error('MISSING_TENANT_CONTEXT'), {
+                agentType: type,
+                operation,
+                securityViolation: true,
+                critical: true
+            });
+            return false;
+        }
+
+        // Check if tenant is active
+        if (tenantContext.restaurant.tenantStatus !== 'active' && tenantContext.restaurant.tenantStatus !== 'trial') {
+            smartLog.warn('Agent creation denied - tenant not active', {
+                tenantId: tenantContext.restaurant.id,
+                tenantStatus: tenantContext.restaurant.tenantStatus,
+                agentType: type,
+                operation,
+                securityViolation: true
+            });
+            return false;
+        }
+
+        // Get agent requirements
+        const requirements = AgentFactory.agentFeatureRequirements[type];
+        if (!requirements) {
+            smartLog.error('Unknown agent type requested', new Error('UNKNOWN_AGENT_TYPE'), {
+                agentType: type,
+                tenantId: tenantContext.restaurant.id,
+                operation,
+                securityViolation: true
+            });
+            return false;
+        }
+
+        // Check plan restrictions
+        if (requirements.planRestrictions && requirements.planRestrictions.length > 0) {
+            if (!requirements.planRestrictions.includes(tenantContext.restaurant.tenantPlan)) {
+                smartLog.warn('Agent creation denied - plan restriction', {
+                    tenantId: tenantContext.restaurant.id,
+                    tenantPlan: tenantContext.restaurant.tenantPlan,
+                    agentType: type,
+                    requiredPlans: requirements.planRestrictions,
+                    operation,
+                    securityViolation: true
+                });
+                return false;
+            }
+        }
+
+        // Check feature requirements
+        for (const requiredFeature of requirements.requiredFeatures) {
+            if (!tenantContext.features[requiredFeature as keyof typeof tenantContext.features]) {
+                smartLog.warn('Agent creation denied - missing required feature', {
+                    tenantId: tenantContext.restaurant.id,
+                    tenantPlan: tenantContext.restaurant.tenantPlan,
+                    agentType: type,
+                    requiredFeature,
+                    operation,
+                    securityViolation: true
+                });
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * 🔒 Track agent usage for billing and analytics
+     */
+    private trackTenantAgentUsage(tenantContext: TenantContext, agentType: AgentType): void {
+        const tenantId = tenantContext.restaurant.id;
+        const current = AgentFactory.tenantUsage.get(tenantId) || {
+            monthlyAgentCreations: 0,
+            totalAgentCreations: 0,
+            lastCreationAt: new Date(),
+            agentTypeUsage: {
+                booking: 0,
+                reservations: 0,
+                conductor: 0,
+                availability: 0
+            }
+        };
+
+        // Reset monthly counters if it's a new month
+        const now = new Date();
+        const lastCreation = new Date(current.lastCreationAt);
+        if (now.getMonth() !== lastCreation.getMonth() || now.getFullYear() !== lastCreation.getFullYear()) {
+            current.monthlyAgentCreations = 0;
+        }
+
+        current.monthlyAgentCreations++;
+        current.totalAgentCreations++;
+        current.agentTypeUsage[agentType]++;
+        current.lastCreationAt = now;
+
+        AgentFactory.tenantUsage.set(tenantId, current);
+
+        smartLog.info('Agent usage tracked', {
+            tenantId,
+            agentType,
+            monthlyCreations: current.monthlyAgentCreations,
+            totalCreations: current.totalAgentCreations,
+            agentTypeUsage: current.agentTypeUsage
+        });
+
+        smartLog.businessEvent('agent_created', {
+            tenantId,
+            tenantPlan: tenantContext.restaurant.tenantPlan,
+            agentType,
+            monthlyCreations: current.monthlyAgentCreations,
+            totalCreations: current.totalAgentCreations
+        });
+    }
+
+    /**
+     * 🔒 Generate tenant-scoped agent ID
+     */
+    private generateTenantScopedAgentId(type: AgentType, tenantId: number): string {
+        return `t${tenantId}_${type}_${Date.now()}`;
+    }
+
+    // ===== 🔒 SECURE AGENT CREATION WITH TENANT VALIDATION =====
+
+    /**
+     * 🔒 Creates or retrieves a cached agent of a specific type for a given restaurant with complete tenant validation.
      * @param type - The type of agent to create ('booking', 'reservations', etc.).
-     * @param restaurantId - The ID of the restaurant for which the agent is being created.
+     * @param tenantContext - Required tenant context for security validation.
      * @param customConfig - Optional custom configuration to override defaults for this agent instance.
      * @returns A promise that resolves to an instance of a BaseAgent.
      */
     async createAgent(
         type: AgentType,
-        restaurantId: number,
+        tenantContext: TenantContext,
         customConfig?: Partial<AgentConfig>
     ): Promise<BaseAgent> {
-        const agentId = this.generateAgentId(type, restaurantId);
+        // 🔒 Security validation
+        if (!this.validateTenantAgentAccess(type, tenantContext, 'createAgent')) {
+            const requirements = AgentFactory.agentFeatureRequirements[type];
+            throw new Error(
+                `Agent type '${type}' not available on your plan. ` +
+                `Required: ${requirements?.description || 'Unknown requirements'}. ` +
+                `Please upgrade to access this feature.`
+            );
+        }
 
+        const restaurantId = tenantContext.restaurant.id;
+        const tenantId = tenantContext.restaurant.id;
+        const agentId = this.generateTenantScopedAgentId(type, tenantId);
+
+        // Check for cached agent (tenant-scoped)
         if (this.factoryConfig.enableCaching) {
-            const cachedEntry = this.agentRegistry.get(agentId);
+            const cachedEntry = this.findCachedAgentForTenant(type, tenantId);
             if (cachedEntry && cachedEntry.healthy) {
                 cachedEntry.lastUsed = new Date();
                 cachedEntry.requestCount++;
-                console.log(`[AgentFactory] Retrieved cached '${type}' agent for restaurant ${restaurantId}.`);
+                cachedEntry.securityContext.lastValidation = new Date();
+
+                smartLog.info('Retrieved cached agent with tenant validation', {
+                    agentType: type,
+                    tenantId,
+                    agentId: cachedEntry.agent.name,
+                    requestCount: cachedEntry.requestCount,
+                    cacheHit: true
+                });
+
                 return cachedEntry.agent;
             }
         }
 
-        console.log(`[AgentFactory] Creating new '${type}' agent for restaurant ${restaurantId}.`);
+        smartLog.info('Creating new agent with tenant validation', {
+            agentType: type,
+            tenantId,
+            tenantPlan: tenantContext.restaurant.tenantPlan,
+            restaurantId,
+            hasCustomConfig: !!customConfig
+        });
+
         const restaurantConfig = await RestaurantConfigManager.getConfig(restaurantId);
         const agent = await this.instantiateAgent(type, restaurantConfig, customConfig);
 
+        // 🔒 Track usage for billing
+        this.trackTenantAgentUsage(tenantContext, type);
+
         if (this.factoryConfig.enableCaching) {
-            this.registerAgent(agentId, agent, type, restaurantId);
+            this.registerSecureAgent(agentId, agent, type, tenantContext);
         }
 
         return agent;
+    }
+
+    /**
+     * 🔒 Find cached agent for specific tenant (prevents cross-tenant sharing)
+     */
+    private findCachedAgentForTenant(type: AgentType, tenantId: number): AgentRegistryEntry | null {
+        for (const [agentId, entry] of this.agentRegistry.entries()) {
+            if (entry.agentType === type && entry.tenantId === tenantId && entry.healthy) {
+                smartLog.info('Found cached agent for tenant', {
+                    agentType: type,
+                    tenantId,
+                    agentId,
+                    cacheHit: true
+                });
+                return entry;
+            }
+        }
+
+        smartLog.info('No cached agent found for tenant', {
+            agentType: type,
+            tenantId,
+            cacheMiss: true
+        });
+        return null;
+    }
+
+    /**
+     * 🔒 Register agent with complete security context
+     */
+    private registerSecureAgent(
+        agentId: string, 
+        agent: BaseAgent, 
+        type: AgentType, 
+        tenantContext: TenantContext
+    ): void {
+        const entry: AgentRegistryEntry = {
+            agent,
+            agentType: type,
+            restaurantId: tenantContext.restaurant.id,
+            tenantId: tenantContext.restaurant.id,
+            createdAt: new Date(),
+            lastUsed: new Date(),
+            requestCount: 1,
+            healthy: true,
+            securityContext: {
+                createdBy: 'system',
+                tenantPlan: tenantContext.restaurant.tenantPlan,
+                featuresEnabled: Object.entries(tenantContext.features)
+                    .filter(([_, enabled]) => enabled)
+                    .map(([feature, _]) => feature),
+                lastValidation: new Date()
+            }
+        };
+
+        this.agentRegistry.set(agentId, entry);
+
+        smartLog.info('Agent registered with security context', {
+            agentId,
+            agentType: type,
+            tenantId: tenantContext.restaurant.id,
+            tenantPlan: tenantContext.restaurant.tenantPlan,
+            featuresEnabled: entry.securityContext.featuresEnabled,
+            cacheSize: this.agentRegistry.size
+        });
+
+        // Evict the least recently used agent if the cache is full
+        if (this.agentRegistry.size > this.factoryConfig.maxCacheSize) {
+            let lruEntry: [string, AgentRegistryEntry] | null = null;
+            for (const currentEntry of this.agentRegistry.entries()) {
+                if (!lruEntry || currentEntry[1].lastUsed < lruEntry[1].lastUsed) {
+                    lruEntry = currentEntry;
+                }
+            }
+            if (lruEntry) {
+                this.agentRegistry.delete(lruEntry[0]);
+                smartLog.info('Agent cache eviction performed', {
+                    evictedAgentId: lruEntry[0],
+                    evictedTenantId: lruEntry[1].tenantId,
+                    reason: 'cache_size_limit',
+                    newCacheSize: this.agentRegistry.size
+                });
+            }
+        }
     }
 
     /**
@@ -205,93 +538,156 @@ export class AgentFactory {
                 case 'reservations':
                     return new MayaAgent(defaultConfig, restaurantConfig);
                 case 'conductor':
-                    return new ConductorAgent(defaultConfig, restaurantConfig); // Use the real ConductorAgent
+                    return new ConductorAgent(defaultConfig, restaurantConfig);
                 case 'availability':
-                    console.warn(`[AgentFactory] Agent type '${type}' is not fully implemented. Using a placeholder.`);
-                    // You would replace this with `new ApolloAgent(...)` etc.
+                    smartLog.warn('Availability agent using placeholder implementation', {
+                        agentType: type,
+                        restaurantId: restaurantConfig.id,
+                        note: 'Replace with ApolloAgent when implemented'
+                    });
                     return new (class extends BaseAgent {
                         name = type;
                         description = `Placeholder for ${type} agent`;
                         capabilities = [];
                         generateSystemPrompt = () => `You are a placeholder ${type} agent.`;
-                        handleMessage = async (message: string) => ({ content: `Placeholder response for: ${message}`, metadata: { processedAt: new Date().toISOString(), agentType: this.name } });
+                        handleMessage = async (message: string) => ({ 
+                            content: `Placeholder response for: ${message}`, 
+                            metadata: { 
+                                processedAt: new Date().toISOString(), 
+                                agentType: this.name 
+                            } 
+                        });
                         getTools = () => [];
                     })(defaultConfig, restaurantConfig);
                 default:
                     throw new Error(`Unknown agent type: ${type}`);
             }
         } catch (error) {
-            console.error(`[AgentFactory] Failed to instantiate '${type}' agent for restaurant ${restaurantConfig.id}:`, error);
+            smartLog.error('Failed to instantiate agent', error as Error, {
+                agentType: type,
+                restaurantId: restaurantConfig.id,
+                hasCustomConfig: !!customConfig
+            });
             throw error;
         }
     }
 
+    // ===== 🔒 TENANT USAGE AND ANALYTICS =====
+
     /**
-     * Generates a unique identifier for an agent instance based on its type and restaurant.
-     * @param type - The agent's type.
-     * @param restaurantId - The restaurant's ID.
-     * @returns A unique string identifier.
+     * 🔒 Get tenant agent usage statistics
      */
-    private generateAgentId(type: AgentType, restaurantId: number): string {
-        return `${type}_${restaurantId}`;
+    getTenantUsage(tenantId: number): TenantAgentUsage | null {
+        return AgentFactory.tenantUsage.get(tenantId) || null;
     }
 
     /**
-     * Registers a new agent in the cache and handles cache eviction if necessary.
-     * @param agentId - The unique ID for the agent.
-     * @param agent - The agent instance to cache.
-     * @param type - The type of the agent.
-     * @param restaurantId - The restaurant ID associated with the agent.
+     * 🔒 Get all tenants usage for super admin
      */
-    private registerAgent(agentId: string, agent: BaseAgent, type: AgentType, restaurantId: number): void {
-        const entry: AgentRegistryEntry = {
-            agent,
-            agentType: type,
-            restaurantId,
-            createdAt: new Date(),
-            lastUsed: new Date(),
-            requestCount: 1,
-            healthy: true, // Assume healthy on creation
-        };
-        this.agentRegistry.set(agentId, entry);
-        console.log(`[AgentFactory] Cached new agent: ${agentId}`);
+    getAllTenantsUsage(): Map<number, TenantAgentUsage> {
+        return new Map(AgentFactory.tenantUsage);
+    }
 
-        // Evict the least recently used agent if the cache is full
-        if (this.agentRegistry.size > this.factoryConfig.maxCacheSize) {
-            let lruEntry: [string, AgentRegistryEntry] | null = null;
-            for (const currentEntry of this.agentRegistry.entries()) {
-                if (!lruEntry || currentEntry[1].lastUsed < lruEntry[1].lastUsed) {
-                    lruEntry = currentEntry;
-                }
-            }
-            if (lruEntry) {
-                this.agentRegistry.delete(lruEntry[0]);
-                console.log(`[AgentFactory] Cache limit reached. Evicted least recently used agent: ${lruEntry[0]}`);
-            }
+    /**
+     * 🔒 Reset monthly usage for a tenant (for billing cycles)
+     */
+    resetTenantMonthlyUsage(tenantId: number): void {
+        const usage = AgentFactory.tenantUsage.get(tenantId);
+        if (usage) {
+            usage.monthlyAgentCreations = 0;
+            AgentFactory.tenantUsage.set(tenantId, usage);
+
+            smartLog.info('Tenant monthly agent usage reset', {
+                tenantId,
+                resetDate: new Date().toISOString()
+            });
         }
     }
+
+    /**
+     * 🔒 Invalidate all cached agents for a tenant (suspension/plan change)
+     */
+    invalidateTenantagents(tenantId: number): number {
+        let invalidatedCount = 0;
+        const agentsToRemove: string[] = [];
+
+        for (const [agentId, entry] of this.agentRegistry.entries()) {
+            if (entry.tenantId === tenantId) {
+                agentsToRemove.push(agentId);
+                invalidatedCount++;
+            }
+        }
+
+        for (const agentId of agentsToRemove) {
+            this.agentRegistry.delete(agentId);
+        }
+
+        if (invalidatedCount > 0) {
+            smartLog.info('Tenant agents cache invalidated', {
+                tenantId,
+                invalidatedCount,
+                reason: 'tenant_plan_change_or_suspension'
+            });
+
+            smartLog.businessEvent('tenant_agents_invalidated', {
+                tenantId,
+                invalidatedCount
+            });
+        }
+
+        // Also clear restaurant config cache
+        RestaurantConfigManager.clearConfigCache(tenantId);
+
+        return invalidatedCount;
+    }
+
+    /**
+     * 🔒 Get agent feature requirements (for UI display)
+     */
+    static getAgentFeatureRequirements(): AgentFeatureRequirements {
+        return { ...AgentFactory.agentFeatureRequirements };
+    }
+
+    // ===== EXISTING METHODS (PRESERVED) =====
 
     /**
      * Starts a periodic timer to run health checks on all cached agents.
      * This method resolves the original `this.startHealthMonitoring is not a function` error.
      */
     private startHealthMonitoring(): void {
-        console.log(`[AgentFactory] Starting periodic health monitoring. Interval: ${this.factoryConfig.healthCheckInterval}ms`);
+        smartLog.info('Agent factory health monitoring started', {
+            interval: this.factoryConfig.healthCheckInterval,
+            tenantIsolationEnabled: true
+        });
 
         this.healthCheckTimer = setInterval(async () => {
             if (this.agentRegistry.size === 0) return;
 
-            console.log('[AgentFactory] Running scheduled agent health check...');
+            smartLog.info('Running agent health check', {
+                totalAgents: this.agentRegistry.size
+            });
+
             for (const [agentId, entry] of this.agentRegistry.entries()) {
                 try {
                     const health = await entry.agent.healthCheck();
                     entry.healthy = health.healthy;
+                    entry.securityContext.lastValidation = new Date();
+
                     if (!health.healthy) {
-                        console.warn(`[AgentFactory] Agent ${agentId} is UNHEALTHY`, { details: health.details });
+                        smartLog.warn('Agent health check failed', {
+                            agentId,
+                            tenantId: entry.tenantId,
+                            agentType: entry.agentType,
+                            details: health.details
+                        });
                     }
                 } catch (error) {
                     entry.healthy = false;
-                    console.error(`[AgentFactory] Error during health check for agent ${agentId}:`, error);
+                    smartLog.error('Agent health check error', error as Error, {
+                        agentId,
+                        tenantId: entry.tenantId,
+                        agentType: entry.agentType
+                    });
                 }
             }
         }, this.factoryConfig.healthCheckInterval);
@@ -301,16 +697,23 @@ export class AgentFactory {
     }
 
     /**
-     * Retrieves statistics about the factory's operation.
+     * Retrieves statistics about the factory's operation with tenant breakdown.
      * @returns An object containing factory usage and performance metrics.
      */
     getFactoryStats(): {
         totalAgents: number;
         agentsByType: Partial<Record<AgentType, number>>;
         agentsByRestaurant: Record<number, number>;
+        agentsByTenant: Record<number, number>;
+        securityStats: {
+            totalTenants: number;
+            avgAgentsPerTenant: number;
+            mostUsedAgentType: string;
+        };
         uptime: string;
     } {
         const agents = Array.from(this.agentRegistry.values());
+        
         const agentsByType = agents.reduce((acc, entry) => {
             acc[entry.agentType] = (acc[entry.agentType] || 0) + 1;
             return acc;
@@ -321,12 +724,29 @@ export class AgentFactory {
             return acc;
         }, {} as Record<number, number>);
 
+        const agentsByTenant = agents.reduce((acc, entry) => {
+            acc[entry.tenantId] = (acc[entry.tenantId] || 0) + 1;
+            return acc;
+        }, {} as Record<number, number>);
+
+        const totalTenants = Object.keys(agentsByTenant).length;
+        const avgAgentsPerTenant = totalTenants > 0 ? Math.round(agents.length / totalTenants * 100) / 100 : 0;
+        
+        const mostUsedAgentType = Object.entries(agentsByType)
+            .sort(([,a], [,b]) => b - a)[0]?.[0] || 'none';
+
         const uptimeMs = Date.now() - this.createdAt.getTime();
 
         return {
             totalAgents: agents.length,
             agentsByType,
             agentsByRestaurant,
+            agentsByTenant,
+            securityStats: {
+                totalTenants,
+                avgAgentsPerTenant,
+                mostUsedAgentType
+            },
             uptime: this.formatUptime(uptimeMs),
         };
     }
@@ -347,3 +767,22 @@ export class AgentFactory {
         return `${minutes % 60}m ${seconds % 60}s`;
     }
 }
+
+// Log successful loading with security features
+smartLog.info('Secure AgentFactory loaded with complete tenant isolation', {
+    features: [
+        '🔒 Complete tenant validation on all agent creation',
+        '🔒 Feature flag enforcement based on tenant plans',
+        '🔒 Plan-based agent restrictions and capabilities',
+        '🔒 Tenant-scoped agent caching (no cross-tenant sharing)',
+        '🔒 Usage tracking for billing and analytics',
+        '🔒 Comprehensive security audit logging',
+        '🔒 Agent cache invalidation for tenant changes',
+        '✅ Health monitoring and performance tracking preserved',
+        '✅ Multi-restaurant support and caching preserved'
+    ],
+    securityLevel: 'HIGH',
+    tenantIsolationEnabled: true,
+    featureValidationEnabled: true,
+    agentTypes: ['booking', 'reservations', 'conductor', 'availability']
+});

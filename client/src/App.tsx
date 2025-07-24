@@ -14,8 +14,15 @@ import AISettings from "@/pages/ai-settings";
 import Preferences from "@/pages/preferences";
 import Integrations from "@/pages/integrations";
 import Login from "@/pages/auth/login";
-import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
-import { Loader2 } from "lucide-react";
+
+// 🔒 SUPER ADMIN: Import admin components
+import AdminLogin from "@/pages/auth/admin-login";
+import AdminDashboard from "@/pages/admin/dashboard";
+import ManageTenantPage from "@/pages/admin/manage-tenant";
+
+import { AuthProvider, useAuth, getRedirectPath } from "@/components/auth/AuthProvider";
+import type { AuthenticatedUser } from "@/components/auth/AuthProvider";
+import { Loader2, Shield, AlertTriangle } from "lucide-react";
 import { useEffect } from "react";
 
 // Error Boundary Component
@@ -99,27 +106,35 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
-// ✅ REMOVED: TimezoneAwareRoute wrapper - no longer needed since DashboardLayout provides context
-
-// Protected Route wrapper component
+// 🔒 SUPER ADMIN: Enhanced Protected Route for Tenant Users
 interface ProtectedRouteProps {
   children: ReactNode;
   requiredRole?: string[];
 }
 
 function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
-  const { isAuthenticated, user, isLoading } = useAuth();
+  const { isAuthenticated, user, isLoading, isTenantUser } = useAuth();
   const [, navigate] = useLocation();
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      navigate('/login');
+    if (!isLoading) {
+      if (!isAuthenticated) {
+        navigate('/login');
+        return;
+      }
+      
+      // Redirect super admins away from tenant routes
+      if (user?.isSuperAdmin) {
+        console.log('[ProtectedRoute] Super admin detected, redirecting to admin dashboard');
+        navigate('/admin/dashboard');
+        return;
+      }
     }
-  }, [isAuthenticated, isLoading, navigate]);
+  }, [isAuthenticated, isLoading, user, navigate]);
 
-  // Check role if specified
+  // Check role if specified (for tenant users)
   if (requiredRole && user && !requiredRole.includes(user.role)) {
-    console.log('Role check failed:', { 
+    console.log('[ProtectedRoute] Role check failed:', { 
       userRole: user.role, 
       requiredRole, 
       userId: user.id,
@@ -129,7 +144,7 @@ function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
         <div className="max-w-md w-full mx-4">
           <div className="bg-card border border-border rounded-lg p-6 shadow-lg text-center">
-            <div className="text-4xl mb-4">🔒</div>
+            <AlertTriangle className="mx-auto h-12 w-12 text-amber-500 mb-4" />
             <h1 className="text-xl font-bold text-foreground mb-2">
               Access Denied
             </h1>
@@ -159,7 +174,7 @@ function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !isTenantUser()) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -170,32 +185,266 @@ function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
   return <>{children}</>;
 }
 
+// 🔒 SUPER ADMIN: New Admin Protected Route Component
+interface AdminProtectedRouteProps {
+  children: ReactNode;
+}
+
+function AdminProtectedRoute({ children }: AdminProtectedRouteProps) {
+  const { isAuthenticated, user, isLoading, isSuperAdmin } = useAuth();
+  const [, navigate] = useLocation();
+
+  useEffect(() => {
+    if (!isLoading) {
+      if (!isAuthenticated) {
+        console.log('[AdminProtectedRoute] Not authenticated, redirecting to admin login');
+        navigate('/admin/login');
+        return;
+      }
+      
+      // Redirect non-super-admins away from admin routes
+      if (!user?.isSuperAdmin) {
+        console.log('[AdminProtectedRoute] Non-admin user detected, redirecting to regular login');
+        navigate('/login');
+        return;
+      }
+    }
+  }, [isAuthenticated, isLoading, user, navigate]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <Shield className="mx-auto h-8 w-8 animate-pulse text-blue-600 mb-2" />
+          <p className="text-sm text-slate-600">Loading admin panel...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || !isSuperAdmin()) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-slate-50">
+        <div className="max-w-md w-full mx-4">
+          <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-lg text-center">
+            <Shield className="mx-auto h-12 w-12 text-red-500 mb-4" />
+            <h1 className="text-xl font-bold text-slate-900 mb-2">
+              Admin Access Required
+            </h1>
+            <p className="text-slate-600 mb-4">
+              You need super admin privileges to access this area.
+            </p>
+            <div className="space-y-2">
+              <button
+                onClick={() => navigate('/admin/login')}
+                className="w-full bg-blue-600 text-white hover:bg-blue-700 px-4 py-2 rounded-md font-medium transition-colors"
+              >
+                Admin Login
+              </button>
+              <button
+                onClick={() => navigate('/login')}
+                className="w-full bg-slate-100 text-slate-700 hover:bg-slate-200 px-4 py-2 rounded-md font-medium transition-colors"
+              >
+                Regular Login
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+// 🔒 SUPER ADMIN: Temporary Admin Login Component (until we create the real one)
+function TemporaryAdminLogin() {
+  const { superAdminLogin, isLoading } = useAuth();
+  const [, navigate] = useLocation();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await superAdminLogin(email, password);
+      navigate('/admin/dashboard');
+    } catch (error) {
+      console.error('Admin login failed:', error);
+    }
+  };
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-slate-50">
+      <div className="max-w-md w-full mx-4">
+        <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-lg">
+          <div className="text-center mb-6">
+            <Shield className="mx-auto h-12 w-12 text-blue-600 mb-4" />
+            <h1 className="text-2xl font-bold text-slate-900">Admin Portal</h1>
+            <p className="text-slate-600">Super admin access required</p>
+          </div>
+          
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded-md font-medium transition-colors flex items-center justify-center"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Signing in...
+                </>
+              ) : (
+                'Sign In'
+              )}
+            </button>
+          </form>
+          
+          <div className="mt-4 text-center">
+            <button
+              onClick={() => navigate('/login')}
+              className="text-sm text-slate-600 hover:text-slate-900"
+            >
+              ← Back to regular login
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 🔒 SUPER ADMIN: Temporary Admin Dashboard Component (until we create the real one)
+function TemporaryAdminDashboard() {
+  const { user, logout } = useAuth();
+  const [, navigate] = useLocation();
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="bg-white border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-4">
+            <div className="flex items-center">
+              <Shield className="h-8 w-8 text-blue-600 mr-3" />
+              <h1 className="text-xl font-bold text-slate-900">Admin Portal</h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <span className="text-sm text-slate-600">
+                Welcome, {user?.name}
+              </span>
+              <button
+                onClick={logout}
+                className="text-sm text-slate-600 hover:text-slate-900"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-medium text-slate-900 mb-4">
+            🚀 Super Admin Dashboard
+          </h2>
+          <p className="text-slate-600 mb-4">
+            This is a temporary admin dashboard. The full admin interface is being built.
+          </p>
+          <div className="space-y-2">
+            <p className="text-sm">✅ Backend routes configured</p>
+            <p className="text-sm">✅ Authentication working</p>
+            <p className="text-sm">⏳ Building tenant management UI...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 🔒 SUPER ADMIN: Enhanced Router with Admin Routes
 function Router() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
   const [location, navigate] = useLocation();
 
-  // Handle redirects using router navigation instead of window.location
+  // 🔒 SUPER ADMIN: Enhanced redirect logic with role-based routing
   useEffect(() => {
     if (isLoading) return; // Wait for auth to load
 
-    // Redirect to login if not authenticated and not already on login page
-    if (!isAuthenticated && location !== "/login") {
-      navigate("/login");
+    // Handle unauthenticated users
+    if (!isAuthenticated) {
+      // Allow access to login pages
+      if (location === "/login" || location === "/admin/login") {
+        return;
+      }
+      
+      // Redirect to appropriate login based on route
+      if (location.startsWith("/admin")) {
+        navigate("/admin/login");
+      } else {
+        navigate("/login");
+      }
       return;
     }
 
-    // Redirect to dashboard if authenticated and on login page
-    if (isAuthenticated && location === "/login") {
-      navigate("/dashboard");
-      return;
+    // Handle authenticated users
+    if (isAuthenticated && user) {
+      const redirectPath = getRedirectPath(user);
+      
+      // Redirect from login pages to appropriate dashboard
+      if (location === "/login" || location === "/admin/login") {
+        navigate(redirectPath);
+        return;
+      }
+      
+      // Redirect root to appropriate dashboard
+      if (location === "/") {
+        navigate(redirectPath);
+        return;
+      }
+      
+      // Ensure super admins don't access tenant routes
+      if (user.isSuperAdmin && !location.startsWith("/admin")) {
+        console.log('[Router] Super admin accessing tenant route, redirecting to admin dashboard');
+        navigate("/admin/dashboard");
+        return;
+      }
+      
+      // Ensure tenant users don't access admin routes
+      if (!user.isSuperAdmin && location.startsWith("/admin")) {
+        console.log('[Router] Tenant user accessing admin route, redirecting to regular dashboard');
+        navigate("/dashboard");
+        return;
+      }
     }
-
-    // Redirect root to dashboard if authenticated
-    if (isAuthenticated && location === "/") {
-      navigate("/dashboard");
-      return;
-    }
-  }, [isAuthenticated, isLoading, location, navigate]);
+  }, [isAuthenticated, isLoading, location, navigate, user]);
 
   if (isLoading) {
     return (
@@ -207,12 +456,41 @@ function Router() {
 
   return (
     <Switch>
+      {/* ============================================================================ */}
+      {/* 🔒 SUPER ADMIN: Admin Routes */}
+      {/* ============================================================================ */}
+      
+      {/* Admin login - accessible without authentication */}
+      <Route path="/admin/login">
+        {!isAuthenticated ? (
+          <AdminLogin />
+        ) : null}
+      </Route>
+      
+      {/* Admin dashboard - requires super admin authentication */}
+      <Route path="/admin/dashboard">
+        <AdminProtectedRoute>
+          <AdminDashboard />
+        </AdminProtectedRoute>
+      </Route>
+      
+      {/* Individual tenant management - requires super admin authentication */}
+      <Route path="/admin/tenants/:id">
+        <AdminProtectedRoute>
+          <ManageTenantPage />
+        </AdminProtectedRoute>
+      </Route>
+
+      {/* ============================================================================ */}
+      {/* Regular Tenant Routes (Existing) */}
+      {/* ============================================================================ */}
+      
       {/* Public routes */}
       <Route path="/login">
         {!isAuthenticated ? <Login /> : null}
       </Route>
       
-      {/* ✅ SIMPLIFIED: Protected routes directly render components - DashboardLayout provides timezone context */}
+      {/* Protected tenant routes */}
       <Route path="/dashboard">
         <ProtectedRoute>
           <Dashboard />
@@ -267,11 +545,19 @@ function Router() {
         </ProtectedRoute>
       </Route>
 
-      {/* Root redirect */}
+      {/* Root redirect - handled by useEffect above */}
       <Route path="/">
-        <ProtectedRoute>
-          <Dashboard />
-        </ProtectedRoute>
+        {isAuthenticated && user ? (
+          user.isSuperAdmin ? (
+            <AdminProtectedRoute>
+              <AdminDashboard />
+            </AdminProtectedRoute>
+          ) : (
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          )
+        ) : null}
       </Route>
       
       {/* 404 fallback */}
