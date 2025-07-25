@@ -2,6 +2,10 @@
 // 📊 SMART LOGGING INTEGRATION: Complete AI operation monitoring and fallback tracking
 // 🚨 CRITICAL BUG FIX: Tool-use message transformation for Claude compatibility
 // 🔒 SECURITY FIX: Complete tenant isolation and feature validation
+// 🚀 PERFORMANCE FIX: GPT is now the primary provider to address Claude instability.
+// 🚀 STABILITY FIX: Added a circuit breaker to prevent repeated calls to a failing AI provider.
+// 🚀 UX FIX: Reduced API timeouts from 30s to 8s.
+
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { smartLog } from './smart-logging.service';
@@ -10,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 
 export interface AIServiceOptions {
-    model: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o' | 'gpt-3.5-turbo';
+    model?: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o' | 'gpt-3.5-turbo'; // Now optional
     maxTokens?: number;
     temperature?: number;
     context?: string; // For logging purposes
@@ -29,6 +33,43 @@ export interface TenantAIUsage {
     totalRequests: number;
 }
 
+// 🚀 STABILITY FIX: Circuit Breaker implementation
+class CircuitBreaker {
+    private failures = 0;
+    private lastFailureTime: number | null = null;
+    private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+    private tripThreshold = 3; // Trip after 3 consecutive failures
+    private resetTimeout = 300000; // 5 minutes
+
+    isTripped(): boolean {
+        if (this.state === 'OPEN') {
+            if (this.lastFailureTime && Date.now() - this.lastFailureTime > this.resetTimeout) {
+                this.state = 'HALF_OPEN';
+                return false; // Allow one request through to test recovery
+            }
+            return true;
+        }
+        return false;
+    }
+
+    recordSuccess(): void {
+        this.failures = 0;
+        if (this.state === 'HALF_OPEN') {
+            this.state = 'CLOSED';
+            smartLog.info('Circuit Breaker: Service recovered, state set to CLOSED.');
+        }
+    }
+
+    recordFailure(): void {
+        this.failures++;
+        this.lastFailureTime = Date.now();
+        if (this.failures >= this.tripThreshold || this.state === 'HALF_OPEN') {
+            this.state = 'OPEN';
+            smartLog.warn('Circuit Breaker: Service failing, state set to OPEN.');
+        }
+    }
+}
+
 export class AIService {
     private claude: Anthropic;
     private openai: OpenAI;
@@ -38,6 +79,11 @@ export class AIService {
         claude: { requests: 0, failures: 0, totalTime: 0, successfulRequests: 0 },
         openai: { requests: 0, failures: 0, totalTime: 0, successfulRequests: 0 }
     };
+
+    // 🚀 STABILITY FIX: Add circuit breakers for each provider
+    private openaiCircuitBreaker = new CircuitBreaker();
+    private claudeCircuitBreaker = new CircuitBreaker();
+
 
     // 🔒 Tenant usage tracking for billing
     private static tenantUsage = new Map<number, TenantAIUsage>();
@@ -62,6 +108,7 @@ export class AIService {
         smartLog.info('AIService initialized with tenant isolation', {
             claudeAvailable: !!process.env.ANTHROPIC_API_KEY,
             openaiAvailable: !!process.env.OPENAI_API_KEY,
+            primaryProvider: 'OpenAI', // 🚀 PERFORMANCE FIX
             fallbackSystem: 'OpenAI -> Claude',
             tenantIsolationEnabled: true,
             securityLevel: 'HIGH'
@@ -187,7 +234,7 @@ export class AIService {
     } {
         return {
             primaryModel: tenantContext.restaurant.primaryAiModel || 'gpt-4o-mini',
-            fallbackModel: tenantContext.restaurant.fallbackAiModel || 'gpt-3.5-turbo',
+            fallbackModel: tenantContext.restaurant.fallbackAiModel || 'haiku', // Fallback to Claude
             temperature: parseFloat(tenantContext.restaurant.aiTemperature?.toString() || '0.7'),
             maxTokens: 1000 // Could be plan-dependent
         };
@@ -196,11 +243,11 @@ export class AIService {
     // ===== 🔒 SECURE AI METHODS WITH TENANT VALIDATION =====
 
     /**
-     * 🔒 Generate content with complete tenant validation
+     * 🔒 Generate content with complete tenant validation and circuit breaker logic
      */
     async generateContent(
-        prompt: string, 
-        options: AIServiceOptions, 
+        prompt: string,
+        options: AIServiceOptions,
         tenantContext: TenantContext
     ): Promise<string> {
         // 🔒 Security validation
@@ -216,6 +263,7 @@ export class AIService {
         const tenantConfig = this.getTenantAIConfig(tenantContext);
         const finalOptions = {
             ...options,
+            model: options.model || tenantConfig.primaryModel, // ✅ USE THIS LINE
             temperature: options.temperature ?? tenantConfig.temperature,
             maxTokens: options.maxTokens ?? tenantConfig.maxTokens,
             context: `${options.context || 'unknown'}-tenant-${tenantContext.restaurant.id}`
@@ -238,67 +286,43 @@ export class AIService {
             let result: string;
             let tokensUsed = 0;
 
-            if (finalOptions.model === 'haiku' || finalOptions.model === 'sonnet') {
-                const claudeResult = await this.tryClaudeGeneration(prompt, finalOptions);
+            // 🚀 PERFORMANCE FIX: Try OpenAI first
+            const primaryIsGPT = finalOptions.model.startsWith('gpt');
 
-                if (claudeResult.success) {
-                    const executionTime = Date.now() - startTime;
-                    this.updateProviderStats('claude', executionTime, true);
-                    tokensUsed = this.estimateTokens(prompt + (claudeResult.content || ''));
-
-                    smartLog.info('Claude generation successful for tenant', {
-                        tenantId: tenantContext.restaurant.id,
-                        model: finalOptions.model,
-                        context: finalOptions.context,
-                        executionTime,
-                        responseLength: claudeResult.content?.length || 0,
-                        processingTime: smartLog.endTimer(overallTimerId),
-                        tokensUsed
-                    });
-
-                    result = claudeResult.content!;
+            if (primaryIsGPT) {
+                const openAIResult = await this.tryOpenAIGeneration(prompt, finalOptions);
+                if (openAIResult.success) {
+                    result = openAIResult.content!;
+                    tokensUsed = this.estimateTokens(prompt + result);
                 } else {
-                    smartLog.warn('Claude generation failed - attempting OpenAI fallback', {
-                        tenantId: tenantContext.restaurant.id,
-                        model: finalOptions.model,
-                        context: finalOptions.context,
-                        claudeError: claudeResult.error,
-                        attemptingFallback: true
-                    });
-
-                    smartLog.businessEvent('ai_fallback', {
-                        tenantId: tenantContext.restaurant.id,
-                        fromProvider: 'Claude',
-                        toProvider: 'OpenAI',
-                        context: finalOptions.context,
-                        model: finalOptions.model,
-                        error: claudeResult.error
-                    });
-
+                    result = await this.fallbackToClaude(prompt, finalOptions, openAIResult.error!);
+                    tokensUsed = this.estimateTokens(prompt + result);
+                }
+            } else { // Primary is Claude
+                const claudeResult = await this.tryClaudeGeneration(prompt, finalOptions);
+                if (claudeResult.success) {
+                    result = claudeResult.content!;
+                    tokensUsed = this.estimateTokens(prompt + result);
+                } else {
                     result = await this.fallbackToOpenAI(prompt, finalOptions, claudeResult.error!);
                     tokensUsed = this.estimateTokens(prompt + result);
                 }
-            } else {
-                result = await this.callOpenAI(prompt, finalOptions);
-                tokensUsed = this.estimateTokens(prompt + result);
             }
 
             // 🔒 Track usage for billing
             this.trackTenantAIUsage(tenantContext, tokensUsed);
-
+            smartLog.info('Content generation successful', {
+                processingTime: smartLog.endTimer(overallTimerId)
+            });
             return result;
 
         } catch (error: any) {
             smartLog.error('AI generation failed for tenant', error, {
                 tenantId: tenantContext.restaurant.id,
-                tenantPlan: tenantContext.restaurant.tenantPlan,
                 context: finalOptions.context,
                 model: finalOptions.model
             });
-
-            // Still track the attempt for billing (failed requests count too)
             this.trackTenantAIUsage(tenantContext, 0);
-
             throw error;
         }
     }
@@ -307,8 +331,8 @@ export class AIService {
      * 🔒 Generate JSON with complete tenant validation
      */
     async generateJSON<T = any>(
-        prompt: string, 
-        options: AIJSONOptions<T>, 
+        prompt: string,
+        options: AIJSONOptions<T>,
         tenantContext: TenantContext
     ): Promise<T> {
         // 🔒 Security validation
@@ -405,7 +429,7 @@ export class AIService {
      * 🔒 Generate chat completion with complete tenant validation
      */
     async generateChatCompletion(options: {
-        model: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o';
+        model?: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o'; // Now optional
         messages: any[];
         tools?: any[];
         tool_choice?: any;
@@ -429,14 +453,14 @@ export class AIService {
         // Get tenant-specific configuration
         const tenantConfig = this.getTenantAIConfig(tenantContext);
         const {
-            model,
+            model = tenantConfig.primaryModel, // ✅ USE THIS LINE
             messages,
             tools,
             tool_choice,
             maxTokens = tenantConfig.maxTokens,
             temperature = tenantConfig.temperature,
             context = 'unknown-completion',
-            timeout = 30000
+            timeout = 8000 // 🚀 UX FIX: Reduced timeout
         } = otherOptions;
 
         const overallTimerId = smartLog.startTimer('ai_chat_completion');
@@ -446,26 +470,15 @@ export class AIService {
         smartLog.info('AI chat completion started with tenant validation', {
             tenantId: tenantContext.restaurant.id,
             tenantPlan: tenantContext.restaurant.tenantPlan,
-            model, 
-            context, 
+            model,
+            context,
             toolCount: tools?.length || 0
         });
 
         try {
+            // 🚀 PERFORMANCE FIX: Try OpenAI first
             const openaiModel = this.mapToOpenAIModel(model);
-            const completion = await Promise.race([
-                this.openai.chat.completions.create({
-                    model: openaiModel,
-                    messages: messages,
-                    tools: tools,
-                    tool_choice: tool_choice,
-                    max_tokens: maxTokens,
-                    temperature: temperature,
-                }),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('OpenAI request timeout')), timeout)
-                )
-            ]) as OpenAI.Chat.Completions.ChatCompletion;
+            const completion = await this.tryOpenAIChatCompletion({ ...otherOptions, model: openaiModel, tenantContext });
 
             const executionTime = Date.now() - startTime;
             tokensUsed = completion.usage?.total_tokens || this.estimateTokensFromMessages(messages);
@@ -478,20 +491,15 @@ export class AIService {
                 tokensUsed
             });
 
-            this.updateProviderStats('openai', executionTime, true);
             this.trackTenantAIUsage(tenantContext, tokensUsed);
-
             return completion;
 
         } catch (error: any) {
-            const executionTime = Date.now() - startTime;
-            this.updateProviderStats('openai', executionTime, false);
             const errorMessage = this.extractErrorMessage(error);
-
             smartLog.error('OpenAI chat completion failed for tenant, attempting Claude fallback', error, {
                 tenantId: tenantContext.restaurant.id,
-                model, 
-                context, 
+                model,
+                context,
                 error: errorMessage
             });
 
@@ -506,38 +514,10 @@ export class AIService {
 
             try {
                 const claudeModel = "claude-3-5-sonnet-20240620";
+                const claudeResult = await this.tryClaudeChatCompletion({ ...otherOptions, model: 'sonnet', tenantContext });
 
-                const systemPrompt = messages.find((m: any) => m.role === 'system')?.content || '';
-                const userMessages = messages.filter((m: any) => m.role !== 'system');
-
-                // 🚨 CRITICAL FIX: Transform tool result messages for Claude compatibility
-                const claudeCompatibleMessages = this.transformMessagesForClaude(userMessages);
-
-                // ✅ Transform tools and tool_choice to Claude's format
-                const claudeTools = tools ? this.mapOpenAIToolsToClaude(tools) : undefined;
-                const claudeToolChoice = tool_choice ? this.mapOpenAIToolChoiceToClaude(tool_choice) : undefined;
-
-                smartLog.info('Claude fallback with message transformation for tenant', {
-                    tenantId: tenantContext.restaurant.id,
-                    originalMessageCount: userMessages.length,
-                    transformedMessageCount: claudeCompatibleMessages.length,
-                    hasToolMessages: userMessages.some((m: any) => m.role === 'tool'),
-                    toolCount: claudeTools?.length || 0
-                });
-
-                const result = await this.claude.messages.create({
-                    model: claudeModel,
-                    system: systemPrompt,
-                    messages: claudeCompatibleMessages, // ✅ Use transformed messages
-                    tools: claudeTools,
-                    tool_choice: claudeToolChoice,
-                    max_tokens: maxTokens,
-                    temperature: temperature,
-                });
-
-                const openAICompatibleResponse = this.mapClaudeResponseToOpenAI(result);
                 const fallbackExecutionTime = Date.now() - startTime;
-                tokensUsed = result.usage?.input_tokens + result.usage?.output_tokens || this.estimateTokensFromMessages(messages);
+                tokensUsed = claudeResult.usage?.total_tokens || this.estimateTokensFromMessages(messages);
 
                 smartLog.info('Claude fallback chat completion successful for tenant', {
                     tenantId: tenantContext.restaurant.id,
@@ -547,10 +527,8 @@ export class AIService {
                     tokensUsed
                 });
 
-                this.updateProviderStats('claude', fallbackExecutionTime, true);
                 this.trackTenantAIUsage(tenantContext, tokensUsed);
-
-                return openAICompatibleResponse;
+                return claudeResult;
 
             } catch (fallbackError: any) {
                 smartLog.error('Claude fallback chat completion also failed for tenant', fallbackError, {
@@ -560,10 +538,7 @@ export class AIService {
                     finalError: this.extractErrorMessage(fallbackError),
                     totalTime: smartLog.endTimer(overallTimerId)
                 });
-
-                // Track failed attempt
                 this.trackTenantAIUsage(tenantContext, 0);
-
                 throw fallbackError;
             }
         }
@@ -615,19 +590,12 @@ export class AIService {
         return this.estimateTokens(totalText);
     }
 
-    // ===== ORIGINAL IMPLEMENTATION PRESERVED =====
+    // ===== ORIGINAL IMPLEMENTATION PRESERVED AND REFACTORED =====
 
     // 🚨 CRITICAL NEW METHOD: Transform OpenAI message format to Claude format
-    /**
-     * Transforms OpenAI message format to Claude-compatible format.
-     * Key fix: Converts role: "tool" messages to role: "user" with tool_result content blocks.
-     * @param messages The messages in OpenAI format
-     * @returns The messages in Claude format
-     */
     private transformMessagesForClaude(messages: any[]): any[] {
         return messages.map(msg => {
             if (msg.role === 'tool') {
-                // 🚨 CRITICAL TRANSFORMATION: OpenAI tool result → Claude tool_result
                 smartLog.info('Transforming tool message for Claude compatibility', {
                     originalRole: msg.role,
                     toolCallId: msg.tool_call_id,
@@ -636,29 +604,18 @@ export class AIService {
 
                 return {
                     role: 'user',
-                    content: [
-                        {
-                            type: 'tool_result',
-                            tool_use_id: msg.tool_call_id,
-                            content: msg.content
-                        }
-                    ]
+                    content: [{
+                        type: 'tool_result',
+                        tool_use_id: msg.tool_call_id,
+                        content: msg.content
+                    }]
                 };
             }
-            
-            // Handle assistant messages with tool calls
             if (msg.role === 'assistant' && msg.tool_calls) {
                 const content = [];
-                
-                // Add text content if present
                 if (msg.content) {
-                    content.push({
-                        type: 'text',
-                        text: msg.content
-                    });
+                    content.push({ type: 'text', text: msg.content });
                 }
-                
-                // Transform tool calls to Claude format
                 msg.tool_calls.forEach((toolCall: any) => {
                     content.push({
                         type: 'tool_use',
@@ -667,29 +624,15 @@ export class AIService {
                         input: JSON.parse(toolCall.function.arguments)
                     });
                 });
-                
-                return {
-                    role: 'assistant',
-                    content: content
-                };
+                return { role: 'assistant', content: content };
             }
-            
-            // For other message types, return as-is (user, system)
             return msg;
         });
     }
 
-    // ✅ Helper function to convert OpenAI tools to Claude's format
-    /**
-     * Converts an array of tools from OpenAI's format to Claude's format.
-     * @param openAITools The tools in OpenAI's format.
-     * @returns The tools in Claude's format.
-     */
     private mapOpenAIToolsToClaude(openAITools: any[]): Anthropic.Tool[] {
         return openAITools.map(tool => {
-            if (tool.type !== 'function' || !tool.function) {
-                return null; // Or handle other tool types if necessary
-            }
+            if (tool.type !== 'function' || !tool.function) return null;
             return {
                 name: tool.function.name,
                 description: tool.function.description,
@@ -698,24 +641,14 @@ export class AIService {
         }).filter(Boolean) as Anthropic.Tool[];
     }
 
-    /**
-     * Converts the tool_choice parameter from OpenAI's format to Claude's format.
-     * @param openAIToolChoice The tool_choice in OpenAI's format.
-     * @returns The tool_choice in Claude's format.
-     */
     private mapOpenAIToolChoiceToClaude(openAIToolChoice: any): Anthropic.ToolChoice {
         if (typeof openAIToolChoice === 'string') {
-            if (openAIToolChoice === 'auto') {
-                return { type: 'auto' };
-            }
-            if (openAIToolChoice === 'any') {
-                return { type: 'any' };
-            }
+            if (openAIToolChoice === 'auto') return { type: 'auto' };
+            if (openAIToolChoice === 'any') return { type: 'any' };
         }
         if (typeof openAIToolChoice === 'object' && openAIToolChoice.type === 'function' && openAIToolChoice.function?.name) {
             return { type: 'tool', name: openAIToolChoice.function.name };
         }
-        // Default to 'auto' if the format is unrecognized but tool_choice is present
         return { type: 'auto' };
     }
 
@@ -761,38 +694,17 @@ export class AIService {
         };
     }
 
-    getOpenAIClient(): OpenAI {
-        return this.openai;
-    }
-
-    private async tryClaudeGeneration(prompt: string, options: AIServiceOptions): Promise<{
-        success: boolean;
-        content?: string;
-        error?: string;
-    }> {
-        if (!process.env.ANTHROPIC_API_KEY) {
-            return {
-                success: false,
-                error: 'Claude API key not available'
-            };
+    private async tryClaudeGeneration(prompt: string, options: AIServiceOptions): Promise<{ success: boolean; content?: string; error?: string; }> {
+        if (this.claudeCircuitBreaker.isTripped()) {
+            smartLog.warn('Claude circuit breaker is open, skipping request.');
+            return { success: false, error: 'Circuit breaker is open for Claude' };
         }
+        if (!process.env.ANTHROPIC_API_KEY) return { success: false, error: 'Claude API key not available' };
 
         const claudeTimerId = smartLog.startTimer('claude_generation');
         const startTime = Date.now();
-
         try {
-            const claudeModel = options.model === 'sonnet'
-                ? "claude-3-5-sonnet-20240620"
-                : "claude-3-haiku-20240307";
-
-            smartLog.info('Claude API call started', {
-                model: claudeModel,
-                context: options.context,
-                promptLength: prompt.length,
-                maxTokens: options.maxTokens,
-                timeout: options.timeout
-            });
-
+            const claudeModel = options.model === 'sonnet' ? "claude-3-5-sonnet-20240620" : "claude-3-haiku-20240307";
             const result = await Promise.race([
                 this.claude.messages.create({
                     model: claudeModel,
@@ -800,133 +712,132 @@ export class AIService {
                     temperature: options.temperature || 0.2,
                     messages: [{ role: 'user', content: prompt }]
                 }),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Claude request timeout')), options.timeout || 30000)
-                )
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Claude request timeout')), options.timeout || 8000)) // 🚀 UX FIX
             ]) as Anthropic.Messages.Message;
 
             const response = result.content[0];
             if (response.type === 'text' && response.text.trim()) {
-                const executionTime = Date.now() - startTime;
-                this.updateProviderStats('claude', executionTime, true);
-
-                smartLog.info('Claude generation completed successfully', {
-                    model: claudeModel,
-                    context: options.context,
-                    responseLength: response.text.length,
-                    executionTime,
-                    processingTime: smartLog.endTimer(claudeTimerId)
-                });
-
-                return {
-                    success: true,
-                    content: response.text
-                };
+                this.updateProviderStats('claude', Date.now() - startTime, true);
+                this.claudeCircuitBreaker.recordSuccess();
+                smartLog.info('Claude generation successful', { processingTime: smartLog.endTimer(claudeTimerId) });
+                return { success: true, content: response.text };
             }
-
-            const executionTime = Date.now() - startTime;
-            this.updateProviderStats('claude', executionTime, false);
-
-            smartLog.warn('Claude returned non-text or empty response', {
-                model: claudeModel,
-                context: options.context,
-                responseType: response.type,
-                processingTime: smartLog.endTimer(claudeTimerId)
-            });
-
-            return {
-                success: false,
-                error: 'Non-text or empty response from Claude'
-            };
-
+            throw new Error('Non-text or empty response from Claude');
         } catch (error: any) {
-            const executionTime = Date.now() - startTime;
-            this.updateProviderStats('claude', executionTime, false);
-
+            this.updateProviderStats('claude', Date.now() - startTime, false);
+            this.claudeCircuitBreaker.recordFailure();
             const errorMessage = this.extractErrorMessage(error);
-
-            smartLog.error('Claude generation failed', error, {
-                context: options.context,
-                model: options.model,
-                executionTime,
-                errorType: error.name || 'unknown',
-                processingTime: smartLog.endTimer(claudeTimerId)
-            });
-
-            return {
-                success: false,
-                error: errorMessage
-            };
+            smartLog.error('Claude generation failed', error, { processingTime: smartLog.endTimer(claudeTimerId) });
+            return { success: false, error: errorMessage };
         }
     }
 
-    private async fallbackToOpenAI(prompt: string, options: AIServiceOptions, claudeError: string): Promise<string> {
-        const fallbackModels = ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'];
-        const fallbackTimerId = smartLog.startTimer('openai_fallback');
-
-        smartLog.info('OpenAI fallback started', {
-            context: options.context,
-            claudeError,
-            fallbackModels,
-            originalModel: options.model
-        });
-
-        for (let i = 0; i < fallbackModels.length; i++) {
-            const model = fallbackModels[i];
-            const modelTimerId = smartLog.startTimer(`fallback_${model}`);
-
-            try {
-                const result = await this.callOpenAI(prompt, {
-                    ...options,
-                    model: model as any
-                });
-
-                smartLog.info('OpenAI fallback successful', {
-                    context: options.context,
-                    fallbackModel: model,
-                    originalModel: options.model,
-                    attemptNumber: i + 1,
-                    responseLength: result.length,
-                    modelTime: smartLog.endTimer(modelTimerId),
-                    totalFallbackTime: smartLog.endTimer(fallbackTimerId)
-                });
-
-                return result;
-
-            } catch (error: any) {
-                smartLog.warn('OpenAI fallback model failed', {
-                    context: options.context,
-                    model,
-                    attemptNumber: i + 1,
-                    error: this.extractErrorMessage(error),
-                    modelTime: smartLog.endTimer(modelTimerId)
-                });
-
-                if (i === fallbackModels.length - 1) {
-                    smartLog.error('All AI providers failed - returning safe default', new Error('ALL_PROVIDERS_FAILED'), {
-                        context: options.context,
-                        claudeError,
-                        openaiAttempts: fallbackModels.length,
-                        totalFallbackTime: smartLog.endTimer(fallbackTimerId)
-                    });
-
-                    smartLog.businessEvent('system_error', {
-                        type: 'all_ai_providers_failed',
-                        context: options.context,
-                        claudeError,
-                        openaiError: this.extractErrorMessage(error)
-                    });
-
-                    return this.getSafeDefault(options.context || 'unknown');
-                }
-            }
+    private async tryOpenAIGeneration(prompt: string, options: AIServiceOptions): Promise<{ success: boolean; content?: string; error?: string; }> {
+        if (this.openaiCircuitBreaker.isTripped()) {
+            smartLog.warn('OpenAI circuit breaker is open, skipping request.');
+            return { success: false, error: 'Circuit breaker is open for OpenAI' };
         }
+        const openaiTimerId = smartLog.startTimer('openai_generation');
+        const startTime = Date.now();
+        try {
+            const result = await this.callOpenAI(prompt, options);
+            this.updateProviderStats('openai', Date.now() - startTime, true);
+            this.openaiCircuitBreaker.recordSuccess();
+            smartLog.info('OpenAI generation successful', { processingTime: smartLog.endTimer(openaiTimerId) });
+            return { success: true, content: result };
+        } catch (error: any) {
+            this.updateProviderStats('openai', Date.now() - startTime, false);
+            this.openaiCircuitBreaker.recordFailure();
+            const errorMessage = this.extractErrorMessage(error);
+            smartLog.error('OpenAI generation failed', error, { processingTime: smartLog.endTimer(openaiTimerId) });
+            return { success: false, error: errorMessage };
+        }
+    }
 
-        return this.getSafeDefault(options.context || 'unknown');
+    private async fallbackToOpenAI(prompt: string, options: AIServiceOptions, primaryError: string): Promise<string> {
+        smartLog.warn('Falling back to OpenAI', { context: options.context, primaryError });
+        smartLog.businessEvent('ai_fallback', { fromProvider: 'Claude', toProvider: 'OpenAI', context: options.context, error: primaryError });
+        const result = await this.tryOpenAIGeneration(prompt, { ...options, model: 'gpt-4o-mini' });
+        if (result.success) return result.content!;
+        throw new Error(`Primary (Claude) and fallback (OpenAI) providers failed. OpenAI Error: ${result.error}`);
+    }
+
+    private async fallbackToClaude(prompt: string, options: AIServiceOptions, primaryError: string): Promise<string> {
+        smartLog.warn('Falling back to Claude', { context: options.context, primaryError });
+        smartLog.businessEvent('ai_fallback', { fromProvider: 'OpenAI', toProvider: 'Claude', context: options.context, error: primaryError });
+        const result = await this.tryClaudeGeneration(prompt, { ...options, model: 'haiku' });
+        if (result.success) return result.content!;
+        throw new Error(`Primary (OpenAI) and fallback (Claude) providers failed. Claude Error: ${result.error}`);
+    }
+
+    private async tryOpenAIChatCompletion(options: any): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+        if (this.openaiCircuitBreaker.isTripped()) {
+            smartLog.warn('OpenAI circuit breaker is open, skipping chat completion.');
+            throw new Error('Circuit breaker is open for OpenAI');
+        }
+        const startTime = Date.now();
+        try {
+            const completion = await this.callOpenAIChat(options);
+            this.updateProviderStats('openai', Date.now() - startTime, true);
+            this.openaiCircuitBreaker.recordSuccess();
+            return completion;
+        } catch (error) {
+            this.updateProviderStats('openai', Date.now() - startTime, false);
+            this.openaiCircuitBreaker.recordFailure();
+            throw error;
+        }
+    }
+
+    private async tryClaudeChatCompletion(options: any): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+        if (this.claudeCircuitBreaker.isTripped()) {
+            smartLog.warn('Claude circuit breaker is open, skipping chat completion.');
+            throw new Error('Circuit breaker is open for Claude');
+        }
+        const startTime = Date.now();
+        try {
+            const completion = await this.callClaudeChat(options);
+            this.updateProviderStats('claude', Date.now() - startTime, true);
+            this.claudeCircuitBreaker.recordSuccess();
+            return completion;
+        } catch (error) {
+            this.updateProviderStats('claude', Date.now() - startTime, false);
+            this.claudeCircuitBreaker.recordFailure();
+            throw error;
+        }
+    }
+
+    private async callOpenAIChat(options: any): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+        const { model, messages, tools, tool_choice, maxTokens, temperature, timeout = 8000 } = options;
+        return await Promise.race([
+            this.openai.chat.completions.create({
+                model, messages, tools, tool_choice, max_tokens: maxTokens, temperature,
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OpenAI request timeout')), timeout))
+        ]) as OpenAI.Chat.Completions.ChatCompletion;
+    }
+
+    private async callClaudeChat(options: any): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+        const { model, messages, tools, tool_choice, maxTokens, temperature, timeout = 8000 } = options;
+        const claudeModel = model === 'sonnet' ? "claude-3-5-sonnet-20240620" : "claude-3-haiku-20240307";
+        const systemPrompt = messages.find((m: any) => m.role === 'system')?.content || '';
+        const userMessages = messages.filter((m: any) => m.role !== 'system');
+        const claudeCompatibleMessages = this.transformMessagesForClaude(userMessages);
+        const claudeTools = tools ? this.mapOpenAIToolsToClaude(tools) : undefined;
+        const claudeToolChoice = tool_choice ? this.mapOpenAIToolChoiceToClaude(tool_choice) : undefined;
+
+        const result = await Promise.race([
+            this.claude.messages.create({
+                model: claudeModel, system: systemPrompt, messages: claudeCompatibleMessages,
+                tools: claudeTools, tool_choice: claudeToolChoice, max_tokens: maxTokens, temperature,
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Claude request timeout')), timeout))
+        ]) as Anthropic.Messages.Message;
+
+        return this.mapClaudeResponseToOpenAI(result);
     }
 
     private async callOpenAI(prompt: string, options: AIServiceOptions): Promise<string> {
-        const openaiModel = this.mapToOpenAIModel(options.model);
+        const openaiModel = this.mapToOpenAIModel(options.model!);
         const openaiTimerId = smartLog.startTimer('openai_generation');
         const startTime = Date.now();
 
@@ -947,7 +858,7 @@ export class AIService {
                     temperature: options.temperature || 0.2
                 }),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('OpenAI request timeout')), options.timeout || 30000)
+                    setTimeout(() => reject(new Error('OpenAI request timeout')), options.timeout || 8000) // 🚀 UX FIX
                 )
             ]) as OpenAI.Chat.Completions.ChatCompletion;
 
@@ -1139,7 +1050,7 @@ export class AIService {
                 totalTenants: AIService.tenantUsage.size,
                 totalMonthlyRequests: Array.from(AIService.tenantUsage.values()).reduce((sum, usage) => sum + usage.monthlyRequests, 0),
                 totalMonthlyTokens: Array.from(AIService.tenantUsage.values()).reduce((sum, usage) => sum + usage.monthlyTokens, 0),
-                avgRequestsPerTenant: AIService.tenantUsage.size > 0 
+                avgRequestsPerTenant: AIService.tenantUsage.size > 0
                     ? Math.round(Array.from(AIService.tenantUsage.values()).reduce((sum, usage) => sum + usage.monthlyRequests, 0) / AIService.tenantUsage.size)
                     : 0
             }

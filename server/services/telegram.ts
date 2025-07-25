@@ -1,6 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { storage } from '../storage';
 import { enhancedConversationManager, type Language } from './enhanced-conversation-manager';
+import { tenantContextManager } from './tenant-context';
 import {
     createTelegramReservation,
     type CreateTelegramReservationResult
@@ -9,6 +10,17 @@ import type { Restaurant } from '@shared/schema';
 import { db } from '../db';
 import { eq, and } from 'drizzle-orm';
 import { restaurants as schemaRestaurants, integrationSettings as schemaIntegrationSettings } from '@shared/schema';
+
+// 🚨 RACE CONDITION FIX: Message queuing infrastructure
+interface QueuedMessage {
+    text: string;
+    msg: TelegramBot.Message;
+    timestamp: number;
+}
+
+const messageQueues = new Map<number, QueuedMessage[]>();
+const processingLocks = new Set<number>();
+const activePromises = new Map<number, Promise<void>>();
 
 const activeBots = new Map<number, TelegramBot>();
 // Store active Telegram sessions
@@ -250,6 +262,135 @@ const telegramLocaleStrings: Record<Language, TelegramLocalizedStrings> = {
     }
 };
 
+// 🚨 RACE CONDITION FIX: Enhanced typing indicator management
+const activeTypingIntervals = new Map<number, NodeJS.Timeout>();
+
+// 🚨 RACE CONDITION FIX: Enqueue message for sequential processing
+function enqueueMessage(chatId: number, text: string, msg: TelegramBot.Message): void {
+    if (!messageQueues.has(chatId)) {
+        messageQueues.set(chatId, []);
+    }
+    
+    messageQueues.get(chatId)!.push({
+        text,
+        msg,
+        timestamp: Date.now()
+    });
+    
+    console.log(`📥 [Sofia AI] Message enqueued for chat ${chatId}: "${text.substring(0, 50)}" (queue size: ${messageQueues.get(chatId)!.length})`);
+}
+
+// 🚨 UX ENHANCEMENT: Start persistent typing indicator for queue processing
+function startQueueTypingIndicator(chatId: number, bot: TelegramBot): void {
+    // Don't start multiple typing indicators for same chat
+    if (activeTypingIntervals.has(chatId)) {
+        return;
+    }
+    
+    // Show typing immediately
+    bot.sendChatAction(chatId, 'typing').catch(error => {
+        console.warn(`⚠️ [Sofia AI] Could not send initial typing indicator for chat ${chatId}:`, error);
+    });
+    
+    // Continue showing typing every 4.5 seconds (Telegram typing lasts ~5 seconds)
+    const typingInterval = setInterval(() => {
+        bot.sendChatAction(chatId, 'typing').catch(error => {
+            console.warn(`⚠️ [Sofia AI] Could not send typing indicator for chat ${chatId}:`, error);
+        });
+    }, 4500);
+    
+    activeTypingIntervals.set(chatId, typingInterval);
+    console.log(`⌨️ [Sofia AI] Started persistent typing indicator for chat ${chatId}`);
+}
+
+// 🚨 UX ENHANCEMENT: Stop typing indicator when queue processing is complete
+function stopQueueTypingIndicator(chatId: number): void {
+    const typingInterval = activeTypingIntervals.get(chatId);
+    if (typingInterval) {
+        clearInterval(typingInterval);
+        activeTypingIntervals.delete(chatId);
+        console.log(`⌨️ [Sofia AI] Stopped typing indicator for chat ${chatId}`);
+    }
+}
+
+// 🚨 RACE CONDITION FIX: Sequential message processing per user with enhanced typing
+async function processMessageQueue(
+    chatId: number, 
+    bot: TelegramBot, 
+    restaurantId: number, 
+    restaurant: Restaurant
+): Promise<void> {
+    // Prevent concurrent processing for same user
+    if (processingLocks.has(chatId)) {
+        console.log(`⏳ [Sofia AI] Chat ${chatId} already processing, will be handled by existing process`);
+        return activePromises.get(chatId);
+    }
+    
+    processingLocks.add(chatId);
+    
+    // 🚨 UX: Start typing indicator immediately when processing begins
+    startQueueTypingIndicator(chatId, bot);
+    
+    const processingPromise = (async () => {
+        try {
+            const queue = messageQueues.get(chatId);
+            let processedCount = 0;
+            
+            while (queue && queue.length > 0) {
+                const queuedMessage = queue.shift()!;
+                processedCount++;
+                
+                console.log(`🔄 [Sofia AI] Processing message ${processedCount} for chat ${chatId}: "${queuedMessage.text.substring(0, 50)}"`);
+                
+                // Process single message (existing handleMessage function)
+                // Note: handleMessage has its own typing management, but our persistent indicator continues
+                try {
+                    await handleMessage(bot, restaurantId, chatId, queuedMessage.text, restaurant);
+                    console.log(`✅ [Sofia AI] Message ${processedCount} processed successfully for chat ${chatId}`);
+                } catch (messageError) {
+                    console.error(`❌ [Sofia AI] Error processing message ${processedCount} for chat ${chatId}:`, messageError);
+                    
+                    // Send error message to user
+                    try {
+                        const errorMsg = restaurant.name ? 
+                            `I'm sorry, I encountered an issue processing your message. Please try again.` :
+                            `Извините, произошла ошибка при обработке сообщения. Попробуйте еще раз.`;
+                        await bot.sendMessage(chatId, errorMsg);
+                    } catch (sendError) {
+                        console.error(`❌ [Sofia AI] Could not send error message to chat ${chatId}:`, sendError);
+                    }
+                }
+                
+                // Small delay between messages in queue to prevent overwhelming
+                if (queue.length > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            console.log(`🏁 [Sofia AI] Completed processing ${processedCount} messages for chat ${chatId}`);
+            
+        } catch (error) {
+            console.error(`❌ [Sofia AI] Critical error in message queue processing for chat ${chatId}:`, error);
+        } finally {
+            // 🚨 CRITICAL: Always stop typing indicator when queue processing is done
+            stopQueueTypingIndicator(chatId);
+            
+            // Always clean up locks
+            processingLocks.delete(chatId);
+            activePromises.delete(chatId);
+            
+            // Clean up empty queues
+            const remainingQueue = messageQueues.get(chatId);
+            if (remainingQueue && remainingQueue.length === 0) {
+                messageQueues.delete(chatId);
+            }
+        }
+    })();
+    
+    activePromises.set(chatId, processingPromise);
+    return processingPromise;
+}
+
 async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: number, text: string, restaurant: Restaurant) {
     const restaurantTimezone = restaurant.timezone || 'Europe/Belgrade'; // Use correct default
     let currentLang: Language = 'en';
@@ -260,12 +401,21 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     if (!sessionId) {
         currentLang = 'auto';
 
-        // 🚨 ASYNC FIX: Add 'await' here because createSession is now an async function
+        // CRITICAL FIX: Load tenant context before creating session
+        const tenantContext = await tenantContextManager.loadContext(restaurantId);
+        if (!tenantContext) {
+            console.error(`CRITICAL: Could not load tenant context for restaurant ${restaurantId}`);
+            await bot.sendMessage(chatId, "I'm sorry, there was a problem connecting. Please try again later.");
+            return;
+        }
+
+        // ASYNC FIX: Add 'await' here because createSession is now an async function
         sessionId = await enhancedConversationManager.createSession({
             restaurantId,
             platform: 'telegram',
             language: currentLang,
-            telegramUserId: chatId.toString()
+            telegramUserId: chatId.toString(),
+            tenantContext: tenantContext // CRITICAL FIX: Pass tenant context
         });
 
         telegramSessions.set(chatId, sessionId);
@@ -281,80 +431,92 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     const restaurantName = restaurant.name || defaultRestaurantName;
     const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
+    // ✅ UX IMPROVEMENT: Start repeating "typing" indicator
+    // This shows users that Sofia is processing their message during the 5-8 second delays
+    const typingInterval = setInterval(() => bot.sendChatAction(chatId, 'typing'), 4500);
+
+    // ✅ ROBUST ERROR HANDLING: Wrap entire logic in try...finally block
     try {
-        console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
+        // The original try...catch block remains inside
+        try {
+            console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
 
-        // Handle message with enhanced conversation manager
-        const result = await enhancedConversationManager.handleMessage(sessionId, text);
+            // Handle message with enhanced conversation manager
+            const result = await enhancedConversationManager.handleMessage(sessionId, text);
 
-        // Update language from session (may have changed during processing)
-        const updatedSession = enhancedConversationManager.getSession(sessionId);
-        if (updatedSession) {
-            currentLang = updatedSession.language;
-        }
+            // Update language from session (may have changed during processing)
+            const updatedSession = enhancedConversationManager.getSession(sessionId);
+            if (updatedSession) {
+                currentLang = updatedSession.language;
+            }
 
-        console.log(`🔍 [Sofia AI] Enhanced conversation result (lang: ${currentLang}, timezone: ${restaurantTimezone}):`, {
-            hasBooking: result.hasBooking,
-            reservationId: result.reservationId,
-            blocked: result.blocked,
-            blockReason: result.blockReason,
-            currentStep: result.session.currentStep,
-            gatheringInfo: result.session.gatheringInfo
-        });
-
-        // ✅ ENHANCED: Check for name clarification needed
-        const pendingConfirmation = result.session.pendingConfirmation;
-        if (pendingConfirmation?.functionContext?.error?.details?.dbName &&
-            pendingConfirmation?.functionContext?.error?.details?.requestName) {
-
-            const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
-            const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
-
-            console.log(`[Telegram] 🔄 Sending name clarification with buttons: DB="${dbName}", Request="${requestName}"`);
-
-            await bot.sendMessage(chatId, locale.nameClarificationPrompt(dbName, requestName), {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            {
-                                text: locale.useNewNameButton(requestName),
-                                callback_data: `confirm_name:new:${requestName}`
-                            },
-                            {
-                                text: locale.useDbNameButton(dbName),
-                                callback_data: `confirm_name:db:${dbName}`
-                            }
-                        ]
-                    ]
-                }
+            console.log(`🔍 [Sofia AI] Enhanced conversation result (lang: ${currentLang}, timezone: ${restaurantTimezone}):`, {
+                hasBooking: result.hasBooking,
+                reservationId: result.reservationId,
+                blocked: result.blocked,
+                blockReason: result.blockReason,
+                currentStep: result.session.currentStep,
+                gatheringInfo: result.session.gatheringInfo
             });
 
-            console.log(`✅ [Sofia AI] Sent name clarification request with buttons to ${chatId}`);
-            return;
-        }
+            // ✅ ENHANCED: Check for name clarification needed
+            const pendingConfirmation = result.session.pendingConfirmation;
+            if (pendingConfirmation?.functionContext?.error?.details?.dbName &&
+                pendingConfirmation?.functionContext?.error?.details?.requestName) {
 
-        // ✅ FIXED: Session now continues after successful booking
-        if (result.hasBooking && result.reservationId) {
+                const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
+                const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
+
+                console.log(`[Telegram] 🔄 Sending name clarification with buttons: DB="${dbName}", Request="${requestName}"`);
+
+                await bot.sendMessage(chatId, locale.nameClarificationPrompt(dbName, requestName), {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                {
+                                    text: locale.useNewNameButton(requestName),
+                                    callback_data: `confirm_name:new:${requestName}`
+                                },
+                                {
+                                    text: locale.useDbNameButton(dbName),
+                                    callback_data: `confirm_name:db:${dbName}`
+                                }
+                            ]
+                        ]
+                    }
+                });
+
+                console.log(`✅ [Sofia AI] Sent name clarification request with buttons to ${chatId}`);
+                return;
+            }
+
+            // ✅ FIXED: Session now continues after successful booking
+            if (result.hasBooking && result.reservationId) {
+                await bot.sendMessage(chatId, result.response);
+                // Session continues with 'conductor' agent for follow-up requests
+                console.log(`✅ [Sofia AI] Telegram reservation confirmed for chat ${chatId}, reservation #${result.reservationId}, session continues`);
+                return;
+            }
+
+            // Check if blocked
+            if (result.blocked) {
+                await bot.sendMessage(chatId, result.response);
+                console.log(`⚠️ [Sofia AI] Message blocked for chat ${chatId}: ${result.blockReason}`);
+                return;
+            }
+
+            // Send response
             await bot.sendMessage(chatId, result.response);
-            // Session continues with 'conductor' agent for follow-up requests
-            console.log(`✅ [Sofia AI] Telegram reservation confirmed for chat ${chatId}, reservation #${result.reservationId}, session continues`);
-            return;
+            console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone})`);
+
+        } catch (error) {
+            console.error('❌ [Sofia AI] Error processing Telegram conversation:', error);
+            await bot.sendMessage(chatId, locale.genericError);
         }
-
-        // Check if blocked
-        if (result.blocked) {
-            await bot.sendMessage(chatId, result.response);
-            console.log(`⚠️ [Sofia AI] Message blocked for chat ${chatId}: ${result.blockReason}`);
-            return;
-        }
-
-        // Send response
-        await bot.sendMessage(chatId, result.response);
-        console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone})`);
-
-    } catch (error) {
-        console.error('❌ [Sofia AI] Error processing Telegram conversation:', error);
-        await bot.sendMessage(chatId, locale.genericError);
+    } finally {
+        // ✅ CRITICAL: Always clear the interval to stop the typing indicator
+        // This runs regardless of whether the try block completed successfully or threw an error
+        clearInterval(typingInterval);
     }
 }
 
@@ -527,10 +689,16 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             await bot.sendMessage(chatId, locale.cancelMessage);
         });
 
+        // 🚨 RACE CONDITION FIX: Replace direct message handler with queue-based system
         bot.on('message', async (msg) => {
             if (msg.text && msg.text.startsWith('/')) return;
             if (msg.text && msg.chat.id) {
-                await handleMessage(bot, restaurantId, msg.chat.id, msg.text, restaurant);
+                // 🚨 FIX: Enqueue message instead of processing directly
+                enqueueMessage(msg.chat.id, msg.text, msg);
+                
+                // Process queue (handles concurrent calls safely)
+                // Note: This will start typing indicator immediately for better UX
+                processMessageQueue(msg.chat.id, bot, restaurantId, restaurant);
             }
         });
 
@@ -589,7 +757,9 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
 
                     // ✅ CRITICAL: Send the name choice as a regular message to conversation manager
                     // This will trigger the name choice extraction logic in enhanced-conversation-manager.ts
-                    await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
+                    // 🚨 RACE CONDITION FIX: Use queue system for callback-triggered messages too
+                    enqueueMessage(chatId, chosenName, callbackQuery.message as TelegramBot.Message);
+                    processMessageQueue(chatId, bot, restaurantId, restaurant);
 
                 } catch (editError: any) {
                     console.warn(`[Telegram] Could not edit message or answer callback query: ${editError.message || editError}`);
@@ -597,7 +767,9 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                     // Fallback: still try to process the name choice
                     try {
                         await bot.sendMessage(chatId, locale.nameConfirmationUsed(chosenName));
-                        await handleMessage(bot, restaurantId, chatId, chosenName, restaurant);
+                        // 🚨 RACE CONDITION FIX: Use queue system for fallback too
+                        enqueueMessage(chatId, chosenName, callbackQuery.message as TelegramBot.Message);
+                        processMessageQueue(chatId, bot, restaurantId, restaurant);
                     } catch (fallbackError: any) {
                         console.error(`[Telegram] Fallback handling also failed: ${fallbackError.message || fallbackError}`);
                     }
@@ -677,6 +849,21 @@ export async function initializeAllTelegramBots(): Promise<void> {
 
 export function cleanupTelegramBots(): void {
     console.log(`🧹 [Telegram] Cleaning up ${activeBots.size} active enhanced bots...`);
+    
+    // 🚨 RACE CONDITION FIX: Clear message queues during cleanup
+    messageQueues.clear();
+    processingLocks.clear();
+    activePromises.clear();
+    console.log(`🧹 [Telegram] Message queues cleared`);
+    
+    // 🚨 UX FIX: Clear all active typing indicators
+    for (const [chatId, typingInterval] of activeTypingIntervals.entries()) {
+        clearInterval(typingInterval);
+        console.log(`🧹 [Telegram] Cleared typing indicator for chat ${chatId}`);
+    }
+    activeTypingIntervals.clear();
+    console.log(`🧹 [Telegram] All typing indicators cleared`);
+    
     for (const [restaurantId, bot] of activeBots.entries()) {
         try {
             console.log(`[Telegram] Stopping polling for enhanced bot of restaurant ${restaurantId} during cleanup.`);
@@ -689,7 +876,7 @@ export function cleanupTelegramBots(): void {
     }
     activeBots.clear();
     telegramSessions.clear();
-    console.log(`✅ [Telegram] Enhanced cleanup completed. Active bots: ${activeBots.size}, Active sessions: ${telegramSessions.size}`);
+    console.log(`✅ [Telegram] Enhanced cleanup completed. Active bots: ${activeBots.size}, Active sessions: ${telegramSessions.size}, Message queues: ${messageQueues.size}, Typing indicators: ${activeTypingIntervals.size}`);
 }
 
 export function getTelegramBot(restaurantId: number): TelegramBot | undefined {

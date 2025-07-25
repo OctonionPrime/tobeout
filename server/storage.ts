@@ -5,6 +5,7 @@
 // 2. Currency data corruption - Updated all financial calculations for decimal types
 // 3. Complete tenant isolation across all operations
 // 4. Added missing super admin methods: getAllTenants and logSuperAdminActivity
+// 5. 🚨 NEW FIX: Added missing updateTenant method for super admin functionality
 //
 
 import {
@@ -242,6 +243,25 @@ export interface IStorage {
     getTenantUsage(tenantId: number): Promise<any>;
     getTenantRecentActivity(tenantId: number, limit: number): Promise<any[]>;
     getTenantAuditLogs(tenantId: number, options: { limit: number; offset: number }): Promise<any[]>;
+
+    // 🚨 CRITICAL FIX: Add missing updateTenant method
+    updateTenant(tenantId: number, data: {
+        restaurantName?: string;
+        subdomain?: string;
+        plan?: 'starter' | 'professional' | 'enterprise';
+        status?: 'active' | 'suspended' | 'terminated' | 'trial';
+        timezone?: string;
+        maxTables?: number;
+        maxUsers?: number;
+        maxReservationsPerMonth?: number;
+        enableAiChat?: boolean;
+        enableTelegramBot?: boolean;
+        enableGuestAnalytics?: boolean;
+        enableAdvancedReporting?: boolean;
+        enableMenuManagement?: boolean;
+        adminNotes?: string;
+        customSettings?: any;
+    }): Promise<Restaurant>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -332,6 +352,90 @@ export class DatabaseStorage implements IStorage {
             .where(eq(restaurants.id, id))
             .returning();
         return updatedRestaurant;
+    }
+
+    // ================================
+    // 🚨 CRITICAL FIX: MISSING updateTenant METHOD IMPLEMENTATION
+    // ================================
+
+    async updateTenant(tenantId: number, data: {
+        restaurantName?: string;
+        subdomain?: string;
+        plan?: 'starter' | 'professional' | 'enterprise';
+        status?: 'active' | 'suspended' | 'terminated' | 'trial';
+        timezone?: string;
+        maxTables?: number;
+        maxUsers?: number;
+        maxReservationsPerMonth?: number;
+        enableAiChat?: boolean;
+        enableTelegramBot?: boolean;
+        enableGuestAnalytics?: boolean;
+        enableAdvancedReporting?: boolean;
+        enableMenuManagement?: boolean;
+        adminNotes?: string;
+        customSettings?: any;
+    }): Promise<Restaurant> {
+        console.log(`🏢 [Storage] Updating tenant ${tenantId} with data:`, Object.keys(data));
+        
+        return await db.transaction(async (tx) => {
+            // Prepare restaurant updates with proper field mapping
+            const updates: Partial<InsertRestaurant> = {};
+            
+            // Basic restaurant fields
+            if (data.restaurantName !== undefined) updates.name = data.restaurantName;
+            if (data.subdomain !== undefined) updates.subdomain = data.subdomain;
+            if (data.plan !== undefined) updates.tenantPlan = data.plan;
+            if (data.status !== undefined) updates.tenantStatus = data.status;
+            if (data.timezone !== undefined) updates.timezone = data.timezone;
+            
+            // Feature flags (exact field mapping)
+            if (data.enableAiChat !== undefined) updates.enableAiChat = data.enableAiChat;
+            if (data.enableTelegramBot !== undefined) updates.enableTelegramBot = data.enableTelegramBot;
+            if (data.enableGuestAnalytics !== undefined) updates.enableGuestAnalytics = data.enableGuestAnalytics;
+            if (data.enableAdvancedReporting !== undefined) updates.enableAdvancedReporting = data.enableAdvancedReporting;
+            if (data.enableMenuManagement !== undefined) updates.enableMenuManagement = data.enableMenuManagement;
+            
+            // Tenant limits (proper field mapping)
+            if (data.maxTables !== undefined) updates.maxTablesAllowed = data.maxTables;
+            if (data.maxUsers !== undefined) updates.maxStaffAccounts = data.maxUsers;
+            if (data.maxReservationsPerMonth !== undefined) updates.maxMonthlyReservations = data.maxReservationsPerMonth;
+            
+            // Admin fields (if schema supports them - currently commented out)
+            // if (data.adminNotes !== undefined) updates.adminNotes = data.adminNotes;
+            // if (data.customSettings !== undefined) updates.customSettings = data.customSettings;
+            
+            // Always update modification timestamp
+            updates.lastModifiedAt = new Date();
+            
+            console.log(`🏢 [Storage] Applying ${Object.keys(updates).length} field updates to tenant ${tenantId}`);
+            
+            // Update the restaurant record
+            const [updatedRestaurant] = await tx
+                .update(restaurants)
+                .set(updates)
+                .where(eq(restaurants.id, tenantId))
+                .returning();
+                
+            if (!updatedRestaurant) {
+                throw new Error(`Tenant ${tenantId} not found`);
+            }
+            
+            // Log audit event
+            await this.logTenantAudit({
+                restaurantId: tenantId,
+                action: 'tenant_updated',
+                performedBy: 'super_admin',
+                performedByType: 'super_admin',
+                details: {
+                    updatedFields: Object.keys(data),
+                    fieldCount: Object.keys(updates).length,
+                    changes: data
+                }
+            });
+            
+            console.log(`✅ [Storage] Tenant ${tenantId} updated successfully - ${Object.keys(updates).length} fields modified`);
+            return updatedRestaurant;
+        });
     }
 
     // ================================

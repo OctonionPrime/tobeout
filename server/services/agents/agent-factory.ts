@@ -1,39 +1,11 @@
 // server/services/agents/agent-factory.ts
 
-/**
- * @file agent-factory.ts
- * @description This file contains the implementation of the AgentFactory, a singleton class
- * responsible for creating, managing, and caching different types of AI agents (Sofia, Maya, etc.)
- * for multiple restaurants. It dynamically loads restaurant-specific configurations,
- * handles agent caching to improve performance, and includes health monitoring for reliability.
- * 🔒 SECURITY ENHANCEMENT: Complete tenant isolation and feature validation added.
- *
- * @version 2.2.0
- * @date 2025-07-23
- *
- * @changelog
- * - v2.2.0 (2025-07-23):
- * - 🔒 SECURITY FIX: Added complete tenant isolation and feature validation
- * - 🔒 ADDED: Tenant context validation for all agent creation operations
- * - 🔒 ADDED: Feature flag enforcement based on tenant plans
- * - 🔒 ADDED: Usage tracking for billing and analytics
- * - 🔒 ADDED: Plan-based agent restrictions and capabilities
- * - 🔒 ADDED: Tenant-scoped agent caching to prevent cross-tenant sharing
- * - 🔒 ADDED: Comprehensive security audit logging
- * - v2.1.0 (2025-07-21):
- * - ADDED: Full implementation for the ConductorAgent to handle post-task conversation flow.
- * - FIXED: Replaced the placeholder implementation for 'conductor' agent with the new ConductorAgent class.
- * - v2.0.0 (2025-07-21):
- * - FIXED: Added missing startHealthMonitoring and registerAgent methods to resolve critical runtime error.
- * - ADDED: Defined AgentType and AgentRegistryEntry types for proper type safety.
- * - REFACTORED: Now supports multiple restaurants by dynamically loading configurations via RestaurantConfigManager.
- * - ENHANCED: Caching mechanism is now restaurant-specific for better performance and context separation.
- */
-
 import { BaseAgent, AgentConfig, RestaurantConfig } from './base-agent';
 import { SofiaAgent } from './sofia-agent';
 import { MayaAgent } from './maya-agent';
 import { ConductorAgent } from './conductor-agent';
+// 🚀 APOLLO FIX: Import the newly created ApolloAgent
+import { ApolloAgent } from './apollo-agent';
 import { TenantContext } from '../tenant-context';
 import { smartLog } from '../smart-logging.service';
 import { storage } from '../../storage';
@@ -47,12 +19,14 @@ type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
 
 /**
  * Represents an entry in the agent cache registry with tenant isolation.
+ * 🔒 BUG-B-1 FIX: Added full tenantContext storage for AI operations
  */
 interface AgentRegistryEntry {
     agent: BaseAgent;
     agentType: AgentType;
     restaurantId: number;
     tenantId: number; // 🔒 NEW: Explicit tenant tracking
+    tenantContext: TenantContext; // ✅ BUG-B-1 FIX: Store full context for AI calls
     createdAt: Date;
     lastUsed: Date;
     requestCount: number;
@@ -233,8 +207,8 @@ export class AgentFactory {
      * 🔒 Validates tenant has access to create the requested agent type
      */
     private validateTenantAgentAccess(
-        type: AgentType, 
-        tenantContext: TenantContext, 
+        type: AgentType,
+        tenantContext: TenantContext,
         operation: string
     ): boolean {
         if (!tenantContext) {
@@ -339,7 +313,7 @@ export class AgentFactory {
             tenantId,
             agentType,
             monthlyCreations: current.monthlyAgentCreations,
-            totalCreations: current.totalAgentCreations,
+            totalCreations: current.totalCreations,
             agentTypeUsage: current.agentTypeUsage
         });
 
@@ -347,8 +321,8 @@ export class AgentFactory {
             tenantId,
             tenantPlan: tenantContext.restaurant.tenantPlan,
             agentType,
-            monthlyCreations: current.monthlyAgentCreations,
-            totalCreations: current.totalAgentCreations
+            monthlyCreations: current.monthlyCreations,
+            totalCreations: current.totalCreations
         });
     }
 
@@ -394,6 +368,8 @@ export class AgentFactory {
                 cachedEntry.lastUsed = new Date();
                 cachedEntry.requestCount++;
                 cachedEntry.securityContext.lastValidation = new Date();
+                // ✅ BUG-B-1 FIX: Update tenant context in cache to ensure it's current
+                cachedEntry.tenantContext = tenantContext;
 
                 smartLog.info('Retrieved cached agent with tenant validation', {
                     agentType: type,
@@ -429,16 +405,25 @@ export class AgentFactory {
     }
 
     /**
+     * ✅ BUG-B-5 FIX: Enhanced cache management with staleness check
      * 🔒 Find cached agent for specific tenant (prevents cross-tenant sharing)
      */
     private findCachedAgentForTenant(type: AgentType, tenantId: number): AgentRegistryEntry | null {
         for (const [agentId, entry] of this.agentRegistry.entries()) {
-            if (entry.agentType === type && entry.tenantId === tenantId && entry.healthy) {
+            if (entry.agentType === type && 
+                entry.tenantId === tenantId && 
+                entry.healthy &&
+                !this.isEntryStale(entry)) { // ✅ BUG-B-5 FIX: Add staleness check
+                
+                entry.lastUsed = new Date();
+                entry.requestCount++;
+                
                 smartLog.info('Found cached agent for tenant', {
                     agentType: type,
                     tenantId,
                     agentId,
-                    cacheHit: true
+                    cacheHit: true,
+                    requestCount: entry.requestCount
                 });
                 return entry;
             }
@@ -453,12 +438,40 @@ export class AgentFactory {
     }
 
     /**
+     * ✅ BUG-B-5 FIX: Check if cache entry is stale
+     */
+    private isEntryStale(entry: AgentRegistryEntry): boolean {
+        const maxAge = 30 * 60 * 1000; // 30 minutes
+        const isStale = Date.now() - entry.lastUsed.getTime() > maxAge;
+        
+        if (isStale) {
+            smartLog.info('Cache entry marked as stale', {
+                agentType: entry.agentType,
+                tenantId: entry.tenantId,
+                lastUsed: entry.lastUsed,
+                maxAgeMinutes: maxAge / 60000
+            });
+        }
+        
+        return isStale;
+    }
+
+    /**
+     * ✅ BUG-B-5 FIX: Prevent cache clearing on valid session resets
+     */
+    private shouldClearCacheForReset(resetReason: string): boolean {
+        const validReasons = ['new_booking_request', 'agent_handoff'];
+        return !validReasons.includes(resetReason);
+    }
+
+    /**
      * 🔒 Register agent with complete security context
+     * ✅ BUG-B-1 FIX: Store full tenant context for AI operations
      */
     private registerSecureAgent(
-        agentId: string, 
-        agent: BaseAgent, 
-        type: AgentType, 
+        agentId: string,
+        agent: BaseAgent,
+        type: AgentType,
         tenantContext: TenantContext
     ): void {
         const entry: AgentRegistryEntry = {
@@ -466,6 +479,7 @@ export class AgentFactory {
             agentType: type,
             restaurantId: tenantContext.restaurant.id,
             tenantId: tenantContext.restaurant.id,
+            tenantContext, // ✅ BUG-B-1 FIX: Store full context
             createdAt: new Date(),
             lastUsed: new Date(),
             requestCount: 1,
@@ -539,26 +553,16 @@ export class AgentFactory {
                     return new MayaAgent(defaultConfig, restaurantConfig);
                 case 'conductor':
                     return new ConductorAgent(defaultConfig, restaurantConfig);
+
+                // 🚀 APOLLO FIX: Replace the placeholder with the actual ApolloAgent class
                 case 'availability':
-                    smartLog.warn('Availability agent using placeholder implementation', {
+                    smartLog.info('Instantiating production-ready ApolloAgent', {
                         agentType: type,
                         restaurantId: restaurantConfig.id,
-                        note: 'Replace with ApolloAgent when implemented'
+                        status: 'COMPLETE'
                     });
-                    return new (class extends BaseAgent {
-                        name = type;
-                        description = `Placeholder for ${type} agent`;
-                        capabilities = [];
-                        generateSystemPrompt = () => `You are a placeholder ${type} agent.`;
-                        handleMessage = async (message: string) => ({ 
-                            content: `Placeholder response for: ${message}`, 
-                            metadata: { 
-                                processedAt: new Date().toISOString(), 
-                                agentType: this.name 
-                            } 
-                        });
-                        getTools = () => [];
-                    })(defaultConfig, restaurantConfig);
+                    return new ApolloAgent(defaultConfig, restaurantConfig);
+
                 default:
                     throw new Error(`Unknown agent type: ${type}`);
             }
@@ -648,28 +652,37 @@ export class AgentFactory {
         return { ...AgentFactory.agentFeatureRequirements };
     }
 
-    // ===== EXISTING METHODS (PRESERVED) =====
+    // ===== ENHANCED HEALTH MONITORING WITH TENANT CONTEXT =====
 
     /**
+     * ✅ BUG-B-1 FIX: Enhanced health monitoring with tenant context support
      * Starts a periodic timer to run health checks on all cached agents.
-     * This method resolves the original `this.startHealthMonitoring is not a function` error.
+     * 
+     * CRITICAL CHANGE: Now passes tenantContext to healthCheck() method to prevent
+     * MISSING_TENANT_CONTEXT errors during background health monitoring.
      */
     private startHealthMonitoring(): void {
         smartLog.info('Agent factory health monitoring started', {
             interval: this.factoryConfig.healthCheckInterval,
-            tenantIsolationEnabled: true
+            tenantIsolationEnabled: true,
+            tenantContextEnabled: true // ✅ BUG-B-1 FIX: Indicating tenant context support
         });
 
         this.healthCheckTimer = setInterval(async () => {
             if (this.agentRegistry.size === 0) return;
 
-            smartLog.info('Running agent health check', {
-                totalAgents: this.agentRegistry.size
+            smartLog.info('Running agent health check with tenant context', {
+                totalAgents: this.agentRegistry.size,
+                tenantContextSupport: true // ✅ BUG-B-1 FIX: Log tenant context support
             });
 
             for (const [agentId, entry] of this.agentRegistry.entries()) {
                 try {
-                    const health = await entry.agent.healthCheck();
+                    // ✅ BUG-B-1 CRITICAL FIX: Pass tenant context to health check
+                    // Previously: const health = await entry.agent.healthCheck(); // ❌ Missing tenant context
+                    // Now: Pass the stored tenant context from the registry entry
+                    const health = await entry.agent.healthCheck(entry.tenantContext);
+                    
                     entry.healthy = health.healthy;
                     entry.securityContext.lastValidation = new Date();
 
@@ -678,7 +691,16 @@ export class AgentFactory {
                             agentId,
                             tenantId: entry.tenantId,
                             agentType: entry.agentType,
-                            details: health.details
+                            details: health.details,
+                            tenantContextPassed: true // ✅ BUG-B-1 FIX: Confirm tenant context was passed
+                        });
+                    } else {
+                        // Log successful health check with tenant context
+                        smartLog.debug('Agent health check passed', {
+                            agentId,
+                            tenantId: entry.tenantId,
+                            agentType: entry.agentType,
+                            tenantContextPassed: true // ✅ BUG-B-1 FIX: Confirm tenant context was passed
                         });
                     }
                 } catch (error) {
@@ -686,14 +708,54 @@ export class AgentFactory {
                     smartLog.error('Agent health check error', error as Error, {
                         agentId,
                         tenantId: entry.tenantId,
-                        agentType: entry.agentType
+                        agentType: entry.agentType,
+                        errorType: 'HEALTH_CHECK_FAILURE',
+                        tenantContextPassed: !!entry.tenantContext // ✅ BUG-B-1 FIX: Log whether tenant context was available
                     });
                 }
             }
+
+            // ✅ BUG-B-5 FIX: Remove stale entries during health check
+            this.cleanupStaleEntries();
         }, this.factoryConfig.healthCheckInterval);
 
         // Allows the Node.js process to exit even if this timer is active.
         this.healthCheckTimer.unref();
+    }
+
+    /**
+     * ✅ BUG-B-5 FIX: Clean up stale cache entries
+     */
+    private cleanupStaleEntries(): void {
+        const staleEntries: string[] = [];
+        
+        for (const [agentId, entry] of this.agentRegistry.entries()) {
+            if (this.isEntryStale(entry)) {
+                staleEntries.push(agentId);
+            }
+        }
+
+        for (const agentId of staleEntries) {
+            const entry = this.agentRegistry.get(agentId);
+            this.agentRegistry.delete(agentId);
+            
+            if (entry) {
+                smartLog.info('Stale cache entry removed', {
+                    agentId,
+                    tenantId: entry.tenantId,
+                    agentType: entry.agentType,
+                    lastUsed: entry.lastUsed,
+                    reason: 'STALE_CACHE_CLEANUP'
+                });
+            }
+        }
+
+        if (staleEntries.length > 0) {
+            smartLog.info('Cache cleanup completed', {
+                removedEntries: staleEntries.length,
+                remainingEntries: this.agentRegistry.size
+            });
+        }
     }
 
     /**
@@ -713,7 +775,7 @@ export class AgentFactory {
         uptime: string;
     } {
         const agents = Array.from(this.agentRegistry.values());
-        
+
         const agentsByType = agents.reduce((acc, entry) => {
             acc[entry.agentType] = (acc[entry.agentType] || 0) + 1;
             return acc;
@@ -731,9 +793,9 @@ export class AgentFactory {
 
         const totalTenants = Object.keys(agentsByTenant).length;
         const avgAgentsPerTenant = totalTenants > 0 ? Math.round(agents.length / totalTenants * 100) / 100 : 0;
-        
+
         const mostUsedAgentType = Object.entries(agentsByType)
-            .sort(([,a], [,b]) => b - a)[0]?.[0] || 'none';
+            .sort(([, a], [, b]) => b - a)[0]?.[0] || 'none';
 
         const uptimeMs = Date.now() - this.createdAt.getTime();
 
@@ -767,22 +829,3 @@ export class AgentFactory {
         return `${minutes % 60}m ${seconds % 60}s`;
     }
 }
-
-// Log successful loading with security features
-smartLog.info('Secure AgentFactory loaded with complete tenant isolation', {
-    features: [
-        '🔒 Complete tenant validation on all agent creation',
-        '🔒 Feature flag enforcement based on tenant plans',
-        '🔒 Plan-based agent restrictions and capabilities',
-        '🔒 Tenant-scoped agent caching (no cross-tenant sharing)',
-        '🔒 Usage tracking for billing and analytics',
-        '🔒 Comprehensive security audit logging',
-        '🔒 Agent cache invalidation for tenant changes',
-        '✅ Health monitoring and performance tracking preserved',
-        '✅ Multi-restaurant support and caching preserved'
-    ],
-    securityLevel: 'HIGH',
-    tenantIsolationEnabled: true,
-    featureValidationEnabled: true,
-    agentTypes: ['booking', 'reservations', 'conductor', 'availability']
-});

@@ -1,20 +1,22 @@
 // src/agents/base-agent.ts
-// ✅ PHASE 4.1: BaseAgent Pattern Implementation
-// Foundation class for all restaurant booking agents
-// Provides shared functionality, standardized interface, and professional architecture
-// Integrates with AIService, ContextManager, and existing restaurant booking infrastructure
+// This version resolves the MISSING_TENANT_CONTEXT bug by correctly propagating
+// the tenant context from the agent's execution context to the underlying AIService.
 
 import { aiService } from '../ai-service';
 import { contextManager } from '../context-manager';
 import type { Language } from '../enhanced-conversation-manager';
+// ✅ BUG-B-1 FIX: Import TenantContext to use in the AgentContext interface
+import type { TenantContext } from '../tenant-context';
 
 /**
- * Context information passed to agents for processing user requests
+ * Context information passed to agents for processing user requests.
+ * ✅ BUG-B-1 FIX: Added the required 'tenantContext' property.
  */
 export interface AgentContext {
     restaurantId: number;
     timezone: string;
     language: Language;
+    tenantContext: TenantContext; // This is the critical addition.
     telegramUserId?: string;
     sessionId?: string;
     guestHistory?: {
@@ -48,8 +50,8 @@ export interface AgentContext {
 export interface AgentResponse {
     content: string;
     toolCalls?: any[];
-    handoffSignal?: { 
-        to: 'booking' | 'reservations' | 'conductor' | 'availability'; 
+    handoffSignal?: {
+        to: 'booking' | 'reservations' | 'conductor' | 'availability';
         reason: string;
         confidence?: number;
     };
@@ -103,23 +105,12 @@ export interface RestaurantConfig {
 
 /**
  * BaseAgent - Foundation class for all restaurant booking agents
- * 
- * This abstract class provides:
- * - Standardized interface for all agents
- * - Shared utility methods (AI generation, translation, logging)
- * - Integration with AIService and ContextManager
- * - Error handling and performance monitoring
- * - Professional logging and debugging capabilities
- * 
- * Agents extending this class: Sofia (booking), Maya (reservations), Apollo (availability)
  */
 export abstract class BaseAgent {
-    // Abstract properties each agent must define
     abstract readonly name: string;
     abstract readonly description: string;
     abstract readonly capabilities: string[];
 
-    // Performance monitoring
     private readonly createdAt: Date;
     private requestCount: number = 0;
     private totalProcessingTime: number = 0;
@@ -141,34 +132,18 @@ export abstract class BaseAgent {
         });
     }
 
-    // ===== ABSTRACT METHODS (Must be implemented by each agent) =====
-
-    /**
-     * Generate system prompt for the agent based on context
-     * Each agent implements this to create their specific instructions
-     */
     abstract generateSystemPrompt(context: AgentContext): string;
-
-    /**
-     * Handle user message and return appropriate response
-     * Main entry point for agent processing
-     */
     abstract handleMessage(message: string, context: AgentContext): Promise<AgentResponse>;
-
-    /**
-     * Get tools available to this agent
-     * Returns array of function definitions for tool calling
-     */
     abstract getTools(): any[];
 
-    // ===== SHARED UTILITY METHODS =====
-
     /**
-     * Generate text content using AIService with automatic fallback
-     * Standardized across all agents with consistent error handling
+     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Generate text content using AIService with automatic fallback.
      */
     protected async generateResponse(
-        prompt: string, 
+        prompt: string,
+        message: string, // Kept for potential future use, though prompt is primary
+        context: AgentContext, // This is the key change
         options: {
             model?: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o';
             maxTokens?: number;
@@ -178,15 +153,16 @@ export abstract class BaseAgent {
         } = {}
     ): Promise<string> {
         const startTime = Date.now();
-        
+
         try {
+            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
             const response = await aiService.generateContent(prompt, {
                 model: options.model || this.config.primaryModel || 'haiku',
                 maxTokens: options.maxTokens || this.config.maxTokens || 1000,
                 temperature: options.temperature !== undefined ? options.temperature : (this.config.temperature || 0.2),
                 context: options.context || `${this.name}-generation`,
                 timeout: options.timeout || 30000
-            });
+            }, context.tenantContext); // This is the critical fix.
 
             const processingTime = Date.now() - startTime;
             this.updatePerformanceMetrics(processingTime);
@@ -212,11 +188,12 @@ export abstract class BaseAgent {
     }
 
     /**
-     * Generate and parse JSON content with schema validation
-     * Used for structured responses and tool parameter generation
+     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Generate and parse JSON content with schema validation.
      */
     protected async generateJSON<T>(
         prompt: string,
+        context: AgentContext, // This is the key change
         options: {
             model?: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o';
             maxTokens?: number;
@@ -227,8 +204,9 @@ export abstract class BaseAgent {
         } = {}
     ): Promise<T> {
         const startTime = Date.now();
-        
+
         try {
+            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
             const response = await aiService.generateJSON<T>(prompt, {
                 model: options.model || this.config.primaryModel || 'haiku',
                 maxTokens: options.maxTokens || this.config.maxTokens || 1000,
@@ -236,7 +214,7 @@ export abstract class BaseAgent {
                 context: options.context || `${this.name}-json`,
                 schema: options.schema,
                 retryOnInvalidJSON: options.retryOnInvalidJSON !== false
-            });
+            }, context.tenantContext); // This is the critical fix.
 
             const processingTime = Date.now() - startTime;
             this.updatePerformanceMetrics(processingTime);
@@ -260,20 +238,21 @@ export abstract class BaseAgent {
     }
 
     /**
-     * Translate text to target language using AIService
-     * Handles caching and context-appropriate translation
+     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Translate text to target language using AIService.
      */
     protected async translate(
-        text: string, 
+        text: string,
         targetLanguage: Language,
-        context: 'greeting' | 'error' | 'info' | 'question' | 'success' | 'confirmation' = 'info'
+        context: AgentContext, // This is the key change
+        translationContext: 'greeting' | 'error' | 'info' | 'question' | 'success' | 'confirmation' = 'info'
     ): Promise<string> {
         if (!this.config.enableTranslation || targetLanguage === 'en' || targetLanguage === 'auto') {
             return text;
         }
 
         const startTime = Date.now();
-        
+
         try {
             const languageNames: Record<Language, string> = {
                 'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
@@ -281,25 +260,26 @@ export abstract class BaseAgent {
                 'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
             };
 
-            const prompt = `Translate this restaurant ${context} message to ${languageNames[targetLanguage]}:
+            const prompt = `Translate this restaurant ${translationContext} message to ${languageNames[targetLanguage]}:
 
 "${text}"
 
-Context: ${context} message for restaurant booking system
+Context: ${translationContext} message for restaurant booking system
 Keep the same tone, emojis, and professional style.
 Return only the translation, no explanations.`;
 
+            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
             const translation = await aiService.generateContent(prompt, {
-                model: 'haiku', // Fast and cost-effective for translation
+                model: 'haiku',
                 maxTokens: Math.min(text.length * 2 + 100, 500),
                 temperature: 0.2,
-                context: `${this.name}-translation-${context}`
-            });
+                context: `${this.name}-translation-${translationContext}`
+            }, context.tenantContext); // This is the critical fix.
 
             const processingTime = Date.now() - startTime;
             this.logAgentAction('Translated text', {
                 targetLanguage,
-                context,
+                context: translationContext,
                 processingTimeMs: processingTime,
                 originalLength: text.length,
                 translatedLength: translation.length
@@ -313,18 +293,11 @@ Return only the translation, no explanations.`;
                 targetLanguage,
                 fallbackToOriginal: true
             });
-            
-            // Fallback to original text if translation fails
+
             return text;
         }
     }
 
-    // ===== CONTEXT MANAGEMENT METHODS =====
-
-    /**
-     * Resolve reservation ID from user message and session context
-     * Integrates with ContextManager for smart context resolution
-     */
     protected resolveReservationContext(
         userMessage: string,
         session: any,
@@ -341,7 +314,7 @@ Return only the translation, no explanations.`;
 
         try {
             const resolution = contextManager.resolveReservationFromContext(userMessage, session, providedId);
-            
+
             this.logAgentAction('Context resolution', {
                 resolvedId: resolution.resolvedId,
                 confidence: resolution.confidence,
@@ -366,13 +339,9 @@ Return only the translation, no explanations.`;
         }
     }
 
-    /**
-     * Preserve context after successful operations
-     * Helps with follow-up requests and context continuity
-     */
     protected preserveContext(
-        session: any, 
-        reservationId: number, 
+        session: any,
+        reservationId: number,
         operationType: 'modification' | 'cancellation' | 'creation'
     ): void {
         if (!this.config.enableContextResolution) {
@@ -381,7 +350,7 @@ Return only the translation, no explanations.`;
 
         try {
             contextManager.preserveReservationContext(session, reservationId, operationType);
-            
+
             this.logAgentAction('Context preserved', {
                 reservationId,
                 operationType,
@@ -397,10 +366,6 @@ Return only the translation, no explanations.`;
         }
     }
 
-    /**
-     * Update conversation flags to track what has been asked
-     * Prevents repetitive questions and improves user experience
-     */
     protected updateConversationFlags(session: any, flags: any): void {
         if (!this.config.enableContextResolution) {
             return;
@@ -408,7 +373,7 @@ Return only the translation, no explanations.`;
 
         try {
             contextManager.updateConversationFlags(session, flags);
-            
+
             this.logAgentAction('Conversation flags updated', {
                 updatedFlags: Object.keys(flags).filter(key => flags[key] !== undefined)
             });
@@ -420,12 +385,6 @@ Return only the translation, no explanations.`;
         }
     }
 
-    // ===== ERROR HANDLING METHODS =====
-
-    /**
-     * Standardized error handling for agents
-     * Creates consistent error responses with appropriate user messaging
-     */
     protected handleAgentError(error: Error, context: string, userMessage?: string): AgentResponse {
         this.logAgentAction(`Error in ${context}`, {
             error: error.message,
@@ -433,10 +392,9 @@ Return only the translation, no explanations.`;
             stack: error.stack?.substring(0, 200)
         });
 
-        // Determine if error is recoverable
-        const isRecoverable = !error.message.includes('SYSTEM_ERROR') && 
-                            !error.message.includes('CRITICAL') &&
-                            !error.message.includes('Fatal');
+        const isRecoverable = !error.message.includes('SYSTEM_ERROR') &&
+            !error.message.includes('CRITICAL') &&
+            !error.message.includes('Fatal');
 
         return {
             content: "I apologize, I'm experiencing technical difficulties. Please try again or rephrase your request.",
@@ -454,9 +412,6 @@ Return only the translation, no explanations.`;
         };
     }
 
-    /**
-     * Create standardized validation error response
-     */
     protected createValidationError(message: string, field?: string): AgentResponse {
         return {
             content: message,
@@ -473,9 +428,6 @@ Return only the translation, no explanations.`;
         };
     }
 
-    /**
-     * Create standardized business rule error response
-     */
     protected createBusinessRuleError(message: string, code?: string): AgentResponse {
         return {
             content: message,
@@ -492,12 +444,6 @@ Return only the translation, no explanations.`;
         };
     }
 
-    // ===== LOGGING AND MONITORING METHODS =====
-
-    /**
-     * Structured logging for agent actions
-     * Provides consistent logging format across all agents
-     */
     protected logAgentAction(action: string, metadata?: any): void {
         const logEntry = {
             timestamp: new Date().toISOString(),
@@ -510,20 +456,11 @@ Return only the translation, no explanations.`;
         console.log(`[${this.name}Agent] ${action}`, metadata ? metadata : '');
     }
 
-    /**
-     * Update performance metrics for monitoring
-     */
     private updatePerformanceMetrics(processingTimeMs: number): void {
         this.requestCount++;
         this.totalProcessingTime += processingTimeMs;
     }
 
-    // ===== AGENT METADATA AND INTROSPECTION =====
-
-    /**
-     * Get comprehensive agent metadata
-     * Useful for debugging, monitoring, and agent selection
-     */
     getMetadata(): {
         name: string;
         description: string;
@@ -544,15 +481,15 @@ Return only the translation, no explanations.`;
         lastUpdated: string;
     } {
         const uptimeMs = Date.now() - this.createdAt.getTime();
-        const averageProcessingTime = this.requestCount > 0 
+        const averageProcessingTime = this.requestCount > 0
             ? Math.round(this.totalProcessingTime / this.requestCount)
             : 0;
 
         return {
             name: this.name,
             description: this.description,
-            capabilities: [...this.capabilities], // Create copy to prevent mutation
-            config: { ...this.config }, // Create copy to prevent mutation
+            capabilities: [...this.capabilities],
+            config: { ...this.config },
             performance: {
                 requestCount: this.requestCount,
                 averageProcessingTime,
@@ -570,10 +507,10 @@ Return only the translation, no explanations.`;
     }
 
     /**
-     * Health check for agent functionality
-     * Tests core capabilities and service integrations
+     * ✅ BUG-B-1 FIX: Updated signature to accept TenantContext for AI operations.
+     * Health check for agent functionality.
      */
-    async healthCheck(): Promise<{
+    async healthCheck(tenantContext: TenantContext): Promise<{
         healthy: boolean;
         checks: {
             aiService: boolean;
@@ -591,12 +528,21 @@ Return only the translation, no explanations.`;
         };
         const details: string[] = [];
 
+        // Create a mock AgentContext to pass to internal methods
+        const mockAgentContext: AgentContext = {
+            restaurantId: this.restaurantConfig.id,
+            timezone: this.restaurantConfig.timezone,
+            language: 'en',
+            tenantContext: tenantContext // Use the provided context
+        };
+
         // Test AI service
         try {
-            await this.generateResponse("Say 'OK'", { 
-                maxTokens: 10, 
+            // ✅ BUG-B-1 FIX: Pass the mock AgentContext to generateResponse.
+            await this.generateResponse("Say 'OK'", "health check", mockAgentContext, {
+                maxTokens: 10,
                 context: 'health-check',
-                timeout: 5000 
+                timeout: 5000
             });
             checks.aiService = true;
             details.push('AI service responding normally');
@@ -616,7 +562,8 @@ Return only the translation, no explanations.`;
 
         // Test translation
         try {
-            await this.translate('Hello', 'ru', 'info');
+            // ✅ BUG-B-1 FIX: Pass the mock AgentContext to translate.
+            await this.translate('Hello', 'ru', mockAgentContext, 'info');
             checks.translation = true;
             details.push('Translation service working');
         } catch (error) {
@@ -633,7 +580,7 @@ Return only the translation, no explanations.`;
         }
 
         const healthy = Object.values(checks).every(check => check === true);
-        
+
         return {
             healthy,
             checks,
@@ -641,9 +588,6 @@ Return only the translation, no explanations.`;
         };
     }
 
-    /**
-     * Get performance statistics
-     */
     getPerformanceStats(): {
         requestCount: number;
         averageResponseTime: number;
@@ -651,11 +595,10 @@ Return only the translation, no explanations.`;
         efficiency: number;
     } {
         const uptimeMs = Date.now() - this.createdAt.getTime();
-        const averageResponseTime = this.requestCount > 0 
+        const averageResponseTime = this.requestCount > 0
             ? Math.round(this.totalProcessingTime / this.requestCount)
             : 0;
-        
-        // Calculate efficiency (requests per minute)
+
         const uptimeMinutes = uptimeMs / (1000 * 60);
         const efficiency = uptimeMinutes > 0 ? Math.round(this.requestCount / uptimeMinutes) : 0;
 
@@ -667,9 +610,6 @@ Return only the translation, no explanations.`;
         };
     }
 
-    /**
-     * Format uptime in human-readable format
-     */
     private formatUptime(ms: number): string {
         const seconds = Math.floor(ms / 1000);
         const minutes = Math.floor(seconds / 60);
@@ -683,46 +623,32 @@ Return only the translation, no explanations.`;
     }
 }
 
-// ===== UTILITY FUNCTIONS =====
-
-/**
- * Validate agent configuration
- */
 export function validateAgentConfig(config: AgentConfig): {
     valid: boolean;
     errors: string[];
 } {
     const errors: string[] = [];
-
     if (!config.name || config.name.trim().length === 0) {
         errors.push('Agent name is required');
     }
-
     if (!config.description || config.description.trim().length === 0) {
         errors.push('Agent description is required');
     }
-
     if (!Array.isArray(config.capabilities) || config.capabilities.length === 0) {
         errors.push('Agent must have at least one capability');
     }
-
     if (config.maxTokens !== undefined && (config.maxTokens < 1 || config.maxTokens > 4000)) {
         errors.push('maxTokens must be between 1 and 4000');
     }
-
     if (config.temperature !== undefined && (config.temperature < 0 || config.temperature > 2)) {
         errors.push('temperature must be between 0 and 2');
     }
-
     return {
         valid: errors.length === 0,
         errors
     };
 }
 
-/**
- * Create default agent configuration
- */
 export function createDefaultAgentConfig(
     name: string,
     description: string,
@@ -742,34 +668,5 @@ export function createDefaultAgentConfig(
     };
 }
 
-// ===== EXPORTS =====
-
 export default BaseAgent;
 
-// Log successful module initialization
-console.log(`
-🎉 BaseAgent Foundation Loaded Successfully! 🎉
-
-✅ Abstract BaseAgent class with comprehensive functionality
-✅ Standardized AgentResponse and AgentContext interfaces  
-✅ Integration with AIService and ContextManager
-✅ Professional error handling and logging
-✅ Performance monitoring and health checks
-✅ Translation and context resolution support
-✅ Validation utilities and configuration helpers
-
-🚀 Ready for agent implementations:
-- Sofia (booking specialist)
-- Maya (reservation management)  
-- Apollo (availability specialist)
-
-📊 Features Available:
-- Smart AI generation with fallback
-- Context-aware reservation resolution
-- Multi-language translation
-- Performance monitoring
-- Health checks and diagnostics
-- Structured logging
-
-🏗️ Architecture: Production-Ready ✅
-`);

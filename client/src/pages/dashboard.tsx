@@ -14,7 +14,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { apiRequest } from "@/lib/queryClient";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-// ✅ CORRECT: Import Sofia AI component
 import { EnhancedAIAssistant } from '@/components/dashboard/EnhancedAIAssistant';
 
 export default function Dashboard() {
@@ -27,10 +26,7 @@ export default function Dashboard() {
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
-    // In a real application, you would get the restaurant ID from user context or auth state
-    const restaurantId = 1;
-
-    // ✅ FIXED: React Query v5 compatibility - gcTime instead of cacheTime
+    // ✅ FIX: Fetch restaurant profile to get the dynamic restaurantId
     const { data: restaurant, isLoading: isRestaurantLoading, error: restaurantError } = useQuery({
         queryKey: ['/api/restaurants/profile'],
         queryFn: async () => {
@@ -40,18 +36,18 @@ export default function Dashboard() {
             console.log('✅ [Dashboard] Restaurant profile loaded:', { id: data.id, timezone: data.timezone });
             return data;
         },
-        staleTime: 0, // ✅ CRITICAL: Ensure fresh timezone data
-        gcTime: 5 * 60 * 1000, // ✅ FIXED: gcTime instead of cacheTime for React Query v5
+        staleTime: 5 * 60 * 1000, // Stale after 5 minutes
+        gcTime: 10 * 60 * 1000,
     });
 
-    // ✅ ENHANCED: Fallback timezone with better logic
+    // ✅ FIX: Use the dynamic restaurantId from the fetched data
+    const restaurantId = restaurant?.id;
     const effectiveTimezone = restaurant?.timezone || 'Europe/Moscow';
 
     const deleteMutation = useMutation({
         mutationFn: async (id: number) => {
             console.log(`🗑️ [Dashboard] Deleting reservation ${id}...`);
             const response = await apiRequest("DELETE", `/api/reservations/${id}`);
-            // Ensure we always return JSON, even if the body is empty
             const text = await response.text();
             console.log(`✅ [Dashboard] Reservation ${id} deleted successfully`);
             return text ? JSON.parse(text) : {};
@@ -61,11 +57,10 @@ export default function Dashboard() {
                 title: "Success",
                 description: "Reservation deleted successfully",
             });
-            // Invalidate all related queries to refresh the UI
             queryClient.invalidateQueries({ queryKey: ['/api/reservations'] });
             queryClient.invalidateQueries({ queryKey: ['/api/dashboard/upcoming'] });
             queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
-            queryClient.invalidateQueries({ queryKey: ['tables_availability_status'] }); // ✅ ADDED: Invalidate table status
+            queryClient.invalidateQueries({ queryKey: ['tables_availability_status'] });
             setDeleteConfirmOpen(false);
         },
         onError: (error) => {
@@ -102,7 +97,6 @@ export default function Dashboard() {
         }
     };
 
-    // ✅ ENHANCED: Better loading and error states
     if (isRestaurantLoading) {
         return (
             <DashboardLayout>
@@ -138,7 +132,6 @@ export default function Dashboard() {
     return (
         <DashboardLayout>
             <div className="px-4 py-6 lg:px-8">
-                {/* Page Header */}
                 <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between">
                     <div>
                         <h2 className="text-2xl font-bold text-gray-800">Restaurant Dashboard</h2>
@@ -184,67 +177,63 @@ export default function Dashboard() {
                     </div>
                 </header>
 
-                {/* ✅ PASS timezone as prop (interface should accept it) */}
-                <StatisticsCards
+                {/* ✅ FIX: Conditionally render child components only when restaurantId is available */}
+                {restaurantId && (
+                    <>
+                        <StatisticsCards
+                            restaurantId={restaurantId}
+                            restaurantTimezone={effectiveTimezone}
+                        />
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+                            <div className="lg:col-span-2">
+                                <UpcomingReservations
+                                    restaurantId={restaurantId}
+                                    restaurantTimezone={effectiveTimezone}
+                                    onEdit={handleEditReservation}
+                                    onDelete={handleDeleteReservation}
+                                />
+                            </div>
+                            <div className="lg:col-span-1">
+                                <TableStatus
+                                    restaurantId={restaurantId}
+                                    restaurantTimezone={effectiveTimezone}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                            <div className="lg:col-span-1">
+                                <EnhancedAIAssistant />
+                            </div>
+                            <div className="lg:col-span-1">
+                                <AIAssistant
+                                    restaurantId={restaurantId}
+                                    restaurantTimezone={effectiveTimezone}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-8">
+                            <ReservationTimeline
+                                restaurantId={restaurantId}
+                                restaurantTimezone={effectiveTimezone}
+                            />
+                        </div>
+                    </>
+                )}
+            </div>
+
+            {isReservationModalOpen && restaurantId && (
+                <ReservationModal
+                    isOpen={isReservationModalOpen}
+                    onClose={() => setIsReservationModalOpen(false)}
+                    reservationId={selectedReservationId}
                     restaurantId={restaurantId}
                     restaurantTimezone={effectiveTimezone}
                 />
+            )}
 
-                {/* Upcoming Reservations & Table Status */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-                    <div className="lg:col-span-2">
-                        {/* ✅ PASS timezone as prop */}
-                        <UpcomingReservations
-                            restaurantId={restaurantId}
-                            restaurantTimezone={effectiveTimezone}
-                            onEdit={handleEditReservation}
-                            onDelete={handleDeleteReservation}
-                        />
-                    </div>
-                    <div className="lg:col-span-1">
-                        {/* ✅ PASS timezone as prop */}
-                        <TableStatus
-                            restaurantId={restaurantId}
-                            restaurantTimezone={effectiveTimezone}
-                        />
-                    </div>
-                </div>
-
-                {/* ✅ NEW: Sofia AI Assistant */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                    <div className="lg:col-span-1">
-                        {/* ✅ ADDED: Sofia AI Chat Interface */}
-                        <EnhancedAIAssistant />
-                    </div>
-                    <div className="lg:col-span-1">
-                        {/* ✅ OLD: AI Assistant Timeline (both components coexist) */}
-                        <AIAssistant 
-                            restaurantId={restaurantId}
-                            {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
-                        />
-                    </div>
-                </div>
-
-                {/* Reservation Timeline */}
-                <div className="grid grid-cols-1 gap-8">
-                    {/* ✅ PASS timezone as prop */}
-                    <ReservationTimeline
-                        restaurantId={restaurantId}
-                        restaurantTimezone={effectiveTimezone}
-                    />
-                </div>
-            </div>
-
-            {/* ✅ CONDITIONAL: Only pass if component interface supports it */}
-            <ReservationModal
-                isOpen={isReservationModalOpen}
-                onClose={() => setIsReservationModalOpen(false)}
-                reservationId={selectedReservationId}
-                restaurantId={restaurantId}
-                {...(effectiveTimezone ? { restaurantTimezone: effectiveTimezone } : {})}
-            />
-
-            {/* Delete Confirmation Dialog */}
             <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>

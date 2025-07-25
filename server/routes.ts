@@ -2350,12 +2350,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const context = getTenantContext(req);
             const { platform = 'web', language = 'en' } = req.body;
 
-            const sessionId = enhancedConversationManager.createSession({
+            const sessionId = await enhancedConversationManager.createSession({
                 restaurantId: context.restaurant.id,
                 platform,
                 language,
-                webSessionId: req.sessionID
+                webSessionId: req.sessionID,
+                tenantContext: context
             });
+
+            console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${context.restaurant.id} with greeting in ${context.restaurant.languages?.[0] || 'en'}`);
+
 
             // ✅ Get restaurant greeting based on restaurant language/country
             let restaurantGreeting: string;

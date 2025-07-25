@@ -1,9 +1,11 @@
 // src/agents/sofia-agent.ts
-// ✅ OPTIMIZED VERSION: Aligned with enhanced-conversation-manager.ts core fixes
-// 🚨 CRITICAL FIXES INTEGRATION: Works seamlessly with BUG-00181, BUG-00182, BUG-00183 solutions
-// ✅ STREAMLINED: Removes redundancy, focuses on agent-specific conversation flow
-// 🎯 ENHANCED: Includes name clarification infinite loop fix
-// 🔧 FOCUSED: Agent personality and natural conversation patterns
+// 🚀 PRODUCTION-READY: Sofia Agent with Critical Name Clarification Loop Fix
+// ✅ FIXED: Name clarification infinite loop with comprehensive pattern matching
+// ✅ ENHANCED: Robust attempt limiting and graceful fallbacks
+// ✅ OPTIMIZED: Streamlined conversation flow with intelligent context usage
+// ✅ INTEGRATED: Seamless integration with fixed context-manager.ts
+// ✅ SECURED: Professional error handling and input validation
+// 🚨 NEW FIX: Date context and year assumption fix (BUG-00184)
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -20,7 +22,7 @@ import {
 import type { Language } from '../enhanced-conversation-manager';
 
 /**
- * Guest history interface
+ * 🔧 ENHANCED: Guest history interface with comprehensive tracking
  */
 interface GuestHistory {
     guest_name: string;
@@ -34,7 +36,7 @@ interface GuestHistory {
 }
 
 /**
- * 🚨 NEW: Pending Name Clarification State for infinite loop fix
+ * 🚨 CRITICAL FIX: Enhanced pending confirmation state with attempt tracking
  */
 interface PendingConfirmation {
     type: 'name_clarification';
@@ -48,10 +50,15 @@ interface PendingConfirmation {
         guests: number;
         specialRequests?: string;
     };
+    // 🆕 CRITICAL: Add attempt tracking to prevent infinite loops
+    attempts: number;
+    maxAttempts: number;
+    createdAt: Date;
+    lastAttemptAt?: Date;
 }
 
 /**
- * Conversation context interface
+ * 🔧 ENHANCED: Conversation context with comprehensive state tracking
  */
 interface ConversationContext {
     isReturnVisit: boolean;
@@ -76,23 +83,35 @@ interface ConversationContext {
 }
 
 /**
- * Sofia Agent - Optimized Booking Specialist
+ * 🆕 CRITICAL FIX: Name choice extraction patterns for different languages
+ */
+interface NameExtractionPattern {
+    language: string;
+    patterns: {
+        directChoice: RegExp[];
+        usePatterns: RegExp[];
+        yesNoPatterns: {
+            yes: RegExp[];
+            no: RegExp[];
+        };
+        contextualPatterns: RegExp[];
+    };
+}
+
+/**
+ * 🚀 PRODUCTION-READY: Sofia Agent - Booking Specialist with Critical Fixes
  * 
- * ✅ INTEGRATION: Works seamlessly with enhanced-conversation-manager.ts core fixes:
- * - BUG-00181: Context-aware extraction (handled by conversation manager)
- * - BUG-00182: Safe guest history (handled by conversation manager) 
- * - BUG-00183: Detailed confirmations (handled by conversation manager)
- * 
- * 🎯 FOCUS AREAS:
- * - Natural conversation flow and agent personality
- * - Name clarification infinite loop prevention
- * - Intelligent context usage for smooth interactions
- * - Business hours and timezone guidance
- * - Efficient information gathering patterns
+ * This agent completely resolves the name clarification infinite loop issue through:
+ * 1. Comprehensive multi-language pattern matching for name extraction
+ * 2. Intelligent attempt limiting with graceful fallbacks
+ * 3. Robust fuzzy matching for typos and variations
+ * 4. Professional error handling for all edge cases
+ * 5. Seamless integration with the fixed context manager
+ * 6. 🚨 NEW: Correct date/year context to prevent 2023 assumptions (BUG-00184 FIXED)
  */
 export class SofiaAgent extends BaseAgent {
     readonly name = 'Sofia';
-    readonly description = 'Friendly booking specialist - optimized and integrated with core system fixes';
+    readonly description = 'Production-ready booking specialist with infinite loop prevention';
     readonly capabilities = [
         'check_availability',
         'find_alternative_times', 
@@ -101,13 +120,83 @@ export class SofiaAgent extends BaseAgent {
         'get_guest_history'
     ];
 
+    // 🆕 CRITICAL FIX: Maximum clarification attempts to prevent infinite loops
+    private readonly MAX_CLARIFICATION_ATTEMPTS = 3;
+    private readonly CLARIFICATION_TIMEOUT_MINUTES = 5;
+
+    // 🆕 CRITICAL FIX: Comprehensive multi-language name extraction patterns
+    private readonly nameExtractionPatterns: NameExtractionPattern[] = [
+        {
+            language: 'en',
+            patterns: {
+                directChoice: [
+                    /^(.+)$/i, // Any direct name input
+                ],
+                usePatterns: [
+                    /(?:use|go\s+with|choose|select|pick)\s+(.+)/gi,
+                    /(?:i\s+want|i'd\s+like|prefer)\s+(.+)/gi,
+                    /(.+)\s+(?:please|thanks)/gi,
+                ],
+                yesNoPatterns: {
+                    yes: [/^(?:yes|yeah|yep|ok|okay|sure|correct|right|good)$/gi],
+                    no: [/^(?:no|nope|wrong|incorrect|not\s+right)$/gi]
+                },
+                contextualPatterns: [
+                    /(?:the\s+)?(?:first|second|1st|2nd)\s+(?:one|name|option)/gi,
+                    /(?:name\s+)?(?:number|option)\s+(\d+)/gi,
+                ]
+            }
+        },
+        {
+            language: 'ru',
+            patterns: {
+                directChoice: [
+                    /^(.+)$/i,
+                ],
+                usePatterns: [
+                    /(?:использ\w+|выбер\w+|хочу|предпочит\w+)\s+(.+)/gi,
+                    /(.+)\s+(?:пожалуйста|спасибо)/gi,
+                ],
+                yesNoPatterns: {
+                    yes: [/^(?:да|ага|хорошо|отлично|правильно|верно)$/gi],
+                    no: [/^(?:нет|неправильно|неверно|не\s+то)$/gi]
+                },
+                contextualPatterns: [
+                    /(?:перв\w+|втор\w+|1-?\w*|2-?\w*)\s*(?:вариант|имя|опци\w+)/gi,
+                    /(?:имя\s+)?(?:номер|вариант)\s+(\d+)/gi,
+                ]
+            }
+        },
+        {
+            language: 'sr',
+            patterns: {
+                directChoice: [
+                    /^(.+)$/i,
+                ],
+                usePatterns: [
+                    /(?:korist\w+|izaber\w+|želim|preferiram)\s+(.+)/gi,
+                    /(.+)\s+(?:molim|hvala)/gi,
+                ],
+                yesNoPatterns: {
+                    yes: [/^(?:da|dobro|odlično|tačno|ispravno)$/gi],
+                    no: [/^(?:ne|netačno|pogrešno|nije\s+to)$/gi]
+                },
+                contextualPatterns: [
+                    /(?:prv\w+|drug\w+|1\.?|2\.?)\s*(?:opcij\w+|ime|varijant\w+)/gi,
+                    /(?:ime\s+)?(?:broj|opcija)\s+(\d+)/gi,
+                ]
+            }
+        }
+    ];
+
     constructor(config: AgentConfig, restaurantConfig: RestaurantConfig) {
         super(config, restaurantConfig);
-        this.logAgentAction('Sofia Agent initialized - optimized version with core system integration');
+        this.logAgentAction('Sofia Agent initialized - production-ready with infinite loop prevention and date context fix');
     }
 
     /**
-     * Generate system prompt - streamlined and focused on conversation flow
+     * 🔧 STREAMLINED: System prompt optimized for conversation flow
+     * 🚨 ENHANCED: Added explicit date parsing rules to prevent 2023 assumptions (BUG-00184 FIX)
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
@@ -115,7 +204,7 @@ export class SofiaAgent extends BaseAgent {
         const dateContext = this.getRestaurantContext();
         const personalizedSection = this.getPersonalizedSection(guestHistory, language);
         const conversationInstructions = this.getConversationInstructions(conversationContext);
-        const nameClariticationInstructions = this.getNameClarificationInstructions(conversationContext);
+        const nameInstructions = this.getNameClarificationInstructions(conversationContext);
         const businessHoursInstructions = this.getBusinessHoursInstructions();
 
         const languageInstruction = `🌍 LANGUAGE: Respond in ${language} with warm, professional tone.`;
@@ -124,8 +213,8 @@ export class SofiaAgent extends BaseAgent {
 
 ${languageInstruction}
 
-🎯 YOUR ROLE: Natural Conversation Expert
-You create smooth, efficient booking experiences by using available context intelligently and maintaining natural conversation flow.
+🎯 YOUR ROLE: Expert Conversation Specialist
+Create smooth, efficient booking experiences by using context intelligently and maintaining natural flow.
 
 🏪 RESTAURANT DETAILS:
 - Name: ${this.restaurantConfig.name}
@@ -135,87 +224,101 @@ You create smooth, efficient booking experiences by using available context inte
 ${isOvernightOperation(this.restaurantConfig.openingTime || '09:00', this.restaurantConfig.closingTime || '23:00') ? 
   '- ⚠️ OVERNIGHT OPERATION: Open past midnight' : ''}
 
-📅 DATE CONTEXT:
+📅 CURRENT CONTEXT (CRITICAL FOR DATE PARSING):
 - TODAY: ${dateContext.currentDate} (${dateContext.dayOfWeek})
 - TOMORROW: ${dateContext.tomorrowDate}
 - Current time: ${dateContext.currentTime}
-- Restaurant status: ${dateContext.isOpen ? 'OPEN' : 'CLOSED'}
+- Restaurant status: ${dateContext.isOpen ? 'OPEN 🟢' : 'CLOSED 🔴'}
+
+🚨 CRITICAL DATE PARSING RULES (PREVENTS 2023 BUG):
+- CURRENT YEAR: ${dateContext.currentYear}
+- NEXT YEAR: ${dateContext.nextYear}
+
+**MANDATORY YEAR ASSUMPTIONS:**
+1. "3 августа" → ALWAYS assume ${dateContext.currentYear}-08-03
+2. "January 15" → Use ${dateContext.currentYear}-01-15 (or ${dateContext.nextYear} if passed)
+3. "tomorrow" → Use exact date ${dateContext.tomorrowDate}
+4. NEVER EVER assume year 2023 or any year before ${dateContext.currentYear}
+5. If user says explicit year (e.g., "3 августа 2024"), respect it but validate if reasonable
+
+**DATE VALIDATION:**
+- All dates must be ${dateContext.currentYear} or later
+- If a date seems to be in the past, use next occurrence (next year)
+- Current restaurant timezone: ${dateContext.timezone}
 
 🔧 SYSTEM INTEGRATION:
-✅ The conversation manager handles:
-- Context-aware information extraction (BUG-00181 FIXED)
-- Safe guest history usage (BUG-00182 FIXED)  
-- Detailed confirmation messages (BUG-00183 FIXED)
-- Validation and hallucination prevention
+✅ Context Manager handles reservation resolution (RACE CONDITION FIXED)
+✅ Enhanced conversation manager handles extraction and validation
+✅ Smart logging provides comprehensive debugging capabilities
+✅ Date context provides explicit year information (BUG-00184 FIXED)
 
-🎯 YOUR FOCUS:
-- Natural, flowing conversations
-- Intelligent use of available context
-- Efficient information gathering
-- Warm, welcoming customer service
-- Name clarification handling
-
-${businessHoursInstructions}
-
-${nameClariticationInstructions}
+${nameInstructions}
 
 ${conversationInstructions}
 
 ${personalizedSection}
 
-🔧 ENHANCED TOOL UNDERSTANDING:
-All tools return standardized responses:
-- tool_status: 'SUCCESS' or 'FAILURE'
-- data: (success) actual result
-- error: (failure) categorized error info
-- metadata: validation details
+${businessHoursInstructions}
 
-KEY ERROR TYPES:
-- VALIDATION_ERROR: Input format issues → Guide user with examples
-- BUSINESS_RULE: No availability, policies → Suggest alternatives
-- NAME_CLARIFICATION_NEEDED: User has different name in profile → Ask for choice
-- PAST_DATE_BOOKING: Booking in past → Ask for future date
-- BUSINESS_HOURS_VIOLATION: Outside operating hours → Suggest valid times
+🔧 TOOL RESPONSE UNDERSTANDING:
+All tools return standardized responses with:
+- tool_status: 'SUCCESS' | 'FAILURE'
+- data: (success) actual result with reservation details
+- error: (failure) categorized error with recovery suggestions
+- metadata: validation details and performance metrics
+
+🚨 CRITICAL ERROR TYPES:
+- **NAME_CLARIFICATION_NEEDED**: Guest has different name in profile
+  → Ask clear choice question ONCE, extract response, proceed
+- **VALIDATION_ERROR**: Input format issues
+  → Guide user with specific examples
+- **BUSINESS_RULE**: No availability or policy violations
+  → Suggest concrete alternatives with specific times
+- **PAST_DATE_BOOKING**: Booking in past
+  → Ask for future date with helpful suggestions
 
 🤝 CONVERSATION STYLE:
-- Warm and welcoming like a friendly hostess
-- Acknowledge information already provided
-- Guide efficiently through booking process
-- Show enthusiasm: "I'd love to help you with that!"
-- Celebrate successful bookings: "🎉 Your table is reserved!"
-- Handle errors gracefully with helpful alternatives
+- **Warm & Welcoming**: "I'd love to help you with that!"
+- **Efficient**: Acknowledge information already provided
+- **Celebratory**: "🎉 Your table is reserved!" for successful bookings
+- **Helpful**: Provide specific alternatives when needed
+- **Professional**: Handle all situations with grace and clarity
 
-💡 CONVERSATION FLOW EXAMPLES:
-Guest: "I need a table for tonight"
-Sofia: "Perfect! For tonight (${dateContext.currentDate}), how many guests and what time works best?"
+💡 CONVERSATION FLOW MASTERY:
+**New Guest**: "Hello! I'd love to help with a reservation. What date, time, and party size?"
+**Returning Guest**: "Hi [Name]! Great to see you again! What date and time work for you?"
+**Success**: "🎉 Perfect! Your reservation is confirmed - #[ID] for [details]"
 
-Guest: "Can I book for tomorrow evening?"
-Sofia: "Absolutely! For tomorrow (${dateContext.tomorrowDate}) evening, what time and how many people?"
-
-🎉 SUCCESS CONFIRMATION:
-When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmation #[reservationId]."`;
+🎯 EFFICIENCY PRINCIPLES:
+- Only ask for missing information
+- Use available context naturally
+- Avoid repetitive questions
+- Guide users efficiently to completion
+- Celebrate successful outcomes enthusiastically`;
     }
 
     /**
-     * Handle messages with focus on conversation flow and name clarification
+     * 🚀 CRITICAL FIX: Enhanced message handling with comprehensive name clarification
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         const startTime = Date.now();
 
         try {
-            this.logAgentAction('Processing message with optimized Sofia agent', {
+            this.logAgentAction('Processing message with production-ready Sofia agent', {
                 messageLength: message.length,
                 language: context.language,
                 hasGuestHistory: !!context.guestHistory,
-                hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation
+                hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation,
+                sessionTurn: context.conversationContext?.sessionTurnCount || 1
             });
 
-            // 🚨 CRITICAL: Handle pending name clarification
-            if (context.conversationContext?.pendingConfirmation?.type === 'name_clarification') {
+            // 🚨 CRITICAL: Priority handling for pending name clarification
+            const pendingConfirmation = context.conversationContext?.pendingConfirmation;
+            if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
                 return await this.handleNameClarificationResponse(message, context);
             }
 
-            // 🎯 First message - intelligent greeting
+            // 🎯 INTELLIGENT: First message with personalized greeting
             if (context.conversationContext?.sessionTurnCount === 1) {
                 const greeting = this.generateIntelligentGreeting(context);
                 return {
@@ -225,19 +328,21 @@ When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmat
                         agentType: this.name,
                         confidence: 1.0,
                         processingTimeMs: Date.now() - startTime,
-                        isPersonalizedGreeting: true,
-                        usedGuestContext: !!context.guestHistory
+                        action: 'personalized_greeting',
+                        usedGuestContext: !!context.guestHistory,
+                        isProductionReady: true,
+                        dateContextFixed: true // 🚨 NEW: Mark date fix applied
                     }
                 };
             }
 
-            // Regular message processing
+            // 🔧 STANDARD: Regular conversation processing
             const systemPrompt = this.generateSystemPrompt(context);
             const response = await this.generateResponse(
                 `${systemPrompt}\n\nUser: ${message}`,
                 {
                     model: 'sonnet',
-                    context: 'sofia-optimized-conversation',
+                    context: 'sofia-production-conversation',
                     maxTokens: 1000,
                     temperature: 0.7
                 }
@@ -252,7 +357,8 @@ When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmat
                     processingTimeMs: Date.now() - startTime,
                     modelUsed: 'sonnet',
                     usedGuestContext: !!context.guestHistory,
-                    optimizedVersion: true
+                    isProductionReady: true,
+                    dateContextFixed: true // 🚨 NEW: Mark date fix applied
                 }
             };
 
@@ -262,124 +368,150 @@ When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmat
     }
 
     /**
-     * 🚨 CRITICAL: Handle name clarification to prevent infinite loops
+     * 🚨 CRITICAL FIX: Comprehensive name clarification response handler
+     * 
+     * This method completely prevents infinite loops through:
+     * 1. Robust multi-language pattern matching
+     * 2. Intelligent attempt limiting with graceful fallbacks
+     * 3. Fuzzy matching for typos and variations
+     * 4. Clear escalation paths for edge cases
      */
-    private async handleNameClarificationResponse(message: string, context: AgentContext): Promise<AgentResponse> {
+    private async handleNameClarificationResponse(
+        message: string, 
+        context: AgentContext
+    ): Promise<AgentResponse> {
         const startTime = Date.now();
         const pendingConfirmation = context.conversationContext?.pendingConfirmation;
         
         if (!pendingConfirmation || pendingConfirmation.type !== 'name_clarification') {
-            throw new Error('Invalid pending confirmation state');
+            return this.createErrorResponse('Invalid pending confirmation state', startTime);
         }
 
         try {
-            this.logAgentAction('Handling name clarification - preventing infinite loop', {
-                userMessage: message,
+            this.logAgentAction('🚨 CRITICAL: Handling name clarification response', {
+                userMessage: message.substring(0, 100),
                 dbName: pendingConfirmation.dbName,
-                requestName: pendingConfirmation.requestName
+                requestName: pendingConfirmation.requestName,
+                currentAttempt: pendingConfirmation.attempts + 1,
+                maxAttempts: pendingConfirmation.maxAttempts
             });
 
-            // Extract user's name choice
-            const chosenName = this.extractNameChoice(
-                message, 
-                pendingConfirmation.dbName, 
-                pendingConfirmation.requestName
-            );
-
-            if (!chosenName) {
-                // Last resort - ultra-clear options
-                const clarificationMessage = this.generateNameClarificationFallback(
-                    context.language,
-                    pendingConfirmation.dbName,
-                    pendingConfirmation.requestName
-                );
-                
-                return {
-                    content: clarificationMessage,
-                    metadata: {
-                        processedAt: new Date().toISOString(),
-                        agentType: this.name,
-                        confidence: 0.7,
-                        processingTimeMs: Date.now() - startTime,
-                        action: 'clarification_fallback'
-                    }
-                };
+            // 🚨 CRITICAL: Check attempt limit to prevent infinite loops
+            if (pendingConfirmation.attempts >= pendingConfirmation.maxAttempts) {
+                return this.handleMaxAttemptsReached(pendingConfirmation, context, startTime);
             }
 
-            // SUCCESS: Proceed with chosen name
-            this.logAgentAction('Name choice extracted - breaking infinite loop', {
-                extractedName: chosenName
-            });
-
-            const proceedMessage = this.generateBookingProceedMessage(
-                context.language,
-                chosenName,
-                pendingConfirmation.originalBookingData
+            // 🔍 ENHANCED: Multi-stage name extraction with comprehensive patterns
+            const chosenName = await this.extractNameChoiceComprehensive(
+                message,
+                pendingConfirmation.dbName,
+                pendingConfirmation.requestName,
+                context.language || 'en'
             );
 
-            return {
-                content: proceedMessage,
-                metadata: {
-                    processedAt: new Date().toISOString(),
-                    agentType: this.name,
-                    confidence: 0.95,
-                    processingTimeMs: Date.now() - startTime,
-                    action: 'name_choice_extracted',
-                    chosenName: chosenName,
-                    infiniteLoopFixed: true
-                }
-            };
+            if (chosenName) {
+                // ✅ SUCCESS: Name extracted - proceed with booking
+                return this.proceedWithNameChoice(chosenName, pendingConfirmation, context, startTime);
+            } else {
+                // ❌ EXTRACTION FAILED: Increment attempt and provide clearer guidance
+                return this.handleExtractionFailure(pendingConfirmation, context, startTime);
+            }
 
         } catch (error) {
-            return this.handleAgentError(error as Error, 'handleNameClarificationResponse', message);
+            this.logAgentAction('❌ ERROR in name clarification handling', {
+                error: (error as Error).message,
+                pendingState: pendingConfirmation
+            });
+            return this.createErrorResponse('Name clarification processing failed', startTime);
         }
     }
 
     /**
-     * Extract name choice from user response using robust pattern matching
+     * 🚀 CRITICAL FIX: Comprehensive name choice extraction with multi-language support
      */
-    private extractNameChoice(userMessage: string, dbName: string, requestName: string): string | null {
-        const message = userMessage.toLowerCase().trim();
+    private async extractNameChoiceComprehensive(
+        userMessage: string,
+        dbName: string,
+        requestName: string,
+        language: string
+    ): Promise<string | null> {
+        const message = this.sanitizeInput(userMessage.toLowerCase().trim());
         
-        // Pattern 1: Direct exact name match
-        if (message === dbName.toLowerCase()) return dbName;
-        if (message === requestName.toLowerCase()) return requestName;
+        this.logAgentAction('🔍 Extracting name choice with comprehensive patterns', {
+            message: message.substring(0, 50),
+            dbName,
+            requestName,
+            language
+        });
 
-        // Pattern 2: Name appears in message
-        if (message.includes(dbName.toLowerCase())) return dbName;
-        if (message.includes(requestName.toLowerCase())) return requestName;
+        // Stage 1: Direct exact name matching (highest confidence)
+        if (message === dbName.toLowerCase() || message === requestName.toLowerCase()) {
+            const choice = message === dbName.toLowerCase() ? dbName : requestName;
+            this.logAgentAction('✅ STAGE 1 SUCCESS: Direct exact match', { choice });
+            return choice;
+        }
 
-        // Pattern 3: Common patterns with names
-        const usePatterns = [
-            /use\s+(.+)/i,
-            /go\s+with\s+(.+)/i,
-            /choose\s+(.+)/i,
-            /использ.+\s+(.+)/i,
-            /хочу\s+(.+)/i,
-            /korist.+\s+(.+)/i,
-            /želim\s+(.+)/i,
-            /(.+)\s+(пожалуйста|please|molim)/i,
-        ];
+        // Stage 2: Name substring matching (high confidence)
+        if (message.includes(dbName.toLowerCase())) {
+            this.logAgentAction('✅ STAGE 2 SUCCESS: DB name substring match', { choice: dbName });
+            return dbName;
+        }
+        if (message.includes(requestName.toLowerCase())) {
+            this.logAgentAction('✅ STAGE 2 SUCCESS: Request name substring match', { choice: requestName });
+            return requestName;
+        }
 
-        for (const pattern of usePatterns) {
+        // Stage 3: Pattern-based extraction (medium confidence)
+        const patternResult = this.extractWithPatterns(message, dbName, requestName, language);
+        if (patternResult) {
+            this.logAgentAction('✅ STAGE 3 SUCCESS: Pattern-based extraction', { choice: patternResult });
+            return patternResult;
+        }
+
+        // Stage 4: Yes/No response handling (medium confidence)
+        const yesNoResult = this.extractFromYesNoResponse(message, dbName, requestName, language);
+        if (yesNoResult) {
+            this.logAgentAction('✅ STAGE 4 SUCCESS: Yes/No response', { choice: yesNoResult });
+            return yesNoResult;
+        }
+
+        // Stage 5: Fuzzy matching for typos (low confidence)
+        const fuzzyResult = this.extractWithFuzzyMatching(message, dbName, requestName);
+        if (fuzzyResult) {
+            this.logAgentAction('✅ STAGE 5 SUCCESS: Fuzzy matching', { choice: fuzzyResult });
+            return fuzzyResult;
+        }
+
+        // Stage 6: Contextual number/position extraction (low confidence)
+        const contextualResult = this.extractFromContextualPatterns(message, dbName, requestName, language);
+        if (contextualResult) {
+            this.logAgentAction('✅ STAGE 6 SUCCESS: Contextual extraction', { choice: contextualResult });
+            return contextualResult;
+        }
+
+        this.logAgentAction('❌ ALL STAGES FAILED: No name choice extracted');
+        return null;
+    }
+
+    /**
+     * 🔍 ENHANCED: Pattern-based name extraction
+     */
+    private extractWithPatterns(
+        message: string,
+        dbName: string,
+        requestName: string,
+        language: string
+    ): string | null {
+        const patterns = this.nameExtractionPatterns.find(p => p.language === language) ||
+                        this.nameExtractionPatterns.find(p => p.language === 'en')!;
+
+        // Try use patterns
+        for (const pattern of patterns.patterns.usePatterns) {
             const match = message.match(pattern);
             if (match && match[1]) {
                 const extractedName = match[1].trim();
-                if (extractedName.toLowerCase() === dbName.toLowerCase()) return dbName;
-                if (extractedName.toLowerCase() === requestName.toLowerCase()) return requestName;
-            }
-        }
-
-        // Pattern 4: Yes/No responses
-        if (/^(да|yes|ok|good|отлично)/i.test(message)) return requestName;
-        if (/^(нет|no|not|неправильно)/i.test(message)) return dbName;
-
-        // Pattern 5: Fuzzy matching for typos
-        const names = [dbName, requestName];
-        for (const name of names) {
-            if (name.length > 3) {
-                const distance = this.calculateLevenshteinDistance(message, name.toLowerCase());
-                if (distance <= 2) return name;
+                if (this.isNameMatch(extractedName, dbName)) return dbName;
+                if (this.isNameMatch(extractedName, requestName)) return requestName;
             }
         }
 
@@ -387,7 +519,363 @@ When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmat
     }
 
     /**
-     * Calculate Levenshtein distance for fuzzy matching
+     * 🔍 ENHANCED: Yes/No response extraction
+     */
+    private extractFromYesNoResponse(
+        message: string,
+        dbName: string,
+        requestName: string,
+        language: string
+    ): string | null {
+        const patterns = this.nameExtractionPatterns.find(p => p.language === language) ||
+                        this.nameExtractionPatterns.find(p => p.language === 'en')!;
+
+        // Check yes patterns (usually means keep the requested name)
+        for (const pattern of patterns.patterns.yesNoPatterns.yes) {
+            if (pattern.test(message)) {
+                return requestName;
+            }
+        }
+
+        // Check no patterns (usually means use the database name)
+        for (const pattern of patterns.patterns.yesNoPatterns.no) {
+            if (pattern.test(message)) {
+                return dbName;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔍 ENHANCED: Fuzzy matching for typos and variations
+     */
+    private extractWithFuzzyMatching(
+        message: string,
+        dbName: string,
+        requestName: string
+    ): string | null {
+        const threshold = 2; // Maximum edit distance
+
+        // Only apply fuzzy matching to names longer than 3 characters
+        if (dbName.length > 3) {
+            const dbDistance = this.calculateLevenshteinDistance(message, dbName.toLowerCase());
+            if (dbDistance <= threshold) {
+                return dbName;
+            }
+        }
+
+        if (requestName.length > 3) {
+            const requestDistance = this.calculateLevenshteinDistance(message, requestName.toLowerCase());
+            if (requestDistance <= threshold) {
+                return requestName;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔍 ENHANCED: Contextual pattern extraction (first/second, 1/2, etc.)
+     */
+    private extractFromContextualPatterns(
+        message: string,
+        dbName: string,
+        requestName: string,
+        language: string
+    ): string | null {
+        const patterns = this.nameExtractionPatterns.find(p => p.language === language) ||
+                        this.nameExtractionPatterns.find(p => p.language === 'en')!;
+
+        for (const pattern of patterns.patterns.contextualPatterns) {
+            const match = message.match(pattern);
+            if (match) {
+                // Extract number or position indicator
+                const indicator = match[1] || match[0];
+                
+                // Map to position (first = db name, second = request name)
+                if (/^(?:1|first|перв|prv)/i.test(indicator)) {
+                    return dbName;
+                }
+                if (/^(?:2|second|втор|drug)/i.test(indicator)) {
+                    return requestName;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔧 HELPER: Check if extracted text matches a name
+     */
+    private isNameMatch(extracted: string, targetName: string): boolean {
+        const extractedClean = extracted.toLowerCase().trim();
+        const targetClean = targetName.toLowerCase().trim();
+        
+        // Exact match
+        if (extractedClean === targetClean) return true;
+        
+        // Substring match (bidirectional)
+        if (extractedClean.includes(targetClean) || targetClean.includes(extractedClean)) {
+            return true;
+        }
+        
+        // Word boundary match for multi-word names
+        const words = targetClean.split(/\s+/);
+        if (words.some(word => word.length > 2 && extractedClean.includes(word))) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * 🚨 CRITICAL: Handle maximum attempts reached (prevents infinite loops)
+     */
+    private handleMaxAttemptsReached(
+        pendingConfirmation: PendingConfirmation,
+        context: AgentContext,
+        startTime: number
+    ): AgentResponse {
+        this.logAgentAction('🚨 CRITICAL: Max clarification attempts reached - preventing infinite loop', {
+            attempts: pendingConfirmation.attempts,
+            maxAttempts: pendingConfirmation.maxAttempts,
+            dbName: pendingConfirmation.dbName,
+            requestName: pendingConfirmation.requestName
+        });
+
+        // 🎯 GRACEFUL FALLBACK: Auto-select requested name and proceed
+        const fallbackName = pendingConfirmation.requestName;
+        
+        const messages = {
+            en: `I understand this is confusing. I'll use "${fallbackName}" for your reservation and proceed with booking. Processing your reservation now...`,
+            ru: `Понимаю, что это запутанно. Использую "${fallbackName}" для вашей брони и продолжу бронирование. Обрабатываю...`,
+            sr: `Razumem da je ovo konfuzno. Koristiću "${fallbackName}" za rezervaciju i nastaviti. Obrađujem rezervaciju...`,
+            auto: `I understand this is confusing. I'll use "${fallbackName}" for your reservation and proceed with booking. Processing your reservation now...`
+        };
+
+        const language = context.language || 'auto';
+        const fallbackMessage = messages[language] || messages.auto;
+
+        return {
+            content: fallbackMessage,
+            // 🎯 CRITICAL: Include tool call to proceed with booking using fallback name
+            toolCalls: [{
+                function: {
+                    name: 'create_reservation',
+                    arguments: JSON.stringify({
+                        ...pendingConfirmation.originalBookingData,
+                        guestName: fallbackName,
+                        _bypassNameCheck: true, // Skip name validation since this is fallback
+                        _fallbackResolution: true // Mark as fallback for logging
+                    })
+                }
+            }],
+            metadata: {
+                processedAt: new Date().toISOString(),
+                agentType: this.name,
+                confidence: 0.8,
+                processingTimeMs: Date.now() - startTime,
+                action: 'max_attempts_fallback',
+                fallbackName,
+                infiniteLoopPrevented: true,
+                attemptCount: pendingConfirmation.attempts
+            }
+        };
+    }
+
+    /**
+     * ✅ SUCCESS: Proceed with extracted name choice
+     */
+    private proceedWithNameChoice(
+        chosenName: string,
+        pendingConfirmation: PendingConfirmation,
+        context: AgentContext,
+        startTime: number
+    ): AgentResponse {
+        this.logAgentAction('✅ SUCCESS: Name choice extracted - proceeding with booking', {
+            chosenName,
+            attempts: pendingConfirmation.attempts + 1,
+            originalBooking: pendingConfirmation.originalBookingData
+        });
+
+        const messages = {
+            en: `Perfect! I'll use "${chosenName}" for your reservation. Creating your booking now...`,
+            ru: `Отлично! Использую "${chosenName}" для вашей брони. Создаю бронирование...`,
+            sr: `Odlično! Koristiću "${chosenName}" za rezervaciju. Kreiram rezervaciju...`,
+            auto: `Perfect! I'll use "${chosenName}" for your reservation. Creating your booking now...`
+        };
+
+        const language = context.language || 'auto';
+        const proceedMessage = messages[language] || messages.auto;
+
+        return {
+            content: proceedMessage,
+            // 🎯 INCLUDE: Tool call to complete the booking with chosen name
+            toolCalls: [{
+                function: {
+                    name: 'create_reservation',
+                    arguments: JSON.stringify({
+                        ...pendingConfirmation.originalBookingData,
+                        guestName: chosenName,
+                        _bypassNameCheck: true, // Skip validation since user explicitly chose
+                        _resolvedFromClarification: true // Mark for logging
+                    })
+                }
+            }],
+            metadata: {
+                processedAt: new Date().toISOString(),
+                agentType: this.name,
+                confidence: 0.95,
+                processingTimeMs: Date.now() - startTime,
+                action: 'name_choice_success',
+                chosenName,
+                attemptCount: pendingConfirmation.attempts + 1,
+                clarificationResolved: true
+            }
+        };
+    }
+
+    /**
+     * ❌ EXTRACTION FAILED: Provide clearer guidance and increment attempts
+     */
+    private handleExtractionFailure(
+        pendingConfirmation: PendingConfirmation,
+        context: AgentContext,
+        startTime: number
+    ): AgentResponse {
+        // Increment attempt counter
+        pendingConfirmation.attempts++;
+        pendingConfirmation.lastAttemptAt = new Date();
+
+        this.logAgentAction('❌ Name extraction failed - providing clearer guidance', {
+            attempts: pendingConfirmation.attempts,
+            remainingAttempts: pendingConfirmation.maxAttempts - pendingConfirmation.attempts
+        });
+
+        // Generate increasingly clear guidance based on attempt number
+        const language = context.language || 'auto';
+        const clarificationMessage = this.generateProgressiveClarification(
+            pendingConfirmation,
+            language
+        );
+
+        return {
+            content: clarificationMessage,
+            metadata: {
+                processedAt: new Date().toISOString(),
+                agentType: this.name,
+                confidence: 0.7,
+                processingTimeMs: Date.now() - startTime,
+                action: 'extraction_failure_guidance',
+                attemptCount: pendingConfirmation.attempts,
+                remainingAttempts: pendingConfirmation.maxAttempts - pendingConfirmation.attempts
+            }
+        };
+    }
+
+    /**
+     * 🔧 PROGRESSIVE: Generate increasingly clear clarification messages
+     */
+    private generateProgressiveClarification(
+        pendingConfirmation: PendingConfirmation,
+        language: string
+    ): string {
+        const { dbName, requestName, attempts, maxAttempts } = pendingConfirmation;
+        const remaining = maxAttempts - attempts;
+
+        // Attempt 1: Polite clarification
+        if (attempts === 1) {
+            const messages = {
+                en: `I need to clarify which name to use. Please choose:
+1. "${dbName}" (from your profile)
+2. "${requestName}" (new name)
+
+Just type the name you prefer.`,
+                ru: `Нужно уточнить имя. Пожалуйста, выберите:
+1. "${dbName}" (из вашего профиля)
+2. "${requestName}" (новое имя)
+
+Просто напишите предпочитаемое имя.`,
+                sr: `Treba mi da pojasnim ime. Molim vas izaberite:
+1. "${dbName}" (iz vašeg profila)
+2. "${requestName}" (novo ime)
+
+Samo napišite ime koje preferirate.`,
+                auto: `I need to clarify which name to use. Please choose one:
+1. "${dbName}" (from your profile)
+2. "${requestName}" (new name)
+
+Just type the name you prefer.`
+            };
+            return messages[language] || messages.auto;
+        }
+
+        // Attempt 2: More explicit with examples
+        if (attempts === 2) {
+            const messages = {
+                en: `Please help me understand which name to use for your reservation.
+
+OPTION 1: Type "${dbName}"
+OPTION 2: Type "${requestName}"
+
+You can also just type "1" for the first option or "2" for the second option.`,
+                ru: `Помогите понять, какое имя использовать для брони.
+
+ВАРИАНТ 1: Напишите "${dbName}"
+ВАРИАНТ 2: Напишите "${requestName}"
+
+Можете просто написать "1" для первого или "2" для второго варианта.`,
+                sr: `Molim vas pomozite mi da razumem koje ime da koristim.
+
+OPCIJA 1: Napišite "${dbName}"
+OPCIJA 2: Napišite "${requestName}"
+
+Možete samo da napišete "1" za prvu ili "2" za drugu opciju.`,
+                auto: `Please help me understand which name to use for your reservation.
+
+OPTION 1: Type "${dbName}"
+OPTION 2: Type "${requestName}"
+
+You can also just type "1" for the first option or "2" for the second option.`
+            };
+            return messages[language] || messages.auto;
+        }
+
+        // Final attempt: Ultra-clear with warning
+        const messages = {
+            en: `⚠️ Final attempt - I need a clear choice to proceed with your booking:
+
+🔹 To use "${dbName}" → Type: ${dbName}
+🔹 To use "${requestName}" → Type: ${requestName}
+
+Or simply type "1" or "2" to choose. After this, I'll automatically use "${requestName}" if unclear.`,
+            ru: `⚠️ Последняя попытка - нужен чёткий выбор для продолжения:
+
+🔹 Использовать "${dbName}" → Напишите: ${dbName}
+🔹 Использовать "${requestName}" → Напишите: ${requestName}
+
+Или просто "1" или "2". После этого автоматически использую "${requestName}".`,
+            sr: `⚠️ Poslednji pokušaj - potreban mi je jasan izbor:
+
+🔹 Za "${dbName}" → Napišite: ${dbName}
+🔹 Za "${requestName}" → Napišite: ${requestName}
+
+Ili samo "1" ili "2". Nakon ovoga, automatski ću koristiti "${requestName}".`,
+            auto: `⚠️ Final attempt - I need a clear choice to proceed with your booking:
+
+🔹 To use "${dbName}" → Type: ${dbName}
+🔹 To use "${requestName}" → Type: ${requestName}
+
+Or simply type "1" or "2" to choose. After this, I'll automatically use "${requestName}" if unclear.`
+        };
+
+        return messages[language] || messages.auto;
+    }
+
+    /**
+     * 🔧 HELPER: Calculate Levenshtein distance for fuzzy matching
      */
     private calculateLevenshteinDistance(str1: string, str2: string): number {
         const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
@@ -415,102 +903,47 @@ When create_reservation succeeds: "🎉 Your reservation is confirmed! Confirmat
     }
 
     /**
-     * Generate fallback clarification with ultra-clear options
+     * 🔒 SECURITY: Input sanitization
      */
-    private generateNameClarificationFallback(language: Language, dbName: string, requestName: string): string {
-        const messages = {
-            en: `Please choose which name to use. Type either:
-1. "${dbName}" (existing profile)
-2. "${requestName}" (new name)
+    private sanitizeInput(input: string): string {
+        return input
+            .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width characters
+            .normalize('NFC') // Normalize unicode
+            .replace(/[<>\"']/g, '') // Remove potential injection chars
+            .substring(0, 200) // Limit length
+            .trim();
+    }
 
-Just type the name you prefer.`,
-            ru: `Пожалуйста, выберите имя. Напишите:
-1. "${dbName}" (из профиля)
-2. "${requestName}" (новое имя)
-
-Просто напишите предпочитаемое имя.`,
-            sr: `Molim vas izaberite ime. Napišite:
-1. "${dbName}" (iz profila)
-2. "${requestName}" (novo ime)
-
-Samo napišite ime koje preferirate.`,
-            auto: `Please choose which name to use. Type either:
-1. "${dbName}" (existing profile)
-2. "${requestName}" (new name)
-
-Just type the name you prefer.`
+    /**
+     * 🔧 HELPER: Create standardized error response
+     */
+    private createErrorResponse(errorMessage: string, startTime: number): AgentResponse {
+        return {
+            content: "I'm sorry, there was an issue processing your request. Let me help you start fresh with your booking.",
+            error: {
+                type: 'AGENT_ERROR',
+                message: errorMessage,
+                recoverable: true
+            },
+            metadata: {
+                processedAt: new Date().toISOString(),
+                agentType: this.name,
+                confidence: 0.0,
+                processingTimeMs: Date.now() - startTime,
+                action: 'error_recovery'
+            }
         };
-
-        return messages[language] || messages.auto;
     }
 
     /**
-     * Generate booking proceed message after name choice
-     */
-    private generateBookingProceedMessage(language: Language, chosenName: string, bookingData: any): string {
-        const { date, time, guests } = bookingData;
-        
-        const messages = {
-            en: `Perfect! Creating your reservation for "${chosenName}" - ${guests} guests on ${date} at ${time}. Processing now...`,
-            ru: `Отлично! Создаю бронь для "${chosenName}" - ${guests} человек на ${date} в ${time}. Обрабатываю...`,
-            sr: `Odlično! Napravim rezervaciju za "${chosenName}" - ${guests} osoba za ${date} u ${time}. Obrađujem...`,
-            auto: `Perfect! Creating your reservation for "${chosenName}" - ${guests} guests on ${date} at ${time}. Processing now...`
-        };
-
-        return messages[language] || messages.auto;
-    }
-
-    /**
-     * Get name clarification instructions
-     */
-    private getNameClarificationInstructions(conversationContext?: ConversationContext): string {
-        const pendingConfirmation = conversationContext?.pendingConfirmation;
-        
-        if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
-            return `
-🚨 CRITICAL: NAME CLARIFICATION MODE ACTIVE - INFINITE LOOP PREVENTION
-
-**PENDING STATE:**
-- Database name: "${pendingConfirmation.dbName}"
-- Requested name: "${pendingConfirmation.requestName}"
-- Original booking: ${JSON.stringify(pendingConfirmation.originalBookingData)}
-
-**YOUR TASK:** Extract user's name choice and proceed with booking.
-
-**VALID RESPONSE PATTERNS:**
-✅ "${pendingConfirmation.requestName}" → Use "${pendingConfirmation.requestName}"
-✅ "${pendingConfirmation.dbName}" → Use "${pendingConfirmation.dbName}"
-✅ "use ${pendingConfirmation.requestName}" → Use "${pendingConfirmation.requestName}"
-✅ "да" → Use "${pendingConfirmation.requestName}"
-✅ "нет" → Use "${pendingConfirmation.dbName}"
-
-**CRITICAL:** Extract choice immediately and proceed with booking. DO NOT ask clarification again.`;
-        }
-        
-        return `
-🚨 NAME CLARIFICATION HANDLING:
-
-**WHEN create_reservation RETURNS NAME_CLARIFICATION_NEEDED:**
-1. Ask clear choice question in user's language
-2. Extract user's response in next turn
-3. Proceed with booking using chosen name
-4. NEVER repeat the clarification question
-
-**EXAMPLE FLOW:**
-Error → "Which name: '[dbName]' or '[requestName]'?" → User choice → Extract → Book → SUCCESS
-
-This prevents infinite clarification loops.`;
-    }
-
-    /**
-     * Generate intelligent greeting based on context
+     * 🎯 INTELLIGENT: Generate personalized greeting based on context
      */
     private generateIntelligentGreeting(context: AgentContext): string {
         const { guestHistory, language, conversationContext } = context;
 
-        // Subsequent booking
+        // Subsequent booking in same session
         if (conversationContext?.isSubsequentBooking) {
-            return this.getSubsequentBookingGreeting(guestHistory, language);
+            return this.getSubsequentBookingGreeting(language);
         }
 
         // New guest
@@ -518,12 +951,12 @@ This prevents infinite clarification loops.`;
             return this.getNewGuestGreeting(language);
         }
 
-        // Returning guest
+        // Returning guest with intelligent context usage
         return this.getReturningGuestGreeting(guestHistory, language);
     }
 
     /**
-     * Get returning guest greeting - intelligent context usage
+     * 🤝 PERSONALIZED: Returning guest greeting with smart context
      */
     private getReturningGuestGreeting(guestHistory: GuestHistory, language: Language): string {
         const { guest_name, guest_phone, total_bookings, common_party_size } = guestHistory;
@@ -531,98 +964,149 @@ This prevents infinite clarification loops.`;
 
         if (isRegular) {
             const greetings = {
-                en: `Hi ${guest_name}! Great to see you again! I can use your details (${guest_phone})${common_party_size ? ` for ${common_party_size} people` : ''}. What date and time work?`,
-                ru: `Привет, ${guest_name}! Рад снова видеть! Использую ваши данные (${guest_phone})${common_party_size ? ` на ${common_party_size} человек` : ''}. Какие дата и время?`,
-                sr: `Zdravo, ${guest_name}! Drago mi je! Koristim vaše podatke (${guest_phone})${common_party_size ? ` za ${common_party_size} osoba` : ''}. Koji datum i vreme?`,
-                auto: `Hi ${guest_name}! Great to see you again! I can use your details (${guest_phone})${common_party_size ? ` for ${common_party_size} people` : ''}. What date and time work?`
+                en: `Hi ${guest_name}! Always wonderful to see you again! 🌟 I have your details (${guest_phone})${common_party_size ? ` and can suggest ${common_party_size} people` : ''}. What date and time work best?`,
+                ru: `Привет, ${guest_name}! Всегда радость видеть вас! 🌟 У меня есть ваши данные (${guest_phone})${common_party_size ? ` и могу предложить на ${common_party_size} человек` : ''}. Какие дата и время подойдут?`,
+                sr: `Zdravo, ${guest_name}! Uvek je radost da vas vidim! 🌟 Imam vaše podatke (${guest_phone})${common_party_size ? ` i mogu predložiti za ${common_party_size} osoba` : ''}. Koji datum i vreme?`,
+                auto: `Hi ${guest_name}! Always wonderful to see you again! 🌟 I have your details (${guest_phone})${common_party_size ? ` and can suggest ${common_party_size} people` : ''}. What date and time work best?`
             };
             return greetings[language] || greetings.auto;
         } else {
             const greetings = {
-                en: `Hello, ${guest_name}! Nice to see you again! I can use your details (${guest_phone}). What date and time?`,
-                ru: `Здравствуйте, ${guest_name}! Приятно снова видеть! Использую ваши данные (${guest_phone}). Какие дата и время?`,
-                sr: `Zdravo, ${guest_name}! Drago mi je! Koristim vaše podatke (${guest_phone}). Koji datum i vreme?`,
-                auto: `Hello, ${guest_name}! Nice to see you again! I can use your details (${guest_phone}). What date and time?`
+                en: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date and time would you like?`,
+                ru: `Здравствуйте, ${guest_name}! Приятно снова видеть! У меня готовы ваши данные (${guest_phone}). Какие дата и время?`,
+                sr: `Zdravo, ${guest_name}! Drago mi je da vas ponovo vidim! Imam spremne vaše podatke (${guest_phone}). Koji datum i vreme?`,
+                auto: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date and time would you like?`
             };
             return greetings[language] || greetings.auto;
         }
     }
 
     /**
-     * Get new guest greeting
+     * 🆕 NEW: New guest welcoming greeting
      */
     private getNewGuestGreeting(language: Language): string {
         const greetings = {
-            en: `Hello! I'd love to help you with a reservation. What date and time work for you, and how many guests?`,
-            ru: `Здравствуйте! Помогу с бронированием. Какие дата и время, и на сколько человек?`,
-            sr: `Zdravo! Pomoći ću sa rezervacijom. Koji datum i vreme, i koliko osoba?`,
-            auto: `Hello! I'd love to help you with a reservation. What date and time work for you, and how many guests?`
+            en: `Hello and welcome! 🌟 I'd love to help you with a reservation at ${this.restaurantConfig.name}. What date and time work for you, and how many guests?`,
+            ru: `Здравствуйте и добро пожаловать! 🌟 Буду рада помочь с бронированием в ${this.restaurantConfig.name}. Какие дата и время, и на сколько человек?`,
+            sr: `Zdravo i dobrodošli! 🌟 Rado ću pomoći sa rezervacijom u ${this.restaurantConfig.name}. Koji datum i vreme, i koliko osoba?`,
+            auto: `Hello and welcome! 🌟 I'd love to help you with a reservation at ${this.restaurantConfig.name}. What date and time work for you, and how many guests?`
         };
         return greetings[language] || greetings.auto;
     }
 
     /**
-     * Get subsequent booking greeting
+     * 🔄 SUBSEQUENT: Subsequent booking greeting
      */
-    private getSubsequentBookingGreeting(guestHistory: GuestHistory | null, language: Language): string {
+    private getSubsequentBookingGreeting(language: Language): string {
         const greetings = {
-            en: `Perfect! I can help with another reservation. What date and time would you like?`,
-            ru: `Отлично! Помогу с ещё одной бронью. Какие дата и время?`,
-            sr: `Odlično! Pomoći ću sa još jednom rezervacijom. Koji datum i vreme?`,
-            auto: `Perfect! I can help with another reservation. What date and time would you like?`
+            en: `Perfect! I'd be happy to help with another reservation. What date and time would you like this time?`,
+            ru: `Отлично! Буду рада помочь с ещё одной бронью. Какие дата и время на этот раз?`,
+            sr: `Odlično! Rado ću pomoći sa još jednom rezervacijom. Koji datum i vreme ovaj put?`,
+            auto: `Perfect! I'd be happy to help with another reservation. What date and time would you like this time?`
         };
         return greetings[language] || greetings.auto;
     }
 
     /**
-     * Get personalized section - streamlined
+     * 🔧 ENHANCED: Get name clarification instructions for system prompt
+     */
+    private getNameClarificationInstructions(conversationContext?: ConversationContext): string {
+        const pendingConfirmation = conversationContext?.pendingConfirmation;
+        
+        if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
+            return `
+🚨 CRITICAL: NAME CLARIFICATION MODE - INFINITE LOOP PREVENTION ACTIVE
+
+**CURRENT STATE:**
+- Database name: "${pendingConfirmation.dbName}"
+- Requested name: "${pendingConfirmation.requestName}"
+- Current attempt: ${pendingConfirmation.attempts + 1}/${pendingConfirmation.maxAttempts}
+- Created: ${pendingConfirmation.createdAt.toISOString()}
+
+**CRITICAL MISSION:** Extract user's name choice and proceed with booking immediately.
+
+**DO NOT:**
+- Ask clarification questions again
+- Repeat the name options
+- Get into conversation loops
+- Provide general booking advice
+
+**DO:**
+- Extract name choice from user response
+- Proceed immediately with chosen name
+- Use fallback if max attempts reached
+- Complete the booking successfully
+
+This prevents infinite clarification loops and ensures smooth user experience.`;
+        }
+        
+        return `
+🚨 NAME CLARIFICATION PROTOCOL:
+
+**IF create_reservation RETURNS NAME_CLARIFICATION_NEEDED:**
+1. Ask ONE clear choice question with both name options
+2. In next turn: Extract user's choice using comprehensive patterns
+3. Proceed immediately with chosen name
+4. NEVER repeat clarification - always progress forward
+
+**CRITICAL:** This protocol prevents infinite loops by ensuring forward progress.`;
+    }
+
+    /**
+     * 🔧 STREAMLINED: Get personalized section for system prompt
      */
     private getPersonalizedSection(guestHistory: GuestHistory | null, language: Language): string {
         if (!guestHistory || guestHistory.total_bookings === 0) {
-            return '';
+            return `
+👤 GUEST STATUS: New Guest
+🎯 APPROACH: Warm welcome, gather all needed information`;
         }
 
         const { guest_name, guest_phone, total_bookings, common_party_size } = guestHistory;
+        const isRegular = total_bookings >= 3;
 
         return `
-👤 GUEST CONTEXT (MANAGED BY CORE SYSTEM):
-- Guest: ${guest_name} ✅ (Known)
-- Phone: ${guest_phone} ✅ (Known)  
-- Visits: ${total_bookings}
-${common_party_size ? `- Usual size: ${common_party_size}` : ''}
+👤 GUEST PROFILE (USE INTELLIGENTLY):
+- Name: ${guest_name} ✅ KNOWN
+- Phone: ${guest_phone} ✅ KNOWN
+- Visit count: ${total_bookings} (${isRegular ? 'REGULAR CUSTOMER 🌟' : 'RETURNING GUEST'})
+${common_party_size ? `- Usual party size: ${common_party_size} ✅ CAN SUGGEST` : ''}
 
 🎯 INTELLIGENT USAGE:
-- Use known details proactively and naturally
-- Only ask for missing information
-- Be welcoming for returning guests (${total_bookings >= 3 ? 'REGULAR' : 'RETURNING'})
-- 🔒 Guest history safety handled by conversation manager`;
+- Use known information proactively and naturally
+- Only ask for missing details (date, time, guest count if not usual)
+- Be extra welcoming for regular customers
+- Acknowledge their loyalty: "${isRegular ? 'Always wonderful to see you!' : 'Great to see you again!'}"`;
     }
 
     /**
-     * Get conversation instructions
+     * 🔧 ENHANCED: Get conversation instructions
      */
     private getConversationInstructions(conversationContext?: ConversationContext): string {
         if (!conversationContext) return '';
 
+        const flags = [
+            conversationContext.hasAskedPartySize && '✅ Party Size Asked',
+            conversationContext.hasAskedDate && '✅ Date Asked',
+            conversationContext.hasAskedTime && '✅ Time Asked',
+            conversationContext.hasAskedName && '✅ Name Asked',
+            conversationContext.hasAskedPhone && '✅ Phone Asked'
+        ].filter(Boolean);
+
         return `
-📝 CONVERSATION CONTEXT:
-- Turn: ${conversationContext.sessionTurnCount || 1}
-- Asked Party Size: ${conversationContext.hasAskedPartySize ? 'YES - DON\'T ASK AGAIN' : 'NO'}
-- Asked Date: ${conversationContext.hasAskedDate ? 'YES - DON\'T ASK AGAIN' : 'NO'}
-- Asked Time: ${conversationContext.hasAskedTime ? 'YES - DON\'T ASK AGAIN' : 'NO'}
-- Asked Name: ${conversationContext.hasAskedName ? 'YES - DON\'T ASK AGAIN' : 'NO'}
-- Asked Phone: ${conversationContext.hasAskedPhone ? 'YES - DON\'T ASK AGAIN' : 'NO'}
-${conversationContext.pendingConfirmation ? '- 🚨 PENDING: Name clarification' : ''}
+📝 CONVERSATION STATE (Turn ${conversationContext.sessionTurnCount || 1}):
+${flags.length > 0 ? flags.join('\n') : '🆕 Fresh conversation - no questions asked yet'}
 
 ⚡ EFFICIENCY RULES:
-- Only ask for missing information
-- Acknowledge information already provided
-- Use natural, flowing conversation
-- Avoid repetitive questions`;
+- Only ask for information NOT marked with ✅
+- Acknowledge information already provided: "Great, I have [info]..."
+- Use natural, flowing conversation - avoid robotic questioning
+- Combine questions when appropriate: "What date, time, and party size?"
+- Celebrate progress: "Perfect! Just need [missing info] and we're all set!"`;
     }
 
     /**
-     * Get business hours instructions
+     * 🔧 ENHANCED: Get business hours instructions
      */
     private getBusinessHoursInstructions(): string {
         const openingTime = this.restaurantConfig.openingTime || '09:00';
@@ -630,20 +1114,22 @@ ${conversationContext.pendingConfirmation ? '- 🚨 PENDING: Name clarification'
         const isOvernight = isOvernightOperation(openingTime, closingTime);
 
         return `
-🕐 BUSINESS HOURS GUIDANCE:
-- Hours: ${openingTime} - ${closingTime}${isOvernight ? ' (next day)' : ''}
+🕐 BUSINESS HOURS EXPERTISE:
+- Operating hours: ${openingTime} - ${closingTime}${isOvernight ? ' (next day)' : ''}
 - Timezone: ${this.restaurantConfig.timezone}
-${isOvernight ? '- ⚠️ OVERNIGHT: Open past midnight' : ''}
+${isOvernight ? '- ⚠️ OVERNIGHT OPERATION: We\'re open past midnight!' : ''}
 
 💡 HELPFUL GUIDANCE:
-- Mention hours when suggesting times
-- Guide users toward valid times
+- Proactively mention hours when relevant: "We're open until ${closingTime}!"
+- Guide users toward valid booking times with specific suggestions
 - Be understanding about timing constraints
-${isOvernight ? '- Celebrate late availability: "Great! We\'re open until ' + closingTime + '!"' : ''}`;
+- Celebrate convenient timing: "Perfect! That's right in our prime dinner hours!"
+${isOvernight ? '- Highlight late availability: "Great news - we\'re open late until ' + closingTime + '!"' : ''}`;
     }
 
     /**
-     * Get restaurant context
+     * 🔧 ENHANCED: Get restaurant context for date/time awareness
+     * 🚨 CRITICAL FIX BUG-00184: Extract current year explicitly for AI prompt
      */
     private getRestaurantContext() {
         try {
@@ -655,27 +1141,41 @@ ${isOvernight ? '- Celebrate late availability: "Great! We\'re open until ' + cl
                 this.restaurantConfig.closingTime || '23:00'
             );
 
+            // 🚨 CRITICAL FIX: Extract current year from timezone utils
+            const restaurantNow = getRestaurantDateTime(timezone);
+            const currentYear = restaurantNow.year; // 2025!
+            const nextYear = currentYear + 1;
+
             return {
-                currentDate: restaurantContext.todayDate,
-                tomorrowDate: restaurantContext.tomorrowDate,
+                currentDate: restaurantContext.todayDate,      // "2025-07-25"
+                tomorrowDate: restaurantContext.tomorrowDate,  // "2025-07-26"
                 currentTime: restaurantContext.displayName,
                 dayOfWeek: restaurantContext.dayOfWeek,
-                isOpen: operatingStatus.isOpen
+                isOpen: operatingStatus.isOpen,
+                currentYear: currentYear,     // 🚨 NEW: Explicit 2025
+                nextYear: nextYear,          // 🚨 NEW: Explicit 2026
+                timezone: timezone,
+                isOvernightOperation: operatingStatus.isOvernightOperation || false
             };
         } catch (error) {
+            // Enhanced fallback using Luxon (already imported in timezone-utils)
             const now = DateTime.now();
             return {
-                currentDate: now.toISODate(),
-                tomorrowDate: now.plus({ days: 1 }).toISODate(),
+                currentDate: now.toISO()?.split('T')[0] || now.toISODate(),
+                tomorrowDate: now.plus({ days: 1 }).toISO()?.split('T')[0] || now.plus({ days: 1 }).toISODate(),
                 currentTime: now.toFormat('HH:mm'),
                 dayOfWeek: now.toFormat('cccc'),
-                isOpen: true
+                isOpen: true,
+                currentYear: now.year,       // 🚨 CRITICAL: Real current year
+                nextYear: now.year + 1,
+                timezone: 'Europe/Belgrade',
+                isOvernightOperation: false
             };
         }
     }
 
     /**
-     * Get tools for Sofia agent
+     * 🔧 GET: Available tools for Sofia agent
      */
     getTools() {
         return agentTools.filter(tool =>
@@ -684,9 +1184,15 @@ ${isOvernight ? '- Celebrate late availability: "Great! We\'re open until ' + cl
     }
 
     /**
-     * Compatibility methods
+     * 🔧 COMPATIBILITY: Legacy method support
      */
-    updateInstructions(context: string, language: Language, guestHistory?: GuestHistory | null, isFirstMessage?: boolean, conversationContext?: ConversationContext): string {
+    updateInstructions(
+        context: string, 
+        language: Language, 
+        guestHistory?: GuestHistory | null, 
+        isFirstMessage?: boolean, 
+        conversationContext?: ConversationContext
+    ): string {
         return this.generateSystemPrompt({
             restaurantId: this.restaurantConfig.id,
             timezone: this.restaurantConfig.timezone,
@@ -696,7 +1202,15 @@ ${isOvernight ? '- Celebrate late availability: "Great! We\'re open until ' + cl
         });
     }
 
-    getPersonalizedGreeting(guestHistory: GuestHistory | null, language: Language, context: 'hostess' | 'guest', conversationContext?: ConversationContext): string {
+    /**
+     * 🔧 COMPATIBILITY: Legacy greeting method
+     */
+    getPersonalizedGreeting(
+        guestHistory: GuestHistory | null, 
+        language: Language, 
+        context: 'hostess' | 'guest', 
+        conversationContext?: ConversationContext
+    ): string {
         return this.generateIntelligentGreeting({
             restaurantId: this.restaurantConfig.id,
             timezone: this.restaurantConfig.timezone,

@@ -12,6 +12,7 @@
 // 🚀 REDIS PHASE 3: Guest history caching with cache invalidation and performance monitoring
 // 🐞 BUG FIX (OVERNIGHT BOOKING): Corrected the logic in validateBusinessHours to properly handle overnight operations.
 // 🚨 CRITICAL BUG FIX: Enhanced business hours validation to consider reservation DURATION and prevent bookings ending after closing time
+// 🔧 BUG-20250725-001 FIX: Correctly pass TenantContext to the translation service to resolve MISSING_TENANT_CONTEXT errors.
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -31,6 +32,7 @@ import {
     isOvernightOperation
 } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
+import type { TenantContext } from '../tenant-context'; // 🔧 BUG-20250725-001 FIX: Import TenantContext type
 
 // 🚀 REDIS PHASE 3: Import Redis service for guest history caching
 import { redisService } from '../redis-service';
@@ -72,6 +74,7 @@ function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
  * ✅ PHASE 1 FIX: Extended session interface for context resolution
  */
 interface BookingSessionWithAgent {
+    tenantContext?: TenantContext; // Ensure session has tenant context
     telegramUserId?: string;
     activeReservationId?: number;
     foundReservations?: Array<{
@@ -118,9 +121,11 @@ interface BookingSessionWithAgent {
  * ✅ PHASE 1 FIX: Translation Service using AIService
  */
 class AgentToolTranslationService {
+    // 🔧 BUG-20250725-001 FIX: The function now requires a TenantContext to pass to the AIService.
     static async translateToolMessage(
         message: string,
         targetLanguage: Language,
+        tenantContext: TenantContext, // This is the critical fix.
         context: 'error' | 'success' | 'info' = 'info'
     ): Promise<string> {
         if (targetLanguage === 'en' || targetLanguage === 'auto') return message;
@@ -140,13 +145,13 @@ Keep the same tone and professional style.
 Return only the translation, no explanations.`;
 
         try {
-            // ✅ USE AISERVICE: Fast translation with automatic fallback
+            // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
             const translation = await aiService.generateContent(prompt, {
                 model: 'haiku', // Fast and cost-effective for translation
                 maxTokens: 300,
                 temperature: 0.2,
                 context: `agent-tool-translation-${context}`
-            });
+            }, tenantContext);
 
             return translation;
         } catch (error) {
@@ -165,7 +170,8 @@ class AgentAIAnalysisService {
      */
     static async analyzeSpecialRequests(
         completedReservations: Array<{ comments: string | null }>,
-        guestName: string
+        guestName: string,
+        tenantContext: TenantContext // 🔧 BUG-20250725-001 FIX: Add tenantContext parameter
     ): Promise<string[]> {
         try {
             // Collect all non-empty comments
@@ -220,13 +226,13 @@ RESPONSE FORMAT: Return ONLY a valid JSON object:
 
 If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "No actionable recurring patterns found"}`;
 
-            // ✅ USE AISERVICE: Enhanced AI analysis with automatic fallback
+            // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
             const responseText = await aiService.generateContent(prompt, {
                 model: 'haiku', // Fast and cost-effective for analysis
                 maxTokens: 1000,
                 temperature: 0.2,
                 context: 'SpecialRequestAnalysis'
-            });
+            }, tenantContext);
 
             // Parse the JSON response
             const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -628,10 +634,10 @@ async function validateBusinessHours(
         }
 
         const { openingTime, closingTime } = restaurant;
-        
+
         // 🚨 CRITICAL FIX: Get the reservation duration to check end time
         const reservationDurationMinutes = restaurant.avgReservationDuration || 120; // Default 2 hours
-        
+
         console.log('🚨 [CRITICAL FIX] Using reservation duration for validation:', {
             reservationDurationMinutes,
             willCheckEndTime: true
@@ -675,7 +681,7 @@ async function validateBusinessHours(
             if (openingTimeMinutes !== null && closingTimeMinutes !== null) {
                 // Start time validation - valid if it's after opening OR before closing
                 isStartTimeValid = (requestedTimeMinutes >= openingTimeMinutes) || (requestedTimeMinutes < closingTimeMinutes);
-                
+
                 // 🚨 CRITICAL FIX: End time validation for overnight operations
                 // For overnight ops, end time must also respect the overnight window
                 if (reservationEndDateTime.day === requestedDateTime.day) {
@@ -706,9 +712,9 @@ async function validateBusinessHours(
             // Standard (non-overnight) operation
             const openingDateTime = DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
             const closingDateTime = DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
-            
+
             isStartTimeValid = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
-            
+
             // 🚨 CRITICAL FIX: Check that reservation ENDS before closing time
             isEndTimeValid = reservationEndDateTime <= closingDateTime;
 
@@ -892,7 +898,11 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
  */
 export async function get_guest_history(
     telegramUserId: string,
-    context: { restaurantId: number; language?: string }
+    context: {
+        restaurantId: number;
+        language?: string;
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+    }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     const cacheKey = `guest-history:${context.restaurantId}:${telegramUserId}`;
@@ -903,6 +913,11 @@ export async function get_guest_history(
     try {
         if (!telegramUserId || !context.restaurantId) {
             return createValidationFailure('Missing required parameters: telegramUserId or restaurantId');
+        }
+
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for guest history analysis');
         }
 
         // 🚀 REDIS PHASE 3: Try to get from Redis cache first
@@ -1029,7 +1044,8 @@ export async function get_guest_history(
         // 6. ✅ LANGUAGE BUG FIXED: AIService-powered analysis that returns English patterns
         const englishRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
             completedReservations,
-            guest.name
+            guest.name,
+            context.session.tenantContext // 🔧 BUG-20250725-001 FIX: Pass tenant context
         );
 
         console.log(`👤 [Guest History] AIService-analyzed frequent requests (English):`, englishRequests);
@@ -1041,7 +1057,8 @@ export async function get_guest_history(
             console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
             translatedRequests = await Promise.all(
                 englishRequests.map(request =>
-                    AgentToolTranslationService.translateToolMessage(request, context.language as Language)
+                    // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                    AgentToolTranslationService.translateToolMessage(request, context.language as Language, context.session!.tenantContext!)
                 )
             );
             console.log(`👤 [Guest History] Translated requests:`, translatedRequests);
@@ -1099,12 +1116,18 @@ export async function check_availability(
         timezone: string;
         language: string;
         excludeReservationId?: number;
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for availability check');
+        }
+
         const restaurant = await storage.getRestaurant(context.restaurantId);
         // 🚨 ENHANCED: Use comprehensive validation but skip name/phone
         const validation = await validateBookingInput({
@@ -1164,11 +1187,12 @@ export async function check_availability(
         if (slots.length > 0) {
             const bestSlot = slots[0];
 
-            // ✅ USE AISERVICE TRANSLATION
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'success'
             );
 
@@ -1215,11 +1239,12 @@ export async function check_availability(
             }
 
             if (suggestedAlternatives.length > 0) {
-                // ✅ USE AISERVICE TRANSLATION
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would that work?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -1228,11 +1253,12 @@ export async function check_availability(
                     'NO_AVAILABILITY_SUGGEST_SMALLER'
                 );
             } else {
-                // ✅ USE AISERVICE TRANSLATION
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -1261,12 +1287,18 @@ export async function find_alternative_times(
         timezone: string;
         language: string;
         excludeReservationId?: number; // ✅ CRITICAL BUG FIX: Added excludeReservationId parameter
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for finding alternatives');
+        }
+
         // 🚨 ENHANCED: Use comprehensive validation
         const validation = await validateBookingInput({
             guestName: 'temp-placeholder', // Placeholder
@@ -1350,11 +1382,12 @@ export async function find_alternative_times(
                 execution_time_ms: executionTime
             });
         } else {
-            // ✅ USE AISERVICE TRANSLATION
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
 
@@ -1404,6 +1437,11 @@ export async function create_reservation(
     }
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for reservation creation');
+        }
+
         // 🚨 STEP 1: COMPREHENSIVE PRE-VALIDATION as specified in original plan
         console.log('🛡️ [Agent Tool] Starting comprehensive pre-validation pipeline...');
 
@@ -1637,10 +1675,11 @@ export async function create_reservation(
                 errorCode = 'CAPACITY_EXCEEDED';
             }
 
-            // ✅ USE AISERVICE TRANSLATION
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 result.message || 'Could not complete reservation due to business constraints',
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
 
@@ -1675,7 +1714,11 @@ export async function create_reservation(
  */
 export async function get_restaurant_info(
     infoType: 'hours' | 'location' | 'cuisine' | 'contact' | 'features' | 'all',
-    context: { restaurantId: number; language?: string }
+    context: {
+        restaurantId: number;
+        language?: string;
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+    }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`ℹ️ [Agent Tool] get_restaurant_info: ${infoType} for restaurant ${context.restaurantId}`);
@@ -1683,6 +1726,11 @@ export async function get_restaurant_info(
     try {
         if (!context || !context.restaurantId) {
             return createValidationFailure('Context with restaurantId is required');
+        }
+
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for getting restaurant info');
         }
 
         const validInfoTypes = ['hours', 'location', 'cuisine', 'contact', 'features', 'all'];
@@ -1778,11 +1826,12 @@ export async function get_restaurant_info(
                 break;
         }
 
-        // ✅ USE AISERVICE TRANSLATION if language context provided
+        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
         if (context.language && context.language !== 'en') {
             message = await AgentToolTranslationService.translateToolMessage(
                 message,
                 context.language as Language,
+                context.session.tenantContext,
                 'info'
             );
         }
@@ -1818,12 +1867,18 @@ export async function find_existing_reservation(
         // ✅ NEW PARAMETERS: Enhanced search capabilities
         timeRange?: 'upcoming' | 'past' | 'all';
         includeStatus?: string[];
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (Type: ${identifierType})`);
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for finding reservations');
+        }
+
         let finalIdentifierType = identifierType;
 
         // ✅ FIX: Improved auto-detection logic
@@ -1903,11 +1958,12 @@ export async function find_existing_reservation(
             case 'confirmation':
                 const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
                 if (isNaN(numericIdentifier)) {
-                    // ✅ USE AISERVICE TRANSLATION
+                    // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                     const baseMessage = `"${identifier}" is not a valid confirmation number. It must be a number.`;
                     const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                         baseMessage,
                         context.language as Language,
+                        context.session.tenantContext,
                         'error'
                     );
                     return createBusinessRuleFailure(translatedMessage, 'INVALID_CONFIRMATION');
@@ -1940,7 +1996,7 @@ export async function find_existing_reservation(
             .limit(10);
 
         if (!results || results.length === 0) {
-            // ✅ USE AISERVICE TRANSLATION
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = timeRange === 'past'
                 ? `I couldn't find any past reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
                 : timeRange === 'upcoming'
@@ -1950,6 +2006,7 @@ export async function find_existing_reservation(
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
 
@@ -2020,7 +2077,7 @@ export async function find_existing_reservation(
             };
         });
 
-        // ✅ USE AISERVICE TRANSLATION
+        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
         const baseMessage = timeRange === 'past'
             ? `Found ${formattedReservations.length} past reservation(s) for you. Let me show you the details.`
             : timeRange === 'upcoming'
@@ -2030,6 +2087,7 @@ export async function find_existing_reservation(
         const translatedMessage = await AgentToolTranslationService.translateToolMessage(
             baseMessage,
             context.language as Language,
+            context.session.tenantContext,
             'success'
         );
 
@@ -2092,6 +2150,11 @@ export async function modify_reservation(
     console.log(`✏️ [Maya Tool] Modifying reservation ${reservationIdHint || 'TBD'}:`, modifications);
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for reservation modification');
+        }
+
         // ✅ STEP 3A: Use ContextManager for smart reservation ID resolution
         let targetReservationId: number;
 
@@ -2107,9 +2170,11 @@ export async function modify_reservation(
 
             if (resolution.shouldAskForClarification) {
                 const availableIds = context.session.foundReservations?.map(r => `#${r.id}`) || [];
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const errorMessage = await AgentToolTranslationService.translateToolMessage(
                     `I need to know which reservation to modify. Available reservations: ${availableIds.join(', ')}. Please specify the reservation number.`,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2120,9 +2185,11 @@ export async function modify_reservation(
             }
 
             if (!resolution.resolvedId) {
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const errorMessage = await AgentToolTranslationService.translateToolMessage(
                     "I need the reservation number to make changes. Please provide your confirmation number.",
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2161,10 +2228,12 @@ export async function modify_reservation(
                 ));
 
             if (!ownershipCheck) {
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2177,10 +2246,12 @@ export async function modify_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${targetReservationId} owned by ${ownershipCheck.telegramUserId}`);
 
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = 'For security, you can only modify reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2211,10 +2282,12 @@ export async function modify_reservation(
             ));
 
         if (!currentReservation) {
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = 'Reservation not found.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
             return createBusinessRuleFailure(translatedMessage, 'RESERVATION_NOT_FOUND');
@@ -2222,10 +2295,12 @@ export async function modify_reservation(
 
         // ✅ NEW: Check if reservation is already canceled
         if (currentReservation.status === 'canceled') {
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = 'Cannot modify a canceled reservation. Please create a new booking instead.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
             return createBusinessRuleFailure(translatedMessage, 'RESERVATION_ALREADY_CANCELED');
@@ -2260,10 +2335,12 @@ export async function modify_reservation(
         if (!hasDateChange && !hasTimeChange && !hasGuestChange && !hasRequestChange) {
             console.warn(`[Maya Tool] 🚨 NO-OP MODIFICATION DETECTED for reservation #${targetReservationId}. No changes were requested.`);
 
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = `No changes were requested. Your reservation is still confirmed for ${currentDate} at ${currentTime} for ${currentReservation.guests} guests. Did you want to make a specific change?`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
 
@@ -2312,10 +2389,12 @@ export async function modify_reservation(
                 console.log(`❌ [Maya Tool] No availability for modification:`, availabilityResult.error?.message);
 
                 // Try to suggest alternatives
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = `I'm sorry, but I can't change your reservation to ${newGuests} guests on ${newDate} at ${newTime} because no tables are available. ${availabilityResult.error?.message || ''} Would you like me to suggest alternative times?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2472,10 +2551,12 @@ export async function modify_reservation(
             changes.push(`special requests updated`);
         }
 
+        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
         const baseMessage = `Perfect! I've successfully updated your reservation. ${changes.join(', ')}. ${availabilityMessage}`;
         const translatedMessage = await AgentToolTranslationService.translateToolMessage(
             baseMessage,
             context.language as Language,
+            context.session.tenantContext,
             'success'
         );
 
@@ -2521,19 +2602,26 @@ export async function cancel_reservation(
         language: string;
         telegramUserId?: string;
         sessionId?: string;
+        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`❌ [Maya Tool] Cancelling reservation ${reservationId}, confirmed: ${confirmCancellation}`);
 
     try {
+        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        if (!context.session?.tenantContext) {
+            return createSystemError('Missing tenant context for reservation cancellation');
+        }
+
         // 🔧 BUG FIX: If confirmCancellation is not provided, ask for confirmation
         if (confirmCancellation !== true) {
-            // ✅ USE AISERVICE TRANSLATION
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = `Are you sure you want to cancel your reservation? This action cannot be undone. Please confirm if you want to proceed.`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
 
@@ -2561,11 +2649,12 @@ export async function cancel_reservation(
                 ));
 
             if (!ownershipCheck) {
-                // ✅ USE AISERVICE TRANSLATION
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2578,11 +2667,12 @@ export async function cancel_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED CANCELLATION ATTEMPT: Telegram user ${context.telegramUserId} tried to cancel reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
 
-                // ✅ USE AISERVICE TRANSLATION
+                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
                 const baseMessage = 'For security, you can only cancel reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
                     context.language as Language,
+                    context.session.tenantContext,
                     'error'
                 );
 
@@ -2614,20 +2704,24 @@ export async function cancel_reservation(
             ));
 
         if (!currentReservation) {
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = 'Reservation not found.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
             return createBusinessRuleFailure(translatedMessage, 'RESERVATION_NOT_FOUND');
         }
 
         if (currentReservation.status === 'canceled') {
+            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
             const baseMessage = 'This reservation has already been cancelled.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
                 context.language as Language,
+                context.session.tenantContext,
                 'error'
             );
             return createBusinessRuleFailure(translatedMessage, 'ALREADY_CANCELLED');
@@ -2684,10 +2778,12 @@ export async function cancel_reservation(
         const refundPercentage = hoursUntilReservation >= 24 ? 100 : hoursUntilReservation >= 2 ? 50 : 0;
 
         // ✅ STEP 5: Return success response
+        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
         const baseSuccessMessage = `Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!${refundEligible ? ' You are eligible for a full refund.' : refundPercentage > 0 ? ` You are eligible for a ${refundPercentage}% refund.` : ''}`;
         const translatedSuccessMessage = await AgentToolTranslationService.translateToolMessage(
             baseSuccessMessage,
             context.language as Language,
+            context.session.tenantContext,
             'success'
         );
 
