@@ -6,6 +6,8 @@
 // ✅ INTEGRATED: Seamless integration with fixed context-manager.ts
 // ✅ SECURED: Professional error handling and input validation
 // 🚨 NEW FIX: Date context and year assumption fix (BUG-00184)
+// 🛠️ APPLIED: Bug Fix 1 - Last Seating Rule
+// 🛠️ APPLIED: Bug Fix 2 - Guest Count Confirmation
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -108,6 +110,8 @@ interface NameExtractionPattern {
  * 4. Professional error handling for all edge cases
  * 5. Seamless integration with the fixed context manager
  * 6. 🚨 NEW: Correct date/year context to prevent 2023 assumptions (BUG-00184 FIXED)
+ * 7. 🛠️ NEW: Last seating rule awareness (BUG FIX 1)
+ * 8. 🛠️ NEW: Guest count confirmation for returning guests (BUG FIX 2)
  */
 export class SofiaAgent extends BaseAgent {
     readonly name = 'Sofia';
@@ -276,6 +280,17 @@ All tools return standardized responses with:
   → Suggest concrete alternatives with specific times
 - **PAST_DATE_BOOKING**: Booking in past
   → Ask for future date with helpful suggestions
+
+🛡️ SMART RECOVERY PROTOCOL:
+When ANY booking validation fails and user provides new information:
+- **TIME VALIDATION FAILURE** → Re-confirm date + party size
+- **DATE VALIDATION FAILURE** → Re-confirm time + party size  
+- **PARTY SIZE VALIDATION FAILURE** → Re-confirm date + time
+- **MULTIPLE FAILURES** → Fresh start, gather all info again
+
+**RECOVERY FORMAT:** "Perfect! Just to be sure - that's [NEW_TIME] on [DATE] for [GUESTS] people?"
+**RATIONALE:** Validation failures often indicate broader context changes.
+**EXCEPTION:** Skip re-confirmation if date/party size were explicitly confirmed in the last 2 exchanges.
 
 🤝 CONVERSATION STYLE:
 - **Warm & Welcoming**: "I'd love to help you with that!"
@@ -956,29 +971,34 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🤝 PERSONALIZED: Returning guest greeting with smart context
+     * 🛠️ BUG FIX 2 APPLIED: Force the AI to Confirm Guest Count for returning guests
+     * 
+     * This method now changes the logic to formulate a direct question when a common party size is known,
+     * preventing the AI from making unverified assumptions about party size.
      */
     private getReturningGuestGreeting(guestHistory: GuestHistory, language: Language): string {
         const { guest_name, guest_phone, total_bookings, common_party_size } = guestHistory;
         const isRegular = total_bookings >= 3;
 
-        if (isRegular) {
+        // If a common party size exists, formulate a direct question.
+        if (common_party_size) {
             const greetings = {
-                en: `Hi ${guest_name}! Always wonderful to see you again! 🌟 I have your details (${guest_phone})${common_party_size ? ` and can suggest ${common_party_size} people` : ''}. What date and time work best?`,
-                ru: `Привет, ${guest_name}! Всегда радость видеть вас! 🌟 У меня есть ваши данные (${guest_phone})${common_party_size ? ` и могу предложить на ${common_party_size} человек` : ''}. Какие дата и время подойдут?`,
-                sr: `Zdravo, ${guest_name}! Uvek je radost da vas vidim! 🌟 Imam vaše podatke (${guest_phone})${common_party_size ? ` i mogu predložiti za ${common_party_size} osoba` : ''}. Koji datum i vreme?`,
-                auto: `Hi ${guest_name}! Always wonderful to see you again! 🌟 I have your details (${guest_phone})${common_party_size ? ` and can suggest ${common_party_size} people` : ''}. What date and time work best?`
-            };
-            return greetings[language] || greetings.auto;
-        } else {
-            const greetings = {
-                en: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date and time would you like?`,
-                ru: `Здравствуйте, ${guest_name}! Приятно снова видеть! У меня готовы ваши данные (${guest_phone}). Какие дата и время?`,
-                sr: `Zdravo, ${guest_name}! Drago mi je da vas ponovo vidim! Imam spremne vaše podatke (${guest_phone}). Koji datum i vreme?`,
-                auto: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date and time would you like?`
+                en: `Hi ${guest_name}! Great to see you again! For your usual ${common_party_size} people? If so, what date and time work best?`,
+                ru: `Привет, ${guest_name}! Приятно снова видеть! Как обычно, на ${common_party_size} человек? Если да, то какие дата и время вам подойдут?`,
+                sr: `Zdravo, ${guest_name}! Drago mi je da vas ponovo vidim! Kao i obično, za ${common_party_size} osoba? Ako jeste, koji datum i vreme vam odgovaraju?`,
+                auto: `Hi ${guest_name}! Great to see you again! For your usual ${common_party_size} people? If so, what date and time work best?`
             };
             return greetings[language] || greetings.auto;
         }
+
+        // Fallback for returning guests without a common party size.
+        const fallbackGreetings = {
+            en: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date, time, and party size are you looking for?`,
+            ru: `Здравствуйте, ${guest_name}! Приятно снова видеть! У меня готовы ваши данные (${guest_phone}). Какие дата, время и количество гостей?`,
+            sr: `Zdravo, ${guest_name}! Drago mi je da vas ponovo vidim! Imam spremne vaše podatke (${guest_phone}). Koji datum, vreme i broj gostiju?`,
+            auto: `Hello, ${guest_name}! Nice to see you again! I have your contact info (${guest_phone}) ready. What date, time, and party size are you looking for?`
+        };
+        return fallbackGreetings[language] || fallbackGreetings.auto;
     }
 
     /**
@@ -1106,16 +1126,23 @@ ${flags.length > 0 ? flags.join('\n') : '🆕 Fresh conversation - no questions 
     }
 
     /**
-     * 🔧 ENHANCED: Get business hours instructions
+     * 🛠️ BUG FIX 1 APPLIED: Make the AI Aware of the "Last Seating" Rule
+     * 
+     * This method now calculates the last possible booking time and inserts it directly 
+     * into the agent's system prompt to prevent confusion about closing times.
      */
     private getBusinessHoursInstructions(): string {
         const openingTime = this.restaurantConfig.openingTime || '09:00';
         const closingTime = this.restaurantConfig.closingTime || '23:00';
         const isOvernight = isOvernightOperation(openingTime, closingTime);
+        
+        // Calculate the last bookable time
+        const lastBookingTime = DateTime.fromFormat(closingTime, 'HH:mm').minus({ minutes: this.restaurantConfig.avgReservationDuration || 120 }).toFormat('HH:mm');
 
         return `
 🕐 BUSINESS HOURS EXPERTISE:
 - Operating hours: ${openingTime} - ${closingTime}${isOvernight ? ' (next day)' : ''}
+- 🚨 CRITICAL BOOKING RULE: The last possible booking time is ${lastBookingTime} to ensure guests have enough time to dine before we close.
 - Timezone: ${this.restaurantConfig.timezone}
 ${isOvernight ? '- ⚠️ OVERNIGHT OPERATION: We\'re open past midnight!' : ''}
 
@@ -1124,6 +1151,7 @@ ${isOvernight ? '- ⚠️ OVERNIGHT OPERATION: We\'re open past midnight!' : ''}
 - Guide users toward valid booking times with specific suggestions
 - Be understanding about timing constraints
 - Celebrate convenient timing: "Perfect! That's right in our prime dinner hours!"
+- 🚨 ENFORCE LAST SEATING: Do not accept bookings after ${lastBookingTime}
 ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late until ' + closingTime + '!"' : ''}`;
     }
 
