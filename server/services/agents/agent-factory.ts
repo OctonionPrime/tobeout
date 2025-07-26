@@ -695,8 +695,9 @@ export class AgentFactory {
                             tenantContextPassed: true // ✅ BUG-B-1 FIX: Confirm tenant context was passed
                         });
                     } else {
+                        // 🐞 FIX: Changed from .debug to .info
                         // Log successful health check with tenant context
-                        smartLog.debug('Agent health check passed', {
+                        smartLog.info('Agent health check passed', {
                             agentId,
                             tenantId: entry.tenantId,
                             agentType: entry.agentType,

@@ -460,6 +460,16 @@ async function validateBookingInput(input: {
             };
         }
 
+        // 🐞 FIX: Prevent using a phone number as a name
+        const nameAsDigits = trimmedName.replace(/\D/g, '');
+        if (nameAsDigits.length > 6) {
+            return {
+                valid: false,
+                errorMessage: 'A phone number cannot be used as a guest name. Please provide the actual guest name.',
+                field: 'guestName'
+            };
+        }
+
         // 🚨 Phone validation with comprehensive regex
         if (!input.guestPhone || typeof input.guestPhone !== 'string') {
             return {
@@ -1573,7 +1583,8 @@ export async function create_reservation(
             context.language as any,
             context.confirmedName,
             undefined,
-            context.timezone
+            context.timezone,
+            context.session.tenantContext // ✅ CORE FIX: Pass the tenant context from the session
         );
 
         const executionTime = Date.now() - startTime;

@@ -355,7 +355,9 @@ export function getRestaurantTimeContext(restaurantTimezone: string) {
         minute: now.minute,
         dayOfWeek: now.weekdayLong || '',
         offset: now.offset,
-        displayName: getTimezoneDisplayName(restaurantTimezone)
+        displayName: getTimezoneDisplayName(restaurantTimezone),
+        currentYear: now.year, // <-- INSERT THIS LINE
+        nextYear: now.year + 1   // <-- INSERT THIS LINE
     };
 }
 

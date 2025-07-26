@@ -441,76 +441,32 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
         try {
             console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
 
-            // Handle message with enhanced conversation manager
+            // Handle message with the conversation manager
             const result = await enhancedConversationManager.handleMessage(sessionId, text);
 
-            // Update language from session (may have changed during processing)
-            const updatedSession = enhancedConversationManager.getSession(sessionId);
-            if (updatedSession) {
-                currentLang = updatedSession.language;
-            }
+            // The manager now provides the final, translated message and any necessary buttons in the 'result' object.
+            // We no longer need any special 'if' blocks here.
 
-            console.log(`🔍 [Sofia AI] Enhanced conversation result (lang: ${currentLang}, timezone: ${restaurantTimezone}):`, {
+            console.log(`🔍 [Sofia AI] Enhanced conversation result (lang: ${result.session.language}, timezone: ${restaurantTimezone}):`, {
                 hasBooking: result.hasBooking,
                 reservationId: result.reservationId,
                 blocked: result.blocked,
                 blockReason: result.blockReason,
-                currentStep: result.session.currentStep,
-                gatheringInfo: result.session.gatheringInfo
+                currentStep: result.session.currentStep
             });
 
-            // ✅ ENHANCED: Check for name clarification needed
-            const pendingConfirmation = result.session.pendingConfirmation;
-            if (pendingConfirmation?.functionContext?.error?.details?.dbName &&
-                pendingConfirmation?.functionContext?.error?.details?.requestName) {
+            // ✅ DEFINITIVE FIX: Always send the response from the manager.
+            // It will contain the correct text (in Russian) and the buttons if needed.
+            await bot.sendMessage(chatId, result.response, {
+                parse_mode: 'HTML',
+                reply_markup: (result as any).reply_markup || undefined
+            });
 
-                const { dbName, requestName } = pendingConfirmation.functionContext.error.details;
-                const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
-
-                console.log(`[Telegram] 🔄 Sending name clarification with buttons: DB="${dbName}", Request="${requestName}"`);
-
-                await bot.sendMessage(chatId, locale.nameClarificationPrompt(dbName, requestName), {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [
-                                {
-                                    text: locale.useNewNameButton(requestName),
-                                    callback_data: `confirm_name:new:${requestName}`
-                                },
-                                {
-                                    text: locale.useDbNameButton(dbName),
-                                    callback_data: `confirm_name:db:${dbName}`
-                                }
-                            ]
-                        ]
-                    }
-                });
-
-                console.log(`✅ [Sofia AI] Sent name clarification request with buttons to ${chatId}`);
-                return;
-            }
-
-            // ✅ FIXED: Session now continues after successful booking
-            if (result.hasBooking && result.reservationId) {
-                await bot.sendMessage(chatId, result.response);
-                // Session continues with 'conductor' agent for follow-up requests
-                console.log(`✅ [Sofia AI] Telegram reservation confirmed for chat ${chatId}, reservation #${result.reservationId}, session continues`);
-                return;
-            }
-
-            // Check if blocked
-            if (result.blocked) {
-                await bot.sendMessage(chatId, result.response);
-                console.log(`⚠️ [Sofia AI] Message blocked for chat ${chatId}: ${result.blockReason}`);
-                return;
-            }
-
-            // Send response
-            await bot.sendMessage(chatId, result.response);
-            console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone})`);
+            console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} (lang: ${result.session.language})`);
 
         } catch (error) {
             console.error('❌ [Sofia AI] Error processing Telegram conversation:', error);
+            const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
             await bot.sendMessage(chatId, locale.genericError);
         }
     } finally {

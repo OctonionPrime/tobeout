@@ -14,6 +14,7 @@ import type {
 } from '@shared/schema';
 import type { Language } from './enhanced-conversation-manager';
 import type { AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service'; // Import AvailabilitySlot
+import type { TenantContext } from './tenant-context'; 
 
 // Updated result type
 export type CreateTelegramReservationResult = {
@@ -53,9 +54,10 @@ export async function createTelegramReservation(
     telegramUserId: string,
     comments?: string,
     lang?: Language,
-    confirmedName?: string, // ✅ CRITICAL: Now properly handle confirmed name
-    selected_slot_info?: ServiceAvailabilitySlot, // Added selected_slot_info
-    restaurantTimezone: string = 'Europe/Moscow' // ✅ CRITICAL ADDITION
+    confirmedName?: string,
+    selected_slot_info?: ServiceAvailabilitySlot,
+    restaurantTimezone: string = 'Europe/Moscow',
+    tenantContext?: TenantContext 
 ): Promise<CreateTelegramReservationResult> {
     try {
         console.log(`[TelegramBooking] Initiating reservation: R${restaurantId}, UserReqName:${name}, Date:${date}, Time:${time}, Guests:${guests}, TGUser:${telegramUserId}, Lang:${lang}, ConfirmedProfileName:${confirmedName}, Timezone:${restaurantTimezone}`);
@@ -77,6 +79,10 @@ export async function createTelegramReservation(
         const effectiveTimezone = restaurant.timezone || restaurantTimezone;
         console.log(`[TelegramBooking] Using timezone: ${effectiveTimezone}`);
 
+        if (!tenantContext) { // 👈 THIS VALIDATION BLOCK
+            console.error(`[TelegramBooking] CRITICAL: createTelegramReservation called without tenantContext.`);
+            return { success: false, status: 'error', message: 'System error: Tenant context is missing.' };
+        }
         if (!guest) {
             guest = await storage.getGuestByPhone(phone, restaurantId); // <-- CRITICAL FIX
             if (guest) {
@@ -174,10 +180,11 @@ export async function createTelegramReservation(
             guests,
             comments: comments || '',
             source: 'telegram',
-            booking_guest_name: bookingGuestName, // ✅ Use effective name
+            booking_guest_name: bookingGuestName,
             lang: effectiveLang,
-            selected_slot_info: selected_slot_info, // Pass the selected slot if available
-            timezone: effectiveTimezone // ✅ CRITICAL ADDITION
+            selected_slot_info: selected_slot_info,
+            timezone: effectiveTimezone,
+            tenantContext: tenantContext 
         };
 
         console.log('[TelegramBooking] Calling coreCreateReservation with request:', {

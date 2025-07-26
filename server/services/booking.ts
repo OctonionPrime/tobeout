@@ -17,6 +17,7 @@ import type {
     Table
 } from '@shared/schema';
 import type { Language } from './enhanced-conversation-manager';
+import { TenantContext } from './tenant-context'; 
 import { isValidTimezone, formatTimeForRestaurant } from '../utils/timezone-utils';
 import { DateTime } from 'luxon';
 
@@ -117,6 +118,7 @@ export interface BookingRequest {
     booking_guest_name?: string | null;
     selected_slot_info?: ServiceAvailabilitySlot;
     tableId?: number;
+    tenantContext?: TenantContext; // ✅ Add the full tenant context object
 }
 
 export interface BookingResponse {
@@ -172,8 +174,15 @@ export async function createReservation(
 ): Promise<BookingResponse> {
     const locale = getLocale(bookingRequest.lang);
 
-    // ✅ SECURITY: Use authenticated tenant ID instead of client data
+    // ✅ FINAL FIX: Validate that the tenantContext was passed in
+    if (!bookingRequest.tenantContext) {
+        logger.error(`CRITICAL: createReservation called without tenantContext.`);
+        return { success: false, message: 'System error: Tenant context is missing.' };
+    }
+
+    // ✅ SECURITY: Use authenticated tenant ID from the server-side context
     const restaurantId = authenticatedTenantId;
+    const { tenantContext } = bookingRequest; // Destructure for easy access
 
     // ✅ CRITICAL FIX: Updated validation to handle both formats
     if (!restaurantId || !bookingRequest.guestId || !bookingRequest.guests) {
@@ -199,10 +208,10 @@ export async function createReservation(
 
         logger.info(`Create reservation request: R${restaurantId}, G:${guests}, GuestID:${guestId}, BookingName: ${booking_guest_name}, HasUTC: ${hasUtcTimestamp}, HasLegacy: ${hasLegacyFields}`);
 
-        // ✅ SECURITY: Validate restaurant exists and belongs to authenticated tenant
-        const restaurant: Restaurant | undefined = await storage.getRestaurant(restaurantId);
-        if (!restaurant) {
-            logger.error(`Restaurant ID ${restaurantId} not found or unauthorized access.`);
+        // ✅ PERFORMANCE OPTIMIZATION: Use restaurant data directly from tenantContext
+        const restaurant: Restaurant = tenantContext.restaurant;
+        if (!restaurant) { // This check is now mostly for type safety
+            logger.error(`Restaurant object missing from tenantContext for ID ${restaurantId}.`);
             return { success: false, message: locale.restaurantNotFound(restaurantId) };
         }
 

@@ -8,6 +8,7 @@
 // 🚨 NEW FIX: Date context and year assumption fix (BUG-00184)
 // 🛠️ APPLIED: Bug Fix 1 - Last Seating Rule
 // 🛠️ APPLIED: Bug Fix 2 - Guest Count Confirmation
+// 🔧 CRITICAL FIX: Final booking command moved to end to prevent date hallucination
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -112,6 +113,7 @@ interface NameExtractionPattern {
  * 6. 🚨 NEW: Correct date/year context to prevent 2023 assumptions (BUG-00184 FIXED)
  * 7. 🛠️ NEW: Last seating rule awareness (BUG FIX 1)
  * 8. 🛠️ NEW: Guest count confirmation for returning guests (BUG FIX 2)
+ * 9. 🔧 CRITICAL: Final booking command positioned at end to prevent date hallucination
  */
 export class SofiaAgent extends BaseAgent {
     readonly name = 'Sofia';
@@ -201,6 +203,7 @@ export class SofiaAgent extends BaseAgent {
     /**
      * 🔧 STREAMLINED: System prompt optimized for conversation flow
      * 🚨 ENHANCED: Added explicit date parsing rules to prevent 2023 assumptions (BUG-00184 FIX)
+     * 🔧 CRITICAL FIX: Final booking command moved to the very end to prevent date hallucination
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
@@ -210,8 +213,33 @@ export class SofiaAgent extends BaseAgent {
         const conversationInstructions = this.getConversationInstructions(conversationContext);
         const nameInstructions = this.getNameClarificationInstructions(conversationContext);
         const businessHoursInstructions = this.getBusinessHoursInstructions();
-
         const languageInstruction = `🌍 LANGUAGE: Respond in ${language} with warm, professional tone.`;
+
+        // 🚨 CRITICAL HALLUCINATION FIX LOGIC (MOVED TO THE END)
+        let finalBookingCommand = '';
+        if (context.conversationContext?.gatheringInfo) {
+            const { name, phone, date, time, guests } = context.conversationContext.gatheringInfo;
+            if (name && phone && date && time && guests) {
+                finalBookingCommand = `
+🚨 FINAL BOOKING INSTRUCTIONS - EXECUTE NOW 🚨
+
+**ALL necessary information has been gathered and validated. Your ONLY task is to finalize the booking.**
+
+**CONFIRMED DETAILS:**
+- Guest Name: ${name}
+- Guest Phone: ${phone}
+- Date: ${date}
+- Time: ${time}
+- Guests: ${guests}
+
+**MANDATORY ACTION:**
+- You MUST call the 'create_reservation' tool using EXACTLY the details listed above.
+- 🚷 FORBIDDEN: DO NOT change any details.
+- 🚷 FORBIDDEN: DO NOT ask for more information.
+- 🚷 FORBIDDEN: DO NOT respond with text. Call the tool immediately.
+`;
+            }
+        }
 
         return `You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}.
 
@@ -220,13 +248,19 @@ ${languageInstruction}
 🎯 YOUR ROLE: Expert Conversation Specialist
 Create smooth, efficient booking experiences by using context intelligently and maintaining natural flow.
 
+⚡️ IMMEDIATE ACTION PROTOCOL (HIGHEST PRIORITY):
+- Your primary goal is to use tools to achieve the user's objective.
+- If you have enough information to use a tool (like date, time, and guests for check_availability), you MUST call that tool.
+- DO NOT respond with text confirming you are about to do something. For example, instead of saying "Okay, I will check for 5 PM", you MUST directly call the check_availability tool with the arguments.
+- Only ask questions if essential information is missing.
+
 🏪 RESTAURANT DETAILS:
 - Name: ${this.restaurantConfig.name}
 - Cuisine: ${this.restaurantConfig.cuisine || 'Excellent dining'}
 - Hours: ${this.restaurantConfig.openingTime} - ${this.restaurantConfig.closingTime}
 - Timezone: ${this.restaurantConfig.timezone}
-${isOvernightOperation(this.restaurantConfig.openingTime || '09:00', this.restaurantConfig.closingTime || '23:00') ? 
-  '- ⚠️ OVERNIGHT OPERATION: Open past midnight' : ''}
+${isOvernightOperation(this.restaurantConfig.openingTime || '09:00', this.restaurantConfig.closingTime || '23:00') ?
+                '- ⚠️ OVERNIGHT OPERATION: Open past midnight' : ''}
 
 📅 CURRENT CONTEXT (CRITICAL FOR DATE PARSING):
 - TODAY: ${dateContext.currentDate} (${dateContext.dayOfWeek})
@@ -309,7 +343,7 @@ When ANY booking validation fails and user provides new information:
 - Use available context naturally
 - Avoid repetitive questions
 - Guide users efficiently to completion
-- Celebrate successful outcomes enthusiastically`;
+- Celebrate successful outcomes enthusiastically${finalBookingCommand}`;
     }
 
     /**
@@ -983,10 +1017,10 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
         // If a common party size exists, formulate a direct question.
         if (common_party_size) {
             const greetings = {
-                en: `Hi ${guest_name}! Great to see you again! For your usual ${common_party_size} people? If so, what date and time work best?`,
-                ru: `Привет, ${guest_name}! Приятно снова видеть! Как обычно, на ${common_party_size} человек? Если да, то какие дата и время вам подойдут?`,
-                sr: `Zdravo, ${guest_name}! Drago mi je da vas ponovo vidim! Kao i obično, za ${common_party_size} osoba? Ako jeste, koji datum i vreme vam odgovaraju?`,
-                auto: `Hi ${guest_name}! Great to see you again! For your usual ${common_party_size} people? If so, what date and time work best?`
+                en: `Hi ${guest_name}! Welcome back. I see you usually book for ${common_party_size}. How many guests will be joining you this time?`,
+                ru: `Привет, ${guest_name}! С возвращением! Вижу, вы обычно бронируете на ${common_party_size}. Сколько гостей будет в этот раз?`,
+                sr: `Zdravo, ${guest_name}! Dobrodošli nazad. Vidim da obično rezervišete za ${common_party_size}. Koliko gostiju će biti ovog puta?`,
+                auto: `Hi ${guest_name}! Welcome back. I see you usually book for ${common_party_size}. How many guests will be joining you this time?`
             };
             return greetings[language] || greetings.auto;
         }
@@ -1090,12 +1124,13 @@ This prevents infinite clarification loops and ensures smooth user experience.`;
 - Name: ${guest_name} ✅ KNOWN
 - Phone: ${guest_phone} ✅ KNOWN
 - Visit count: ${total_bookings} (${isRegular ? 'REGULAR CUSTOMER 🌟' : 'RETURNING GUEST'})
-${common_party_size ? `- Usual party size: ${common_party_size} ✅ CAN SUGGEST` : ''}
+${common_party_size ? `- Usual party size: ${common_party_size} ⚠️ MUST CONFIRM. Never assume.` : ''}
 
 🎯 INTELLIGENT USAGE:
-- Use known information proactively and naturally
-- Only ask for missing details (date, time, guest count if not usual)
-- Be extra welcoming for regular customers
+- Use known information proactively and naturally.
+- 🚨 CRITICAL RULE (GUEST COUNT): Even if you know the 'Usual party size', you MUST ALWAYS explicitly ask the user "How many guests will be joining you?" for every new booking. DO NOT assume the number of guests.
+- 🚨 CRITICAL RULE (GUEST NAME): If the guest's name is missing, you MUST ask for it. DO NOT use the phone number as the guest's name when calling the 'create_reservation' tool.
+- Be extra welcoming for regular customers.
 - Acknowledge their loyalty: "${isRegular ? 'Always wonderful to see you!' : 'Great to see you again!'}"`;
     }
 
@@ -1162,39 +1197,34 @@ ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late u
     private getRestaurantContext() {
         try {
             const timezone = this.restaurantConfig.timezone;
-            const restaurantContext = getRestaurantTimeContext(timezone);
+            const restaurantContext = getRestaurantTimeContext(timezone); // This now contains the year
             const operatingStatus = getRestaurantOperatingStatus(
                 timezone,
                 this.restaurantConfig.openingTime || '09:00',
                 this.restaurantConfig.closingTime || '23:00'
             );
 
-            // 🚨 CRITICAL FIX: Extract current year from timezone utils
-            const restaurantNow = getRestaurantDateTime(timezone);
-            const currentYear = restaurantNow.year; // 2025!
-            const nextYear = currentYear + 1;
-
             return {
-                currentDate: restaurantContext.todayDate,      // "2025-07-25"
-                tomorrowDate: restaurantContext.tomorrowDate,  // "2025-07-26"
+                currentDate: restaurantContext.todayDate,
+                tomorrowDate: restaurantContext.tomorrowDate,
                 currentTime: restaurantContext.displayName,
                 dayOfWeek: restaurantContext.dayOfWeek,
                 isOpen: operatingStatus.isOpen,
-                currentYear: currentYear,     // 🚨 NEW: Explicit 2025
-                nextYear: nextYear,          // 🚨 NEW: Explicit 2026
+                currentYear: restaurantContext.currentYear, // Use the new property
+                nextYear: restaurantContext.nextYear,       // Use the new property
                 timezone: timezone,
                 isOvernightOperation: operatingStatus.isOvernightOperation || false
             };
         } catch (error) {
-            // Enhanced fallback using Luxon (already imported in timezone-utils)
+            // Enhanced fallback using Luxon
             const now = DateTime.now();
             return {
-                currentDate: now.toISO()?.split('T')[0] || now.toISODate(),
-                tomorrowDate: now.plus({ days: 1 }).toISO()?.split('T')[0] || now.plus({ days: 1 }).toISODate(),
+                currentDate: now.toISODate(),
+                tomorrowDate: now.plus({ days: 1 }).toISODate(),
                 currentTime: now.toFormat('HH:mm'),
                 dayOfWeek: now.toFormat('cccc'),
                 isOpen: true,
-                currentYear: now.year,       // 🚨 CRITICAL: Real current year
+                currentYear: now.year,
                 nextYear: now.year + 1,
                 timezone: 'Europe/Belgrade',
                 isOvernightOperation: false
