@@ -13,6 +13,7 @@
 // 🐞 BUG FIX (OVERNIGHT BOOKING): Corrected the logic in validateBusinessHours to properly handle overnight operations.
 // 🚨 CRITICAL BUG FIX: Enhanced business hours validation to consider reservation DURATION and prevent bookings ending after closing time
 // 🔧 BUG-20250725-001 FIX: Correctly pass TenantContext to the translation service to resolve MISSING_TENANT_CONTEXT errors.
+// 🔒 MULTITENANCY FIX: Fixed get_guest_history to properly filter by restaurant ID for tenant isolation
 
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
@@ -897,14 +898,16 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
 // ===== 🚀 REDIS PHASE 3: ENHANCED GUEST HISTORY TOOL WITH CACHING =====
 
 /**
- * 🚀 REDIS PHASE 3: Get guest history with Redis caching and cache invalidation
+ * 🚀 REDIS PHASE 3 + 🔒 MULTITENANCY FIX: Get guest history with Redis caching and proper tenant isolation
  * ✅ PHASE 1 FIX: Get guest history with AIService-powered analysis (now returns English patterns)
- * * Features:
+ * 🔒 CRITICAL SECURITY FIX: Now properly filters guests by restaurant ID for tenant isolation
+ * Features:
  * - Redis caching with 1-hour TTL
  * - Automatic fallback to memory cache when Redis is down
  * - Cache hit/miss logging and performance monitoring
  * - Compression for large objects
  * - Cache invalidation triggered by booking changes
+ * - PROPER MULTITENANCY: Only returns guests for the requesting restaurant
  */
 export async function get_guest_history(
     telegramUserId: string,
@@ -955,21 +958,23 @@ export async function get_guest_history(
 
         console.log(`❌ [Cache MISS] Guest history not in cache, querying database: ${cacheKey}`);
 
-        // 2. If not in cache, execute the existing database logic
-        // 1. Find the guest by telegram user ID
+        // 🔒 CRITICAL MULTITENANCY FIX: Add restaurantId to the guest lookup
         const [guest] = await db
             .select()
             .from(guests)
-            .where(eq(guests.telegram_user_id, telegramUserId));
+            .where(and( // Use 'and' to combine conditions
+                eq(guests.telegram_user_id, telegramUserId),
+                eq(guests.restaurantId, context.restaurantId) // 🔒 SECURITY: Only find guests for this restaurant
+            ));
 
         if (!guest) {
-            console.log(`👤 [Guest History] No guest found for telegram user: ${telegramUserId}`);
+            console.log(`👤 [Guest History] No guest found for telegram user: ${telegramUserId} at restaurant ${context.restaurantId}`);
             return createBusinessRuleFailure('Guest not found', 'GUEST_NOT_FOUND');
         }
 
-        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id}) with phone: ${guest.phone}`);
+        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id}) with phone: ${guest.phone} for restaurant ${context.restaurantId}`);
 
-        // 2. Query all reservations for this guest at this restaurant
+        // 2. Query all reservations for this guest at this restaurant (already properly scoped)
         const allReservations = await db
             .select({
                 id: reservations.id,
@@ -982,11 +987,11 @@ export async function get_guest_history(
             .from(reservations)
             .where(and(
                 eq(reservations.guestId, guest.id),
-                eq(reservations.restaurantId, context.restaurantId)
+                eq(reservations.restaurantId, context.restaurantId) // ✅ This was already correct
             ))
             .orderBy(desc(reservations.reservation_utc));
 
-        console.log(`👤 [Guest History] Found ${allReservations.length} total reservations for guest`);
+        console.log(`👤 [Guest History] Found ${allReservations.length} total reservations for guest at restaurant ${context.restaurantId}`);
 
         if (allReservations.length === 0) {
             const response = createSuccessResponse({
@@ -999,7 +1004,8 @@ export async function get_guest_history(
                 frequent_special_requests: []
             }, {
                 execution_time_ms: Date.now() - startTime,
-                cached: false
+                cached: false,
+                tenantIsolated: true // 🔒 Indicate proper tenant isolation
             });
 
             // 🚀 REDIS PHASE 3: Cache empty result too (shorter TTL)
@@ -1085,12 +1091,13 @@ export async function get_guest_history(
             frequent_special_requests: translatedRequests // ✅ Now powered by AIService with English-first analysis
         };
 
-        console.log(`👤 [Guest History] Final history data with fixed AIService analysis:`, historyData);
+        console.log(`👤 [Guest History] Final history data with tenant isolation for restaurant ${context.restaurantId}:`, historyData);
 
         // 🚀 REDIS PHASE 3: Store result in cache with TTL
         const response = createSuccessResponse(historyData, {
             execution_time_ms: Date.now() - startTime,
-            cached: false
+            cached: false,
+            tenantIsolated: true // 🔒 Indicate proper tenant isolation
         });
 
         console.log(`💾 [Cache] Storing guest history in Redis cache: ${cacheKey}`);
@@ -2825,7 +2832,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "get_guest_history",
-            description: "🚀 REDIS CACHED: Get guest's booking history for personalized service with 1-hour Redis caching. Use this to welcome returning guests and suggest their usual preferences. Cache automatically invalidated when bookings change.",
+            description: "🚀 REDIS CACHED + 🔒 MULTITENANCY FIXED: Get guest's booking history for personalized service with 1-hour Redis caching and proper tenant isolation. Use this to welcome returning guests and suggest their usual preferences. Cache automatically invalidated when bookings change. Now properly filters guests by restaurant ID.",
             parameters: {
                 type: "object",
                 properties: {
@@ -3054,8 +3061,9 @@ export const agentTools = [
 // ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
 // 🚨 CRITICAL BUG FIXED: All functions now include comprehensive validation pipeline with duration check
 // 🚀 REDIS PHASE 3: All booking functions now include guest history cache invalidation
+// 🔒 MULTITENANCY FIXED: get_guest_history now properly filters by restaurant ID
 export const agentFunctions = {
-    // 🚀 REDIS PHASE 3: Guest memory tool with Redis caching, cache invalidation, and performance monitoring
+    // 🚀 REDIS PHASE 3 + 🔒 MULTITENANCY: Guest memory tool with Redis caching, cache invalidation, performance monitoring, and proper tenant isolation
     get_guest_history,
 
     // 🚨 CRITICAL BUG FIXED: Sofia's tools with comprehensive validation pipeline including duration check

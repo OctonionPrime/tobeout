@@ -276,7 +276,7 @@ export const guests = pgTable("guests", {
   name: text("name").notNull(),
   phone: text("phone"),
   email: text("email"),
-  telegram_user_id: text("telegram_user_id").unique(),
+  telegram_user_id: text("telegram_user_id"),
   language: text("language").default('en'),
   birthday: date("birthday"),
   comments: text("comments"),
