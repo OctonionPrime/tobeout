@@ -445,16 +445,16 @@ if (process.env.ENABLE_FREE_DASHBOARD === 'true') {
 
 // This allows you to view individual log files directly by URL
 // Example: http://localhost:5000/logs/app.log
-app.use('/logs', express.static('logs'));
+app.use('/logs', express.static('logs', { etag: false, lastModified: false }));
 
 // These two lines work together to create a browseable directory for reports
 // Example: http://localhost:5000/reports/
-app.use('/reports', express.static('reports'));
+app.use('/reports', express.static('reports', { etag: false, lastModified: false })); // Recommended change
 app.use('/reports', serveIndex('reports', { 'icons': true }));
 
 // These two lines work together to create a browseable directory for analytics
 // Example: http://localhost:5000/analytics/
-app.use('/analytics', express.static('analytics'));
+app.use('/analytics', express.static('analytics', { etag: false, lastModified: false })); // Recommended change
 app.use('/analytics', serveIndex('analytics', { 'icons': true }));
 
 

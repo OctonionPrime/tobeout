@@ -2103,13 +2103,25 @@ export class DatabaseStorage implements IStorage {
 
             // 2. Create the restaurant (tenant) and link it to the owner
             const [restaurant] = await tx.insert(restaurants).values({
+                // Core Tenant Info
                 userId: owner.id,
                 name: data.restaurantName,
                 subdomain: data.subdomain,
                 tenantPlan: data.plan,
                 timezone: data.timezone,
-                ...data.features,
-                ...data.limits
+                tenantStatus: 'trial', // Set an initial status
+
+                // Explicitly map features
+                enableAiChat: data.features.enableAiChat,
+                enableTelegramBot: data.features.enableTelegramBot,
+                enableGuestAnalytics: data.features.enableGuestAnalytics,
+                enableAdvancedReporting: data.features.enableAdvancedReporting,
+                enableMenuManagement: data.features.enableMenuManagement,
+
+                // Explicitly map limits (using correct column names from your schema)
+                maxTablesAllowed: data.limits.maxTables,
+                maxStaffAccounts: data.limits.maxUsers
+
             }).returning();
             
             console.log(`[Storage] Successfully created user ${owner.id} and restaurant ${restaurant.id}`);
