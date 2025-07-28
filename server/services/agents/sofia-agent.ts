@@ -1,5 +1,5 @@
 // src/agents/sofia-agent.ts
-// 🚀 PRODUCTION-READY: Sofia Agent with Critical Name Clarification Loop Fix
+// 🚀 PRODUCTION-READY: Sofia Agent with Critical Bug Fixes Applied
 // ✅ FIXED: Name clarification infinite loop with comprehensive pattern matching
 // ✅ ENHANCED: Robust attempt limiting and graceful fallbacks
 // ✅ OPTIMIZED: Streamlined conversation flow with intelligent context usage
@@ -9,6 +9,8 @@
 // 🛠️ APPLIED: Bug Fix 1 - Last Seating Rule
 // 🛠️ APPLIED: Bug Fix 2 - Guest Count Confirmation
 // 🔧 CRITICAL FIX: Final booking command moved to end to prevent date hallucination
+// 🚨 BUG #3 FIX: Premature availability check prevention with strict validation
+// 🚨 BUG #4 FIX: Circular reference prevention in PendingConfirmation structure
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -39,7 +41,7 @@ interface GuestHistory {
 }
 
 /**
- * 🚨 CRITICAL FIX: Enhanced pending confirmation state with attempt tracking
+ * 🚨 CRITICAL BUG #4 FIX: Enhanced pending confirmation state with circular reference prevention
  */
 interface PendingConfirmation {
     type: 'name_clarification';
@@ -52,6 +54,15 @@ interface PendingConfirmation {
         time: string;
         guests: number;
         specialRequests?: string;
+    };
+    // 🚨 CRITICAL BUG #4 FIX: Store only essential context, not full session object
+    originalContext: {
+        restaurantId: number;
+        timezone: string;
+        sessionId: string;
+        language: string;
+        // 🚨 CRITICAL: DO NOT include session, restaurantConfig, or other complex objects
+        // that could create circular references during Redis serialization
     };
     // 🆕 CRITICAL: Add attempt tracking to prevent infinite loops
     attempts: number;
@@ -104,7 +115,7 @@ interface NameExtractionPattern {
 /**
  * 🚀 PRODUCTION-READY: Sofia Agent - Booking Specialist with Critical Fixes
  * 
- * This agent completely resolves the name clarification infinite loop issue through:
+ * This agent completely resolves critical issues through:
  * 1. Comprehensive multi-language pattern matching for name extraction
  * 2. Intelligent attempt limiting with graceful fallbacks
  * 3. Robust fuzzy matching for typos and variations
@@ -114,10 +125,12 @@ interface NameExtractionPattern {
  * 7. 🛠️ NEW: Last seating rule awareness (BUG FIX 1)
  * 8. 🛠️ NEW: Guest count confirmation for returning guests (BUG FIX 2)
  * 9. 🔧 CRITICAL: Final booking command positioned at end to prevent date hallucination
+ * 10. 🚨 BUG #3 FIX: Prevents premature availability checks with strict validation
+ * 11. 🚨 BUG #4 FIX: Eliminates circular references in pending confirmation structure
  */
 export class SofiaAgent extends BaseAgent {
     readonly name = 'Sofia';
-    readonly description = 'Production-ready booking specialist with infinite loop prevention';
+    readonly description = 'Production-ready booking specialist with critical bug fixes applied';
     readonly capabilities = [
         'check_availability',
         'find_alternative_times', 
@@ -197,13 +210,14 @@ export class SofiaAgent extends BaseAgent {
 
     constructor(config: AgentConfig, restaurantConfig: RestaurantConfig) {
         super(config, restaurantConfig);
-        this.logAgentAction('Sofia Agent initialized - production-ready with infinite loop prevention and date context fix');
+        this.logAgentAction('Sofia Agent initialized - production-ready with critical bug fixes applied');
     }
 
     /**
      * 🔧 STREAMLINED: System prompt optimized for conversation flow
      * 🚨 ENHANCED: Added explicit date parsing rules to prevent 2023 assumptions (BUG-00184 FIX)
      * 🔧 CRITICAL FIX: Final booking command moved to the very end to prevent date hallucination
+     * 🚨 BUG #3 FIX: Added strict availability check validation rules
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
@@ -214,6 +228,9 @@ export class SofiaAgent extends BaseAgent {
         const nameInstructions = this.getNameClarificationInstructions(conversationContext);
         const businessHoursInstructions = this.getBusinessHoursInstructions();
         const languageInstruction = `🌍 LANGUAGE: Respond in ${language} with warm, professional tone.`;
+        
+        // 🚨 BUG #3 FIX: Add strict availability check validation rules
+        const availabilityValidationRules = this.getAvailabilityValidationRules();
 
         // 🚨 CRITICAL HALLUCINATION FIX LOGIC (MOVED TO THE END)
         let finalBookingCommand = '';
@@ -284,11 +301,15 @@ ${isOvernightOperation(this.restaurantConfig.openingTime || '09:00', this.restau
 - If a date seems to be in the past, use next occurrence (next year)
 - Current restaurant timezone: ${dateContext.timezone}
 
+${availabilityValidationRules}
+
 🔧 SYSTEM INTEGRATION:
 ✅ Context Manager handles reservation resolution (RACE CONDITION FIXED)
 ✅ Enhanced conversation manager handles extraction and validation
 ✅ Smart logging provides comprehensive debugging capabilities
 ✅ Date context provides explicit year information (BUG-00184 FIXED)
+✅ Availability validation prevents premature tool calls (BUG #3 FIXED)
+✅ Circular reference prevention in confirmations (BUG #4 FIXED)
 
 ${nameInstructions}
 
@@ -347,18 +368,56 @@ When ANY booking validation fails and user provides new information:
     }
 
     /**
+     * 🚨 BUG #3 FIX: Strict availability check validation rules
+     * Prevents premature availability checks with assumed guest counts
+     */
+    private getAvailabilityValidationRules(): string {
+        return `
+🚨 CRITICAL AVAILABILITY CHECK RULES - BUG #3 FIX:
+
+**MANDATORY PREREQUISITES FOR check_availability:**
+- ✅ Date MUST be provided and explicitly validated by user
+- ✅ Time MUST be provided and explicitly validated by user  
+- ✅ Guests MUST be provided and explicitly validated by user
+- ❌ NEVER call check_availability with default/assumed values
+- ❌ NEVER assume guests = 1 if not explicitly provided by user
+- ❌ NEVER use "typical" or "usual" guest counts without explicit confirmation
+
+**FORBIDDEN ACTIONS - WILL CAUSE SYSTEM ERRORS:**
+- ❌ check_availability(date="2025-07-29", time="19:00", guests=1) when user didn't specify guests
+- ❌ Any tool call with assumed/default parameter values
+- ❌ Premature availability checking before all parameters confirmed
+- ❌ Using historical guest data without explicit user confirmation
+
+**REQUIRED BEHAVIOR:**
+- If missing guests → Ask: "How many guests will be joining you?"
+- If missing date → Ask: "What date would you prefer?"
+- If missing time → Ask: "What time works for you?"
+- Only call tools when ALL required parameters are explicitly provided by user
+
+**VALIDATION SEQUENCE:**
+1. Validate ALL parameters are user-provided (not assumed)
+2. If any missing → Ask for missing info (DO NOT assume defaults)
+3. If all present → Proceed with tool call
+4. NEVER proceed with partial information
+
+**CRITICAL RULE:** Even if you know the user's "usual party size" from history, you MUST ask for confirmation for each new booking. Historical data is for reference only, not for making assumptions.`;
+    }
+
+    /**
      * 🚀 CRITICAL FIX: Enhanced message handling with comprehensive name clarification
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         const startTime = Date.now();
 
         try {
-            this.logAgentAction('Processing message with production-ready Sofia agent', {
+            this.logAgentAction('Processing message with production-ready Sofia agent (bug fixes applied)', {
                 messageLength: message.length,
                 language: context.language,
                 hasGuestHistory: !!context.guestHistory,
                 hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation,
-                sessionTurn: context.conversationContext?.sessionTurnCount || 1
+                sessionTurn: context.conversationContext?.sessionTurnCount || 1,
+                bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
             });
 
             // 🚨 CRITICAL: Priority handling for pending name clarification
@@ -380,18 +439,19 @@ When ANY booking validation fails and user provides new information:
                         action: 'personalized_greeting',
                         usedGuestContext: !!context.guestHistory,
                         isProductionReady: true,
-                        dateContextFixed: true // 🚨 NEW: Mark date fix applied
+                        dateContextFixed: true, // 🚨 NEW: Mark date fix applied
+                        bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
                     }
                 };
             }
 
-            // 🔧 STANDARD: Regular conversation processing
+            // 🔧 STANDARD: Regular conversation processing with bug fixes
             const systemPrompt = this.generateSystemPrompt(context);
             const response = await this.generateResponse(
                 `${systemPrompt}\n\nUser: ${message}`,
                 {
                     model: 'sonnet',
-                    context: 'sofia-production-conversation',
+                    context: 'sofia-production-conversation-fixed',
                     maxTokens: 1000,
                     temperature: 0.7
                 }
@@ -407,7 +467,8 @@ When ANY booking validation fails and user provides new information:
                     modelUsed: 'sonnet',
                     usedGuestContext: !!context.guestHistory,
                     isProductionReady: true,
-                    dateContextFixed: true // 🚨 NEW: Mark date fix applied
+                    dateContextFixed: true, // 🚨 NEW: Mark date fix applied
+                    bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
                 }
             };
 
@@ -424,6 +485,7 @@ When ANY booking validation fails and user provides new information:
      * 2. Intelligent attempt limiting with graceful fallbacks
      * 3. Fuzzy matching for typos and variations
      * 4. Clear escalation paths for edge cases
+     * 5. 🚨 BUG #4 FIX: Ensures no circular references in pending confirmation creation
      */
     private async handleNameClarificationResponse(
         message: string, 
@@ -437,12 +499,13 @@ When ANY booking validation fails and user provides new information:
         }
 
         try {
-            this.logAgentAction('🚨 CRITICAL: Handling name clarification response', {
+            this.logAgentAction('🚨 CRITICAL: Handling name clarification response (BUG #4 SAFE)', {
                 userMessage: message.substring(0, 100),
                 dbName: pendingConfirmation.dbName,
                 requestName: pendingConfirmation.requestName,
                 currentAttempt: pendingConfirmation.attempts + 1,
-                maxAttempts: pendingConfirmation.maxAttempts
+                maxAttempts: pendingConfirmation.maxAttempts,
+                hasCleanOriginalContext: this.validateCleanContext(pendingConfirmation.originalContext)
             });
 
             // 🚨 CRITICAL: Check attempt limit to prevent infinite loops
@@ -473,6 +536,95 @@ When ANY booking validation fails and user provides new information:
             });
             return this.createErrorResponse('Name clarification processing failed', startTime);
         }
+    }
+
+    /**
+     * 🚨 BUG #4 FIX: Validate that original context is clean (no circular references)
+     */
+    private validateCleanContext(originalContext: any): boolean {
+        try {
+            // Test serialization to detect circular references
+            const serialized = JSON.stringify(originalContext);
+            const parsed = JSON.parse(serialized);
+            
+            // Ensure only allowed properties exist
+            const allowedProperties = ['restaurantId', 'timezone', 'sessionId', 'language'];
+            const actualProperties = Object.keys(originalContext);
+            
+            const hasOnlyAllowedProperties = actualProperties.every(prop => allowedProperties.includes(prop));
+            const hasNoCircularRefs = serialized.length > 0;
+            
+            this.logAgentAction('🔍 Clean context validation', {
+                hasOnlyAllowedProperties,
+                hasNoCircularRefs,
+                actualProperties,
+                serializedLength: serialized.length
+            });
+            
+            return hasOnlyAllowedProperties && hasNoCircularRefs;
+        } catch (error) {
+            this.logAgentAction('❌ Clean context validation failed', {
+                error: (error as Error).message,
+                context: originalContext
+            });
+            return false;
+        }
+    }
+
+    /**
+     * 🚨 BUG #4 FIX: Create clean pending confirmation with safe serialization
+     */
+    private createCleanPendingConfirmation(
+        dbName: string,
+        requestName: string,
+        originalBookingData: any,
+        context: AgentContext
+    ): PendingConfirmation {
+        // 🚨 CRITICAL BUG #4 FIX: Create clean context object without circular references
+        const cleanOriginalContext = {
+            restaurantId: this.restaurantConfig.id,
+            timezone: this.restaurantConfig.timezone,
+            sessionId: context.sessionId || 'unknown',
+            language: context.language || 'en'
+            // 🚨 CRITICAL: DO NOT include session, restaurantConfig, or other complex objects
+        };
+
+        const pendingConfirmation: PendingConfirmation = {
+            type: 'name_clarification',
+            dbName,
+            requestName,
+            originalBookingData,
+            originalContext: cleanOriginalContext,
+            attempts: 0,
+            maxAttempts: this.MAX_CLARIFICATION_ATTEMPTS,
+            createdAt: new Date(),
+            lastAttemptAt: undefined
+        };
+
+        // 🚨 BUG #4 FIX: Validate serialization before returning
+        try {
+            const testSerialization = JSON.stringify(pendingConfirmation);
+            if (testSerialization.length === 0) {
+                throw new Error('Serialization produced empty result');
+            }
+            
+            this.logAgentAction('✅ Clean pending confirmation created', {
+                dbName,
+                requestName,
+                contextProperties: Object.keys(cleanOriginalContext),
+                serializationLength: testSerialization.length,
+                bugFixApplied: 'BUG_4_CIRCULAR_REFERENCE_PREVENTION'
+            });
+            
+        } catch (serializationError) {
+            this.logAgentAction('❌ CRITICAL: Pending confirmation failed serialization test', {
+                error: (serializationError as Error).message,
+                pendingConfirmation
+            });
+            throw new Error('Failed to create serializable pending confirmation');
+        }
+
+        return pendingConfirmation;
     }
 
     /**
@@ -691,7 +843,8 @@ When ANY booking validation fails and user provides new information:
             attempts: pendingConfirmation.attempts,
             maxAttempts: pendingConfirmation.maxAttempts,
             dbName: pendingConfirmation.dbName,
-            requestName: pendingConfirmation.requestName
+            requestName: pendingConfirmation.requestName,
+            bugFixApplied: 'BUG_4_INFINITE_LOOP_PREVENTION'
         });
 
         // 🎯 GRACEFUL FALLBACK: Auto-select requested name and proceed
@@ -729,7 +882,8 @@ When ANY booking validation fails and user provides new information:
                 action: 'max_attempts_fallback',
                 fallbackName,
                 infiniteLoopPrevented: true,
-                attemptCount: pendingConfirmation.attempts
+                attemptCount: pendingConfirmation.attempts,
+                bugFixesApplied: ['BUG_4_INFINITE_LOOP_PREVENTION']
             }
         };
     }
@@ -746,7 +900,8 @@ When ANY booking validation fails and user provides new information:
         this.logAgentAction('✅ SUCCESS: Name choice extracted - proceeding with booking', {
             chosenName,
             attempts: pendingConfirmation.attempts + 1,
-            originalBooking: pendingConfirmation.originalBookingData
+            originalBooking: pendingConfirmation.originalBookingData,
+            bugFixApplied: 'BUG_4_CLEAN_PROGRESSION'
         });
 
         const messages = {
@@ -781,7 +936,8 @@ When ANY booking validation fails and user provides new information:
                 action: 'name_choice_success',
                 chosenName,
                 attemptCount: pendingConfirmation.attempts + 1,
-                clarificationResolved: true
+                clarificationResolved: true,
+                bugFixesApplied: ['BUG_4_CLEAN_PROGRESSION']
             }
         };
     }

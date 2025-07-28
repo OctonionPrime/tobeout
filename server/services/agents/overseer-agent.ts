@@ -24,7 +24,7 @@ export interface RestaurantConfig {
 export class OverseerAgent {
     readonly name = 'Overseer';
     readonly description = 'Master decision maker for agent routing and conversation flow management';
-    
+
     private config: OverseerConfig;
     private restaurantConfig: RestaurantConfig;
 
@@ -32,7 +32,7 @@ export class OverseerAgent {
         this.config = config;
         this.restaurantConfig = restaurantConfig;
     }
-    
+
     /**
      * Main entry point for overseer decisions
      */
@@ -42,7 +42,7 @@ export class OverseerAgent {
         availabilityFailure?: any
     ): Promise<OverseerDecision> {
         const timerId = smartLog.startTimer('overseer_decision');
-        
+
         try {
             smartLog.info('Overseer decision context', {
                 sessionId: session.sessionId,
@@ -55,7 +55,7 @@ export class OverseerAgent {
             });
 
             const systemPrompt = this.generateSystemPrompt(session, userMessage, availabilityFailure);
-            
+
             const decision = await aiService.generateJSON(systemPrompt, {
                 model: 'gpt-4o', // 🚀 UPGRADE: Using a more powerful HARDCODED ON PURPOSE model for critical decisions
                 maxTokens: 1000,
@@ -127,8 +127,8 @@ export class OverseerAgent {
      * Generate the comprehensive system prompt for agent selection
      */
     private generateSystemPrompt(
-        session: BookingSessionWithAgent, 
-        userMessage: string, 
+        session: BookingSessionWithAgent,
+        userMessage: string,
         availabilityFailure?: any
     ): string {
         const recentHistory = session.conversationHistory
@@ -198,13 +198,27 @@ If detected, use Sofia (booking) agent and flag as NEW BOOKING REQUEST.
 
 ### RULE 1.5: HANDLE SIMPLE CONTINUATIONS (CRITICAL BUGFIX)
 **NEVER** flag \`isNewBookingRequest: true\` for simple, short answers like:
-- "yes", "no", "ok", "confirm", "yep", "nope", "agree", "good", "everything's?\s*good", "fine"
+- "yes", "no", "ok", "confirm", "yep", "nope", "agree", "good", "everything's?\\s*good", "fine"
 - "да", "нет", "хорошо", "подтверждаю", "согласен", "ок"
 - "igen", "nem", "jó", "rendben"
 - "ja", "nein", "gut", "okay"
 - "oui", "non", "bien", "d'accord"
 
 These are continuations of the current task, NOT new requests. \`isNewBookingRequest\` must be \`false\` for them.
+
+### RULE 1.6: COMMON BOOKING REQUEST PATTERNS
+Treat these as NEW booking requests WITHOUT intervention:
+- "table", "book", "reservation" (English)
+- "стол", "столик", "можно стол", "забронировать", "бронь" (Russian)
+- "asztal", "foglalás" (Hungarian)
+- "sto", "rezervacija" (Serbian)
+- "tisch", "reservierung" (German)
+- "table", "réservation" (French)
+- "mesa", "reserva" (Spanish)
+- "tavolo", "prenotazione" (Italian)
+- "mesa", "reserva" (Portuguese)
+- "tafel", "reservering" (Dutch)
+If the message contains ONLY these patterns (with optional "please", "can I", etc.), treat as new booking request. Do NOT generate intervention.
 
 ### RULE 2: TASK CONTINUITY (HIGHEST PRIORITY)
 This rule is critical to avoid unnatural conversation resets.
@@ -228,6 +242,16 @@ If user mentions time changes ("earlier", "later", "different time") consider co
 
 ### RULE 5: CONDUCTOR RESET
 Use "conductor" ONLY after successful task completion (booking created, cancellation confirmed).
+
+### INTERVENTION RULES:
+Generate an intervention ONLY when:
+1. User explicitly asks about both new and existing bookings in the same message
+2. User message is completely unrelated to restaurant bookings
+3. User has been stuck in a loop for 3+ turns
+DO NOT generate intervention for:
+- Simple booking requests like "table", "можно стол", etc.
+- When user provides booking details (date, time, guests)
+- Simple continuations of current conversation
 
 Respond with ONLY a JSON object:
 

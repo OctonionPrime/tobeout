@@ -6,6 +6,7 @@
 // 3. Complete tenant isolation across all operations
 // 4. Added missing super admin methods: getAllTenants and logSuperAdminActivity
 // 5. 🚨 NEW FIX: Added missing updateTenant method for super admin functionality
+// 6. ✅ BUG FIX: Fixed tenant feature flags bug in createTenantWithOwner method
 //
 
 import {
@@ -2076,6 +2077,7 @@ export class DatabaseStorage implements IStorage {
         return tenant;
     }
 
+    // ✅ BUG FIX: Fixed tenant feature flags in createTenantWithOwner method
     async createTenantWithOwner(data: {
         restaurantName: string;
         subdomain: string;
@@ -2090,6 +2092,17 @@ export class DatabaseStorage implements IStorage {
     }): Promise<{ restaurant: Restaurant, owner: User }> {
         return await db.transaction(async (tx) => {
             console.log(`[Storage] Starting transaction to create tenant ${data.restaurantName}`);
+
+            // ✅ BUG FIX: Ensure feature flags have proper defaults if undefined
+            const safeFeatures = {
+                enableAiChat: data.features.enableAiChat !== undefined ? Boolean(data.features.enableAiChat) : true,
+                enableTelegramBot: data.features.enableTelegramBot !== undefined ? Boolean(data.features.enableTelegramBot) : false,
+                enableGuestAnalytics: data.features.enableGuestAnalytics !== undefined ? Boolean(data.features.enableGuestAnalytics) : true,
+                enableAdvancedReporting: data.features.enableAdvancedReporting !== undefined ? Boolean(data.features.enableAdvancedReporting) : false,
+                enableMenuManagement: data.features.enableMenuManagement !== undefined ? Boolean(data.features.enableMenuManagement) : true,
+            };
+
+            console.log(`[Storage] Safe feature flags for tenant ${data.restaurantName}:`, safeFeatures);
 
             // 1. Create the owner user
             const hashedPassword = await bcrypt.hash(data.initialPassword, 10);
@@ -2109,22 +2122,29 @@ export class DatabaseStorage implements IStorage {
                 subdomain: data.subdomain,
                 tenantPlan: data.plan,
                 timezone: data.timezone,
-                tenantStatus: 'trial', // Set an initial status
+                tenantStatus: 'trial',
 
-                // Explicitly map features
-                enableAiChat: data.features.enableAiChat,
-                enableTelegramBot: data.features.enableTelegramBot,
-                enableGuestAnalytics: data.features.enableGuestAnalytics,
-                enableAdvancedReporting: data.features.enableAdvancedReporting,
-                enableMenuManagement: data.features.enableMenuManagement,
+                // ✅ BUG FIX: Use safe feature flags with explicit boolean values
+                enableAiChat: safeFeatures.enableAiChat,
+                enableTelegramBot: safeFeatures.enableTelegramBot,
+                enableGuestAnalytics: safeFeatures.enableGuestAnalytics,
+                enableAdvancedReporting: safeFeatures.enableAdvancedReporting,
+                enableMenuManagement: safeFeatures.enableMenuManagement,
 
-                // Explicitly map limits (using correct column names from your schema)
+                // Explicitly map limits
                 maxTablesAllowed: data.limits.maxTables,
                 maxStaffAccounts: data.limits.maxUsers
 
             }).returning();
             
-            console.log(`[Storage] Successfully created user ${owner.id} and restaurant ${restaurant.id}`);
+            console.log(`[Storage] Successfully created user ${owner.id} and restaurant ${restaurant.id} with features:`, {
+                enableAiChat: restaurant.enableAiChat,
+                enableTelegramBot: restaurant.enableTelegramBot,
+                enableGuestAnalytics: restaurant.enableGuestAnalytics,
+                enableAdvancedReporting: restaurant.enableAdvancedReporting,
+                enableMenuManagement: restaurant.enableMenuManagement,
+            });
+            
             return { restaurant, owner };
         });
     }

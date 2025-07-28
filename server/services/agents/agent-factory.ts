@@ -93,6 +93,15 @@ class RestaurantConfigManager {
             throw new Error(`[RestaurantConfigManager] Restaurant with ID ${restaurantId} not found.`);
         }
 
+        console.log('🔍 [DEBUG] Raw restaurant data from storage:', {
+            restaurantId,
+            opening_time: restaurant.opening_time,          // snake_case (DB)
+            closing_time: restaurant.closing_time,          // snake_case (DB)
+            openingTime: restaurant.openingTime,            // camelCase (Drizzle)
+            closingTime: restaurant.closingTime,            // camelCase (Drizzle)
+            allKeys: Object.keys(restaurant)
+        });
+
         const config: RestaurantConfig = {
             id: restaurant.id,
             name: restaurant.name,
@@ -105,6 +114,12 @@ class RestaurantConfigManager {
             country: restaurant.country,
             languages: restaurant.languages,
         };
+
+        console.log('🔍 [DEBUG] Final restaurant config:', {
+            restaurantId,
+            configOpeningTime: config.openingTime,
+            configClosingTime: config.closingTime
+        });
 
         this.configs.set(restaurantId, config);
         smartLog.info('Restaurant configuration loaded and cached', {

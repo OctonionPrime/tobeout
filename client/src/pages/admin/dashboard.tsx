@@ -312,8 +312,30 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
     },
   });
 
+  // ✅ FIX 1: Explicit boolean conversion in form submission
   const onSubmit = (data: CreateTenantForm) => {
-    createTenantMutation.mutate(data);
+    // ✅ BUG FIX: Ensure all feature flags are explicitly set as booleans
+    const tenantData = {
+      ...data,
+      // Explicitly ensure feature flags are booleans, not undefined
+      enableAiChat: Boolean(data.enableAiChat),
+      enableTelegramBot: Boolean(data.enableTelegramBot), 
+      enableGuestAnalytics: Boolean(data.enableGuestAnalytics),
+      enableAdvancedReporting: Boolean(data.enableAdvancedReporting),
+      enableMenuManagement: Boolean(data.enableMenuManagement),
+    };
+    
+    console.log('[CreateTenant] Submitting tenant data with explicit feature flags:', {
+      features: {
+        enableAiChat: tenantData.enableAiChat,
+        enableTelegramBot: tenantData.enableTelegramBot,
+        enableGuestAnalytics: tenantData.enableGuestAnalytics,
+        enableAdvancedReporting: tenantData.enableAdvancedReporting,
+        enableMenuManagement: tenantData.enableMenuManagement,
+      }
+    });
+    
+    createTenantMutation.mutate(tenantData);
   };
 
   // Auto-generate subdomain from restaurant name
@@ -472,12 +494,14 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
           <div className="space-y-4">
             <h4 className="font-medium text-sm text-slate-900">Feature Configuration</h4>
             
+            {/* ✅ FIX 2: Proper Switch handling with watch() and setValue() */}
             <div className="grid grid-cols-2 gap-4">
               <div className="flex items-center justify-between">
                 <Label htmlFor="enableAiChat" className="text-sm">AI Chat Assistant</Label>
                 <Switch
                   id="enableAiChat"
-                  {...register("enableAiChat")}
+                  checked={watch("enableAiChat")}
+                  onCheckedChange={(checked) => setValue("enableAiChat", checked)}
                 />
               </div>
 
@@ -485,7 +509,8 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
                 <Label htmlFor="enableTelegramBot" className="text-sm">Telegram Bot</Label>
                 <Switch
                   id="enableTelegramBot"
-                  {...register("enableTelegramBot")}
+                  checked={watch("enableTelegramBot")}
+                  onCheckedChange={(checked) => setValue("enableTelegramBot", checked)}
                 />
               </div>
 
@@ -493,7 +518,8 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
                 <Label htmlFor="enableGuestAnalytics" className="text-sm">Guest Analytics</Label>
                 <Switch
                   id="enableGuestAnalytics"
-                  {...register("enableGuestAnalytics")}
+                  checked={watch("enableGuestAnalytics")}
+                  onCheckedChange={(checked) => setValue("enableGuestAnalytics", checked)}
                 />
               </div>
 
@@ -501,7 +527,8 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
                 <Label htmlFor="enableAdvancedReporting" className="text-sm">Advanced Reporting</Label>
                 <Switch
                   id="enableAdvancedReporting"
-                  {...register("enableAdvancedReporting")}
+                  checked={watch("enableAdvancedReporting")}
+                  onCheckedChange={(checked) => setValue("enableAdvancedReporting", checked)}
                 />
               </div>
 
@@ -509,7 +536,8 @@ function CreateTenantDialog({ onSuccess }: { onSuccess: () => void }) {
                 <Label htmlFor="enableMenuManagement" className="text-sm">Menu Management</Label>
                 <Switch
                   id="enableMenuManagement"
-                  {...register("enableMenuManagement")}
+                  checked={watch("enableMenuManagement")}
+                  onCheckedChange={(checked) => setValue("enableMenuManagement", checked)}
                 />
               </div>
             </div>

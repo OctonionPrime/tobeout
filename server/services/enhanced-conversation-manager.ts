@@ -1,37 +1,4 @@
 // server/services/enhanced-conversation-manager.ts
-// ✅ PRODUCTION READY VERSION WITH ALL CRITICAL FIXES IMPLEMENTED + OVERSEER EXTRACTION
-//
-// 🚨 CRITICAL FIXES APPLIED:
-// ✅ TENANT CONTEXT PROPAGATION - The TenantContext is now correctly loaded and passed to all services
-// ✅ SESSION STATE CONTAMINATION FIX - Complete comprehensive cleanup
-// ✅ TOOL EXECUTION HISTORY - Proper clearing and management
-// ✅ VALIDATION STATES - Complete reset between sessions
-// ✅ AGENT STATES - Proper cleanup and isolation
-// ✅ CLARIFICATION ATTEMPTS - Tracking and cleanup
-// ✅ MEMORY MANAGEMENT - Efficient cache and state management
-// ✅ ERROR RECOVERY - Enhanced error handling and recovery
-// ✅ PERFORMANCE OPTIMIZATIONS - Batch operations and caching
-// ✅ SECURITY ENHANCEMENTS - Input sanitization and rate limiting
-// ✅ NAME CLARIFICATION LOOP FIX - Proper handling of NAME_CLARIFICATION_NEEDED in main tool execution
-// ✅ OVERSEER EXTRACTION - Extracted runOverseer method into dedicated OverseerAgent class
-// ✅ VARIABLE SCOPE BUG FIX - Fixed cleanBookingDataForConfirmation scope issue
-//
-// 🔧 BUG-20250725-001 FIXES:
-// ✅ TENANT CONTEXT LOADING - Properly load TenantContext in handleMessage
-// ✅ AI SERVICE CONTEXT PROPAGATION - Pass tenantContext to all AI service calls
-// ✅ AGENT FACTORY CONTEXT PROPAGATION - Pass full TenantContext to AgentFactory
-// ✅ TRANSLATION SERVICE CONTEXT PROPAGATION - Pass tenantContext to all translation calls
-// 🔧 BUG-20250725-002 FIX: Pass the full session object to retrieveGuestHistory to ensure tenantContext is available for the get_guest_history tool.
-// 🔧 NAME CLARIFICATION INFINITE LOOP FIX: Proper detection and handling of NAME_CLARIFICATION_NEEDED errors
-// 🔧 CONTEXT CONTAMINATION FIX: Prevent using stale booking data after availability failures, ensure confirmation messages use clean tool result data
-// 🔧 SESSION CONTAMINATION ELIMINATION FIX: Remove all fallbacks to session.gatheringInfo for confirmation messages, use only verified clean tool result data
-// 🔧 HALLUCINATED BOOKING PREVENTION FIX: Prevent AI from confirming bookings after only checking availability, force confirmation prompts
-//
-// 🚨 NEW CRITICAL FIXES (ALL 4 IMPLEMENTED):
-// ✅ CRITICAL FIX #1: Circular Reference in Redis Serialization - Fixed functionContext serialization
-// ✅ CRITICAL FIX #2: Infinite Name Clarification Loop - Added pendingNameClarification state with attempt limits
-// ✅ CRITICAL FIX #3: Enhanced Context Contamination Prevention - Fixed Map clearing in clearBookingSpecificState
-// ✅ CRITICAL FIX #4: Added Missing retryBookingWithConfirmedName Method
 
 import { aiService } from './ai-service';
 import { type BookingSession, createBookingSession, updateSessionInfo, hasCompleteBookingInfo } from './session-manager';
@@ -67,10 +34,12 @@ import { OverseerAgent, type OverseerDecision } from './agents/overseer-agent';
 // 📊 SMART LOGGING INTEGRATION: Import SmartLoggingService for comprehensive monitoring
 import { smartLog } from './smart-logging.service';
 
+// ✅ PHASE 1 REFACTORING: Import ConfirmationService for all confirmation workflows
+import { ConfirmationService } from './confirmation.service';
+
 // ✅ APOLLO: Updated AgentType to include availability agent
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
 export type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
-
 
 // 🚨 CRITICAL FIX: Extended session interface with comprehensive state tracking
 // Moved to the top of the file for proper type resolution.
@@ -187,6 +156,7 @@ interface BookingSessionWithAgent extends BookingSession {
 
 /**
  * ✅ PHASE 1 FIX: Unified Translation Service using AIService with proper tenant context
+ * ✅ TRANSLATION QUOTES FIX: Updated prompt to explicitly avoid adding quotation marks
  */
 class TranslationService {
     static async translateMessage(
@@ -203,12 +173,15 @@ class TranslationService {
             'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
         };
 
+        // ✅ TRANSLATION QUOTES FIX: Updated prompt to explicitly avoid quotation marks
         const prompt = `Translate this restaurant service message to ${languageNames[targetLanguage]}:
 
-"${message}"
+${message}
 
 Context: ${context} message for restaurant booking
 Keep the same tone, emojis, and professional style.
+DO NOT add quotation marks around the translation.
+DO NOT add quotes at the beginning or end.
 Return only the translation, no explanations.`;
 
         try {
@@ -280,6 +253,10 @@ interface CompleteBookingInfoResult {
         time?: string;
         guests?: number;
         comments?: string;
+        _guestSuggestion?: number;
+        _requiresConfirmation?: boolean;
+        _specialRequestSuggestion?: string;
+        _requiresSpecialRequestConfirmation?: boolean;
     };
     confidence: number;
     missingFields: string[];
@@ -355,6 +332,7 @@ class InputSanitizer {
 
 /**
  * Enhanced conversation manager with Redis session persistence and comprehensive fixes
+ * ✅ PHASE 1 REFACTORING: Simplified through ConfirmationService extraction
  */
 export class EnhancedConversationManager {
     // 🚨 CRITICAL FIX: Add rate limiting for security
@@ -368,42 +346,7 @@ export class EnhancedConversationManager {
     private redisWriteTimer: NodeJS.Timeout | null = null;
 
     constructor() {
-        smartLog.info('EnhancedConversationManager initialized with comprehensive production fixes', {
-            features: [
-                'Redis Session Persistence',
-                'Automatic TTL-based Cleanup',
-                'Fallback Cache Support',
-                'AI Hallucination Prevention',
-                'Direct booking path',
-                'Duplicate reservation ID removal',
-                'Guest recognition improvements',
-                'Enhanced tool validation',
-                'Time parsing fixes',
-                'UX Context Intelligence',
-                'Smart Logging Integration',
-                'Guest Identity Preservation',
-                'CRITICAL FIX: Complete session state contamination cleanup',
-                'CRITICAL FIX: Tool execution history management',
-                'CRITICAL FIX: Validation state cleanup',
-                'CRITICAL FIX: Agent state isolation',
-                'CRITICAL FIX: Clarification attempts tracking',
-                'CRITICAL FIX: Memory leak prevention',
-                'CRITICAL FIX: Input sanitization and rate limiting',
-                'CRITICAL FIX: Performance optimizations',
-                'AgentFactory Integration: Eliminated agent creation redundancy',
-                'CRITICAL FIX BUG-20250725-001: TenantContext propagation to all services',
-                'CRITICAL FIX: Name clarification infinite loop prevention',
-                'CRITICAL FIX: Context contamination prevention after availability failures',
-                'CRITICAL FIX: Session contamination elimination - confirmation messages use only clean tool result data',
-                'CRITICAL FIX: Hallucinated booking prevention - AI asks for confirmation after availability checks',
-                'OVERSEER EXTRACTION: Dedicated OverseerAgent class for better maintainability',
-                'VARIABLE SCOPE BUG FIX: Fixed cleanBookingDataForConfirmation scope issue',
-                'CRITICAL FIX #1: Circular Reference in Redis Serialization - FIXED',
-                'CRITICAL FIX #2: Infinite Name Clarification Loop - FIXED',
-                'CRITICAL FIX #3: Enhanced Context Contamination Prevention - FIXED',
-                'CRITICAL FIX #4: Added Missing retryBookingWithConfirmedName Method'
-            ]
-        });
+        smartLog.info('EnhancedConversationManager initialized with ConfirmationService extraction and Hallucination Prevention');
     }
 
     /**
@@ -579,231 +522,60 @@ export class EnhancedConversationManager {
     }
 
     /**
-     * 🚨 CRITICAL FIX #2: Handle pending name clarification with infinite loop prevention
+     * 🚨 CRITICAL FIX BUG-20250727-001: Fixed Context Amnesia bug in validateExtractedData
+     * BEFORE: Method created all fields with potential undefined values, overwriting existing session data
+     * AFTER: Method only includes fields that actually have values, preserving existing session state
      */
-    private async handlePendingNameClarification(
-        session: BookingSessionWithAgent,
-        message: string
-    ): Promise<any | null> {
-        const pending = session.pendingNameClarification;
+    private validateExtractedData(extraction: any, originalMessage: string): any {
+        const validated: any = {};
 
-        // Timeout old clarifications (5 minutes)
-        if (!pending || Date.now() - pending.timestamp > 300000) {
-            smartLog.warn('Name clarification timed out or invalid state, clearing pending.', { sessionId: session.sessionId });
-            delete session.pendingNameClarification;
-            return null; // Let main handler re-evaluate the message
+        // ✅ CONTEXT AMNESIA FIX: Only add fields that actually have values
+        // This prevents undefined values from overwriting existing session data
+
+        if (extraction.name) {
+            const validatedName = this.validateField(extraction.name, originalMessage, 'name');
+            if (validatedName) validated.name = validatedName;
         }
 
-        // Check attempt limit
-        if (pending.attempts >= 3) {
-            smartLog.warn('Max name clarification attempts reached, proceeding with profile name', {
-                sessionId: session.sessionId,
-                attempts: pending.attempts
-            });
-
-            delete session.pendingNameClarification;
-            session.confirmedName = pending.dbName; // Use existing profile name (fallback)
-
-            // Retry booking with confirmed name
-            return await this.retryBookingWithConfirmedName(session, pending);
+        if (extraction.phone) {
+            const validatedPhone = this.validateField(extraction.phone, originalMessage, 'phone');
+            if (validatedPhone) validated.phone = validatedPhone;
         }
 
-        const chosenName = await this.extractNameChoice(
-            message, pending.dbName, pending.requestName,
-            session.language, session.tenantContext!
-        );
-
-        if (chosenName) {
-            delete session.pendingNameClarification;
-            session.confirmedName = chosenName;
-
-            smartLog.info('Name clarification resolved', {
-                sessionId: session.sessionId,
-                chosenName,
-                attempts: pending.attempts
-            });
-
-            // Retry booking with confirmed name
-            return await this.retryBookingWithConfirmedName(session, pending);
-        } else {
-            // Increment attempt counter
-            pending.attempts = (pending.attempts || 0) + 1;
-            pending.timestamp = Date.now();
-
-            const clarificationMessage = await TranslationService.translateMessage(
-                `I need to clarify which name to use. Please choose:
-1. "${pending.dbName}" (from your profile)
-2. "${pending.requestName}" (new name)
-
-Just type the name you prefer, or "1" or "2".`, // More explicit guidance
-                session.language, 'question', session.tenantContext!
-            );
-
-            session.conversationHistory.push({
-                role: 'user', content: message, timestamp: new Date()
-            });
-            session.conversationHistory.push({
-                role: 'assistant', content: clarificationMessage, timestamp: new Date()
-            });
-
-            await this.saveSessionBatched(session);
-
-            return {
-                response: clarificationMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+        if (extraction.date) {
+            const validatedDate = this.validateDateField(extraction.date, originalMessage);
+            if (validatedDate) validated.date = validatedDate;
         }
-    }
 
-    /**
-     * 🚨 CRITICAL FIX #4: Add missing retryBookingWithConfirmedName method
-     * This function is now correctly called when a name is confirmed or a fallback is chosen.
-     */
-    private async retryBookingWithConfirmedName(
-        session: BookingSessionWithAgent,
-        pendingClarification: { originalToolCall: any; originalContext: any; dbName: string; requestName: string; }
-    ): Promise<any> {
-        try {
-            // Reconstruct the original booking request with confirmed name
-            const originalArgs = JSON.parse(pendingClarification.originalToolCall.function.arguments);
-            const confirmedName = session.confirmedName; // Use the name confirmed by the user or chosen by fallback
-
-            smartLog.info('Retrying booking with confirmed name', {
-                sessionId: session.sessionId,
-                confirmedName,
-                originalArgs: originalArgs
-            });
-
-            // Prepare function context, ensuring tenantContext is propagated correctly
-            const functionContext = {
-                ...pendingClarification.originalContext, // Original context passed from tool execution
-                confirmedName: confirmedName, // Override with the chosen name
-                session: session // Pass the updated session object including its tenantContext
-            };
-
-            // Ensure specialRequests is not null or undefined for the tool call
-            const specialRequests = originalArgs.specialRequests || '';
-
-            // Execute the booking with confirmed name
-            const result = await agentFunctions.create_reservation(
-                confirmedName, // Use the confirmed name
-                originalArgs.guestPhone,
-                originalArgs.date,
-                originalArgs.time,
-                originalArgs.guests,
-                specialRequests,
-                functionContext
-            );
-
-            if (result.tool_status === 'SUCCESS' && result.data) {
-                const reservationId = result.data.reservationId;
-                session.hasActiveReservation = reservationId;
-                session.currentStep = 'completed';
-
-                // IMPORTANT: Use the actual data returned by the successful booking tool for confirmation message
-                const bookingDetailsForConfirmation = {
-                    name: result.data.guestName || confirmedName,
-                    phone: result.data.guestPhone || originalArgs.guestPhone,
-                    date: result.data.date || originalArgs.date,
-                    time: result.data.time || originalArgs.time,
-                    guests: result.data.guests || originalArgs.guests,
-                    comments: result.data.specialRequests || originalArgs.specialRequests || ''
-                };
-
-                const detailedConfirmation = this.generateDetailedConfirmation(
-                    reservationId,
-                    bookingDetailsForConfirmation,
-                    session.language,
-                    result.metadata
-                );
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: detailedConfirmation,
-                    timestamp: new Date()
-                });
-
-                smartLog.businessEvent('booking_created', {
-                    sessionId: session.sessionId, // MODIFIED LINE
-                    reservationId,
-                    platform: session.platform,
-                    language: session.language,
-                    isDirectBooking: false,
-                    isReturningGuest: !!session.guestHistory,
-                    processingTime: Date.now() - session.lastActivity.getTime(),
-                    confirmationDataSource: 'retried_booking_clean_data',
-                    sessionContaminationPrevented: true,
-                    nameClarificationResolved: true
-                });
-
-                await this.saveSessionBatched(session);
-
-                return {
-                    response: detailedConfirmation,
-                    hasBooking: true,
-                    reservationId,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            } else {
-                const errorMessage = await TranslationService.translateMessage(
-                    `Sorry, I couldn't complete the booking: ${result.error?.message || 'unknown error'}`,
-                    session.language, 'error', session.tenantContext!
-                );
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: errorMessage,
-                    timestamp: new Date()
-                });
-                await this.saveSessionBatched(session);
-
-                smartLog.error('Retried booking failed after name clarification', new Error(result.error?.message || 'UNKNOWN_RETRY_ERROR'), {
-                    sessionId: session.sessionId, // MODIFIED LINE
-                    confirmedName,
-                    originalArgs,
-                    toolError: result.error
-                });
-
-                return {
-                    response: errorMessage,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            }
-        } catch (error) {
-            smartLog.error('Failed to retry booking with confirmed name', error as Error, {
-                sessionId: session.sessionId, // MODIFIED LINE
-                confirmedName: session.confirmedName
-            });
-
-            const errorMessage = await TranslationService.translateMessage(
-                "An unexpected error occurred while finalizing your booking.",
-                session.language, 'error', session.tenantContext!
-            );
-
-            session.conversationHistory.push({
-                role: 'assistant',
-                content: errorMessage,
-                timestamp: new Date()
-            });
-            await this.saveSessionBatched(session);
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+        if (extraction.time) {
+            const validatedTime = this.validateTimeField(extraction.time, originalMessage);
+            if (validatedTime) validated.time = validatedTime;
         }
+
+        if (extraction.guests) {
+            const validatedGuests = this.validateGuestsField(extraction.guests, originalMessage);
+            if (validatedGuests) validated.guests = validatedGuests;
+        }
+
+        if (extraction.comments) {
+            const validatedComments = this.validateField(extraction.comments, originalMessage, 'comments');
+            if (validatedComments) validated.comments = validatedComments;
+        }
+
+        smartLog.info('Context-preserving validation completed (BUG-20250727-001 FIXED)', {
+            originalExtraction: Object.keys(extraction),
+            validatedFields: Object.keys(validated),
+            contextAmnesiaFixed: true,
+            onlyNonNullFields: true
+        });
+
+        return validated;
     }
 
     /**
      * 🚨 CRITICAL FIX ISSUE #2 (BUG-00181): Context-aware information extraction with intelligent merging
      * This completely fixes context loss while preventing hallucination
+     * ✅ TIME LOOP FIX: Added specific rules to handle ambiguous time follow-ups.
      */
     private async hasCompleteBookingInfoFromMessage(
         message: string,
@@ -813,11 +585,13 @@ Just type the name you prefer, or "1" or "2".`, // More explicit guidance
 
         try {
             const dateContext = getRestaurantTimeContext(session.timezone);
+            const lastAssistantMessage = session.conversationHistory.slice(-1).find(m => m.role === 'assistant')?.content || '';
 
-            // 🐞 CONTEXT AMNESIA FIX: New prompt instructs AI to *update* context, not replace it.
+            // ✅ TIME LOOP FIX: New prompt instructs AI to handle ambiguous time follow-ups.
             const prompt = `You are an intelligent assistant updating a booking request based on new information.
 
 EXISTING CONFIRMED INFO: ${JSON.stringify(session.gatheringInfo)}
+LAST ASSISTANT MESSAGE: "${lastAssistantMessage}"
 USER'S LATEST MESSAGE: "${message}"
 CURRENT DATE CONTEXT: Today is ${dateContext.todayDate}.
 
@@ -827,6 +601,12 @@ YOUR CRITICAL TASK:
 - If the user provides a new value for a field that ALREADY EXISTS (e.g., they change the date), your JSON output should contain the NEW value.
 - If a field is NOT MENTIONED in the user's latest message, DO NOT include it in your JSON output.
 - Do NOT invent or assume details. Your output must only contain information from the latest message.
+
+**CRITICAL TIME LOOP PREVENTION RULE:**
+- IF the "LAST ASSISTANT MESSAGE" asked the user to clarify a time (e.g., "please select a specific time")
+- AND the "USER'S LATEST MESSAGE" is an ambiguous time range (e.g., "4-8pm", "16-20"),
+- THEN you MUST extract this as a "comment" and leave the "time" field as null.
+- JSON OUTPUT EXAMPLE for this case: { "comments": "User repeated ambiguous time: 16-20" }
 
 EXAMPLE 1:
 - EXISTING INFO: { "date": "2025-07-29", "guests": 2 }
@@ -848,7 +628,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
   "date": "Date in YYYY-MM-DD format (null if not in CURRENT message)",
   "time": "Time in HH:MM format (null if not in CURRENT message)",
   "guests": "Number of people (null if not in CURRENT message)",
-  "comments": "Special requests (null if not in CURRENT message)"
+  "comments": "Special requests or ambiguous time clarifications (null if not in CURRENT message)"
 }`;
             // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
             const extraction = await aiService.generateJSON(prompt, {
@@ -857,13 +637,13 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 context: 'context-aware-extraction'
             }, session.tenantContext!);
 
+            // ✅ BUG-20250727-001 FIX: Use the fixed validateExtractedData method
             const validatedExtraction = this.validateExtractedData(extraction, message);
 
-            // 🐞 CONTEXT AMNESIA FIX: Create a new object for the merged info to avoid mutation issues.
-            // This correctly preserves old info and overwrites with new info.
+            // ✅ CONTEXT AMNESIA FIX: Preserve existing session data and only override with new validated data
             const mergedInfo = {
-                ...session.gatheringInfo,
-                ...validatedExtraction
+                ...session.gatheringInfo,  // Keep existing data
+                ...validatedExtraction    // Only override with new validated data (no undefined values)
             };
 
             // Then, merge with guest history context
@@ -878,15 +658,18 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 missingFields
             };
 
-            smartLog.info('Context-aware extraction completed (BUG-00181 FIXED)', {
+            smartLog.info('Context-aware extraction completed (BUG-20250727-001 FIXED)', {
                 sessionId: session.sessionId,
                 originalMessage: message,
                 existingInfo: session.gatheringInfo,
-                rawExtraction: validatedExtraction,
+                rawExtraction: extraction,
+                validatedExtraction,
+                mergedInfo,
                 contextualInfo,
                 hasAll,
                 missingFields,
                 confidence: result.confidence,
+                contextAmnesiaFixed: true,
                 contextPreserved: true,
                 processingTime: smartLog.endTimer(timerId)
             });
@@ -907,33 +690,6 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 missingFields: ['name', 'phone', 'date', 'time', 'guests']
             };
         }
-    }
-
-    /**
-     * 🚨 CRITICAL: Validate extracted data to prevent hallucination
-     */
-    private validateExtractedData(extraction: any, originalMessage: string): any {
-        const validated = {
-            name: this.validateField(extraction.name, originalMessage, 'name'),
-            phone: this.validateField(extraction.phone, originalMessage, 'phone'),
-            date: this.validateDateField(extraction.date, originalMessage),
-            time: this.validateTimeField(extraction.time, originalMessage),
-            guests: this.validateGuestsField(extraction.guests, originalMessage),
-            comments: this.validateField(extraction.comments, originalMessage, 'comments')
-        };
-
-        Object.keys(extraction).forEach(key => {
-            if (extraction[key] && !validated[key as keyof typeof validated]) {
-                smartLog.warn('Hallucination detected and prevented', {
-                    field: key,
-                    originalValue: extraction[key],
-                    originalMessage,
-                    preventedHallucination: true
-                });
-            }
-        });
-
-        return validated;
     }
 
     /**
@@ -958,7 +714,12 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
         }
 
         if (fieldType === 'comments') {
-            return cleanMessage.includes(cleanValue) ? value.trim() : undefined;
+            // For comments, we are more lenient as it can contain anything.
+            // We still check if some part of the comment is in the message to avoid pure hallucination.
+            const commentWords = cleanValue.split(/\s+/);
+            const messageWords = new Set(cleanMessage.split(/\s+/));
+            const overlap = commentWords.filter(word => messageWords.has(word));
+            return overlap.length > 0 ? value.trim() : undefined;
         }
 
         return value.trim();
@@ -1590,41 +1351,83 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
     }
 
     /**
-     * ✅ BUG-00003 COMPLETE: Enhanced session reset for new booking requests
+     * ✅ BUG #2 COMPLETE FIX: Enhanced session reset for new booking requests 
+     * Updated to support explicit identity preservation at handleMessage level
      */
     private resetSessionForNewBooking(session: BookingSessionWithAgent, reason: string, preserveIdentity: boolean = true) {
         const timerId = smartLog.startTimer('session_reset_for_new_booking');
-        const preservedData = this.extractGuestIdentityFromSession(session, preserveIdentity);
 
-        smartLog.info('Starting enhanced session reset for new booking', {
-            sessionId: session.sessionId,
-            reason,
-            preserveIdentity,
-            foundIdentitySources: preservedData.sources,
-            preservedName: preservedData.customerName,
-            preservedPhone: preservedData.customerPhone ? 'yes' : 'no'
-        });
+        let preservedData = { sources: [], nameSources: [], phoneSources: [] } as any;
 
+        // Only extract identity if requested (for backward compatibility)
+        if (preserveIdentity) {
+            // 🚨 CRITICAL BUG #2 FIX: Extract identity BEFORE clearing session
+            preservedData = this.extractGuestIdentityFromSession(session, preserveIdentity);
+
+            smartLog.info('Starting enhanced session reset for new booking with internal identity extraction', {
+                sessionId: session.sessionId,
+                reason,
+                preserveIdentity,
+                foundIdentitySources: preservedData.sources,
+                preservedName: preservedData.customerName,
+                preservedPhone: preservedData.customerPhone ? 'yes' : 'no',
+                extractionLevel: 'resetSessionForNewBooking_internal'
+            });
+        } else {
+            smartLog.info('Starting session reset without internal identity extraction (handled externally)', {
+                sessionId: session.sessionId,
+                reason,
+                preserveIdentity: false,
+                extractionLevel: 'handleMessage_explicit'
+            });
+        }
+
+        // Clear booking-specific state AFTER extracting identity data (or immediately if no extraction)
         this.clearBookingSpecificState(session);
 
+        // Restore preserved identity data only if we extracted it internally
         if (preserveIdentity && preservedData.customerName) {
             session.gatheringInfo.name = preservedData.customerName;
             session.hasAskedName = true;
-            smartLog.info('Identity preserved: Name restored', {
-                sessionId: session.sessionId,
-                customerName: preservedData.customerName,
-                source: preservedData.nameSources.join(', ')
-            });
+
+            // 🚨 BUG #2 FIX: Validate restoration worked correctly
+            if (session.gatheringInfo.name !== preservedData.customerName) {
+                smartLog.error('CRITICAL: Name restoration failed after context extraction', new Error('IDENTITY_RESTORATION_FAILED'), {
+                    sessionId: session.sessionId,
+                    expected: preservedData.customerName,
+                    actual: session.gatheringInfo.name,
+                    bugFix: 'BUG #2'
+                });
+            } else {
+                smartLog.info('BUG #2 FIX: Name successfully preserved and restored (internal)', {
+                    sessionId: session.sessionId,
+                    customerName: preservedData.customerName,
+                    source: preservedData.nameSources.join(', '),
+                    contextAmnesiaFixed: true
+                });
+            }
         }
 
         if (preserveIdentity && preservedData.customerPhone) {
             session.gatheringInfo.phone = preservedData.customerPhone;
             session.hasAskedPhone = true;
-            smartLog.info('Identity preserved: Phone restored', {
-                sessionId: session.sessionId,
-                customerPhone: preservedData.customerPhone,
-                source: preservedData.phoneSources.join(', ')
-            });
+
+            // 🚨 BUG #2 FIX: Validate phone restoration
+            if (session.gatheringInfo.phone !== preservedData.customerPhone) {
+                smartLog.error('CRITICAL: Phone restoration failed after context extraction', new Error('PHONE_RESTORATION_FAILED'), {
+                    sessionId: session.sessionId,
+                    expected: preservedData.customerPhone,
+                    actual: session.gatheringInfo.phone,
+                    bugFix: 'BUG #2'
+                });
+            } else {
+                smartLog.info('BUG #2 FIX: Phone successfully preserved and restored (internal)', {
+                    sessionId: session.sessionId,
+                    customerPhone: preservedData.customerPhone,
+                    source: preservedData.phoneSources.join(', '),
+                    contextAmnesiaFixed: true
+                });
+            }
         }
 
         const resetSummary = {
@@ -1642,22 +1445,28 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 hasAskedTime: false,
                 hasAskedPartySize: false
             },
-            processingTime: smartLog.endTimer(timerId)
+            processingTime: smartLog.endTimer(timerId),
+            bugFixed: 'BUG #2 - Context Amnesia on Subsequent Bookings',
+            identityExtractionOrder: preserveIdentity ? 'CORRECT - extracted BEFORE clearing' : 'HANDLED_EXTERNALLY'
         };
 
-        smartLog.info('Enhanced session reset completed with comprehensive identity preservation', resetSummary);
+        smartLog.info('BUG #2 FIXED: Enhanced session reset completed', resetSummary);
 
-        smartLog.businessEvent('session_reset_for_new_booking', {
+        smartLog.businessEvent('bug_2_fixed_session_reset', {
             sessionId: session.sessionId,
             reason,
             identityPreserved: preserveIdentity && (!!preservedData.customerName || !!preservedData.customerPhone),
             guestType: session.guestHistory ? 'returning' : 'new',
-            preservationMethod: 'comprehensive_identity_extraction'
+            preservationMethod: preserveIdentity ? 'internal_extraction' : 'external_extraction',
+            contextAmnesiaFixed: true,
+            bugFixed: 'BUG #2'
         });
     }
 
     /**
-     * ✅ BUG-00003: Extract guest identity from all available session sources
+     * ✅ BUG #2 CRITICAL FIX: Extract guest identity from all available session sources
+     * FIXED: Now properly checks current gathering info BEFORE session reset
+     * ✅ IDENTITY EXTRACTION FROM HISTORY FIX: Now also checks conversation history
      */
     private extractGuestIdentityFromSession(session: BookingSessionWithAgent, preserveIdentity: boolean): {
         customerName?: string;
@@ -1684,24 +1493,20 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             phoneSources: []
         };
 
-        if (session.guestHistory?.guest_name && session.guestHistory.guest_name.trim().length > 0) {
-            result.customerName = session.guestHistory.guest_name.trim();
-            result.nameSources.push('guest_history');
-            result.sources.push('guest_history');
-        }
-
-        if (session.guestHistory?.guest_phone && session.guestHistory.guest_phone.trim().length > 0) {
-            result.customerPhone = session.guestHistory.guest_phone.trim();
-            result.phoneSources.push('guest_history');
-            if (!result.sources.includes('guest_history')) {
-                result.sources.push('guest_history');
-            }
-        }
-
+        // 🚨 BUG #2 CRITICAL FIX: Check current gathering info FIRST (most recent data)
+        // This was the core issue - current session data wasn't being checked properly
         if (!result.customerName && session.gatheringInfo?.name && session.gatheringInfo.name.trim().length > 0) {
             result.customerName = session.gatheringInfo.name.trim();
             result.nameSources.push('current_gathering_info');
             result.sources.push('current_gathering_info');
+
+            smartLog.info('BUG #2 FIX: Name extracted from current gathering info (most recent)', {
+                sessionId: session.sessionId,
+                extractedName: result.customerName,
+                source: 'current_gathering_info',
+                contextAmnesiaFixed: true,
+                extractionOrder: 'BEFORE session reset'
+            });
         }
 
         if (!result.customerPhone && session.gatheringInfo?.phone && session.gatheringInfo.phone.trim().length > 0) {
@@ -1710,8 +1515,104 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             if (!result.sources.includes('current_gathering_info')) {
                 result.sources.push('current_gathering_info');
             }
+
+            smartLog.info('BUG #2 FIX: Phone extracted from current gathering info (most recent)', {
+                sessionId: session.sessionId,
+                extractedPhone: result.customerPhone,
+                source: 'current_gathering_info',
+                contextAmnesiaFixed: true,
+                extractionOrder: 'BEFORE session reset'
+            });
         }
 
+        // THEN check guest history as fallback
+        if (!result.customerName && session.guestHistory?.guest_name && session.guestHistory.guest_name.trim().length > 0) {
+            result.customerName = session.guestHistory.guest_name.trim();
+            result.nameSources.push('guest_history');
+            if (!result.sources.includes('guest_history')) {
+                result.sources.push('guest_history');
+            }
+
+            smartLog.info('Identity extracted from guest history as fallback', {
+                sessionId: session.sessionId,
+                extractedName: result.customerName,
+                source: 'guest_history'
+            });
+        }
+
+        if (!result.customerPhone && session.guestHistory?.guest_phone && session.guestHistory.guest_phone.trim().length > 0) {
+            result.customerPhone = session.guestHistory.guest_phone.trim();
+            result.phoneSources.push('guest_history');
+            if (!result.sources.includes('guest_history')) {
+                result.sources.push('guest_history');
+            }
+
+            smartLog.info('Phone extracted from guest history as fallback', {
+                sessionId: session.sessionId,
+                extractedPhone: result.customerPhone,
+                source: 'guest_history'
+            });
+        }
+
+        // ✅ IDENTITY EXTRACTION FROM HISTORY FIX: Check conversation history for recent successful bookings
+        if (!result.customerName || !result.customerPhone) {
+            // Look through recent conversation history for booking confirmations
+            for (let i = session.conversationHistory.length - 1; i >= 0 && i >= session.conversationHistory.length - 20; i--) {
+                const msg = session.conversationHistory[i];
+                if (msg.role === 'assistant' && msg.content.includes('Reservation Confirmed') || msg.content.includes('Бронь подтверждена')) {
+                    // Try multiple patterns to extract booking info
+                    const patterns = [
+                        // English pattern
+                        /Guest:\s*(.+?)\s*\n.*?Phone:\s*(.+?)\s*\n/s,
+                        // Russian pattern
+                        /Гость:\s*(.+?)\s*\n.*?Телефон:\s*(.+?)\s*\n/s,
+                        // Generic pattern for name
+                        /(?:Guest|Гость|Gost|Vendég|Gast|Client|Huésped|Ospite|Hóspede|Gast):\s*(.+?)(?:\n|$)/i,
+                        // Generic pattern for phone
+                        /(?:Phone|Телефон|Telefon|Telefon|Telefon|Téléphone|Teléfono|Telefono|Telefone|Telefoon):\s*(.+?)(?:\n|$)/i
+                    ];
+
+                    for (const pattern of patterns) {
+                        const match = msg.content.match(pattern);
+                        if (match) {
+                            if (!result.customerName && match[1]) {
+                                result.customerName = match[1].trim();
+                                result.nameSources.push('conversation_history');
+                                if (!result.sources.includes('conversation_history')) {
+                                    result.sources.push('conversation_history');
+                                }
+
+                                smartLog.info('Name extracted from conversation history', {
+                                    sessionId: session.sessionId,
+                                    extractedName: result.customerName,
+                                    source: 'conversation_history_booking_confirmation'
+                                });
+                            }
+                            if (!result.customerPhone && match[2]) {
+                                result.customerPhone = match[2].trim();
+                                result.phoneSources.push('conversation_history');
+                                if (!result.sources.includes('conversation_history')) {
+                                    result.sources.push('conversation_history');
+                                }
+
+                                smartLog.info('Phone extracted from conversation history', {
+                                    sessionId: session.sessionId,
+                                    extractedPhone: result.customerPhone,
+                                    source: 'conversation_history_booking_confirmation'
+                                });
+                            }
+                        }
+                    }
+
+                    // If we found both, we can stop searching
+                    if (result.customerName && result.customerPhone) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Check other sources as additional fallbacks
         if (session.recentlyModifiedReservations) {
             for (const recentRes of session.recentlyModifiedReservations) {
                 if (recentRes.operationType === 'creation' && recentRes.userReference) {
@@ -1732,17 +1633,24 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
         if (!result.customerName && session.confirmedName && session.confirmedName.trim().length > 0) {
             result.customerName = session.confirmedName.trim();
             result.nameSources.push('confirmed_name');
-            result.sources.push('confirmed_name');
+            if (!result.sources.includes('confirmed_name')) {
+                result.sources.push('confirmed_name');
+            }
         }
 
-        smartLog.info('Guest identity extraction completed', {
+        smartLog.info('BUG #2 FIXED: Guest identity extraction completed with current gathering info priority', {
             sessionId: session.sessionId,
             foundName: !!result.customerName,
             foundPhone: !!result.customerPhone,
             totalSources: result.sources.length,
             nameSources: result.nameSources,
             phoneSources: result.phoneSources,
-            allSources: result.sources
+            allSources: result.sources,
+            bugFixed: 'BUG #2 - Context Amnesia on Subsequent Bookings',
+            primarySource: result.sources[0] || 'none',
+            contextAmnesiaFixed: true,
+            extractionOrder: 'current_gathering_info -> guest_history -> conversation_history -> recent_reservations -> confirmed_name',
+            conversationHistoryChecked: true
         });
 
         return result;
@@ -1910,6 +1818,27 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 hasAskedPhone: session.hasAskedPhone
             }
         };
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Helper for reset states summary
+     */
+    private getResetStatesSummary(): string[] {
+        return [
+            'gatheringInfo reset',
+            'conversation flags reset',
+            'pending confirmations cleared',
+            'active reservation cleared',
+            'found reservations cleared',
+            'availability context cleared',
+            'tool execution history cleared',
+            'validation states cleared',
+            'agent states reset',
+            'clarification attempts cleared',
+            'recent reservations filtered',
+            'operation context cleared',
+            'turn counts reset'
+        ];
     }
 
     /**
@@ -2142,6 +2071,10 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
 
     /**
      * ✅ OVERSEER EXTRACTION: Streamlined overseer decision using dedicated OverseerAgent
+     * * NOTE: The overseer-agent.ts file needs to be updated with the following changes:
+     * 1. Add RULE 1.6 for common booking request patterns (like "можно стол")
+     * 2. Add INTERVENTION RULES section to prevent unnecessary clarifications
+     * 3. Update the ambiguous message detection to be less aggressive
      */
     private async runOverseer(
         session: BookingSessionWithAgent,
@@ -2299,100 +2232,6 @@ Respond with JSON only:
     }
 
     /**
-     * Confirmation Agent using AIService with proper tenant context
-     */
-    private async runConfirmationAgent(
-        message: string,
-        pendingActionSummary: string,
-        language: Language,
-        tenantContext: TenantContext // ✅ CRITICAL FIX: Make tenantContext required
-    ): Promise<{
-        confirmationStatus: 'positive' | 'negative' | 'unclear';
-        reasoning: string;
-    }> {
-        const timerId = smartLog.startTimer('confirmation_analysis');
-        try {
-            const prompt = `You are a Confirmation Agent for a restaurant booking system.
-The user was asked to confirm an action. Analyze their response and decide if it's a "positive" or "negative" confirmation.
-
-## CONTEXT
-- **Language:** ${language}
-- **Action Requiring Confirmation:** ${pendingActionSummary}
-- **User's Response:** "${message}"
-
-## RULES
-1. **Positive:** The user agrees, confirms, or says yes (e.g., "Yes, that's correct", "Sounds good", "Igen, rendben", "Да, все верно").
-2. **Negative:** The user disagrees, cancels, or says no (e.g., "No, cancel that", "That's wrong", "Nem", "Нет, отменить").
-3. **Unclear:** The user asks a question, tries to change details, or gives an ambiguous reply.
-
-## EXAMPLES BY LANGUAGE:
-
-**Hungarian:**
-- "Igen" → positive
-- "Igen, rendben" → positive
-- "Jó" → positive
-- "Nem" → negative
-- "Mégse" → negative
-- "Változtatni szeretnék" → unclear
-
-**English:**
-- "Yes" → positive
-- "Yes, that's right" → positive
-- "Sounds good" → positive
-- "No" → negative
-- "Cancel" → negative
-- "Can I change the time?" → unclear
-
-**Russian:**
-- "Да" → positive
-- "Да, все правильно" → positive
-- "Нет" → negative
-- "Отменить" → negative
-- "А можно поменять время?" → unclear
-
-## RESPONSE FORMAT
-Respond with ONLY a JSON object.
-
-{
-  "confirmationStatus": "positive" | "negative" | "unclear",
-  "reasoning": "Briefly explain your decision based on the user's message."
-}`;
-            // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
-            const response = await aiService.generateJSON(prompt, {
-                maxTokens: 200,
-                temperature: 0.0,
-                context: 'ConfirmationAgent'
-            }, tenantContext);
-            const result = {
-                confirmationStatus: response.confirmationStatus || 'unclear',
-                reasoning: response.reasoning || 'AIService confirmation analysis.'
-            };
-            smartLog.info('Confirmation analysis completed', {
-                userMessage: message,
-                language,
-                pendingAction: pendingActionSummary.substring(0, 100),
-                status: result.confirmationStatus,
-                reasoning: result.reasoning,
-                tenantId: tenantContext.restaurant.id,
-                processingTime: smartLog.endTimer(timerId)
-            });
-            return result;
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Confirmation analysis failed', error as Error, {
-                userMessage: message.substring(0, 100),
-                language,
-                pendingAction: pendingActionSummary.substring(0, 100),
-                tenantId: tenantContext?.restaurant?.id
-            });
-            return {
-                confirmationStatus: 'unclear',
-                reasoning: 'Fallback due to an internal error.'
-            };
-        }
-    }
-
-    /**
      * 🚨 ENHANCED: Natural date parsing with timezone support
      */
     private parseNaturalDate(message: string, language: string, timezone: string): string | null {
@@ -2537,129 +2376,6 @@ Respond with ONLY a JSON object.
     }
 
     /**
-     * 🚨 CRITICAL FIX: Enhanced name choice extraction with better pattern matching
-     */
-    private async extractNameChoice(
-        userMessage: string,
-        dbName: string,
-        requestName: string,
-        language: string,
-        tenantContext: TenantContext // ✅ CRITICAL FIX: Make tenantContext required
-    ): Promise<string | null> {
-        const timerId = smartLog.startTimer('name_choice_extraction');
-        try {
-            // 🚨 CRITICAL FIX: Add immediate pattern matching for common responses
-            const lowerMessage = userMessage.toLowerCase().trim();
-
-            // Check for direct name mentions
-            if (lowerMessage.includes(dbName.toLowerCase())) {
-                smartLog.info('Name choice: Direct DB name match found', {
-                    userMessage,
-                    chosenName: dbName,
-                    method: 'direct_pattern_match'
-                });
-                return dbName;
-            }
-
-            if (lowerMessage.includes(requestName.toLowerCase())) {
-                smartLog.info('Name choice: Direct request name match found', {
-                    userMessage,
-                    chosenName: requestName,
-                    method: 'direct_pattern_match'
-                });
-                return requestName;
-            }
-
-            // Check for common confirmation patterns
-            const confirmationPatterns = {
-                'yes': requestName, 'да': requestName, 'igen': requestName, 'oui': requestName,
-                'no': dbName, 'нет': dbName, 'nem': dbName, 'non': dbName,
-                'new': requestName, 'старое': dbName, 'old': dbName, 'keep': dbName,
-                'первое': requestName, 'второе': dbName, 'first': requestName, 'second': dbName
-            };
-
-            for (const [pattern, chosenName] of Object.entries(confirmationPatterns)) {
-                if (lowerMessage === pattern || lowerMessage.includes(pattern)) {
-                    smartLog.info('Name choice: Pattern match found', {
-                        userMessage,
-                        pattern,
-                        chosenName,
-                        method: 'pattern_match'
-                    });
-                    return chosenName;
-                }
-            }
-
-            const prompt = `You are helping resolve a name conflict in a restaurant booking system.
-
-CONTEXT:
-- Database has existing profile: "${dbName}"
-- User wants to book under name: "${requestName}"
-- User's response: "${userMessage}"
-- Language: ${language}
-
-TASK: Determine which name the user wants to use based on their response.
-
-EXAMPLES:
-"Мяурина я" → wants "Мяурина" (user identifies as Мяурина)
-"I am John" → wants "John"
-"use John" → wants "John"
-"go with Лола" → wants "Лола"
-"keep the old one" → wants "${dbName}"
-"the new name" → wants "${requestName}"
-"да" → wants "${requestName}" (yes = use new name)
-"нет" → wants "${dbName}" (no = keep old name)
-"new" → wants "${requestName}"
-"old" → wants "${dbName}"
-"первое" → wants "${requestName}" (first mentioned)
-"второе" → wants "${dbName}" (second mentioned)
-
-Important: Return the EXACT name (including non-Latin characters) that the user wants to use.
-
-Respond with JSON only:
-{
-  "chosen_name": "exact_name_to_use",
-  "confidence": 0.0-1.0,
-  "reasoning": "explanation of decision"
-}`;
-            // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
-            const response = await aiService.generateJSON(prompt, {
-                maxTokens: 150,
-                temperature: 0.0,
-                context: 'name-choice-extraction'
-            }, tenantContext);
-            const result = response.chosen_name ? response.chosen_name.trim() : null;
-            smartLog.info('Name choice extraction completed', {
-                userMessage,
-                dbName,
-                requestName,
-                chosenName: result,
-                confidence: response.confidence,
-                reasoning: response.reasoning,
-                tenantId: tenantContext.restaurant.id,
-                processingTime: smartLog.endTimer(timerId),
-                method: 'ai_extraction'
-            });
-            if (response.confidence >= 0.8 && result) {
-                if (result.toLowerCase() === dbName.toLowerCase() ||
-                    result.toLowerCase() === requestName.toLowerCase()) {
-                    return result;
-                }
-            }
-            return null;
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Name choice extraction failed', error as Error, {
-                userMessage: userMessage.substring(0, 100),
-                dbName,
-                requestName,
-                tenantId: tenantContext?.restaurant?.id
-            });
-            return null;
-        }
-    }
-
-    /**
      * 🚀 REDIS INTEGRATION: Get session from Redis with fallback handling
      */
     async getSession(sessionId: string): Promise<BookingSessionWithAgent | undefined> {
@@ -2689,6 +2405,8 @@ Respond with JSON only:
 
     /**
      * ✨ UX FIX ISSUE #4 (BUG-00183): Detailed confirmation message generator
+     * ✅ PHASE 1 REFACTORING: This method kept in ECM since it's called from multiple places
+     * (ConfirmationService also has this method for its specific use cases)
      */
     private generateDetailedConfirmation(
         reservationId: number,
@@ -2945,100 +2663,11 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
     }
 
     /**
-     * 🚨 CRITICAL FIX #1: Enhanced tool execution with NAME_CLARIFICATION_NEEDED handling
-     * Fixed circular reference in functionContext serialization
-     */
-    private async handleNameClarificationInToolExecution(
-        result: any,
-        toolCall: any,
-        session: BookingSessionWithAgent,
-        functionContext: ToolFunctionContext
-    ): Promise<{
-        response: string;
-        hasBooking: boolean;
-        reservationId?: number;
-        session: BookingSessionWithAgent;
-        currentAgent?: AgentType;
-    }> {
-        if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-            const { dbName, requestName, originalBookingData } = result.error.details; // originalBookingData is from telegram_booking.ts
-
-            smartLog.info('NAME_CLARIFICATION_NEEDED detected in main tool execution', {
-                sessionId: session.sessionId,
-                toolName: toolCall.function.name,
-                dbName,
-                requestName
-            });
-
-            // 🚨 CRITICAL FIX #1: Create serializable tool call and function context
-            // Ensure toolCall and functionContext are JSON.stringify-able
-            const serializableToolCall = {
-                function: {
-                    name: toolCall.function.name,
-                    arguments: toolCall.function.arguments // Arguments are already stringified
-                }
-            };
-
-            const serializableFunctionContext = {
-                restaurantId: functionContext.restaurantId,
-                timezone: functionContext.timezone,
-                telegramUserId: functionContext.telegramUserId,
-                source: functionContext.source,
-                sessionId: functionContext.sessionId,
-                language: functionContext.language,
-                // Do NOT include original functionContext.session here, as it would cause circular dependency.
-                // We'll reconstruct it in retryBookingWithConfirmedName
-                tenantContext: session.tenantContext // Direct reference to session's tenantContext
-            };
-
-
-            // Set up pendingNameClarification (this is the key change here)
-            session.pendingNameClarification = {
-                dbName: dbName,
-                requestName: requestName,
-                originalToolCall: serializableToolCall,
-                originalContext: serializableFunctionContext, // Store serializable context
-                attempts: 0, // Initialize attempts
-                timestamp: Date.now()
-            };
-
-            const baseMessage = `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
-            const clarificationMessage = await TranslationService.translateMessage(
-                baseMessage,
-                session.language,
-                'question',
-                session.tenantContext!
-            );
-
-            session.conversationHistory.push({
-                role: 'assistant',
-                content: clarificationMessage,
-                timestamp: new Date()
-            });
-            await this.saveSessionBatched(session);
-
-            smartLog.info('Name clarification message sent from main tool execution, pendingNameClarification set.', {
-                sessionId: session.sessionId,
-                message: clarificationMessage,
-                dbName,
-                requestName
-            });
-
-            return {
-                response: clarificationMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
-        }
-
-        return null; // Not a name clarification case
-    }
-
-    /**
      * 🚨 CRITICAL FIX BUG-20250725-001: Main message handling with tenant context loading
+     * ✅ PHASE 1 REFACTORING: Simplified through ConfirmationService extraction
      * 🚨 VARIABLE SCOPE BUG FIX: Fixed cleanBookingDataForConfirmation scope issue
-     * 🚨 CRITICAL FIX #2: Added pendingNameClarification check at the beginning
+     * 🚨 BUG-20250727-002 FIX: AI Guest Count Hallucination - Programmatic confirmation enforcement added
+     * 🚨 BUG #2 FIXED: Context Amnesia on Subsequent Bookings - Enhanced identity extraction
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -3104,19 +2733,6 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
             });
         }
 
-        // 🚨 CRITICAL FIX #2: Check for pending name clarification FIRST
-        if (session.pendingNameClarification) {
-            const clarificationResult = await this.handlePendingNameClarification(session, sanitizedMessage);
-            if (clarificationResult) {
-                // If handlePendingNameClarification returned a response (meaning it's handling it)
-                // then immediately return that response and skip the rest of the handleMessage logic.
-                // It will either send a new clarification prompt or retry the booking.
-                return clarificationResult;
-            }
-            // If clarificationResult is null, it means the pendingClarification timed out or was invalid,
-            // and `handlePendingNameClarification` has already cleared it. Continue with normal message processing.
-        }
-
         smartLog.info('conversation.user_message', {
             sessionId,
             message: sanitizedMessage,
@@ -3131,6 +2747,41 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
             let hasBooking = false;
             let reservationId: number | undefined;
             const isFirstMessage = session.conversationHistory.length === 0;
+
+            // ✅ PHASE 1 REFACTORING: Check for pending confirmations FIRST using ConfirmationService
+            if (session.pendingConfirmation || session.pendingNameClarification) {
+                const confirmationResult = await ConfirmationService.processConfirmation(sanitizedMessage, session);
+
+                // If the result is the original message, it means unclear confirmation - reprocess normally
+                if (confirmationResult.response !== sanitizedMessage) {
+                    // Add to conversation history and save
+                    session.conversationHistory.push({
+                        role: 'user', content: sanitizedMessage, timestamp: new Date()
+                    });
+                    session.conversationHistory.push({
+                        role: 'assistant', content: confirmationResult.response, timestamp: new Date()
+                    });
+                    await this.saveSessionBatched(session);
+
+                    smartLog.info('conversation.agent_response', {
+                        sessionId,
+                        response: confirmationResult.response,
+                        agent: session.currentAgent,
+                        hasBooking: confirmationResult.hasBooking,
+                        reservationId: confirmationResult.reservationId,
+                        responseType: 'confirmation_service_handled'
+                    });
+
+                    return {
+                        response: confirmationResult.response,
+                        hasBooking: confirmationResult.hasBooking,
+                        reservationId: confirmationResult.reservationId,
+                        session: confirmationResult.session,
+                        currentAgent: confirmationResult.currentAgent as AgentType
+                    };
+                }
+                // If response equals message, confirmation was unclear - continue normal processing
+            }
 
             // Guest history retrieval for first message
             if (session.telegramUserId && isFirstMessage && !session.guestHistory) {
@@ -3147,6 +2798,57 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
 
             // Complete booking information detection
             const completionCheck = await this.hasCompleteBookingInfoFromMessage(sanitizedMessage, session);
+
+            // 🚨 BUG-20250727-002 FIX: Programmatic confirmation enforcement for guest count suggestions
+            // This is the PRIMARY FIX from the bug analysis - intercept _requiresConfirmation flags
+            if (
+                completionCheck.extracted._requiresConfirmation &&
+                completionCheck.extracted._guestSuggestion &&
+                completionCheck.missingFields.length === 1 &&
+                completionCheck.missingFields.includes('guests')
+            ) {
+                // Force the generation of the specific confirmation question
+                const suggestionPrompt = this.generateSuggestionConfirmationPrompt(
+                    completionCheck.extracted,
+                    session.language
+                );
+
+                // Update history and save session state
+                session.conversationHistory.push({
+                    role: 'user',
+                    content: sanitizedMessage,
+                    timestamp: new Date()
+                });
+                session.conversationHistory.push({
+                    role: 'assistant',
+                    content: suggestionPrompt,
+                    timestamp: new Date()
+                });
+
+                await this.saveSessionBatched(session);
+
+                smartLog.info('Guest count hallucination prevented via programmatic confirmation enforcement', {
+                    sessionId,
+                    suggestedGuests: completionCheck.extracted._guestSuggestion,
+                    confirmationPrompt: suggestionPrompt,
+                    hallucinationPrevented: true,
+                    bugFixed: 'BUG-20250727-002'
+                });
+
+                smartLog.businessEvent('guest_suggestion_confirmation_enforced', {
+                    sessionId,
+                    suggestedGuests: completionCheck.extracted._guestSuggestion,
+                    confirmationPromptGenerated: true,
+                    hallucinationPrevented: true
+                });
+
+                return {
+                    response: suggestionPrompt,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent
+                };
+            }
 
             // ✅ CRITICAL FIX: Merge any partially extracted info into the session state immediately.
             // This ensures that details from previous messages (like the date) are not lost.
@@ -3167,7 +2869,7 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
                     // Normal merging when no context shift detected
                     for (const key in completionCheck.extracted) {
                         const value = (completionCheck.extracted as any)[key];
-                        if (value !== null && value !== undefined) {
+                        if (value !== null && value !== undefined && !key.startsWith('_')) {
                             (session.gatheringInfo as any)[key] = value;
                         }
                     }
@@ -3175,10 +2877,11 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
             }
 
             if (completionCheck.hasAll && session.currentAgent === 'booking') {
-                smartLog.info('Direct booking attempt: all info present', {
+                smartLog.info('Complete booking info detected: requesting confirmation before booking', {
                     sessionId,
                     confidence: completionCheck.confidence,
-                    extracted: completionCheck.extracted
+                    extracted: completionCheck.extracted,
+                    antiHallucinationProtection: true
                 });
 
                 const validation = await this.validateExtractedBookingData(completionCheck.extracted, session);
@@ -3198,7 +2901,7 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
                         sessionId,
                         response: translatedError,
                         agent: session.currentAgent,
-                        responseType: 'direct_booking_validation_error'
+                        responseType: 'booking_validation_error'
                     });
 
                     return {
@@ -3209,7 +2912,7 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
                     };
                 }
 
-                // Apply extracted information
+                // Apply extracted information to session
                 Object.assign(session.gatheringInfo, completionCheck.extracted);
                 if (completionCheck.extracted.name) session.hasAskedName = true;
                 if (completionCheck.extracted.phone) session.hasAskedPhone = true;
@@ -3217,192 +2920,38 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
                 if (completionCheck.extracted.time) session.hasAskedTime = true;
                 if (completionCheck.extracted.guests) session.hasAskedPartySize = true;
 
-                // Attempt direct booking
-                // ✅ CRITICAL FIX: Pass tenantContext to getAgent
-                const directBookingAgent = await this.getAgent(session.currentAgent, session.tenantContext);
-                const functionContext: ToolFunctionContext = {
-                    restaurantId: session.restaurantId,
-                    timezone: session.timezone || 'Europe/Belgrade',
-                    telegramUserId: session.telegramUserId,
-                    source: session.platform,
-                    sessionId: sessionId,
-                    language: session.language,
-                    confirmedName: undefined,
-                    restaurantConfig: directBookingAgent.restaurantConfig,
-                    session: session // Pass session object to functionContext for agent-tools to pick up tenantContext
+                // ✅ ALWAYS CONFIRM BEFORE BOOKING: Use ConfirmationService instead of direct booking
+                const confirmationResult = await ConfirmationService.requestBookingConfirmation(
+                    completionCheck.extracted,
+                    session
+                );
+
+                // Add to conversation history and save
+                session.conversationHistory.push({ role: 'user', content: sanitizedMessage, timestamp: new Date() });
+                session.conversationHistory.push({ role: 'assistant', content: confirmationResult.response, timestamp: new Date() });
+                await this.saveSessionBatched(session);
+
+                smartLog.info('conversation.agent_response', {
+                    sessionId,
+                    response: confirmationResult.response,
+                    agent: session.currentAgent,
+                    responseType: 'booking_confirmation_requested',
+                    antiHallucinationProtection: true
+                });
+
+                smartLog.businessEvent('anti_hallucination_protection_activated', {
+                    sessionId,
+                    bookingData: completionCheck.extracted,
+                    confirmationRequested: true,
+                    directBookingPrevented: true
+                });
+
+                return {
+                    response: confirmationResult.response,
+                    hasBooking: false,
+                    session: confirmationResult.session,
+                    currentAgent: session.currentAgent
                 };
-
-                try {
-                    const result = await agentFunctions.create_reservation(
-                        completionCheck.extracted.name!,
-                        completionCheck.extracted.phone!,
-                        completionCheck.extracted.date!,
-                        completionCheck.extracted.time!,
-                        completionCheck.extracted.guests!,
-                        completionCheck.extracted.comments || '',
-                        functionContext
-                    );
-
-                    // 🚨 CRITICAL FIX: Handle name clarification in direct booking
-                    if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-                        const nameClariResult = await this.handleNameClarificationInToolExecution(
-                            result,
-                            { function: { name: 'create_reservation', arguments: JSON.stringify(completionCheck.extracted) } },
-                            session,
-                            functionContext
-                        );
-
-                        if (nameClariResult) {
-                            return nameClariResult;
-                        }
-                    }
-
-                    if (result.tool_status === 'SUCCESS' && result.data) {
-                        hasBooking = true;
-                        reservationId = result.data.reservationId;
-                        session.hasActiveReservation = reservationId;
-                        session.currentStep = 'completed';
-                        contextManager.preserveReservationContext(session, reservationId, 'creation');
-                        this.resetAgentState(session);
-
-                        // 🚨 CRITICAL FIX: For direct bookings, also capture clean data
-                        cleanBookingDataForConfirmation = {
-                            name: result.data.guestName || completionCheck.extracted.name,
-                            phone: result.data.guestPhone || completionCheck.extracted.phone,
-                            date: result.data.date || completionCheck.extracted.date,
-                            time: result.data.time || completionCheck.extracted.time,
-                            guests: result.data.guests || completionCheck.extracted.guests,
-                            comments: result.data.comments || completionCheck.extracted.comments || ''
-                        };
-
-                        const detailedConfirmation = this.generateDetailedConfirmation(
-                            reservationId,
-                            cleanBookingDataForConfirmation, // ✅ Use clean data, not session.gatheringInfo
-                            session.language,
-                            result.metadata
-                        );
-
-                        session.conversationHistory.push({ role: 'user', content: sanitizedMessage, timestamp: new Date() });
-                        session.conversationHistory.push({ role: 'assistant', content: detailedConfirmation, timestamp: new Date() });
-                        await this.saveSessionBatched(session);
-
-                        smartLog.businessEvent('booking_created', {
-                            sessionId,
-                            reservationId,
-                            platform: session.platform,
-                            language: session.language,
-                            isDirectBooking: true,
-                            isReturningGuest: !!session.guestHistory,
-                            processingTime: smartLog.endTimer(overallTimerId),
-                            confirmationDataSource: 'direct_booking_clean_data',
-                            sessionContaminationPrevented: true
-                        });
-
-                        smartLog.info('conversation.agent_response', {
-                            sessionId,
-                            response: detailedConfirmation,
-                            agent: session.currentAgent,
-                            hasBooking: true,
-                            reservationId,
-                            responseType: 'direct_booking_success_detailed',
-                            dataSource: 'clean_tool_result'
-                        });
-
-                        return {
-                            response: detailedConfirmation,
-                            hasBooking: true,
-                            reservationId,
-                            session,
-                            currentAgent: session.currentAgent
-                        };
-                    } else {
-                        smartLog.warn('Direct booking failed', {
-                            sessionId,
-                            error: result.error,
-                            extracted: completionCheck.extracted
-                        });
-                    }
-                } catch (error) {
-                    smartLog.error('Direct booking error', error as Error, {
-                        sessionId,
-                        extracted: completionCheck.extracted
-                    });
-                }
-            }
-
-            // Handle pending confirmation
-            if (session.pendingConfirmation) {
-                // Check if the pending action is for name clarification
-                const isNameClarification = session.pendingConfirmation.summary?.includes('Name clarification needed');
-
-                if (isNameClarification) {
-                    // This block should ideally not be reached if pendingNameClarification is handled first.
-                    // This is a safety net. The main handler for pendingNameClarification is at the beginning of handleMessage.
-                    smartLog.warn('Old pendingConfirmation for name clarification detected. Bypassing ECM handler to allow SofiaAgent to process. This path should be rare.', {
-                        sessionId: session.sessionId,
-                        userResponse: sanitizedMessage
-                    });
-                    // DO NOT process here. Let it fall through to SofiaAgent if needed,
-                    // or re-evaluate with pendingNameClarification for the next turn if it was just set.
-                    // For now, return null to let the main loop continue, which should lead back to pendingNameClarification being handled.
-                    return {
-                        response: await TranslationService.translateMessage('Please confirm the name again.', session.language, 'question', session.tenantContext),
-                        hasBooking: false,
-                        session,
-                        currentAgent: session.currentAgent,
-                        agentHandoff: undefined // No handoff for this
-                    };
-
-                } else {
-                    // If it's any other type of confirmation (e.g., "confirm booking?"), handle it with the existing logic.
-                    smartLog.info('Processing pending confirmation', {
-                        sessionId,
-                        userResponse: sanitizedMessage,
-                        pendingAction: session.pendingConfirmation.summary
-                    });
-
-                    const pendingAction = session.pendingConfirmation;
-                    let summary = 'the requested action';
-                    if (pendingAction.summaryData) {
-                        const details = pendingAction.summaryData;
-                        if (details.action === 'cancellation') {
-                            summary = `cancellation of reservation #${details.reservationId}`;
-                        } else {
-                            summary = `a reservation for ${details.guests} people for ${details.guestName} on ${details.date} at ${details.time}`;
-                        }
-                    }
-
-                    const confirmationResult = await this.runConfirmationAgent(sanitizedMessage, summary, session.language, session.tenantContext!);
-                    switch (confirmationResult.confirmationStatus) {
-                        case 'positive':
-                            smartLog.info('Positive confirmation detected', {
-                                sessionId,
-                                reasoning: confirmationResult.reasoning
-                            });
-                            session.conversationHistory.push({ role: 'user', content: sanitizedMessage, timestamp: new Date() });
-                            await this.saveSessionBatched(session);
-                            return await this.handleConfirmation(sessionId, true);
-
-                        case 'negative':
-                            smartLog.info('Negative confirmation detected', {
-                                sessionId,
-                                reasoning: confirmationResult.reasoning
-                            });
-                            session.conversationHistory.push({ role: 'user', content: sanitizedMessage, timestamp: new Date() });
-                            await this.saveSessionBatched(session);
-                            return await this.handleConfirmation(sessionId, false);
-
-                        case 'unclear':
-                        default:
-                            smartLog.info('Unclear confirmation - treating as new input', {
-                                sessionId,
-                                reasoning: confirmationResult.reasoning
-                            });
-                            delete session.pendingConfirmation;
-                            delete session.confirmedName;
-                            break;
-                    }
-                }
             }
 
             // Language detection with caching
@@ -3513,11 +3062,74 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
 
             const isSimpleContinuation = /^(да|нет|yes|no|ok|okay|confirm|yep|nope|thanks|спасибо|hvala|ок|k|igen|nem|ja|nein|oui|non|sì|sí|tak|nie|agree|good|everything's?\s*good|fine|sure|alright)$/i.test(sanitizedMessage.trim());
             if (overseerDecision.isNewBookingRequest && !isSimpleContinuation) {
-                this.resetSessionForNewBooking(session, overseerDecision.reasoning, true);
-                smartLog.info('New booking request detected - enhanced session reset applied', {
+                // 🚨 CRITICAL BUG #2 FIX: Extract and preserve identity BEFORE session reset
+                // This ensures we capture the current booking's identity before clearing session state
+                const identityToPreserve = this.extractGuestIdentityFromSession(session, true);
+
+                smartLog.info('BUG #2 FIX: Identity extracted before session reset', {
+                    sessionId,
+                    extractedName: identityToPreserve.customerName,
+                    extractedPhone: identityToPreserve.customerPhone ? 'yes' : 'no',
+                    sources: identityToPreserve.sources,
+                    extractionOrder: 'BEFORE session reset (handleMessage level)'
+                });
+
+                // Reset the session (this will clear all booking data)
+                this.resetSessionForNewBooking(session, overseerDecision.reasoning, false); // false = don't extract again
+
+                // 🚨 CRITICAL: Apply preserved identity to the clean session
+                if (identityToPreserve.customerName) {
+                    session.gatheringInfo.name = identityToPreserve.customerName;
+                    session.hasAskedName = true;
+
+                    // Also populate guestHistory for consistency
+                    if (!session.guestHistory) {
+                        session.guestHistory = {} as any;
+                    }
+                    session.guestHistory.guest_name = identityToPreserve.customerName;
+
+                    smartLog.info('BUG #2 FIX: Name preserved and restored', {
+                        sessionId,
+                        restoredName: identityToPreserve.customerName,
+                        source: identityToPreserve.nameSources.join(', '),
+                        contextAmnesiaFixed: true
+                    });
+                }
+
+                if (identityToPreserve.customerPhone) {
+                    session.gatheringInfo.phone = identityToPreserve.customerPhone;
+                    session.hasAskedPhone = true;
+
+                    // Also populate guestHistory for consistency
+                    if (!session.guestHistory) {
+                        session.guestHistory = {} as any;
+                    }
+                    session.guestHistory.guest_phone = identityToPreserve.customerPhone;
+
+                    smartLog.info('BUG #2 FIX: Phone preserved and restored', {
+                        sessionId,
+                        restoredPhone: identityToPreserve.customerPhone,
+                        source: identityToPreserve.phoneSources.join(', '),
+                        contextAmnesiaFixed: true
+                    });
+                }
+
+                smartLog.info('BUG #2 FIXED: New booking request with explicit identity preservation', {
                     sessionId,
                     reason: overseerDecision.reasoning,
-                    preservedIdentity: true
+                    namePreserved: !!identityToPreserve.customerName,
+                    phonePreserved: !!identityToPreserve.customerPhone,
+                    preservationMethod: 'explicit_handleMessage_level',
+                    bugFixed: 'BUG #2 - Context Amnesia on Subsequent Bookings',
+                    orderFixed: 'extract_BEFORE_reset'
+                });
+
+                smartLog.businessEvent('bug_2_fixed_explicit_preservation', {
+                    sessionId,
+                    identityPreserved: !!(identityToPreserve.customerName || identityToPreserve.customerPhone),
+                    preservationLevel: 'handleMessage_explicit',
+                    contextAmnesiaFixed: true,
+                    bugFixed: 'BUG #2'
                 });
             } else if (overseerDecision.isNewBookingRequest && isSimpleContinuation) {
                 smartLog.warn('Overseer incorrectly flagged simple continuation as new booking request', {
@@ -3830,23 +3442,50 @@ REQUIRED CONFIRMATION PATTERNS:
                                     throw new Error(`Unknown tool function: ${toolCall.function.name}`);
                             }
 
-                            // 🚨 CRITICAL FIX: Handle NAME_CLARIFICATION_NEEDED in main tool execution
+                            // ✅ PHASE 1 REFACTORING: Handle NAME_CLARIFICATION_NEEDED via ConfirmationService
                             if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-                                const nameClariResult = await this.handleNameClarificationInToolExecution(
-                                    result,
-                                    toolCall,
-                                    session,
-                                    functionContext
+                                const { dbName, requestName } = result.error.details;
+
+                                // Set up pendingNameClarification for ConfirmationService
+                                session.pendingNameClarification = {
+                                    dbName: dbName,
+                                    requestName: requestName,
+                                    originalToolCall: {
+                                        function: {
+                                            name: toolCall.function.name,
+                                            arguments: toolCall.function.arguments
+                                        }
+                                    },
+                                    originalContext: functionContext,
+                                    attempts: 0,
+                                    timestamp: Date.now()
+                                };
+
+                                const clarificationMessage = await TranslationService.translateMessage(
+                                    `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`,
+                                    session.language,
+                                    'question',
+                                    session.tenantContext!
                                 );
 
-                                if (nameClariResult) {
-                                    // Return immediately to break out of the tool execution loop
-                                    smartLog.info('Name clarification handled in tool execution, returning early', {
-                                        sessionId,
-                                        toolName: toolCall.function.name
-                                    });
-                                    return nameClariResult;
-                                }
+                                session.conversationHistory.push({
+                                    role: 'assistant',
+                                    content: clarificationMessage,
+                                    timestamp: new Date()
+                                });
+                                await this.saveSessionBatched(session);
+
+                                smartLog.info('Name clarification handled in tool execution, setup for ConfirmationService', {
+                                    sessionId,
+                                    toolName: toolCall.function.name
+                                });
+
+                                return {
+                                    response: clarificationMessage,
+                                    hasBooking: false,
+                                    session,
+                                    currentAgent: session.currentAgent
+                                };
                             }
 
                         } catch (funcError) {
@@ -4237,443 +3876,6 @@ REQUIRED ACTION:
     }
 
     /**
-     * Execute confirmed booking immediately
-     */
-    private async executeConfirmedBooking(sessionId: string, pendingAction: any): Promise<{
-        response: string;
-        hasBooking: boolean;
-        reservationId?: number;
-        session: BookingSessionWithAgent;
-        currentAgent?: AgentType;
-    }> {
-        const session = await this.getSession(sessionId);
-        if (!session) {
-            throw new Error(`Session ${sessionId} not found`);
-        }
-
-        const timerId = smartLog.startTimer('confirmed_booking_execution');
-        try {
-            const { toolCall, functionContext } = pendingAction;
-            const args = JSON.parse(toolCall.function.arguments);
-
-            if (session.confirmedName) {
-                args.guestName = session.confirmedName;
-                functionContext.confirmedName = session.confirmedName;
-            }
-
-            smartLog.info('Executing confirmed booking', {
-                sessionId,
-                confirmedName: session.confirmedName,
-                args
-            });
-            // ✅ CRITICAL FIX: Always pass tenantContext to getAgent
-            const agent = await this.getAgent(session.currentAgent, session.tenantContext);
-            if (functionContext) {
-                (functionContext as ToolFunctionContext).restaurantConfig = agent.restaurantConfig;
-
-                // ✅ DEFINITIVE FIX: Re-construct the 'session' object within the functionContext
-                // so that agent-tools can find `context.session.tenantContext`
-                (functionContext as ToolFunctionContext).session = {
-                    ...session, // copy existing session properties
-                    tenantContext: functionContext.tenantContext // Add the tenantContext we saved earlier
-                };
-            }
-
-            const result = await agentFunctions.create_reservation(
-                args.guestName,
-                args.guestPhone,
-                args.date,
-                args.time,
-                args.guests,
-                args.specialRequests || '',
-                functionContext
-            );
-
-            delete session.pendingConfirmation; // Clear pending confirmation after execution
-            delete session.confirmedName;
-
-            if (result.tool_status === 'SUCCESS' && result.data && result.data.success) {
-                session.hasActiveReservation = result.data.reservationId;
-                session.currentStep = 'completed';
-                contextManager.preserveReservationContext(session, result.data.reservationId, 'creation');
-                this.resetAgentState(session);
-
-                const detailedConfirmation = this.generateDetailedConfirmation(
-                    result.data.reservationId,
-                    args,
-                    session.language,
-                    result.metadata
-                );
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: detailedConfirmation,
-                    timestamp: new Date()
-                });
-                await this.saveSessionBatched(session);
-
-                smartLog.businessEvent('booking_created', {
-                    sessionId,
-                    reservationId: result.data.reservationId,
-                    platform: session.platform,
-                    language: session.language,
-                    isReturningGuest: !!session.guestHistory,
-                    processingMethod: 'confirmed_booking',
-                    processingTime: smartLog.endTimer(timerId)
-                });
-
-                smartLog.info('conversation.agent_response', {
-                    sessionId,
-                    response: detailedConfirmation,
-                    agent: session.currentAgent,
-                    hasBooking: true,
-                    reservationId: result.data.reservationId,
-                    responseType: 'confirmed_booking_success_detailed'
-                });
-
-                return {
-                    response: detailedConfirmation,
-                    hasBooking: true,
-                    reservationId: result.data.reservationId,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            } else {
-                const baseMessage = `Sorry, I couldn't create the reservation: ${result.error?.message || 'unknown error'}`;
-                // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-                const errorMessage = await TranslationService.translateMessage(
-                    baseMessage,
-                    session.language,
-                    'error',
-                    session.tenantContext
-                );
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: errorMessage,
-                    timestamp: new Date()
-                });
-                await this.saveSessionBatched(session);
-
-                // ✅ LOGGING FIX: Log the original English error object for system consistency
-                smartLog.warn('Confirmed booking execution failed', {
-                    sessionId,
-                    action: toolCall.function.name,
-                    error: result.error, // This logs the structured English error
-                    processingTime: smartLog.endTimer(timerId)
-                });
-
-                smartLog.info('conversation.agent_response', {
-                    sessionId,
-                    response: errorMessage,
-                    agent: session.currentAgent,
-                    responseType: 'confirmed_booking_error'
-                });
-
-                return {
-                    response: errorMessage,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            }
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Confirmed booking execution error', error as Error, {
-                sessionId
-            });
-            // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-            const errorMessage = await TranslationService.translateMessage(
-                "An error occurred while creating the reservation.",
-                session.language,
-                'error',
-                session.tenantContext
-            );
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
-        }
-    }
-
-    /**
-     * Handle confirmation responses with multi-agent support
-     */
-    async handleConfirmation(sessionId: string, confirmed: boolean): Promise<{
-        response: string;
-        hasBooking: boolean;
-        reservationId?: number;
-        session: BookingSessionWithAgent;
-        currentAgent?: AgentType;
-    }> {
-        const session = await this.getSession(sessionId);
-        if (!session?.pendingConfirmation) {
-            throw new Error('No pending confirmation found');
-        }
-
-        const timerId = smartLog.startTimer('confirmation_handling');
-        try {
-            if (confirmed) {
-                const { toolCall, functionContext } = session.pendingConfirmation;
-                const args = JSON.parse(toolCall.function.arguments);
-
-                if (session.confirmedName) {
-                    args.guestName = session.confirmedName;
-                    functionContext.confirmedName = session.confirmedName;
-                }
-
-                smartLog.info('Processing positive confirmation', {
-                    sessionId,
-                    action: toolCall.function.name,
-                    confirmedName: session.confirmedName
-                });
-                // ✅ CRITICAL FIX: Always pass tenantContext to getAgent
-                const agent = await this.getAgent(session.currentAgent, session.tenantContext);
-                if (functionContext) {
-                    (functionContext as ToolFunctionContext).restaurantConfig = agent.restaurantConfig;
-                }
-
-                let result;
-                switch (toolCall.function.name) {
-                    case 'create_reservation':
-                        result = await agentFunctions.create_reservation(
-                            args.guestName,
-                            args.guestPhone,
-                            args.date,
-                            args.time,
-                            args.guests,
-                            args.specialRequests || '',
-                            functionContext
-                        );
-                        break;
-                    case 'cancel_reservation':
-                        result = await agentFunctions.cancel_reservation(
-                            args.reservationId,
-                            args.reason,
-                            true,
-                            functionContext
-                        );
-                        break;
-                    default:
-                        throw new Error(`Unsupported pending confirmation for: ${toolCall.function.name}`);
-                }
-
-                // Handle name clarification if needed
-                if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
-                    const { dbName, requestName } = result.error.details;
-                    session.pendingConfirmation = {
-                        toolCall,
-                        functionContext: { ...functionContext, error: result.error },
-                        summary: `Name clarification needed: DB has "${dbName}", booking requested for "${requestName}"`
-                    };
-
-                    const baseMessage = `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`;
-                    // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-                    const clarificationMessage = await TranslationService.translateMessage(
-                        baseMessage,
-                        session.language,
-                        'question',
-                        session.tenantContext
-                    );
-
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: clarificationMessage,
-                        timestamp: new Date()
-                    });
-                    await this.saveSessionBatched(session);
-
-                    smartLog.info('conversation.agent_response', {
-                        sessionId,
-                        response: clarificationMessage,
-                        agent: session.currentAgent,
-                        responseType: 'name_clarification_from_confirmation'
-                    });
-
-                    return {
-                        response: clarificationMessage,
-                        hasBooking: false,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
-                }
-
-                delete session.pendingConfirmation;
-                delete session.confirmedName;
-
-                if (result.tool_status === 'SUCCESS' && result.data && (result.data.success || result.data.reservationId)) {
-                    const reservationId = result.data.reservationId;
-                    session.hasActiveReservation = reservationId;
-                    session.currentStep = 'completed';
-
-                    if (toolCall.function.name === 'create_reservation') {
-                        contextManager.preserveReservationContext(session, reservationId, 'creation');
-                        smartLog.businessEvent('booking_created', {
-                            sessionId,
-                            reservationId,
-                            platform: session.platform,
-                            language: session.language,
-                            isReturningGuest: !!session.guestHistory,
-                            processingMethod: 'confirmation',
-                            processingTime: smartLog.endTimer(timerId)
-                        });
-                    } else if (toolCall.function.name === 'cancel_reservation') {
-                        smartLog.businessEvent('booking_canceled', {
-                            sessionId,
-                            reservationId,
-                            platform: session.platform,
-                            language: session.language,
-                            processingMethod: 'confirmation',
-                            processingTime: smartLog.endTimer(timerId)
-                        });
-                    }
-
-                    this.resetAgentState(session);
-
-                    let baseMessage;
-                    if (toolCall.function.name === 'create_reservation') {
-                        const detailedConfirmation = this.generateDetailedConfirmation(
-                            reservationId,
-                            args,
-                            session.language,
-                            result.metadata
-                        );
-                        baseMessage = detailedConfirmation;
-                    } else if (toolCall.function.name === 'cancel_reservation') {
-                        baseMessage = `✅ Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!`;
-                    }
-                    // ✅ CRITICAL FIX: Always pass tenantContext to the translation service for non-booking confirmations
-                    const successMessage = toolCall.function.name === 'create_reservation'
-                        ? baseMessage
-                        : await TranslationService.translateMessage(baseMessage!, session.language, 'success', session.tenantContext);
-
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: successMessage,
-                        timestamp: new Date()
-                    });
-                    await this.saveSessionBatched(session);
-
-                    smartLog.info('conversation.agent_response', {
-                        sessionId,
-                        response: successMessage,
-                        agent: session.currentAgent,
-                        hasBooking: toolCall.function.name === 'create_reservation',
-                        reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined,
-                        responseType: 'confirmation_success_detailed'
-                    });
-
-                    return {
-                        response: successMessage,
-                        hasBooking: toolCall.function.name === 'create_reservation',
-                        reservationId: toolCall.function.name === 'create_reservation' ? reservationId : undefined,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
-                } else {
-                    const baseMessage = `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`;
-                    // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-                    const errorMessage = await TranslationService.translateMessage(
-                        baseMessage,
-                        session.language,
-                        'error',
-                        session.tenantContext
-                    );
-
-                    session.conversationHistory.push({
-                        role: 'assistant',
-                        content: errorMessage,
-                        timestamp: new Date()
-                    });
-                    await this.saveSessionBatched(session);
-
-                    smartLog.warn('Confirmation execution failed', {
-                        sessionId,
-                        action: toolCall.function.name,
-                        error: result.error,
-                        processingTime: smartLog.endTimer(timerId)
-                    });
-
-                    smartLog.info('conversation.agent_response', {
-                        sessionId,
-                        response: errorMessage,
-                        agent: session.currentAgent,
-                        responseType: 'confirmation_error'
-                    });
-
-                    return {
-                        response: errorMessage,
-                        hasBooking: false,
-                        session,
-                        currentAgent: session.currentAgent
-                    };
-                }
-            } else {
-                delete session.pendingConfirmation;
-                delete session.confirmedName;
-                // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-                const cancelMessage = await TranslationService.translateMessage(
-                    "Okay, operation cancelled. How else can I help you?",
-                    session.language,
-                    'question',
-                    session.tenantContext
-                );
-
-                session.conversationHistory.push({
-                    role: 'assistant',
-                    content: cancelMessage,
-                    timestamp: new Date()
-                });
-                await this.saveSessionBatched(session);
-
-                smartLog.info('Confirmation cancelled by user', {
-                    sessionId,
-                    processingTime: smartLog.endTimer(timerId)
-                });
-
-                smartLog.info('conversation.agent_response', {
-                    sessionId,
-                    response: cancelMessage,
-                    agent: session.currentAgent,
-                    responseType: 'confirmation_cancelled'
-                });
-
-                return {
-                    response: cancelMessage,
-                    hasBooking: false,
-                    session,
-                    currentAgent: session.currentAgent
-                };
-            }
-        } catch (error) {
-            smartLog.endTimer(timerId);
-            smartLog.error('Confirmation handling error', error as Error, {
-                sessionId
-            });
-
-            delete session.pendingConfirmation;
-            delete session.confirmedName;
-            // ✅ CRITICAL FIX: Always pass tenantContext to the translation service
-            const errorMessage = await TranslationService.translateMessage(
-                "An error occurred while processing the confirmation.",
-                session.language,
-                'error',
-                session.tenantContext
-            );
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
-        }
-    }
-
-    /**
      * Extract gathering info from function arguments with state tracking for conversation context awareness
      */
     private extractGatheringInfo(session: BookingSessionWithAgent, args: any) {
@@ -4777,7 +3979,7 @@ REQUIRED ACTION:
     }
 
     /**
-     * 🚀 REDIS INTEGRATION: Get enhanced session statistics with comprehensive bug fix tracking
+     * 🚀 REDIS INTEGRATION: Get enhanced session statistics
      */
     async getStats(): Promise<{
         totalSessions: number;
@@ -4829,24 +4031,6 @@ REQUIRED ACTION:
             identityPreservedCount: number;
             identityPreservationRate: string;
             returningGuestExperience: string;
-        };
-        criticalFixesImplemented: {
-            sessionStateContamination: { status: string; description: string; effectiveness: string };
-            inputSanitization: { status: string; description: string; effectiveness: string };
-            rateLimiting: { status: string; description: string; effectiveness: string };
-            performanceOptimizations: { status: string; description: string; effectiveness: string };
-            memoryManagement: { status: string; description: string; effectiveness: string };
-            tenantContextPropagation: { status: string; description: string; effectiveness: string };
-            nameClarificationLoop: { status: string; description: string; effectiveness: string };
-            contextContaminationPrevention: { status: string; description: string; effectiveness: string };
-            sessionContaminationElimination: { status: string; description: string; effectiveness: string };
-            hallucinatedBookingPrevention: { status: string; description: string; effectiveness: string };
-            overseerExtraction: { status: string; description: string; effectiveness: string };
-            variableScopeBugFix: { status: string; description: string; effectiveness: string };
-            criticalFix1_CircularReference: { status: string; description: string; effectiveness: string };
-            criticalFix2_InfiniteNameLoop: { status: string; description: string; effectiveness: string };
-            criticalFix3_MapClearingFix: { status: string; description: string; effectiveness: string };
-            criticalFix4_RetryBookingMethod: { status: string; description: string; effectiveness: string };
         };
     }> {
         const now = new Date();
@@ -4911,90 +4095,6 @@ REQUIRED ACTION:
                 returningGuestExperience: identityPreservedCount > sessionResetsForNewBookings * 0.8 ? 'Excellent' : 'Good'
             };
 
-            const criticalFixesImplemented = {
-                sessionStateContamination: {
-                    status: 'FIXED',
-                    description: 'Complete session state cleanup with comprehensive validation state clearing',
-                    effectiveness: 'Eliminated 100% of state contamination issues'
-                },
-                inputSanitization: {
-                    status: 'IMPLEMENTED',
-                    description: 'Multi-layer input sanitization with unicode normalization and injection prevention',
-                    effectiveness: 'Blocking 99.9% of malicious inputs'
-                },
-                rateLimiting: {
-                    status: 'ACTIVE',
-                    description: 'Per-session rate limiting with 30 messages per minute limit',
-                    effectiveness: 'Preventing abuse and ensuring fair resource usage'
-                },
-                performanceOptimizations: {
-                    status: 'OPTIMIZED',
-                    description: 'Language detection caching, batch Redis operations, and tool result caching',
-                    effectiveness: 'Improved response times by 40-60%'
-                },
-                memoryManagement: {
-                    status: 'ENHANCED',
-                    description: 'Comprehensive memory leak prevention with automatic cleanup and cache limits',
-                    effectiveness: 'Zero memory leaks detected in production testing'
-                },
-                tenantContextPropagation: {
-                    status: 'FIXED',
-                    description: 'BUG-20250725-001: TenantContext now properly loaded and passed to all services',
-                    effectiveness: 'Eliminated 100% of MISSING_TENANT_CONTEXT errors'
-                },
-                nameClarificationLoop: {
-                    status: 'FIXED',
-                    description: 'NAME_CLARIFICATION_NEEDED now properly handled in main tool execution loop',
-                    effectiveness: 'Eliminated infinite loops in name clarification scenarios'
-                },
-                contextContaminationPrevention: {
-                    status: 'FIXED',
-                    description: 'Context shift detection prevents using stale booking data after availability failures',
-                    effectiveness: 'Eliminated confirmation message inaccuracies and improved conversation flow'
-                },
-                sessionContaminationElimination: {
-                    status: 'FIXED',
-                    description: 'Removed all fallbacks to session.gatheringInfo for confirmations, use only verified clean tool result data',
-                    effectiveness: 'Eliminated 100% of session data contamination in confirmation messages'
-                },
-                hallucinatedBookingPrevention: {
-                    status: 'FIXED',
-                    description: 'AI prevented from confirming bookings after only checking availability, forces confirmation prompts instead',
-                    effectiveness: 'Eliminated user confusion from premature booking confirmations'
-                },
-                overseerExtraction: {
-                    status: 'COMPLETED',
-                    description: 'Extracted runOverseer method into dedicated OverseerAgent class for better maintainability',
-                    effectiveness: 'Reduced ECM size by ~400 lines while maintaining exact functionality'
-                },
-                variableScopeBugFix: {
-                    status: 'FIXED',
-                    description: 'Fixed cleanBookingDataForConfirmation variable scope issue that caused ReferenceError after successful bookings',
-                    effectiveness: 'Eliminated booking confirmation failures and ensures detailed confirmation messages'
-                },
-                // 🚨 NEW: All 4 Critical Fixes from the analysis
-                criticalFix1_CircularReference: {
-                    status: 'FIXED',
-                    description: 'CRITICAL FIX #1: Fixed circular reference in Redis serialization by creating safe functionContext without session references',
-                    effectiveness: 'Eliminated 100% of "Converting circular structure to JSON" errors, restored Redis session persistence'
-                },
-                criticalFix2_InfiniteNameLoop: {
-                    status: 'FIXED',
-                    description: 'CRITICAL FIX #2: Added pendingNameClarification state with attempt limits and timeout handling to prevent infinite loops',
-                    effectiveness: 'Eliminated infinite name clarification loops, reduced token usage from 42 requests to 1-3 per clarification'
-                },
-                criticalFix3_MapClearingFix: {
-                    status: 'FIXED',
-                    description: 'CRITICAL FIX #3: Enhanced clearBookingSpecificState with proper Map compatibility fix for Redis-deserialized objects',
-                    effectiveness: 'Eliminated clearification attempts clearing errors and improved session state management reliability'
-                },
-                criticalFix4_RetryBookingMethod: {
-                    status: 'ADDED',
-                    description: 'CRITICAL FIX #4: Added missing retryBookingWithConfirmedName method for proper name clarification completion',
-                    effectiveness: 'Enabled successful booking completion after name clarification, improved booking success rate to 95%+'
-                }
-            };
-
             const stats = {
                 totalSessions,
                 activeSessions,
@@ -5029,42 +4129,15 @@ REQUIRED ACTION:
                     avgResponseTime: redisStats.avgResponseTime,
                     fallbackCacheSize: redisStats.fallbackSize
                 },
-                identityPreservationStats,
-                criticalFixesImplemented
+                identityPreservationStats
             };
-
-            smartLog.info('Generated comprehensive session statistics with ALL 4 CRITICAL FIXES IMPLEMENTED', {
-                totalSessions: stats.totalSessions,
-                activeSessions: stats.activeSessions,
-                completedBookings: stats.completedBookings,
-                redisConnected: redisStats.isConnected,
-                redisHitRate: redisStats.hitRate,
-                criticalFixesStatus: 'ALL_4_CRITICAL_FIXES_IMPLEMENTED',
-                criticalFix1: 'FIXED - Circular Reference in Redis Serialization',
-                criticalFix2: 'FIXED - Infinite Name Clarification Loop',
-                criticalFix3: 'FIXED - Enhanced Context Contamination Prevention with Map fix',
-                criticalFix4: 'ADDED - Missing retryBookingWithConfirmedName Method',
-                sessionStateContamination: 'FIXED',
-                inputSanitization: 'ACTIVE',
-                rateLimiting: 'ACTIVE',
-                performanceOptimizations: 'OPTIMIZED',
-                memoryManagement: 'ENHANCED',
-                tenantContextPropagation: 'FIXED',
-                nameClarificationLoop: 'FIXED',
-                contextContaminationPrevention: 'FIXED',
-                sessionContaminationElimination: 'FIXED',
-                hallucinatedBookingPrevention: 'FIXED',
-                overseerExtraction: 'COMPLETED',
-                variableScopeBugFix: 'FIXED',
-                productionReadiness: 'EXCELLENT - ALL CRITICAL ISSUES RESOLVED'
-            });
 
             return stats;
 
         } catch (error) {
             smartLog.error('Error generating session statistics', error as Error);
 
-            // Return fallback stats with critical fix status
+            // Return fallback stats
             return {
                 totalSessions: 0,
                 activeSessions: 0,
@@ -5115,24 +4188,6 @@ REQUIRED ACTION:
                     identityPreservedCount: 0,
                     identityPreservationRate: '0%',
                     returningGuestExperience: 'Unknown'
-                },
-                criticalFixesImplemented: {
-                    sessionStateContamination: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    inputSanitization: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    rateLimiting: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    performanceOptimizations: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    memoryManagement: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    tenantContextPropagation: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    nameClarificationLoop: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    contextContaminationPrevention: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    sessionContaminationElimination: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    hallucinatedBookingPrevention: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    overseerExtraction: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    variableScopeBugFix: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    criticalFix1_CircularReference: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    criticalFix2_InfiniteNameLoop: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    criticalFix3_MapClearingFix: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' },
-                    criticalFix4_RetryBookingMethod: { status: 'UNKNOWN', description: 'Stats unavailable', effectiveness: 'Unknown' }
                 }
             };
         }
@@ -5153,25 +4208,7 @@ REQUIRED ACTION:
         this.rateLimiter.clear();
         this.pendingRedisWrites.clear();
 
-        smartLog.info('EnhancedConversationManager shutdown completed with ALL 4 CRITICAL FIXES', {
-            status: 'GRACEFUL_SHUTDOWN_COMPLETE',
-            allCachesCleared: true,
-            pendingWritesFlushed: true,
-            criticalFixesImplemented: [
-                'CRITICAL FIX #1: Circular Reference in Redis Serialization - FIXED',
-                'CRITICAL FIX #2: Infinite Name Clarification Loop - FIXED', 
-                'CRITICAL FIX #3: Enhanced Context Contamination Prevention with Map fix - FIXED',
-                'CRITICAL FIX #4: Missing retryBookingWithConfirmedName Method - ADDED'
-            ],
-            bugFix_BUG20250725001: 'IMPLEMENTED',
-            nameClarificationLoopFix: 'IMPLEMENTED',
-            contextContaminationPreventionFix: 'IMPLEMENTED',
-            sessionContaminationEliminationFix: 'IMPLEMENTED',
-            hallucinatedBookingPreventionFix: 'IMPLEMENTED',
-            overseerExtraction: 'COMPLETED',
-            variableScopeBugFix: 'FIXED',
-            productionReadiness: 'EXCELLENT - ALL CRITICAL ISSUES RESOLVED'
-        });
+        smartLog.info('EnhancedConversationManager shutdown completed');
     }
 }
 

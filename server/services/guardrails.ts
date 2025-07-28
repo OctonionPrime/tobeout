@@ -67,7 +67,6 @@ Return only the translation, no explanations.`;
             // ✅ USE AISERVICE: Fast translation with automatic fallback
             // ✅ BUG-B-1 FIX: Pass tenant context to AI service
             const translation = await aiService.generateContent(prompt, {
-                model: 'haiku', // Fast and cost-effective for translation
                 maxTokens: 200,
                 temperature: 0.2,
                 context: `guardrail-translation-${context}`
@@ -352,7 +351,6 @@ Respond with JSON only:
         // ✅ USE AISERVICE: Fast relevance checking with automatic fallback
         // ✅ BUG-B-1 FIX: Pass tenant context to AI service
         const responseText = await aiService.generateContent(prompt, {
-            model: 'haiku',
             maxTokens: 200,
             temperature: 0.0,
             context: 'relevance-check'
@@ -479,7 +477,6 @@ Respond with JSON only:
             // ✅ USE AISERVICE: Fast safety checking with automatic fallback
             // ✅ BUG-B-1 FIX: Pass tenant context to AI service
             const responseText = await aiService.generateContent(safetyPrompt, {
-                model: 'haiku',
                 maxTokens: 150,
                 temperature: 0.0,
                 context: 'safety-check'

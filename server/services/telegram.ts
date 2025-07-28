@@ -23,8 +23,16 @@ const processingLocks = new Set<number>();
 const activePromises = new Map<number, Promise<void>>();
 
 const activeBots = new Map<number, TelegramBot>();
-// Store active Telegram sessions
-const telegramSessions = new Map<number, string>(); // chatId -> sessionId
+
+// 🚨 CRITICAL BUG #1 FIX: Multi-tenant session isolation
+// BEFORE: const telegramSessions = new Map<number, string>(); // chatId -> sessionId
+// AFTER: Use composite keys to prevent cross-restaurant context contamination
+const telegramSessions = new Map<string, string>(); // compositeKey -> sessionId
+
+// 🚨 CRITICAL BUG #1 FIX: Helper function to create composite session key
+function createSessionKey(chatId: number, restaurantId: number): string {
+    return `${chatId}:${restaurantId}`;
+}
 
 interface TelegramLocalizedStrings {
     welcomeMessage: (restaurantName: string) => string;
@@ -396,8 +404,28 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     let currentLang: Language = 'en';
     const defaultRestaurantName = restaurant.name || (currentLang === 'ru' ? "Наш Ресторан" : currentLang === 'sr' ? "Naš Restoran" : "Our Restaurant");
 
-    // Get or create session
-    let sessionId = telegramSessions.get(chatId);
+    // 🚨 CRITICAL BUG #1 FIX: Session persistence validation with composite keys
+    // Get session ID from memory using composite key and validate it still exists in Redis
+    const sessionKey = createSessionKey(chatId, restaurantId);
+    let sessionId = telegramSessions.get(sessionKey);
+    
+    // 🔧 CRITICAL FIX: Validate session data exists, not just ID
+    if (sessionId) {
+        const existingSession = await enhancedConversationManager.getSession(sessionId);
+        if (!existingSession) {
+            // Session ID exists in memory but session data is missing from Redis
+            console.log(`🔄 [Sofia AI] Stale session detected for chat ${chatId}, restaurant ${restaurantId}, creating new session`);
+            console.log(`📊 [Sofia AI] Stale session ID: ${sessionId}`);
+            
+            // Clear stale session ID from memory
+            telegramSessions.delete(sessionKey);
+            sessionId = undefined; // Force new session creation
+        } else {
+            console.log(`✅ [Sofia AI] Valid session found for chat ${chatId}, restaurant ${restaurantId}: ${sessionId}`);
+        }
+    }
+    
+    // Create new session if needed (either no session or stale session was cleared)
     if (!sessionId) {
         currentLang = 'auto';
 
@@ -418,12 +446,13 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
             tenantContext: tenantContext // CRITICAL FIX: Pass tenant context
         });
 
-        telegramSessions.set(chatId, sessionId);
-        console.log(`🎯 [Sofia AI] Created new Telegram session ${sessionId} for chat ${chatId} with language: auto-detect, timezone: ${restaurantTimezone}`);
+        // 🚨 CRITICAL BUG #1 FIX: Use composite key when storing session
+        telegramSessions.set(sessionKey, sessionId);
+        console.log(`🎯 [Sofia AI] Created new Telegram session ${sessionId} for chat ${chatId}, restaurant ${restaurantId} with language: auto-detect, timezone: ${restaurantTimezone}`);
     }
 
     // Get current session to check language
-    const session = enhancedConversationManager.getSession(sessionId);
+    const session = await enhancedConversationManager.getSession(sessionId);
     if (session) {
         currentLang = session.language;
     }
@@ -439,7 +468,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
     try {
         // The original try...catch block remains inside
         try {
-            console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
+            console.log(`📱 [Sofia AI] Processing Telegram message from ${chatId} for restaurant ${restaurantId} (lang: ${currentLang}, timezone: ${restaurantTimezone}): "${text}"`);
 
             // Handle message with the conversation manager
             const result = await enhancedConversationManager.handleMessage(sessionId, text);
@@ -462,7 +491,7 @@ async function handleMessage(bot: TelegramBot, restaurantId: number, chatId: num
                 reply_markup: (result as any).reply_markup || undefined
             });
 
-            console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} (lang: ${result.session.language})`);
+            console.log(`✅ [Sofia AI] Sent enhanced response to ${chatId} for restaurant ${restaurantId} (lang: ${result.session.language})`);
 
         } catch (error) {
             console.error('❌ [Sofia AI] Error processing Telegram conversation:', error);
@@ -527,13 +556,15 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
         const bot = new TelegramBot(token, { polling: { interval: 300, params: { timeout: 10 } } });
         activeBots.set(restaurantId, bot);
 
+        // 🚨 CRITICAL BUG #1 FIX: Update /start command to use composite keys
         bot.onText(/\/start/, async (msg) => {
             const chatId = msg.chat.id;
-            // Clear any existing session
-            const existingSessionId = telegramSessions.get(chatId);
+            // Clear any existing session using composite key
+            const sessionKey = createSessionKey(chatId, restaurantId);
+            const existingSessionId = telegramSessions.get(sessionKey);
             if (existingSessionId) {
                 enhancedConversationManager.endSession(existingSessionId);
-                telegramSessions.delete(chatId);
+                telegramSessions.delete(sessionKey);
             }
 
             // ✅ ENHANCED: Use Telegram language hint but let Language Detection Agent decide
@@ -565,17 +596,19 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 // If no clear match, keep restaurant default (initialBotLang)
             }
 
-            console.log(`🌍 [Sofia AI] /start language detection: Telegram=${msg.from?.language_code}, Hint=${userLang}, RestaurantDefault=${initialBotLang}`);
+            console.log(`🌍 [Sofia AI] /start language detection for restaurant ${restaurantId}: Telegram=${msg.from?.language_code}, Hint=${userLang}, RestaurantDefault=${initialBotLang}`);
             await sendWelcomeMessage(bot, chatId, actualRestaurantName, userLang);
         });
 
+        // 🚨 CRITICAL BUG #1 FIX: Update /help command to use composite keys
         bot.onText(/\/help/, async (msg) => {
             const chatId = msg.chat.id;
-            const sessionId = telegramSessions.get(chatId);
+            const sessionKey = createSessionKey(chatId, restaurantId);
+            const sessionId = telegramSessions.get(sessionKey);
             let lang = initialBotLang;
 
             if (sessionId) {
-                const session = enhancedConversationManager.getSession(sessionId);
+                const session = await enhancedConversationManager.getSession(sessionId);
                 lang = session?.language || initialBotLang;
             } else {
                 // Use Telegram language code as hint
@@ -606,16 +639,18 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             await bot.sendMessage(chatId, locale.helpMessage, { parse_mode: 'Markdown' });
         });
 
+        // 🚨 CRITICAL BUG #1 FIX: Update /cancel command to use composite keys
         bot.onText(/\/cancel/, async (msg) => {
             const chatId = msg.chat.id;
-            const sessionId = telegramSessions.get(chatId);
+            const sessionKey = createSessionKey(chatId, restaurantId);
+            const sessionId = telegramSessions.get(sessionKey);
             let lang = initialBotLang;
 
             if (sessionId) {
-                const session = enhancedConversationManager.getSession(sessionId);
+                const session = await enhancedConversationManager.getSession(sessionId);
                 lang = session?.language || initialBotLang;
                 enhancedConversationManager.endSession(sessionId);
-                telegramSessions.delete(chatId);
+                telegramSessions.delete(sessionKey);
             } else {
                 // Use Telegram language code as hint
                 if (msg.from?.language_code?.startsWith('ru')) {
@@ -670,16 +705,18 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                 return;
             }
 
-            const sessionId = telegramSessions.get(chatId);
+            // 🚨 CRITICAL BUG #1 FIX: Use composite key for callback query session lookup
+            const sessionKey = createSessionKey(chatId, restaurantId);
+            const sessionId = telegramSessions.get(sessionKey);
             if (!sessionId) {
-                console.warn('[Telegram] No active session for callback');
+                console.warn(`[Telegram] No active session for callback from chat ${chatId}, restaurant ${restaurantId}`);
                 await bot.answerCallbackQuery(callbackQuery.id, { text: "Session expired. Please start a new conversation." });
                 return;
             }
 
-            const session = enhancedConversationManager.getSession(sessionId);
+            const session = await enhancedConversationManager.getSession(sessionId);
             if (!session) {
-                console.warn('[Telegram] Session not found for callback');
+                console.warn(`[Telegram] Session not found for callback from chat ${chatId}, restaurant ${restaurantId}`);
                 await bot.answerCallbackQuery(callbackQuery.id, { text: "Session not found. Please start a new conversation." });
                 return;
             }
@@ -687,14 +724,14 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
             const currentLang = session.language;
             const locale = telegramLocaleStrings[currentLang] || telegramLocaleStrings.en;
 
-            console.log(`[Telegram] Callback query received: ${data} from chat ${chatId} (timezone: ${restaurantTimezone})`);
+            console.log(`[Telegram] Callback query received: ${data} from chat ${chatId}, restaurant ${restaurantId} (timezone: ${restaurantTimezone})`);
 
             if (data.startsWith('confirm_name:')) {
                 const parts = data.split(':');
                 const choiceType = parts[1]; // 'new' or 'db'
                 const chosenName = parts[2]; // The actual name
 
-                console.log(`[Telegram] ✅ Name choice received: ${choiceType} -> "${chosenName}"`);
+                console.log(`[Telegram] ✅ Name choice received for restaurant ${restaurantId}: ${choiceType} -> "${chosenName}"`);
 
                 try {
                     // Answer the callback query immediately
@@ -718,7 +755,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                     processMessageQueue(chatId, bot, restaurantId, restaurant);
 
                 } catch (editError: any) {
-                    console.warn(`[Telegram] Could not edit message or answer callback query: ${editError.message || editError}`);
+                    console.warn(`[Telegram] Could not edit message or answer callback query for restaurant ${restaurantId}: ${editError.message || editError}`);
 
                     // Fallback: still try to process the name choice
                     try {
@@ -727,7 +764,7 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
                         enqueueMessage(chatId, chosenName, callbackQuery.message as TelegramBot.Message);
                         processMessageQueue(chatId, bot, restaurantId, restaurant);
                     } catch (fallbackError: any) {
-                        console.error(`[Telegram] Fallback handling also failed: ${fallbackError.message || fallbackError}`);
+                        console.error(`[Telegram] Fallback handling also failed for restaurant ${restaurantId}: ${fallbackError.message || fallbackError}`);
                     }
                 }
             } else {
@@ -758,7 +795,8 @@ export async function initializeTelegramBot(restaurantId: number): Promise<boole
     }
 }
 
-export function stopTelegramBot(restaurantId: number): void {
+// 🚨 CRITICAL BUG #1 FIX: Update stopTelegramBot to use composite keys
+export async function stopTelegramBot(restaurantId: number): Promise<void> {
     const bot = activeBots.get(restaurantId);
     if (bot) {
         console.log(`[Telegram] Stopping enhanced bot polling for restaurant ${restaurantId}...`);
@@ -767,14 +805,26 @@ export function stopTelegramBot(restaurantId: number): void {
             .catch(err => console.error(`Error stopping enhanced bot for restaurant ${restaurantId}:`, err.message || err));
         activeBots.delete(restaurantId);
 
-        // Clear all sessions for this restaurant
-        for (const [chatId, sessionId] of telegramSessions.entries()) {
-            const session = enhancedConversationManager.getSession(sessionId);
-            if (session && session.restaurantId === restaurantId) {
-                enhancedConversationManager.endSession(sessionId);
-                telegramSessions.delete(chatId);
+        // 🚨 CRITICAL BUG #1 FIX: Clear all sessions for this restaurant using composite key pattern
+        const sessionsToDelete: string[] = [];
+        for (const [compositeKey, sessionId] of telegramSessions.entries()) {
+            // Extract restaurantId from composite key (format: "chatId:restaurantId")
+            const [, keyRestaurantId] = compositeKey.split(':');
+            if (parseInt(keyRestaurantId) === restaurantId) {
+                const session = await enhancedConversationManager.getSession(sessionId);
+                if (session && session.restaurantId === restaurantId) {
+                    enhancedConversationManager.endSession(sessionId);
+                    sessionsToDelete.push(compositeKey);
+                }
             }
         }
+        
+        // Delete the identified sessions
+        for (const keyToDelete of sessionsToDelete) {
+            telegramSessions.delete(keyToDelete);
+        }
+        
+        console.log(`🧹 [Telegram] Cleared ${sessionsToDelete.length} sessions for restaurant ${restaurantId}`);
     } else {
         console.log(`[Telegram] No active enhanced bot found for restaurant ${restaurantId} to stop.`);
     }
@@ -803,6 +853,7 @@ export async function initializeAllTelegramBots(): Promise<void> {
     }
 }
 
+// 🚨 CRITICAL BUG #1 FIX: Update cleanupTelegramBots to handle composite keys
 export function cleanupTelegramBots(): void {
     console.log(`🧹 [Telegram] Cleaning up ${activeBots.size} active enhanced bots...`);
     
@@ -831,6 +882,8 @@ export function cleanupTelegramBots(): void {
         }
     }
     activeBots.clear();
+    
+    // 🚨 CRITICAL BUG #1 FIX: Clear all composite key sessions
     telegramSessions.clear();
     console.log(`✅ [Telegram] Enhanced cleanup completed. Active bots: ${activeBots.size}, Active sessions: ${telegramSessions.size}, Message queues: ${messageQueues.size}, Typing indicators: ${activeTypingIntervals.size}`);
 }
@@ -858,17 +911,17 @@ export async function sendTelegramMessage(
     }
 }
 
-export function getConversationStats(): {
+export async function getConversationStats(): Promise<{
     activeConversations: number;
     activeBots: number;
     conversationsByStage: Record<string, number>;
-} {
-    const stats = enhancedConversationManager.getStats();
+}> {
+    const stats = await enhancedConversationManager.getStats();
     const conversationsByStage: Record<string, number> = {};
 
-    // Count Telegram sessions by stage
+    // 🚨 CRITICAL BUG #1 FIX: Count Telegram sessions by stage using composite keys
     for (const sessionId of telegramSessions.values()) {
-        const session = enhancedConversationManager.getSession(sessionId);
+        const session = await enhancedConversationManager.getSession(sessionId);
         if (session) {
             conversationsByStage[session.currentStep] = (conversationsByStage[session.currentStep] || 0) + 1;
         }

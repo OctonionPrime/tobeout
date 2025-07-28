@@ -148,7 +148,6 @@ Return only the translation, no explanations.`;
         try {
             // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
             const translation = await aiService.generateContent(prompt, {
-                model: 'haiku', // Fast and cost-effective for translation
                 maxTokens: 300,
                 temperature: 0.2,
                 context: `agent-tool-translation-${context}`
@@ -229,7 +228,6 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
 
             // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
             const responseText = await aiService.generateContent(prompt, {
-                model: 'haiku', // Fast and cost-effective for analysis
                 maxTokens: 1000,
                 temperature: 0.2,
                 context: 'SpecialRequestAnalysis'
@@ -721,8 +719,13 @@ async function validateBusinessHours(
 
         } else {
             // Standard (non-overnight) operation
-            const openingDateTime = DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
-            const closingDateTime = DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
+            const openingDateTime = openingTime.includes(':') && openingTime.split(':').length === 3
+                ? DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm:ss', { zone: context.timezone })
+                : DateTime.fromFormat(`${date} ${openingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
+
+            const closingDateTime = closingTime.includes(':') && closingTime.split(':').length === 3
+                ? DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm:ss', { zone: context.timezone })
+                : DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
 
             isStartTimeValid = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
 
@@ -1138,6 +1141,15 @@ export async function check_availability(
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Agent Tool] check_availability: ${date} ${time} for ${guests} guests (Restaurant: ${context.restaurantId})${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
+
+    console.log('🔍 [DEBUG] check_availability context received:', {
+        restaurantId: context.restaurantId,
+        hasRestaurantConfig: !!context.restaurantConfig,
+        restaurantConfigKeys: context.restaurantConfig ? Object.keys(context.restaurantConfig) : 'NO_CONFIG',
+        openingTime: context.restaurantConfig?.openingTime,
+        closingTime: context.restaurantConfig?.closingTime,
+        timezone: context.timezone
+    });
 
     try {
         // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls

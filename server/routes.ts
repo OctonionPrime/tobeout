@@ -373,7 +373,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // 🔒 SUPER ADMIN: Create new tenant
     app.post("/api/superadmin/tenants", isSuperAdmin, logSuperAdminActivity('create_tenant'), async (req, res, next) => {
         try {
-            // Validation schema for tenant creation
+            // ✅ FIX 4: Enhanced validation schema with explicit boolean coercion
             const createTenantSchema = z.object({
                 // Restaurant details
                 restaurantName: z.string().min(1, "Restaurant name is required"),
@@ -387,7 +387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 ownerPhone: z.string().optional(),
                 initialPassword: z.string().min(6, "Password must be at least 6 characters"),
                 
-                // Feature configuration
+                // ✅ FIX 4: Ensure boolean coercion with proper defaults
                 enableAiChat: z.boolean().default(true),
                 enableTelegramBot: z.boolean().default(false),
                 enableGuestAnalytics: z.boolean().default(true),
@@ -401,9 +401,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             const validatedData = createTenantSchema.parse(req.body);
-            
-            console.log(`[SuperAdmin] Creating new tenant: ${validatedData.restaurantName} (${validatedData.subdomain})`);
 
+            // ✅ FIX 4: Enhanced debug logging to tenant creation route
+            console.log(`[SuperAdmin] Creating new tenant: ${validatedData.restaurantName} (${validatedData.subdomain})`);
+            console.log(`[SuperAdmin] Feature flags from form:`, {
+                enableAiChat: validatedData.enableAiChat,
+                enableTelegramBot: validatedData.enableTelegramBot,
+                enableGuestAnalytics: validatedData.enableGuestAnalytics,
+                enableAdvancedReporting: validatedData.enableAdvancedReporting,
+                enableMenuManagement: validatedData.enableMenuManagement,
+                types: {
+                    enableAiChat: typeof validatedData.enableAiChat,
+                    enableTelegramBot: typeof validatedData.enableTelegramBot,
+                    enableGuestAnalytics: typeof validatedData.enableGuestAnalytics,
+                    enableAdvancedReporting: typeof validatedData.enableAdvancedReporting,
+                    enableMenuManagement: typeof validatedData.enableMenuManagement,
+                }
+            });
+            
             // Check if subdomain is already taken
             const existingTenant = await storage.getTenantBySubdomain(validatedData.subdomain);
             if (existingTenant) {
@@ -446,7 +461,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 customSettings: validatedData.customSettings
             });
 
+            // ✅ FIX 4: Enhanced success logging with feature flag verification
             console.log(`✅ [SuperAdmin] Created tenant: ${tenant.restaurant.name} (ID: ${tenant.restaurant.id})`);
+            console.log(`✅ [SuperAdmin] Final tenant feature flags:`, {
+                enableAiChat: tenant.restaurant.enableAiChat,
+                enableTelegramBot: tenant.restaurant.enableTelegramBot,
+                enableGuestAnalytics: tenant.restaurant.enableGuestAnalytics,
+                enableAdvancedReporting: tenant.restaurant.enableAdvancedReporting,
+                enableMenuManagement: tenant.restaurant.enableMenuManagement,
+            });
 
             res.status(201).json({
                 tenant: tenant,
@@ -759,20 +782,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const context = getTenantContext(req);
             const validatedData = insertRestaurantSchema.partial().parse(req.body);
 
+            console.log(`[Profile] Updating restaurant ${context.restaurant.id} with data:`, Object.keys(validatedData));
+
             const oldTimezone = context.restaurant.timezone;
-            const newTimezone = validatedData.timezone;
-            const isTimezoneChanging = newTimezone && oldTimezone !== newTimezone;
 
-            if (isTimezoneChanging) {
-                console.log(`🌍 [Profile] Restaurant ${context.restaurant.id} changing timezone: ${oldTimezone} → ${newTimezone}`);
-            }
-
+            // Update the restaurant in the database
             const updatedRestaurant = await storage.updateRestaurant(context.restaurant.id, validatedData);
 
-            if (isTimezoneChanging) {
-                CacheInvalidation.onTimezoneChange(context.restaurant.id, oldTimezone, newTimezone);
-                console.log(`✅ [Profile] Timezone change complete for restaurant ${context.restaurant.id}`);
-            }
+            // ✅ CACHE BUG FIX: Invalidate cache for ALL profile updates, not just timezone changes
+            // This ensures business hours, timezone, and all other profile changes are immediately reflected
+            console.log(`[Cache] Invalidating cache for restaurant ${context.restaurant.id} due to profile update.`);
+            CacheInvalidation.onTimezoneChange(context.restaurant.id, oldTimezone, updatedRestaurant.timezone);
 
             res.json(updatedRestaurant);
         } catch (error: any) {
@@ -2709,6 +2729,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
         } catch (error) {
             console.error('❌ [DEBUG] Error clearing cache:', error);
+            next(error);
+        }
+    });
+
+    // ✅ FIX 5: Debug endpoint for tenant features
+    app.get("/api/debug/tenant-features", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+
+            // Get raw restaurant data from database
+            const rawRestaurant = await storage.getRestaurant(context.restaurant.id);
+
+            return res.json({
+                restaurantId: context.restaurant.id,
+                restaurantName: context.restaurant.name,
+                
+                // Raw database values
+                rawFeatures: {
+                    enableAiChat: rawRestaurant?.enableAiChat,
+                    enableTelegramBot: rawRestaurant?.enableTelegramBot,
+                    enableGuestAnalytics: rawRestaurant?.enableGuestAnalytics,
+                    enableAdvancedReporting: rawRestaurant?.enableAdvancedReporting,
+                    enableMenuManagement: rawRestaurant?.enableMenuManagement,
+                },
+                
+                // Tenant context features (processed)
+                contextFeatures: context.features,
+                
+                // Plan and status
+                tenantPlan: context.restaurant.tenantPlan,
+                tenantStatus: context.restaurant.tenantStatus,
+                
+                // Feature checks
+                featureChecks: {
+                    aiChat: context.features.aiChat,
+                    telegramBot: context.features.telegramBot,
+                    menuManagement: context.features.menuManagement,
+                    guestAnalytics: context.features.guestAnalytics,
+                    advancedReporting: context.features.advancedReporting,
+                },
+                
+                debugTimestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('❌ [DEBUG] Error in tenant features debug:', error);
             next(error);
         }
     });
