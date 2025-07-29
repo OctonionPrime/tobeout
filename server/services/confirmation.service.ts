@@ -255,7 +255,7 @@ Shall I go ahead and confirm this booking?`,
         const timerId = smartLog.startTimer('confirmation_processing');
         
         try {
-            if (!session.pendingConfirmation) {
+            if (!session.pendingConfirmation && !session.pendingNameClarification) {
                 throw new Error('No pending confirmation found');
             }
 
@@ -263,7 +263,7 @@ Shall I go ahead and confirm this booking?`,
                 sessionId: session.sessionId,
                 userMessage: message.substring(0, 100),
                 confirmationType: session.pendingNameClarification ? 'name_clarification' : 'regular',
-                pendingAction: session.pendingConfirmation.summary
+                pendingAction: session.pendingConfirmation?.summary // <-- FIX: ADDED '?'
             });
 
             // Handle name clarification separately (has different workflow)
@@ -409,9 +409,32 @@ Just type the name you prefer, or "1" or "2".`,
             reasoning: confirmationResult.reasoning
         });
 
-        switch (confirmationResult.confirmationStatus) {
+        switch (confirmationResult.confirmationStatus) {           
+
             case 'positive':
-                // User confirmed - execute the action
+                // 🚨 FIX: User confirmed, but may have provided new info. Re-process the message.
+                smartLog.info('Positive confirmation received. Re-checking message for modifications...', { sessionId: session.sessionId });
+
+                const pendingArgs = JSON.parse(pendingAction.toolCall.function.arguments);
+
+                // Step 1: Extract any new details from the user's confirmation message.
+                const updates = await this.extractDetailsFromConfirmation(message, session.tenantContext!);
+
+                // Step 2: Merge the updates with the original pending arguments.
+                // The spread order ensures that new values from 'updates' overwrite old ones.
+                const finalArgs = { ...pendingArgs, ...updates };
+
+                smartLog.info('Merged confirmation data', {
+                    sessionId: session.sessionId,
+                    originalArgs: pendingArgs,
+                    updatesFromUser: updates,
+                    finalArgs
+                });
+
+                // Step 3: Update the pending action with the new, merged arguments before execution.
+                pendingAction.toolCall.function.arguments = JSON.stringify(finalArgs);
+
+                // Step 4: Now, execute the action with the corrected data.
                 return await this.executeConfirmedAction(session, pendingAction);
             
             case 'negative':
@@ -489,23 +512,12 @@ Just type the name you prefer, or "1" or "2".`,
 
         } catch (error) {
             smartLog.endTimer(timerId);
-            smartLog.error('Confirmed action execution failed', error as Error, { 
-                sessionId: session.sessionId 
+            smartLog.error('Confirmed action execution failed', error as Error, {
+                sessionId: session.sessionId
             });
 
-            const errorMessage = await TranslationService.translateMessage(
-                "Sorry, I couldn't complete the action. Please try again.",
-                session.language, 
-                'error', 
-                session.tenantContext!
-            );
-
-            return {
-                response: errorMessage,
-                hasBooking: false,
-                session,
-                currentAgent: session.currentAgent
-            };
+            
+            throw error;
         }
     }
 
@@ -793,6 +805,48 @@ ${comments ? `• Különleges kérések: ${comments}` : ''}
         return templates[language] || templates.en;
     }
 
+    /*
+      NEW HELPER: Extracts details from a confirmation message.
+     */
+    private static async extractDetailsFromConfirmation(
+        message: string,
+        tenantContext: TenantContext
+    ): Promise<any> {
+        // This is a focused AI prompt to find changes within a confirmation.
+        const prompt = `Analyze the user's confirmation message to see if they provided any new or changed booking details.
+
+USER MESSAGE: "${message}"
+
+Extract ONLY the details the user is explicitly changing or adding.
+- If the user says "yes but for the name Petrov", extract the name.
+- If the user says "confirm, and add a note about a window seat", extract the comments.
+- If the user just says "yes", return an empty object.
+
+Respond with JSON only.
+
+EXAMPLE 1:
+USER MESSAGE: "да нужно на имя Петров"
+YOUR JSON: { "guestName": "Петров" }
+
+EXAMPLE 2:
+USER MESSAGE: "Yes, and please note it's a birthday."
+YOUR JSON: { "specialRequests": "It's a birthday." }
+
+EXAMPLE 3:
+USER MESSAGE: "Sounds good"
+YOUR JSON: {}
+`;
+        try {
+            const updates = await aiService.generateJSON(prompt, {
+                context: 'confirmation-modification-extraction'
+            }, tenantContext);
+            return updates || {};
+        } catch (error) {
+            smartLog.error('Failed to extract details from confirmation message', error as Error);
+            return {}; // Return empty object on failure
+        }
+    }
+
     // ===== PRIVATE HELPER METHODS =====
 
     /**
@@ -1007,8 +1061,47 @@ ${comments ? `• Különleges kérések: ${comments}` : ''}
                 session,
                 currentAgent: session.currentAgent
             };
+            
         } else {
-            // Error case
+            // 🚨 FIX: Add specific handling for name mismatch error
+            if (result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
+                const { dbName, requestName } = result.error.details;
+
+                // Set the pendingNameClarification state in the session to start the clarification flow
+                session.pendingNameClarification = {
+                    dbName,
+                    requestName,
+                    originalToolCall: toolCall,
+                    // Create a clean context for safe serialization in Redis
+                    originalContext: {
+                        restaurantId: session.restaurantId,
+                        timezone: session.timezone,
+                        telegramUserId: session.telegramUserId,
+                        source: session.platform,
+                        sessionId: session.sessionId,
+                        language: session.language
+                    },
+                    attempts: 0,
+                    timestamp: Date.now()
+                };
+
+                const clarificationMessage = await TranslationService.translateMessage(
+                    `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`,
+                    session.language,
+                    'question',
+                    session.tenantContext!
+                );
+
+                // Return the clarification question to the user
+                return {
+                    response: clarificationMessage,
+                    hasBooking: false,
+                    session,
+                    currentAgent: session.currentAgent
+                };
+            }
+
+            // Fallback for all other errors
             const errorMessage = await TranslationService.translateMessage(
                 `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`,
                 session.language,

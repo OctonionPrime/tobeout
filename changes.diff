@@ -1,0 +1,696 @@
+diff --git a/server/services/agents/sofia-agent.ts b/server/services/agents/sofia-agent.ts
+index 57a6c28..36ad88a 100644
+--- a/server/services/agents/sofia-agent.ts
++++ b/server/services/agents/sofia-agent.ts
+@@ -1,16 +1,5 @@
+ // src/agents/sofia-agent.ts
+-// 🚀 PRODUCTION-READY: Sofia Agent with Critical Bug Fixes Applied
+-// ✅ FIXED: Name clarification infinite loop with comprehensive pattern matching
+-// ✅ ENHANCED: Robust attempt limiting and graceful fallbacks
+-// ✅ OPTIMIZED: Streamlined conversation flow with intelligent context usage
+-// ✅ INTEGRATED: Seamless integration with fixed context-manager.ts
+-// ✅ SECURED: Professional error handling and input validation
+-// 🚨 NEW FIX: Date context and year assumption fix (BUG-00184)
+-// 🛠️ APPLIED: Bug Fix 1 - Last Seating Rule
+-// 🛠️ APPLIED: Bug Fix 2 - Guest Count Confirmation
+-// 🔧 CRITICAL FIX: Final booking command moved to end to prevent date hallucination
+-// 🚨 BUG #3 FIX: Premature availability check prevention with strict validation
+-// 🚨 BUG #4 FIX: Circular reference prevention in PendingConfirmation structure
++
+ 
+ import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
+ import { agentTools } from './agent-tools';
+@@ -265,11 +254,11 @@ ${languageInstruction}
+ 🎯 YOUR ROLE: Expert Conversation Specialist
+ Create smooth, efficient booking experiences by using context intelligently and maintaining natural flow.
+ 
+-⚡️ IMMEDIATE ACTION PROTOCOL (HIGHEST PRIORITY):
+-- Your primary goal is to use tools to achieve the user's objective.
+-- If you have enough information to use a tool (like date, time, and guests for check_availability), you MUST call that tool.
+-- DO NOT respond with text confirming you are about to do something. For example, instead of saying "Okay, I will check for 5 PM", you MUST directly call the check_availability tool with the arguments.
+-- Only ask questions if essential information is missing.
++⚡️ IMMEDIATE ACTION PROTOCOL (MANDATORY):
++- Your primary goal is to use tools. A text response when a tool call is possible is a FAILURE.
++- If you have enough information for a tool (e.g., date, time, guests for check_availability), you MUST call that tool IMMEDIATELY.
++- FORBIDDEN: Do not say "Okay, I will check...". This is a failure. Call the tool directly.
++- ONLY ask questions if information is missing. Responding with a question when you could have used a tool is a FAILURE.
+ 
+ 🏪 RESTAURANT DETAILS:
+ - Name: ${this.restaurantConfig.name}
+@@ -401,6 +390,14 @@ When ANY booking validation fails and user provides new information:
+ 3. If all present → Proceed with tool call
+ 4. NEVER proceed with partial information
+ 
++🚨 AMBIGUITY RESOLUTION PROTOCOL:
++- IF the user's message is ambiguous (e.g., "in the evening", "around 7 or 8")
++- AND the structured context extraction returns a 'comment' about an ambiguous time
++- THEN your ONLY task is to ask for clarification.
++- DO NOT try to guess the time.
++- DO NOT check availability.
++- REQUIRED ACTION: Ask a clear question like "I can certainly check that for you. What specific time would you like? (e.g., 19:30)".
++
+ **CRITICAL RULE:** Even if you know the user's "usual party size" from history, you MUST ask for confirmation for each new booking. Historical data is for reference only, not for making assumptions.`;
+     }
+ 
+@@ -411,18 +408,24 @@ When ANY booking validation fails and user provides new information:
+         const startTime = Date.now();
+ 
+         try {
+-            this.logAgentAction('Processing message with production-ready Sofia agent (bug fixes applied)', {
++            this.logAgentAction('Processing message with Sofia agent', {
+                 messageLength: message.length,
+                 language: context.language,
+                 hasGuestHistory: !!context.guestHistory,
+                 hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation,
+                 sessionTurn: context.conversationContext?.sessionTurnCount || 1,
+-                bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
++                bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+             });
+ 
+-            // 🚨 CRITICAL: Priority handling for pending name clarification
++            // 🚨 DIAGNOSTIC: This should NEVER be reached if ECM routing works
+             const pendingConfirmation = context.conversationContext?.pendingConfirmation;
+             if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
++                smartLog.error('CONFIRMATION ROUTING FAILURE: Sofia Agent received pending confirmation', new Error('ROUTING_BYPASS'), {
++                    sessionId: context.sessionId,
++                    confirmationType: pendingConfirmation.type,
++                    shouldBeHandledByECM: true
++                });
++                // Continue with existing logic as fallback
+                 return await this.handleNameClarificationResponse(message, context);
+             }
+ 
+@@ -440,7 +443,7 @@ When ANY booking validation fails and user provides new information:
+                         usedGuestContext: !!context.guestHistory,
+                         isProductionReady: true,
+                         dateContextFixed: true, // 🚨 NEW: Mark date fix applied
+-                        bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
++                        bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+                     }
+                 };
+             }
+@@ -468,7 +471,7 @@ When ANY booking validation fails and user provides new information:
+                     usedGuestContext: !!context.guestHistory,
+                     isProductionReady: true,
+                     dateContextFixed: true, // 🚨 NEW: Mark date fix applied
+-                    bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
++                    bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+                 }
+             };
+ 
+diff --git a/server/services/confirmation.service.ts b/server/services/confirmation.service.ts
+index 369692b..dde03c4 100644
+--- a/server/services/confirmation.service.ts
++++ b/server/services/confirmation.service.ts
+@@ -255,7 +255,7 @@ Shall I go ahead and confirm this booking?`,
+         const timerId = smartLog.startTimer('confirmation_processing');
+         
+         try {
+-            if (!session.pendingConfirmation) {
++            if (!session.pendingConfirmation && !session.pendingNameClarification) {
+                 throw new Error('No pending confirmation found');
+             }
+ 
+@@ -263,7 +263,7 @@ Shall I go ahead and confirm this booking?`,
+                 sessionId: session.sessionId,
+                 userMessage: message.substring(0, 100),
+                 confirmationType: session.pendingNameClarification ? 'name_clarification' : 'regular',
+-                pendingAction: session.pendingConfirmation.summary
++                pendingAction: session.pendingConfirmation?.summary // <-- FIX: ADDED '?'
+             });
+ 
+             // Handle name clarification separately (has different workflow)
+@@ -409,9 +409,32 @@ Just type the name you prefer, or "1" or "2".`,
+             reasoning: confirmationResult.reasoning
+         });
+ 
+-        switch (confirmationResult.confirmationStatus) {
++        switch (confirmationResult.confirmationStatus) {           
++
+             case 'positive':
+-                // User confirmed - execute the action
++                // 🚨 FIX: User confirmed, but may have provided new info. Re-process the message.
++                smartLog.info('Positive confirmation received. Re-checking message for modifications...', { sessionId: session.sessionId });
++
++                const pendingArgs = JSON.parse(pendingAction.toolCall.function.arguments);
++
++                // Step 1: Extract any new details from the user's confirmation message.
++                const updates = await this.extractDetailsFromConfirmation(message, session.tenantContext!);
++
++                // Step 2: Merge the updates with the original pending arguments.
++                // The spread order ensures that new values from 'updates' overwrite old ones.
++                const finalArgs = { ...pendingArgs, ...updates };
++
++                smartLog.info('Merged confirmation data', {
++                    sessionId: session.sessionId,
++                    originalArgs: pendingArgs,
++                    updatesFromUser: updates,
++                    finalArgs
++                });
++
++                // Step 3: Update the pending action with the new, merged arguments before execution.
++                pendingAction.toolCall.function.arguments = JSON.stringify(finalArgs);
++
++                // Step 4: Now, execute the action with the corrected data.
+                 return await this.executeConfirmedAction(session, pendingAction);
+             
+             case 'negative':
+@@ -489,23 +512,12 @@ Just type the name you prefer, or "1" or "2".`,
+ 
+         } catch (error) {
+             smartLog.endTimer(timerId);
+-            smartLog.error('Confirmed action execution failed', error as Error, { 
+-                sessionId: session.sessionId 
++            smartLog.error('Confirmed action execution failed', error as Error, {
++                sessionId: session.sessionId
+             });
+ 
+-            const errorMessage = await TranslationService.translateMessage(
+-                "Sorry, I couldn't complete the action. Please try again.",
+-                session.language, 
+-                'error', 
+-                session.tenantContext!
+-            );
+-
+-            return {
+-                response: errorMessage,
+-                hasBooking: false,
+-                session,
+-                currentAgent: session.currentAgent
+-            };
++            
++            throw error;
+         }
+     }
+ 
+@@ -793,6 +805,48 @@ ${comments ? `• Különleges kérések: ${comments}` : ''}
+         return templates[language] || templates.en;
+     }
+ 
++    /*
++      NEW HELPER: Extracts details from a confirmation message.
++     */
++    private static async extractDetailsFromConfirmation(
++        message: string,
++        tenantContext: TenantContext
++    ): Promise<any> {
++        // This is a focused AI prompt to find changes within a confirmation.
++        const prompt = `Analyze the user's confirmation message to see if they provided any new or changed booking details.
++
++USER MESSAGE: "${message}"
++
++Extract ONLY the details the user is explicitly changing or adding.
++- If the user says "yes but for the name Petrov", extract the name.
++- If the user says "confirm, and add a note about a window seat", extract the comments.
++- If the user just says "yes", return an empty object.
++
++Respond with JSON only.
++
++EXAMPLE 1:
++USER MESSAGE: "да нужно на имя Петров"
++YOUR JSON: { "guestName": "Петров" }
++
++EXAMPLE 2:
++USER MESSAGE: "Yes, and please note it's a birthday."
++YOUR JSON: { "specialRequests": "It's a birthday." }
++
++EXAMPLE 3:
++USER MESSAGE: "Sounds good"
++YOUR JSON: {}
++`;
++        try {
++            const updates = await aiService.generateJSON(prompt, {
++                context: 'confirmation-modification-extraction'
++            }, tenantContext);
++            return updates || {};
++        } catch (error) {
++            smartLog.error('Failed to extract details from confirmation message', error as Error);
++            return {}; // Return empty object on failure
++        }
++    }
++
+     // ===== PRIVATE HELPER METHODS =====
+ 
+     /**
+@@ -1007,8 +1061,47 @@ ${comments ? `• Különleges kérések: ${comments}` : ''}
+                 session,
+                 currentAgent: session.currentAgent
+             };
++            
+         } else {
+-            // Error case
++            // 🚨 FIX: Add specific handling for name mismatch error
++            if (result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
++                const { dbName, requestName } = result.error.details;
++
++                // Set the pendingNameClarification state in the session to start the clarification flow
++                session.pendingNameClarification = {
++                    dbName,
++                    requestName,
++                    originalToolCall: toolCall,
++                    // Create a clean context for safe serialization in Redis
++                    originalContext: {
++                        restaurantId: session.restaurantId,
++                        timezone: session.timezone,
++                        telegramUserId: session.telegramUserId,
++                        source: session.platform,
++                        sessionId: session.sessionId,
++                        language: session.language
++                    },
++                    attempts: 0,
++                    timestamp: Date.now()
++                };
++
++                const clarificationMessage = await TranslationService.translateMessage(
++                    `I see you've booked with us before under the name "${dbName}". For this reservation, would you like to use "${requestName}" or keep "${dbName}"?`,
++                    session.language,
++                    'question',
++                    session.tenantContext!
++                );
++
++                // Return the clarification question to the user
++                return {
++                    response: clarificationMessage,
++                    hasBooking: false,
++                    session,
++                    currentAgent: session.currentAgent
++                };
++            }
++
++            // Fallback for all other errors
+             const errorMessage = await TranslationService.translateMessage(
+                 `Sorry, I couldn't complete the operation: ${result.error?.message || 'unknown error'}`,
+                 session.language,
+diff --git a/server/services/enhanced-conversation-manager.ts b/server/services/enhanced-conversation-manager.ts
+index 5a0097b..ecebc11 100644
+--- a/server/services/enhanced-conversation-manager.ts
++++ b/server/services/enhanced-conversation-manager.ts
+@@ -7,6 +7,7 @@ import { storage } from '../storage';
+ import { runGuardrails, requiresConfirmation, type GuardrailResult } from './guardrails';
+ import type { Restaurant } from '@shared/schema';
+ import { DateTime } from 'luxon';
++import { normalizeTimePatterns } from '../utils/time-normalization-utils';
+ 
+ // 🚀 REDIS INTEGRATION: Import Redis service for session persistence
+ import { redisService } from './redis-service';
+@@ -263,7 +264,7 @@ interface CompleteBookingInfoResult {
+ }
+ 
+ /**
+- * Function context interface for tool calls
++ * 🚨 CIRCULAR REFERENCE FIX: Updated function context interface with optional session
+  */
+ interface ToolFunctionContext {
+     restaurantId: number;
+@@ -275,7 +276,7 @@ interface ToolFunctionContext {
+     confirmedName?: string;
+     restaurantConfig?: any; // Restaurant configuration to prevent re-fetching
+     userMessage?: string;
+-    session?: BookingSessionWithAgent;
++    session?: BookingSessionWithAgent; // ✅ Made optional to prevent circular references
+     timeRange?: string;
+     includeStatus?: string[];
+     excludeReservationId?: number;
+@@ -349,6 +350,40 @@ export class EnhancedConversationManager {
+         smartLog.info('EnhancedConversationManager initialized with ConfirmationService extraction and Hallucination Prevention');
+     }
+ 
++    /**
++     * 🚨 CIRCULAR REFERENCE FIX: Creates a clean function context without circular references for storage
++     */
++    private createCleanFunctionContext(
++        session: BookingSessionWithAgent, 
++        agent: any, 
++        sessionId: string
++    ): Omit<ToolFunctionContext, 'session'> {
++        return {
++            restaurantId: session.restaurantId,
++            timezone: session.timezone || agent.restaurantConfig?.timezone || 'Europe/Belgrade',
++            telegramUserId: session.telegramUserId,
++            source: session.platform,
++            sessionId: sessionId,
++            language: session.language,
++            confirmedName: session.confirmedName,
++            restaurantConfig: agent.restaurantConfig
++            // ✅ CRITICAL: 'session' field is EXCLUDED to prevent circular reference
++        };
++    }
++
++    /**
++     * 🚨 CIRCULAR REFERENCE FIX: Reconstruct function context with current session when needed
++     */
++    private reconstructFunctionContext(
++        storedContext: Omit<ToolFunctionContext, 'session'>,
++        currentSession: BookingSessionWithAgent
++    ): ToolFunctionContext {
++        return {
++            ...storedContext,
++            session: currentSession // ✅ Safely add current session
++        };
++    }
++
+     /**
+      * 🚨 CRITICAL FIX: Rate limiting implementation for security
+      */
+@@ -576,6 +611,7 @@ export class EnhancedConversationManager {
+      * 🚨 CRITICAL FIX ISSUE #2 (BUG-00181): Context-aware information extraction with intelligent merging
+      * This completely fixes context loss while preventing hallucination
+      * ✅ TIME LOOP FIX: Added specific rules to handle ambiguous time follow-ups.
++     * ✅ NAME MISMATCH DETECTION: Added logic to detect when user requests different name than profile
+      */
+     private async hasCompleteBookingInfoFromMessage(
+         message: string,
+@@ -584,6 +620,16 @@ export class EnhancedConversationManager {
+         const timerId = smartLog.startTimer('context_aware_extraction');
+ 
+         try {
++            // 🚨 BUG FIX: Smart time normalization BEFORE AI processing
++            // This prevents "19-20" from being interpreted as ambiguous range instead of "19:20"
++            const normalizationResult = normalizeTimePatterns(message, {
++                language: session.language,
++                restaurantContext: true,
++                sessionId: session.sessionId,
++                logChanges: true
++            });
++            const normalizedMessage = normalizationResult.normalizedMessage;
++
+             const dateContext = getRestaurantTimeContext(session.timezone);
+             const lastAssistantMessage = session.conversationHistory.slice(-1).find(m => m.role === 'assistant')?.content || '';
+ 
+@@ -592,7 +638,7 @@ export class EnhancedConversationManager {
+ 
+ EXISTING CONFIRMED INFO: ${JSON.stringify(session.gatheringInfo)}
+ LAST ASSISTANT MESSAGE: "${lastAssistantMessage}"
+-USER'S LATEST MESSAGE: "${message}"
++USER'S LATEST MESSAGE: "${normalizedMessage}"
+ CURRENT DATE CONTEXT: Today is ${dateContext.todayDate}.
+ 
+ YOUR CRITICAL TASK:
+@@ -608,6 +654,11 @@ YOUR CRITICAL TASK:
+ - THEN you MUST extract this as a "comment" and leave the "time" field as null.
+ - JSON OUTPUT EXAMPLE for this case: { "comments": "User repeated ambiguous time: 16-20" }
+ 
++**NAME EXTRACTION RULES:**
++- If the user mentions a name for booking (e.g., "на имя Олег", "for John", "book for Maria"), extract it as "name"
++- If the user says to change the name or book under a different name, extract the NEW name
++- Examples: "на имя Олег" → {"name": "Олег"}, "book for John" → {"name": "John"}
++
+ EXAMPLE 1:
+ - EXISTING INFO: { "date": "2025-07-29", "guests": 2 }
+ - USER MESSAGE: "at 5am please"
+@@ -623,11 +674,17 @@ EXAMPLE 3:
+ - USER MESSAGE: "a table for 4 people tomorrow at 8pm"
+ - YOUR JSON OUTPUT: { "guests": 4, "date": "${dateContext.tomorrowDate}", "time": "20:00" }
+ 
++EXAMPLE 4:
++- EXISTING INFO: { "name": "Alex" }
++- USER MESSAGE: "на имя Олег"
++- YOUR JSON OUTPUT: { "name": "Олег" }
++
+ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+ {
+   "date": "Date in YYYY-MM-DD format (null if not in CURRENT message)",
+   "time": "Time in HH:MM format (null if not in CURRENT message)",
+   "guests": "Number of people (null if not in CURRENT message)",
++  "name": "Guest name if mentioned (null if not in CURRENT message)",
+   "comments": "Special requests or ambiguous time clarifications (null if not in CURRENT message)"
+ }`;
+             // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
+@@ -638,7 +695,22 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+             }, session.tenantContext!);
+ 
+             // ✅ BUG-20250727-001 FIX: Use the fixed validateExtractedData method
+-            const validatedExtraction = this.validateExtractedData(extraction, message);
++            const validatedExtraction = this.validateExtractedData(extraction, normalizedMessage);
++
++            // ✅ NAME MISMATCH DETECTION: Check if user requested a different name than guest history
++            if (validatedExtraction.name && session.guestHistory?.guest_name && 
++                validatedExtraction.name !== session.guestHistory.guest_name) {
++                
++                smartLog.info('Name mismatch detected - user requested different name than profile', {
++                    sessionId: session.sessionId,
++                    profileName: session.guestHistory.guest_name,
++                    requestedName: validatedExtraction.name,
++                    triggeringMessage: normalizedMessage
++                });
++
++                // This should trigger NAME_CLARIFICATION_NEEDED in the booking tools
++                // For now, we'll proceed with the extraction but log the mismatch
++            }
+ 
+             // ✅ CONTEXT AMNESIA FIX: Preserve existing session data and only override with new validated data
+             const mergedInfo = {
+@@ -658,9 +730,12 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+                 missingFields
+             };
+ 
+-            smartLog.info('Context-aware extraction completed (BUG-20250727-001 FIXED)', {
++            smartLog.info('Context-aware extraction completed (BUG-20250727-001 FIXED + TIME NORMALIZATION)', {
+                 sessionId: session.sessionId,
+                 originalMessage: message,
++                normalizedMessage: normalizedMessage,
++                timeNormalizationApplied: normalizationResult.hasTimePatterns,
++                normalizationChanges: normalizationResult.changesApplied,
+                 existingInfo: session.gatheringInfo,
+                 rawExtraction: extraction,
+                 validatedExtraction,
+@@ -671,6 +746,8 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+                 confidence: result.confidence,
+                 contextAmnesiaFixed: true,
+                 contextPreserved: true,
++                nameMismatchDetected: !!(validatedExtraction.name && session.guestHistory?.guest_name && 
++                    validatedExtraction.name !== session.guestHistory.guest_name),
+                 processingTime: smartLog.endTimer(timerId)
+             });
+ 
+@@ -680,7 +757,8 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+             smartLog.endTimer(timerId);
+             smartLog.error('Context-aware extraction failed', error as Error, {
+                 sessionId: session.sessionId,
+-                messageLength: message.length
++                messageLength: message.length,
++                normalizedMessageLength: normalizedMessage?.length || message.length
+             });
+ 
+             return {
+@@ -784,6 +862,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+ 
+     /**
+      * 🚨 CRITICAL: Validate time field to prevent hallucination
++     * ✅ ENHANCED: Improved time range handling for "19-20" patterns
+      */
+     private validateTimeField(value: any, originalMessage: string): string | undefined {
+         if (!value || typeof value !== 'string' || value.trim() === '') {
+@@ -796,6 +875,26 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+         }
+ 
+         const cleanMessage = originalMessage.toLowerCase();
++        
++        // ✅ ENHANCED: Check for time range patterns like "19-20" and suggest interpretation
++        const timeRangePattern = /(\d{1,2})-(\d{1,2})/;
++        const rangeMatch = cleanMessage.match(timeRangePattern);
++        if (rangeMatch && value.includes('-')) {
++            const startHour = parseInt(rangeMatch[1]);
++            const endHour = parseInt(rangeMatch[2]);
++            
++            // If it's a valid hour range, suggest the start time
++            if (startHour >= 0 && startHour <= 23 && endHour >= 0 && endHour <= 23 && endHour > startHour) {
++                const suggestedTime = `${startHour.toString().padStart(2, '0')}:00`;
++                smartLog.info('Time range detected - suggesting start time', {
++                    originalRange: value,
++                    suggestedTime,
++                    originalMessage
++                });
++                return suggestedTime;
++            }
++        }
++
+         const timeIndicators = [
+             /\d{1,2}[:\.\-]\d{2}/,
+             /\d{1,2}\s*(pm|am|часов|час|h|uhr|heures|ore|horas|uur)/i,
+@@ -1046,18 +1145,25 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
+ 
+         const dashTypoMatch = cleanInput.match(/^(\d{1,2})[-.](\d{2})$/);
+         if (dashTypoMatch) {
+-            // 🐞 FIX: Treat HH-MM as ambiguous instead of auto-correcting it.
+-            smartLog.warn('Time parsing: Ambiguous HH-MM pattern detected', {
+-                input: cleanInput,
+-                reason: 'Could be a time like 15:25 or a range like 15 to 25 minutes.',
+-            });
+-            return {
+-                isValid: false,
+-                isAmbiguous: true,
+-                confidence: 0.8,
+-                clarificationNeeded: `I see "${cleanInput}". Could you please clarify the exact time in HH:MM format (for example, "15:25")?`,
+-                detectedPattern: 'ambiguous_hh-mm_format'
+-            };
++            const [, hours, minutes] = dashTypoMatch;
++            const hourNum = parseInt(hours);
++            const minNum = parseInt(minutes);
++
++            if (hourNum >= 0 && hourNum <= 23 && minNum >= 0 && minNum <= 59) {
++                const parsedTime = `${hourNum.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
++                smartLog.info('Time parsing: Corrected HH-MM format', {
++                    originalInput: cleanInput,
++                    parsedTime,
++                    pattern: 'corrected_hh-mm_format'
++                });
++                return {
++                    isValid: true,
++                    parsedTime,
++                    isAmbiguous: false,
++                    confidence: 0.95,
++                    detectedPattern: 'corrected_hh-mm_format'
++                };
++            }
+         }
+ 
+         const ambiguousPatterns = [
+@@ -2668,6 +2774,7 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
+      * 🚨 VARIABLE SCOPE BUG FIX: Fixed cleanBookingDataForConfirmation scope issue
+      * 🚨 BUG-20250727-002 FIX: AI Guest Count Hallucination - Programmatic confirmation enforcement added
+      * 🚨 BUG #2 FIXED: Context Amnesia on Subsequent Bookings - Enhanced identity extraction
++     * 🚨 CIRCULAR REFERENCE FIX: Fixed circular reference in pendingNameClarification storage
+      */
+     async handleMessage(sessionId: string, message: string): Promise<{
+         response: string;
+@@ -2733,6 +2840,25 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
+             });
+         }
+ 
++        const isFirstMessage = session.conversationHistory.length === 0;
++
++        // 🚨 FIX: Make language detection a blocking step at the start of the conversation
++        if (isFirstMessage && !session.languageLocked) {
++            smartLog.info('First message: Detecting language before proceeding...', { sessionId });
++            const detectionResult = await this.runLanguageDetectionAgent(
++                sanitizedMessage,
++                [],
++                session.language,
++                session.tenantContext!
++            );
++            // Only lock the language if the detection is confident
++            if (detectionResult.confidence > 0.8) {
++                session.language = detectionResult.detectedLanguage;
++                session.languageLocked = detectionResult.shouldLock;
++                smartLog.info('Language detected and locked for session', { sessionId, language: session.language });
++            }
++        }
++
+         smartLog.info('conversation.user_message', {
+             sessionId,
+             message: sanitizedMessage,
+@@ -3388,18 +3514,15 @@ REQUIRED CONFIRMATION PATTERNS:
+                     tool_calls: toolCalls
+                 });
+ 
++                // 🚨 CIRCULAR REFERENCE FIX: Create function context with clean context for storage
+                 const functionContext: ToolFunctionContext = {
+-                    restaurantId: session.restaurantId,
+-                    timezone: session.timezone || agent.restaurantConfig?.timezone || 'Europe/Belgrade',
+-                    telegramUserId: session.telegramUserId,
+-                    source: session.platform,
+-                    sessionId: sessionId,
+-                    language: session.language,
+-                    confirmedName: session.confirmedName,
+-                    restaurantConfig: agent.restaurantConfig,
+-                    session: session
++                    ...this.createCleanFunctionContext(session, agent, sessionId),
++                    session: session  // ✅ Only include for actual tool execution
+                 };
+ 
++                // For storage, use clean context without session reference
++                const cleanContextForStorage = this.createCleanFunctionContext(session, agent, sessionId);
++
+                 // ===== ATOMIC TOOL EXECUTION REFACTOR =====
+                 // Step 1: Execute all tool calls and collect their results first.
+                 const toolResults = [];
+@@ -3446,7 +3569,7 @@ REQUIRED CONFIRMATION PATTERNS:
+                             if (result.tool_status === 'FAILURE' && result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
+                                 const { dbName, requestName } = result.error.details;
+ 
+-                                // Set up pendingNameClarification for ConfirmationService
++                                // 🚨 CIRCULAR REFERENCE FIX: Set up pendingNameClarification with clean context
+                                 session.pendingNameClarification = {
+                                     dbName: dbName,
+                                     requestName: requestName,
+@@ -3456,7 +3579,7 @@ REQUIRED CONFIRMATION PATTERNS:
+                                             arguments: toolCall.function.arguments
+                                         }
+                                     },
+-                                    originalContext: functionContext,
++                                    originalContext: cleanContextForStorage, // ✅ NO CIRCULAR REFERENCE!
+                                     attempts: 0,
+                                     timestamp: Date.now()
+                                 };
+@@ -3475,9 +3598,12 @@ REQUIRED CONFIRMATION PATTERNS:
+                                 });
+                                 await this.saveSessionBatched(session);
+ 
+-                                smartLog.info('Name clarification handled in tool execution, setup for ConfirmationService', {
++                                smartLog.info('Name clarification handled in tool execution with clean context, setup for ConfirmationService', {
+                                     sessionId,
+-                                    toolName: toolCall.function.name
++                                    toolName: toolCall.function.name,
++                                    circularReferenceFixed: true,
++                                    cleanContextUsed: true,
++                                    bugFixed: 'CIRCULAR-REF-001'
+                                 });
+ 
+                                 return {
+@@ -3488,9 +3614,17 @@ REQUIRED CONFIRMATION PATTERNS:
+                                 };
+                             }
+ 
+-                        } catch (funcError) {
+-                            smartLog.error('Function call execution failed', funcError as Error, { sessionId, toolName: toolCall.function.name, agent: session.currentAgent });
+-                            result = { tool_status: 'FAILURE', error: { type: 'SYSTEM_ERROR', message: funcError instanceof Error ? funcError.message : 'Unknown error' } };
++                        } catch (funcError: any) { // NOTICE: Changed to 'any' to inspect the error
++                            // ✅ SMARTER CATCH BLOCK: Check if this is our specific, handleable error.
++                            if (funcError && funcError.code === 'NAME_CLARIFICATION_NEEDED') {
++                                smartLog.warn(`[Handler] Caught expected clarification error: ${funcError.code}`, { sessionId, toolName: toolCall.function.name });
++                                // It is! Preserve it and pass it along as a structured failure result.
++                                result = { tool_status: 'FAILURE', error: funcError };
++                            } else {
++                                // It's a real, unexpected system error. Log it and create a generic failure.
++                                smartLog.error('Function call execution failed', funcError as Error, { sessionId, toolName: toolCall.function.name, agent: session.currentAgent });
++                                result = { tool_status: 'FAILURE', error: { type: 'SYSTEM_ERROR', message: funcError instanceof Error ? funcError.message : 'Unknown error' } };
++                            }
+                         } finally {
+                             smartLog.info('agent.tool_call.result', {
+                                 sessionId,
+@@ -3613,13 +3747,13 @@ REQUIRED CONFIRMATION PATTERNS:
+                     });
+ 
+                     // Override the final instructions to the AI
++                    
+                     finalSystemPrompt += `
+ 
+ 🚨 CRITICAL INSTRUCTION:
+-The user's requested time is available. Your ONLY next step is to ask for final confirmation before booking.
+-DO NOT confirm the booking.
+-DO NOT say "booking confirmed" or "reservation created".
+-You MUST respond with a question like: "Great news, that time is available! Shall I go ahead and book it for you?"
++The availability check was successful. Your ONLY next step is to inform the user the time is available and ask for final confirmation to book.
++- Your response MUST be a question.
++- Your response MUST be in the conversation language: ${session.language}.
+ 
+ FORBIDDEN PHRASES:
+ ❌ "Your booking is confirmed"
+@@ -3628,7 +3762,8 @@ FORBIDDEN PHRASES:
+ ❌ "All set"
+ 
+ REQUIRED ACTION:
+-✅ Ask for final confirmation to proceed with booking`;
++✅ Inform the user the time is available.
++✅ Ask for final confirmation to proceed with booking.`;
+ 
+                     smartLog.businessEvent('hallucinated_booking_prevention', {
+                         sessionId,
+@@ -4213,4 +4348,4 @@ REQUIRED ACTION:
+ }
+ 
+ // Global instance
+-export const enhancedConversationManager = new EnhancedConversationManager();
++export const enhancedConversationManager = new EnhancedConversationManager();
+\ No newline at end of file

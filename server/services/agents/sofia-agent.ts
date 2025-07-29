@@ -1,16 +1,5 @@
 // src/agents/sofia-agent.ts
-// 🚀 PRODUCTION-READY: Sofia Agent with Critical Bug Fixes Applied
-// ✅ FIXED: Name clarification infinite loop with comprehensive pattern matching
-// ✅ ENHANCED: Robust attempt limiting and graceful fallbacks
-// ✅ OPTIMIZED: Streamlined conversation flow with intelligent context usage
-// ✅ INTEGRATED: Seamless integration with fixed context-manager.ts
-// ✅ SECURED: Professional error handling and input validation
-// 🚨 NEW FIX: Date context and year assumption fix (BUG-00184)
-// 🛠️ APPLIED: Bug Fix 1 - Last Seating Rule
-// 🛠️ APPLIED: Bug Fix 2 - Guest Count Confirmation
-// 🔧 CRITICAL FIX: Final booking command moved to end to prevent date hallucination
-// 🚨 BUG #3 FIX: Premature availability check prevention with strict validation
-// 🚨 BUG #4 FIX: Circular reference prevention in PendingConfirmation structure
+
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -265,11 +254,11 @@ ${languageInstruction}
 🎯 YOUR ROLE: Expert Conversation Specialist
 Create smooth, efficient booking experiences by using context intelligently and maintaining natural flow.
 
-⚡️ IMMEDIATE ACTION PROTOCOL (HIGHEST PRIORITY):
-- Your primary goal is to use tools to achieve the user's objective.
-- If you have enough information to use a tool (like date, time, and guests for check_availability), you MUST call that tool.
-- DO NOT respond with text confirming you are about to do something. For example, instead of saying "Okay, I will check for 5 PM", you MUST directly call the check_availability tool with the arguments.
-- Only ask questions if essential information is missing.
+⚡️ IMMEDIATE ACTION PROTOCOL (MANDATORY):
+- Your primary goal is to use tools. A text response when a tool call is possible is a FAILURE.
+- If you have enough information for a tool (e.g., date, time, guests for check_availability), you MUST call that tool IMMEDIATELY.
+- FORBIDDEN: Do not say "Okay, I will check...". This is a failure. Call the tool directly.
+- ONLY ask questions if information is missing. Responding with a question when you could have used a tool is a FAILURE.
 
 🏪 RESTAURANT DETAILS:
 - Name: ${this.restaurantConfig.name}
@@ -401,6 +390,14 @@ When ANY booking validation fails and user provides new information:
 3. If all present → Proceed with tool call
 4. NEVER proceed with partial information
 
+🚨 AMBIGUITY RESOLUTION PROTOCOL:
+- IF the user's message is ambiguous (e.g., "in the evening", "around 7 or 8")
+- AND the structured context extraction returns a 'comment' about an ambiguous time
+- THEN your ONLY task is to ask for clarification.
+- DO NOT try to guess the time.
+- DO NOT check availability.
+- REQUIRED ACTION: Ask a clear question like "I can certainly check that for you. What specific time would you like? (e.g., 19:30)".
+
 **CRITICAL RULE:** Even if you know the user's "usual party size" from history, you MUST ask for confirmation for each new booking. Historical data is for reference only, not for making assumptions.`;
     }
 
@@ -411,18 +408,24 @@ When ANY booking validation fails and user provides new information:
         const startTime = Date.now();
 
         try {
-            this.logAgentAction('Processing message with production-ready Sofia agent (bug fixes applied)', {
+            this.logAgentAction('Processing message with Sofia agent', {
                 messageLength: message.length,
                 language: context.language,
                 hasGuestHistory: !!context.guestHistory,
                 hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation,
                 sessionTurn: context.conversationContext?.sessionTurnCount || 1,
-                bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
+                bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
             });
 
-            // 🚨 CRITICAL: Priority handling for pending name clarification
+            // 🚨 DIAGNOSTIC: This should NEVER be reached if ECM routing works
             const pendingConfirmation = context.conversationContext?.pendingConfirmation;
             if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
+                smartLog.error('CONFIRMATION ROUTING FAILURE: Sofia Agent received pending confirmation', new Error('ROUTING_BYPASS'), {
+                    sessionId: context.sessionId,
+                    confirmationType: pendingConfirmation.type,
+                    shouldBeHandledByECM: true
+                });
+                // Continue with existing logic as fallback
                 return await this.handleNameClarificationResponse(message, context);
             }
 
@@ -440,7 +443,7 @@ When ANY booking validation fails and user provides new information:
                         usedGuestContext: !!context.guestHistory,
                         isProductionReady: true,
                         dateContextFixed: true, // 🚨 NEW: Mark date fix applied
-                        bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
+                        bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
                     }
                 };
             }
@@ -468,7 +471,7 @@ When ANY booking validation fails and user provides new information:
                     usedGuestContext: !!context.guestHistory,
                     isProductionReady: true,
                     dateContextFixed: true, // 🚨 NEW: Mark date fix applied
-                    bugFixesApplied: ['BUG_3_PREMATURE_AVAILABILITY', 'BUG_4_CIRCULAR_REFERENCE']
+                    bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
                 }
             };
 
