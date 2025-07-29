@@ -409,19 +409,16 @@ Just type the name you prefer, or "1" or "2".`,
             reasoning: confirmationResult.reasoning
         });
 
-        switch (confirmationResult.confirmationStatus) {           
+        switch (confirmationResult.confirmationStatus) {                      
 
-            case 'positive':
-                // 🚨 FIX: User confirmed, but may have provided new info. Re-process the message.
+            case 'positive': { // Use block scope for clarity
+                // User confirmed, but may have provided new info. Re-process the message.
                 smartLog.info('Positive confirmation received. Re-checking message for modifications...', { sessionId: session.sessionId });
 
                 const pendingArgs = JSON.parse(pendingAction.toolCall.function.arguments);
 
-                // Step 1: Extract any new details from the user's confirmation message.
                 const updates = await this.extractDetailsFromConfirmation(message, session.tenantContext!);
 
-                // Step 2: Merge the updates with the original pending arguments.
-                // The spread order ensures that new values from 'updates' overwrite old ones.
                 const finalArgs = { ...pendingArgs, ...updates };
 
                 smartLog.info('Merged confirmation data', {
@@ -430,12 +427,23 @@ Just type the name you prefer, or "1" or "2".`,
                     updatesFromUser: updates,
                     finalArgs
                 });
+                
+                // This ensures the entire session object is up-to-date BEFORE the tool is executed.
+                // This prevents the tool's response-generation step from using stale data.
+                if (Object.keys(updates).length > 0) {
+                    if (updates.guestName) session.gatheringInfo.name = updates.guestName;
+                    if (updates.specialRequests) session.gatheringInfo.comments = updates.specialRequests;
 
-                // Step 3: Update the pending action with the new, merged arguments before execution.
+                    smartLog.info('Session context forcefully updated before final action', {
+                        sessionId: session.sessionId,
+                        updatedFields: Object.keys(updates)
+                    });
+                }               
+
                 pendingAction.toolCall.function.arguments = JSON.stringify(finalArgs);
 
-                // Step 4: Now, execute the action with the corrected data.
                 return await this.executeConfirmedAction(session, pendingAction);
+            }
             
             case 'negative':
                 // User declined - cancel the pending action

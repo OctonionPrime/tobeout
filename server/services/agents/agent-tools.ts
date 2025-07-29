@@ -1,20 +1,4 @@
 // server/services/agents/agent-tools.ts
-// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
-// 🔧 BUG FIX: Fixed cancel_reservation tool definition to make confirmCancellation optional
-// ✅ STEP 3A COMPLETE: Context Manager function calls replaced
-// ✅ FIXES IMPLEMENTED: Workflow validation + Enhanced tool descriptions
-// 🚨 CRITICAL VALIDATION ENHANCEMENT: Comprehensive input validation pipeline as per original plan
-// 🚨 NEW: validateBookingInput() function with field-by-field validation
-// 🚨 NEW: validateBusinessHours() function with timezone support
-// 🚨 NEW: Enhanced past-date validation with grace period
-// 🚨 NEW: Complete input sanitization for all booking parameters
-// 🐛 BUG FIX: Modified validateBookingInput to conditionally skip name/phone checks for availability calls.
-// 🚀 REDIS PHASE 3: Guest history caching with cache invalidation and performance monitoring
-// 🐞 BUG FIX (OVERNIGHT BOOKING): Corrected the logic in validateBusinessHours to properly handle overnight operations.
-// 🚨 CRITICAL BUG FIX: Enhanced business hours validation to consider reservation DURATION and prevent bookings ending after closing time
-// 🔧 BUG-20250725-001 FIX: Correctly pass TenantContext to the translation service to resolve MISSING_TENANT_CONTEXT errors.
-// 🔒 MULTITENANCY FIX: Fixed get_guest_history to properly filter by restaurant ID for tenant isolation
-
 import { aiService } from '../ai-service';
 // ✅ STEP 3A: Using ContextManager for all context resolution
 import { contextManager } from '../context-manager';
@@ -34,6 +18,7 @@ import {
 } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
 import type { TenantContext } from '../tenant-context'; // 🔧 BUG-20250725-001 FIX: Import TenantContext type
+import { smartLog } from '../smart-logging.service';
 
 // 🚀 REDIS PHASE 3: Import Redis service for guest history caching
 import { redisService } from '../redis-service';
@@ -1464,7 +1449,35 @@ export async function create_reservation(
     if (context.confirmedName) {
         console.log(`📝 [Agent Tool] Using confirmed name: ${context.confirmedName} (original: ${guestName})`);
     }
+    // This block unifies the name mismatch logic by using the session's guest history
+    // as the single source of truth, preventing confusion from other data sources.
+    if (context.session?.guestHistory?.guest_name && !context.confirmedName) {
+        const profileName = context.session.guestHistory.guest_name;
+        const requestedName = effectiveGuestName;
 
+        if (profileName.toLowerCase() !== requestedName.toLowerCase()) {
+            smartLog.warn('Proactive name mismatch detected in agent-tools', {
+                sessionId: context.sessionId,
+                profileName,
+                requestedName,
+                source: 'session.guestHistory'
+            });
+
+            // Return the structured error that triggers the clarification flow.
+            return createFailureResponse(
+                'BUSINESS_RULE',
+                `Name mismatch detected: guest history has '${profileName}' but booking requests '${requestedName}'`,
+                'NAME_CLARIFICATION_NEEDED',
+                {
+                    dbName: profileName,
+                    requestName: requestedName,
+                    guestId: null, // We don't have the DB ID here, but that's okay
+                    phone: context.session.guestHistory.guest_phone,
+                    telegramUserId: context.telegramUserId
+                }
+            );
+        }
+    }
     try {
         // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
