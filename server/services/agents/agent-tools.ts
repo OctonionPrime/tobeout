@@ -1,6 +1,6 @@
 // server/services/agents/agent-tools.ts
 import { aiService } from '../ai-service';
-// ✅ STEP 3A: Using ContextManager for all context resolution
+// ✅ Using ContextManager for all context resolution
 import { contextManager } from '../context-manager';
 import { getAvailableTimeSlots } from '../availability.service';
 import { createTelegramReservation } from '../telegram_booking';
@@ -17,16 +17,15 @@ import {
     isOvernightOperation
 } from '../../utils/timezone-utils';
 import type { Language } from '../enhanced-conversation-manager';
-import type { TenantContext } from '../tenant-context'; // 🔧 BUG-20250725-001 FIX: Import TenantContext type
+import type { TenantContext } from '../tenant-context'; // 🔧 Import TenantContext type
 import { smartLog } from '../smart-logging.service';
 
 // 🚀 REDIS PHASE 3: Import Redis service for guest history caching
 import { redisService } from '../redis-service';
 
-// ✅ FIX: Import the Drizzle 'db' instance, schema definitions, and ORM operators
+// Import the Drizzle 'db' instance, schema definitions, and ORM operators
 import { db } from '../../db';
 import { eq, and, gt, lt, gte, like, inArray, sql, desc, ne } from 'drizzle-orm';
-// ✅ FIX: Use the correct camelCase table names from your schema
 import {
     reservations,
     guests,
@@ -57,7 +56,7 @@ function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
 
 
 /**
- * ✅ PHASE 1 FIX: Extended session interface for context resolution
+ * ✅ Extended session interface for context resolution
  */
 interface BookingSessionWithAgent {
     tenantContext?: TenantContext; // Ensure session has tenant context
@@ -88,7 +87,7 @@ interface BookingSessionWithAgent {
         confidenceLevel: 'high' | 'medium' | 'low';
         contextSource: 'explicit_id' | 'recent_modification' | 'found_reservation';
     };
-    // ✅ FIX #4: Add conversation history and guest history for validation
+    // ✅ Add conversation history and guest history for validation
     conversationHistory?: Array<{
         role: 'user' | 'assistant';
         content: string;
@@ -104,10 +103,10 @@ interface BookingSessionWithAgent {
 }
 
 /**
- * ✅ PHASE 1 FIX: Translation Service using AIService
+ * ✅ Translation Service using AIService
  */
 class AgentToolTranslationService {
-    // 🔧 BUG-20250725-001 FIX: The function now requires a TenantContext to pass to the AIService.
+    // 🔧 The function now requires a TenantContext to pass to the AIService.
     static async translateToolMessage(
         message: string,
         targetLanguage: Language,
@@ -131,7 +130,7 @@ Keep the same tone and professional style.
 Return only the translation, no explanations.`;
 
         try {
-            // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
+            // 🔧 Pass the required tenantContext to the AIService.
             const translation = await aiService.generateContent(prompt, {
                 maxTokens: 300,
                 temperature: 0.2,
@@ -156,7 +155,7 @@ class AgentAIAnalysisService {
     static async analyzeSpecialRequests(
         completedReservations: Array<{ comments: string | null }>,
         guestName: string,
-        tenantContext: TenantContext // 🔧 BUG-20250725-001 FIX: Add tenantContext parameter
+        tenantContext: TenantContext // 🔧 Add tenantContext parameter
     ): Promise<string[]> {
         try {
             // Collect all non-empty comments
@@ -211,7 +210,7 @@ RESPONSE FORMAT: Return ONLY a valid JSON object:
 
 If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "No actionable recurring patterns found"}`;
 
-            // 🔧 BUG-20250725-001 FIX: Pass the required tenantContext to the AIService.
+            // 🔧 Pass the required tenantContext to the AIService.
             const responseText = await aiService.generateContent(prompt, {
                 maxTokens: 1000,
                 temperature: 0.2,
@@ -386,7 +385,7 @@ const createBusinessRuleFailure = (message: string, code?: string): ToolResponse
 const createSystemError = (message: string, originalError?: any): ToolResponse =>
     createFailureResponse('SYSTEM_ERROR', message, 'SYSTEM_FAILURE', { originalError: originalError?.message });
 
-// 🚨 NEW: Validation result interface as per original plan
+// 🚨 NEW: Validation result interface
 interface ValidationResult {
     valid: boolean;
     errorMessage?: string;
@@ -395,7 +394,7 @@ interface ValidationResult {
 }
 
 /**
- * 🚨 CRITICAL NEW FUNCTION: Comprehensive input validation as specified in original plan
+ * 🚨 CRITICAL NEW FUNCTION: Comprehensive input validation
  * This implements the validateBookingInput() function that was missing
  */
 async function validateBookingInput(input: {
@@ -767,7 +766,7 @@ async function validateBusinessHours(
 
 
 /**
- * 🚨 CRITICAL NEW FUNCTION: Past-date validation with grace period as specified in original plan
+ * 🚨 Past-date validation with grace period
  */
 async function validatePastDate(
     date: string,
@@ -897,12 +896,13 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
  * - Cache invalidation triggered by booking changes
  * - PROPER MULTITENANCY: Only returns guests for the requesting restaurant
  */
+// PASTE THIS NEW, MORE RESILIENT VERSION
 export async function get_guest_history(
     telegramUserId: string,
     context: {
         restaurantId: number;
         language?: string;
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -916,107 +916,41 @@ export async function get_guest_history(
             return createValidationFailure('Missing required parameters: telegramUserId or restaurantId');
         }
 
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
-        if (!context.session?.tenantContext) {
-            return createSystemError('Missing tenant context for guest history analysis');
-        }
-
-        // 🚀 REDIS PHASE 3: Try to get from Redis cache first
-        console.log(`🔍 [Cache] Checking Redis cache for key: ${cacheKey}`);
-        const cachedResponse = await redisService.get<ToolResponse>(cacheKey, {
-            fallbackToMemory: true
-        });
-
+        // Try to get from Redis cache first
+        const cachedResponse = await redisService.get<ToolResponse>(cacheKey, { fallbackToMemory: true });
         if (cachedResponse) {
-            const cacheAge = cachedResponse.metadata?.execution_time_ms
-                ? Date.now() - cachedResponse.metadata.execution_time_ms
-                : 'unknown';
-
-            console.log(`✅ [Cache HIT] Guest history retrieved from cache: ${cacheKey} (age: ${cacheAge}ms)`);
-
-            // Update metadata to indicate cache hit
-            cachedResponse.metadata = {
-                ...cachedResponse.metadata,
-                cached: true,
-                cache_hit_time_ms: Date.now() - startTime
-            };
-
+            console.log(`✅ [Cache HIT] Guest history retrieved from cache: ${cacheKey}`);
+            cachedResponse.metadata = { ...cachedResponse.metadata, cached: true, cache_hit_time_ms: Date.now() - startTime };
             return cachedResponse;
         }
 
         console.log(`❌ [Cache MISS] Guest history not in cache, querying database: ${cacheKey}`);
 
-        // 🔒 CRITICAL MULTITENANCY FIX: Add restaurantId to the guest lookup
         const [guest] = await db
             .select()
             .from(guests)
-            .where(and( // Use 'and' to combine conditions
-                eq(guests.telegram_user_id, telegramUserId),
-                eq(guests.restaurantId, context.restaurantId) // 🔒 SECURITY: Only find guests for this restaurant
-            ));
+            .where(and(eq(guests.telegram_user_id, telegramUserId), eq(guests.restaurantId, context.restaurantId)));
 
         if (!guest) {
             console.log(`👤 [Guest History] No guest found for telegram user: ${telegramUserId} at restaurant ${context.restaurantId}`);
             return createBusinessRuleFailure('Guest not found', 'GUEST_NOT_FOUND');
         }
 
-        console.log(`👤 [Guest History] Found guest: ${guest.name} (ID: ${guest.id}) with phone: ${guest.phone} for restaurant ${context.restaurantId}`);
-
-        // 2. Query all reservations for this guest at this restaurant (already properly scoped)
         const allReservations = await db
-            .select({
-                id: reservations.id,
-                status: reservations.status,
-                guests: reservations.guests,
-                comments: reservations.comments,
-                reservation_utc: reservations.reservation_utc,
-                createdAt: reservations.createdAt
-            })
+            .select({ id: reservations.id, status: reservations.status, guests: reservations.guests, comments: reservations.comments, reservation_utc: reservations.reservation_utc, createdAt: reservations.createdAt })
             .from(reservations)
-            .where(and(
-                eq(reservations.guestId, guest.id),
-                eq(reservations.restaurantId, context.restaurantId) // ✅ This was already correct
-            ))
+            .where(and(eq(reservations.guestId, guest.id), eq(reservations.restaurantId, context.restaurantId)))
             .orderBy(desc(reservations.reservation_utc));
 
-        console.log(`👤 [Guest History] Found ${allReservations.length} total reservations for guest at restaurant ${context.restaurantId}`);
-
         if (allReservations.length === 0) {
-            const response = createSuccessResponse({
-                guest_name: guest.name,
-                guest_phone: guest.phone || '',
-                total_bookings: 0,
-                total_cancellations: 0,
-                last_visit_date: null,
-                common_party_size: null,
-                frequent_special_requests: []
-            }, {
-                execution_time_ms: Date.now() - startTime,
-                cached: false,
-                tenantIsolated: true // 🔒 Indicate proper tenant isolation
-            });
-
-            // 🚀 REDIS PHASE 3: Cache empty result too (shorter TTL)
-            await redisService.set(cacheKey, response, {
-                ttl: cacheTTL / 2, // 30 minutes for empty results
-                compress: false,
-                fallbackToMemory: true
-            });
-
+            const response = createSuccessResponse({ guest_name: guest.name, guest_phone: guest.phone || '', total_bookings: 0, total_cancellations: 0, last_visit_date: null, common_party_size: null, frequent_special_requests: [] }, { execution_time_ms: Date.now() - startTime, cached: false, tenantIsolated: true });
+            await redisService.set(cacheKey, response, { ttl: cacheTTL / 2, compress: false, fallbackToMemory: true });
             return response;
         }
 
-        // 3. Analyze reservation data
-        const completedReservations = allReservations.filter(r =>
-            r.status === 'completed' || r.status === 'confirmed'
-        );
-        const cancelledReservations = allReservations.filter(r =>
-            r.status === 'canceled'
-        );
+        const completedReservations = allReservations.filter(r => r.status === 'completed' || r.status === 'confirmed');
+        const cancelledReservations = allReservations.filter(r => r.status === 'canceled');
 
-        console.log(`👤 [Guest History] Analysis: ${completedReservations.length} completed, ${cancelledReservations.length} cancelled`);
-
-        // 4. Find most common party size
         let commonPartySize = null;
         if (completedReservations.length > 0) {
             const partySizeCounts = completedReservations.reduce((acc, reservation) => {
@@ -1024,51 +958,47 @@ export async function get_guest_history(
                 acc[size] = (acc[size] || 0) + 1;
                 return acc;
             }, {} as Record<number, number>);
-
-            const mostCommonSize = Object.entries(partySizeCounts)
-                .sort(([, a], [, b]) => b - a)[0];
-
+            const mostCommonSize = Object.entries(partySizeCounts).sort(([, a], [, b]) => b - a)[0];
             commonPartySize = mostCommonSize ? parseInt(mostCommonSize[0]) : null;
-            console.log(`👤 [Guest History] Most common party size: ${commonPartySize} (from ${JSON.stringify(partySizeCounts)})`);
         }
 
-        // 5. Find last visit date (most recent completed reservation)
         let lastVisitDate = null;
         if (completedReservations.length > 0) {
-            const mostRecentCompleted = completedReservations[0]; // Already sorted by desc date
-            const normalizedDate = normalizeDatabaseTimestamp(mostRecentCompleted.reservation_utc);
+            const normalizedDate = normalizeDatabaseTimestamp(completedReservations[0].reservation_utc);
             const reservationDt = DateTime.fromISO(normalizedDate);
-
             if (reservationDt.isValid) {
                 lastVisitDate = reservationDt.toFormat('yyyy-MM-dd');
-                console.log(`👤 [Guest History] Last visit: ${lastVisitDate}`);
             }
         }
 
-        // 6. ✅ LANGUAGE BUG FIXED: AIService-powered analysis that returns English patterns
-        const englishRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
-            completedReservations,
-            guest.name,
-            context.session.tenantContext // 🔧 BUG-20250725-001 FIX: Pass tenant context
-        );
+        let frequent_special_requests: string[] = [];
+        // ✅ FIX 1: Check if tenantContext exists before calling AI services.
+        if (context.session?.tenantContext) {
+            console.log('✅ [Guest History] Tenant context found. Proceeding with AI-powered special request analysis.');
 
-        console.log(`👤 [Guest History] AIService-analyzed frequent requests (English):`, englishRequests);
-        console.log(`✅ [Language Fix] Patterns are now guaranteed to be in English, regardless of source comment language`);
-
-        // 7. ✅ PHASE 1 FIX: Translate the English requests to target language using AIService
-        let translatedRequests = englishRequests;
-        if (context.language && context.language !== 'en' && englishRequests.length > 0) {
-            console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
-            translatedRequests = await Promise.all(
-                englishRequests.map(request =>
-                    // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
-                    AgentToolTranslationService.translateToolMessage(request, context.language as Language, context.session!.tenantContext!)
-                )
+            const englishRequests = await AgentAIAnalysisService.analyzeSpecialRequests(
+                completedReservations,
+                guest.name,
+                context.session.tenantContext
             );
-            console.log(`👤 [Guest History] Translated requests:`, translatedRequests);
+
+            // ✅ FIX 2: Also check for context before attempting translation.
+            if (context.language && context.language !== 'en' && englishRequests.length > 0) {
+                console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
+                frequent_special_requests = await Promise.all(
+                    englishRequests.map(request =>
+                        AgentToolTranslationService.translateToolMessage(request, context.language as Language, context.session!.tenantContext!)
+                    )
+                );
+            } else {
+                frequent_special_requests = englishRequests;
+            }
+        } else {
+            // If no context, log a warning and skip the AI analysis, returning an empty array.
+            console.warn('⚠️ [Guest History] Missing tenantContext, skipping AI analysis and translation. Returning basic history.');
+            frequent_special_requests = [];
         }
 
-        // 8. Return structured response with translated frequent requests
         const historyData = {
             guest_name: guest.name,
             guest_phone: guest.phone || '',
@@ -1076,30 +1006,12 @@ export async function get_guest_history(
             total_cancellations: cancelledReservations.length,
             last_visit_date: lastVisitDate,
             common_party_size: commonPartySize,
-            frequent_special_requests: translatedRequests // ✅ Now powered by AIService with English-first analysis
+            frequent_special_requests: frequent_special_requests // Use the (potentially empty) requests array
         };
 
-        console.log(`👤 [Guest History] Final history data with tenant isolation for restaurant ${context.restaurantId}:`, historyData);
+        const response = createSuccessResponse(historyData, { execution_time_ms: Date.now() - startTime, cached: false, tenantIsolated: true });
 
-        // 🚀 REDIS PHASE 3: Store result in cache with TTL
-        const response = createSuccessResponse(historyData, {
-            execution_time_ms: Date.now() - startTime,
-            cached: false,
-            tenantIsolated: true // 🔒 Indicate proper tenant isolation
-        });
-
-        console.log(`💾 [Cache] Storing guest history in Redis cache: ${cacheKey}`);
-        const cacheSuccess = await redisService.set(cacheKey, response, {
-            ttl: cacheTTL,
-            compress: true, // Enable compression for large guest history objects
-            fallbackToMemory: true
-        });
-
-        if (cacheSuccess) {
-            console.log(`✅ [Cache] Guest history cached successfully: ${cacheKey} (TTL: ${cacheTTL}s)`);
-        } else {
-            console.warn(`⚠️ [Cache] Failed to cache guest history: ${cacheKey}`);
-        }
+        await redisService.set(cacheKey, response, { ttl: cacheTTL, compress: true, fallbackToMemory: true });
 
         return response;
 
@@ -1121,7 +1033,7 @@ export async function check_availability(
         timezone: string;
         language: string;
         excludeReservationId?: number;
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent; // 🔧 Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -1137,7 +1049,7 @@ export async function check_availability(
     });
 
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for availability check');
         }
@@ -1151,7 +1063,7 @@ export async function check_availability(
             time,
             guests,
             context
-        }, true); // 🐛 BUG FIX: Pass true to indicate this is an availability check
+        }, true); // 🐛 Pass true to indicate this is an availability check
 
         if (!validation.valid) {
             return createValidationFailure(validation.errorMessage!, validation.field);
@@ -1201,7 +1113,7 @@ export async function check_availability(
         if (slots.length > 0) {
             const bestSlot = slots[0];
 
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // 🔧 Pass tenant context to translation service
             const baseMessage = `Table ${bestSlot.tableName} available for ${guests} guests at ${time}${bestSlot.isCombined ? ' (combined tables)' : ''}${context.excludeReservationId ? ` (reservation ${context.excludeReservationId} excluded from conflict check)` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -1253,7 +1165,7 @@ export async function check_availability(
             }
 
             if (suggestedAlternatives.length > 0) {
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}. However, I found availability for ${suggestedAlternatives[0].guests} guests at the same time. Would that work?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -1267,7 +1179,7 @@ export async function check_availability(
                     'NO_AVAILABILITY_SUGGEST_SMALLER'
                 );
             } else {
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const baseMessage = `No tables available for ${guests} guests at ${time} on ${date}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -1290,7 +1202,7 @@ export async function check_availability(
 }
 
 /**
- * ✅ BUG FIX: Find alternative time slots around ANY preferred time with excludeReservationId support
+ * ✅ Find alternative time slots around ANY preferred time with excludeReservationId support
  */
 export async function find_alternative_times(
     date: string,
@@ -1301,14 +1213,14 @@ export async function find_alternative_times(
         timezone: string;
         language: string;
         excludeReservationId?: number; // ✅ CRITICAL BUG FIX: Added excludeReservationId parameter
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent; // 🔧 Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Agent Tool] find_alternative_times: ${date} around ${preferredTime} for ${guests} guests${context.excludeReservationId ? ` (excluding reservation ${context.excludeReservationId})` : ''}`);
 
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for finding alternatives');
         }
@@ -1321,7 +1233,7 @@ export async function find_alternative_times(
             time: preferredTime,
             guests,
             context
-        }, true); // 🐛 BUG FIX: Pass true to skip name/phone validation
+        }, true); // 🐛 Pass true to skip name/phone validation
 
         if (!validation.valid) {
             return createValidationFailure(validation.errorMessage!, validation.field);
@@ -1396,7 +1308,7 @@ export async function find_alternative_times(
                 execution_time_ms: executionTime
             });
         } else {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // 🔧 Pass tenant context to translation service
             const baseMessage = `No alternative times available for ${guests} guests on ${date} near ${preferredTime}${context.excludeReservationId ? ` (even after excluding reservation ${context.excludeReservationId})` : ''}`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -1479,12 +1391,12 @@ export async function create_reservation(
         }
     }
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for reservation creation');
         }
 
-        // 🚨 STEP 1: COMPREHENSIVE PRE-VALIDATION as specified in original plan
+        // 🚨 COMPREHENSIVE PRE-VALIDATION as specified in original plan
         console.log('🛡️ [Agent Tool] Starting comprehensive pre-validation pipeline...');
 
         const validation = await validateBookingInput({
@@ -1504,7 +1416,7 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Basic input validation passed');
 
-        // 🚨 STEP 2: PAST-DATE VALIDATION with grace period as specified in original plan
+        // 🚨 PAST-DATE VALIDATION with grace period as specified in original plan
         const pastDateValidation = await validatePastDate(date, time, context);
         if (!pastDateValidation.valid) {
             console.error('❌ [Agent Tool] Past-date validation failed:', pastDateValidation.errorMessage);
@@ -1513,7 +1425,7 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Past-date validation passed');
 
-        // 🚨 STEP 3: BUSINESS HOURS VALIDATION with DURATION check (CRITICAL BUG FIX)
+        // 🚨 BUSINESS HOURS VALIDATION with DURATION check (CRITICAL BUG FIX)
         const businessHoursValidation = await validateBusinessHours(time, date, context);
         if (!businessHoursValidation.valid) {
             console.error('❌ [Agent Tool] Business hours validation failed (CRITICAL BUG PREVENTED):', businessHoursValidation.errorMessage);
@@ -1522,7 +1434,7 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Business hours validation with DURATION check passed (CRITICAL BUG FIXED)');
 
-        // 🚨 STEP 4: INPUT SANITIZATION as specified in original plan
+        // 🚨 INPUT SANITIZATION as specified in original plan
         const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
         const cleanName = effectiveGuestName.trim();
 
@@ -1538,7 +1450,7 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Input sanitization completed');
 
-        // ✅ FIX #4: WORKFLOW VALIDATION FOR SPECIAL REQUESTS
+        // ✅ WORKFLOW VALIDATION FOR SPECIAL REQUESTS
         let validatedSpecialRequests = specialRequests;
         if (specialRequests && context.session?.guestHistory?.frequent_special_requests?.includes(specialRequests)) {
             console.log(`🚨 [WORKFLOW_VALIDATION] Special request "${specialRequests}" detected from guest history. Checking for explicit confirmation...`);
@@ -1602,7 +1514,7 @@ export async function create_reservation(
         console.log(`   - Timezone: ${context.timezone}`);
         console.log(`   - Confirmed Name: ${context.confirmedName || 'none'}`);
 
-        // 🚨 STEP 5: PROCEED WITH RESERVATION CREATION
+        // 🚨 PROCEED WITH RESERVATION CREATION
         const result = await createTelegramReservation(
             context.restaurantId,
             date,
@@ -1611,7 +1523,7 @@ export async function create_reservation(
             cleanName,
             cleanPhone,
             context.telegramUserId || context.sessionId || 'web_chat_user',
-            validatedSpecialRequests, // ✅ FIX #4: Use validated special requests
+            validatedSpecialRequests, // ✅ Use validated special requests
             context.language as any,
             context.confirmedName,
             undefined,
@@ -1651,13 +1563,13 @@ export async function create_reservation(
         if (result.success && result.reservation && result.reservation.id) {
             console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation with CRITICAL BUG FIX created successfully: #${result.reservation.id} at ${timeFormatted}`);
 
-            // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful booking
+            // 🚀 Invalidate guest history cache after successful booking
             await invalidateGuestHistoryCache({
                 restaurantId: context.restaurantId,
                 telegramUserId: context.telegramUserId
             });
 
-            // ✅ FIX #4: Add comprehensive validation metadata to response
+            // ✅ Add comprehensive validation metadata to response
             const metadata: any = {
                 execution_time_ms: executionTime,
                 validationLayers: [
@@ -1696,7 +1608,7 @@ export async function create_reservation(
                 time: timeFormatted,
                 exactTime: timeFormatted,
                 guests: guests,
-                specialRequests: validatedSpecialRequests, // ✅ FIX #4: Return validated special requests
+                specialRequests: validatedSpecialRequests, // ✅ Return validated special requests
                 message: result.message,
                 success: true,
                 timeSupported: 'exact'
@@ -1718,7 +1630,7 @@ export async function create_reservation(
                 errorCode = 'CAPACITY_EXCEEDED';
             }
 
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // 🔧 Pass tenant context to translation service
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 result.message || 'Could not complete reservation due to business constraints',
                 context.language as Language,
@@ -1760,7 +1672,7 @@ export async function get_restaurant_info(
     context: {
         restaurantId: number;
         language?: string;
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent; // 🔧 Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -1771,7 +1683,7 @@ export async function get_restaurant_info(
             return createValidationFailure('Context with restaurantId is required');
         }
 
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for getting restaurant info');
         }
@@ -1869,7 +1781,7 @@ export async function get_restaurant_info(
                 break;
         }
 
-        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+        // 🔧 Pass tenant context to translation service
         if (context.language && context.language !== 'en') {
             message = await AgentToolTranslationService.translateToolMessage(
                 message,
@@ -1910,14 +1822,14 @@ export async function find_existing_reservation(
         // ✅ NEW PARAMETERS: Enhanced search capabilities
         timeRange?: 'upcoming' | 'past' | 'all';
         includeStatus?: string[];
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent; // 🔧 Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`🔍 [Maya Tool] Finding reservations for: "${identifier}" (Type: ${identifierType})`);
 
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for finding reservations');
         }
@@ -2001,7 +1913,7 @@ export async function find_existing_reservation(
             case 'confirmation':
                 const numericIdentifier = parseInt(identifier.replace(/\D/g, ''), 10);
                 if (isNaN(numericIdentifier)) {
-                    // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                    // 🔧 Pass tenant context to translation service
                     const baseMessage = `"${identifier}" is not a valid confirmation number. It must be a number.`;
                     const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                         baseMessage,
@@ -2039,7 +1951,7 @@ export async function find_existing_reservation(
             .limit(10);
 
         if (!results || results.length === 0) {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // 🔧 Pass tenant context to translation service
             const baseMessage = timeRange === 'past'
                 ? `I couldn't find any past reservations for "${identifier}". Please check the information or try a different way to identify your booking.`
                 : timeRange === 'upcoming'
@@ -2120,7 +2032,7 @@ export async function find_existing_reservation(
             };
         });
 
-        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+        // 🔧 Pass tenant context to translation service
         const baseMessage = timeRange === 'past'
             ? `Found ${formattedReservations.length} past reservation(s) for you. Let me show you the details.`
             : timeRange === 'upcoming'
@@ -2165,8 +2077,8 @@ export async function find_existing_reservation(
 }
 
 /**
- * ✅ STEP 3A COMPLETE: Enhanced modify_reservation with ContextManager integration
- * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful modification
+ * ✅ Enhanced modify_reservation with ContextManager integration
+ * 🚀 Now includes cache invalidation after successful modification
  * This is the CRITICAL function that was causing the context loss problem
  */
 export async function modify_reservation(
@@ -2193,18 +2105,18 @@ export async function modify_reservation(
     console.log(`✏️ [Maya Tool] Modifying reservation ${reservationIdHint || 'TBD'}:`, modifications);
 
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // 🔧 Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for reservation modification');
         }
 
-        // ✅ STEP 3A: Use ContextManager for smart reservation ID resolution
+        // ✅ Use ContextManager for smart reservation ID resolution
         let targetReservationId: number;
 
         if (context.session && context.userMessage) {
             console.log(`[ContextManager] Using ContextManager for reservation ID resolution...`);
 
-            // ✅ STEP 3A: Replace with contextManager call
+            // ✅ Replace with contextManager call
             const resolution = contextManager.resolveReservationFromContext(
                 context.userMessage,
                 context.session,
@@ -2213,7 +2125,7 @@ export async function modify_reservation(
 
             if (resolution.shouldAskForClarification) {
                 const availableIds = context.session.foundReservations?.map(r => `#${r.id}`) || [];
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const errorMessage = await AgentToolTranslationService.translateToolMessage(
                     `I need to know which reservation to modify. Available reservations: ${availableIds.join(', ')}. Please specify the reservation number.`,
                     context.language as Language,
@@ -2228,7 +2140,7 @@ export async function modify_reservation(
             }
 
             if (!resolution.resolvedId) {
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const errorMessage = await AgentToolTranslationService.translateToolMessage(
                     "I need the reservation number to make changes. Please provide your confirmation number.",
                     context.language as Language,
@@ -2271,7 +2183,7 @@ export async function modify_reservation(
                 ));
 
             if (!ownershipCheck) {
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2306,7 +2218,7 @@ export async function modify_reservation(
             console.log(`✅ [Security] Ownership validated for reservation ${targetReservationId}`);
         }
 
-        // ✅ STEP 1: Get current reservation details
+        // ✅ Get current reservation details
         const [currentReservation] = await db
             .select({
                 id: reservations.id,
@@ -2356,7 +2268,7 @@ export async function modify_reservation(
             status: currentReservation.status
         });
 
-        // ✅ STEP 2: Parse current reservation date/time
+        // ✅ Parse current reservation date/time
         const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
         const currentReservationDt = DateTime.fromISO(normalizedTimestamp);
 
@@ -2378,7 +2290,7 @@ export async function modify_reservation(
         if (!hasDateChange && !hasTimeChange && !hasGuestChange && !hasRequestChange) {
             console.warn(`[Maya Tool] 🚨 NO-OP MODIFICATION DETECTED for reservation #${targetReservationId}. No changes were requested.`);
 
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // 🔧 Pass tenant context to translation service
             const baseMessage = `No changes were requested. Your reservation is still confirmed for ${currentDate} at ${currentTime} for ${currentReservation.guests} guests. Did you want to make a specific change?`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2395,7 +2307,7 @@ export async function modify_reservation(
 
         console.log(`📅 [Maya Tool] Current reservation time: ${currentDate} ${currentTime} (${context.timezone})`);
 
-        // ✅ STEP 3: Determine new values (keep current if not changing)
+        // ✅ Determine new values (keep current if not changing)
         const newDate = modifications.newDate || currentDate;
         const newTime = modifications.newTime || currentTime;
         const newGuests = modifications.newGuests || currentReservation.guests;
@@ -2410,7 +2322,7 @@ export async function modify_reservation(
             requests: `"${currentReservation.comments || ''}" → "${newSpecialRequests}"`
         });
 
-        // ✅ STEP 4: Check if we need to find a new table (guest count changed)
+        // ✅ Check if we need to find a new table (guest count changed)
         let newTableId = currentReservation.tableId;
         let availabilityMessage = '';
 
@@ -2432,7 +2344,7 @@ export async function modify_reservation(
                 console.log(`❌ [Maya Tool] No availability for modification:`, availabilityResult.error?.message);
 
                 // Try to suggest alternatives
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const baseMessage = `I'm sorry, but I can't change your reservation to ${newGuests} guests on ${newDate} at ${newTime} because no tables are available. ${availabilityResult.error?.message || ''} Would you like me to suggest alternative times?`;
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2471,7 +2383,7 @@ export async function modify_reservation(
             }
         }
 
-        // ✅ STEP 5: Update the reservation in database
+        // ✅ Update the reservation in database
         console.log(`💾 [Maya Tool] Updating reservation ${targetReservationId} in database...`);
 
         // Create new UTC timestamp if date/time changed
@@ -2570,13 +2482,13 @@ export async function modify_reservation(
 
         console.log(`✅ [Maya Tool] Successfully modified reservation ${targetReservationId} and logged ${modificationLogs.length} changes.`);
 
-        // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful modification
+        // 🚀 Invalidate guest history cache after successful modification
         await invalidateGuestHistoryCache({
             restaurantId: context.restaurantId,
             telegramUserId: context.telegramUserId
         });
 
-        // ✅ STEP 7: Return success response (NO STATE CLEANUP - this was the bug!)
+        // ✅ Return success response (NO STATE CLEANUP - this was the bug!)
         const changes = [];
         if (newGuests !== currentReservation.guests) {
             changes.push(`party size changed from ${currentReservation.guests} to ${newGuests}`);
@@ -2594,7 +2506,7 @@ export async function modify_reservation(
             changes.push(`special requests updated`);
         }
 
-        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+        // 🔧 Pass tenant context to translation service
         const baseMessage = `Perfect! I've successfully updated your reservation. ${changes.join(', ')}. ${availabilityMessage}`;
         const translatedMessage = await AgentToolTranslationService.translateToolMessage(
             baseMessage,
@@ -2603,7 +2515,7 @@ export async function modify_reservation(
             'success'
         );
 
-        // ✅ STEP 3A: Return success with reservation ID for context preservation
+        // ✅ Return success with reservation ID for context preservation
         return createSuccessResponse({
             reservationId: targetReservationId, // ✅ CRITICAL: Include reservation ID for context preservation
             previousValues: {
@@ -3083,21 +2995,17 @@ export const agentTools = [
     }
 ];
 
-// ✅ STEP 3A COMPLETE: Export function implementations with ContextManager integration
-// 🚨 CRITICAL BUG FIXED: All functions now include comprehensive validation pipeline with duration check
-// 🚀 REDIS PHASE 3: All booking functions now include guest history cache invalidation
-// 🔒 MULTITENANCY FIXED: get_guest_history now properly filters by restaurant ID
 export const agentFunctions = {
-    // 🚀 REDIS PHASE 3 + 🔒 MULTITENANCY: Guest memory tool with Redis caching, cache invalidation, performance monitoring, and proper tenant isolation
+    // Guest memory tool with Redis caching, cache invalidation, performance monitoring, and proper tenant isolation
     get_guest_history,
 
-    // 🚨 CRITICAL BUG FIXED: Sofia's tools with comprehensive validation pipeline including duration check
+    // Sofia's tools with comprehensive validation pipeline including duration check
     check_availability, // ✅ Now includes: basic validation + business hours with DURATION CHECK + past-date validation
     find_alternative_times, // ✅ Now includes: basic validation + past-date validation
     create_reservation, // 🚨 CRITICAL BUG FIXED: 5-layer validation pipeline with duration check + Redis cache invalidation
     get_restaurant_info,
 
-    // ✅ STEP 3A COMPLETE: Maya's tools with ContextManager integration + Redis cache invalidation
+    // Maya's tools with ContextManager integration + Redis cache invalidation
     find_existing_reservation,
     modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution + Redis cache invalidation
     cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter + Redis cache invalidation

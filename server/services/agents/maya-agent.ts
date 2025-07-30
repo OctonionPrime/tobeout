@@ -1,46 +1,8 @@
 // src/agents/maya-agent.ts
-// Enhanced Maya Agent Implementation - Context-First Modification Handling
-// Extends BaseAgent with comprehensive reservation management and intelligent context gathering
-// Implements context-first approach for natural conversation flow
-// 🎯 UX ENHANCEMENT: Enhanced Question vs Command Detection to prevent over-eagerness
-// 🎯 UX ENHANCEMENT: No-Op Prevention with intelligent validation
-// 🎯 UX ENHANCEMENT: Natural question handling with specific response patterns
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import type { Language } from '../enhanced-conversation-manager';
 
-/**
- * Maya Agent - The Intelligent Reservation Management Specialist
- * 
- * Enhanced with context-first modification handling that establishes booking context
- * before asking for modification details, creating a more natural user experience.
- * 
- * 🎯 UX ENHANCEMENTS IMPLEMENTED:
- * - Issue 4: Maya Over-Eagerness for General Questions - SOLVED
- * - Enhanced Question vs Command Detection
- * - No-Op Prevention with intelligent parameter validation
- * - Natural question handling with specific response patterns
- * 
- * Key Features:
- * - Context-first modification handling for natural conversation flow
- * - Smart reservation management for existing bookings
- * - Tiered confidence model for decision-making
- * - Context-aware reservation ID resolution
- * - Secure ownership validation
- * - Multi-language support with natural translation
- * - Enhanced validation to prevent over-eager modifications
- * - **ENHANCED**: Precise distinction between general questions and specific commands
- * - **ENHANCED**: No-op modification prevention with validation
- * - **ENHANCED**: Natural question handling patterns from UX document
- * 
- * Context-First Improvements:
- * - Automatically finds user's bookings when they ask general modification questions
- * - Lists multiple bookings with clear options when found
- * - Asks for modification details only after establishing booking context
- * - Provides natural, human-like conversation flow
- * - **NEW**: Prevents execution of modifications without new details
- * - **NEW**: Asks "what exactly do you want to change?" for general questions
- */
 export class MayaAgent extends BaseAgent {
     readonly name = 'Maya';
     readonly description = 'Intelligent reservation management specialist with enhanced question vs command detection';
@@ -53,7 +15,7 @@ export class MayaAgent extends BaseAgent {
     ];
 
     /**
-     * 🎯 ENHANCED: Generate Maya's system prompt with precise question vs command detection
+     * Generate Maya's system prompt with precise question vs command detection
      * Now includes specific instructions for handling general questions vs specific commands
      */
     generateSystemPrompt(context: AgentContext): string {
@@ -82,7 +44,7 @@ export class MayaAgent extends BaseAgent {
 ⚠️ CRITICAL: DO NOT ask for information you have already requested in this conversation!
 ✅ Instead, use the information already provided or acknowledge it naturally.` : '';
 
-        // 🎯 ENHANCED: Critical action rules with precise question vs command detection
+        // 🎯 Critical action rules with precise question vs command detection
         const ENHANCED_CRITICAL_ACTION_RULES = `
 🚨 **MAYA'S ENHANCED EXECUTION RULES - QUESTION vs COMMAND DETECTION (HIGHEST PRIORITY)** 🚨
 
@@ -287,12 +249,12 @@ This enhanced approach provides users with intelligent, context-aware assistance
     }
 
     /**
-     * 🎯 ENHANCED: Handle Maya's message processing with precise question vs command detection
+     * 🎯 Handle Maya's message processing with precise question vs command detection
      * Now includes enhanced logic to prevent over-eagerness and no-op modifications
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         try {
-            // 🎯 ENHANCED: More precise detection logic
+            // 🎯 More precise detection logic
             const messageAnalysis = this.analyzeUserMessage(message, context.language);
             const hasGuestHistory = !!(context.guestHistory && context.guestHistory.guest_phone);
             
@@ -529,44 +491,30 @@ This enhanced approach provides users with intelligent, context-aware assistance
      * Get personalized prompt section with natural conversation patterns
      * Provides context about guest history for more personalized service
      */
+    // REPLACE with this NEW version
     private getPersonalizedPromptSection(guestHistory: any | null, language: Language): string {
+        // If there's no guest history, return an empty string as before.
         if (!guestHistory || guestHistory.total_bookings === 0) {
             return '';
         }
 
-        const { guest_name, guest_phone, total_bookings, common_party_size, frequent_special_requests, last_visit_date } = guestHistory;
+        const { guest_name, total_bookings, last_visit_date } = guestHistory;
 
-        const personalizedSections = {
-            en: `
-👤 GUEST HISTORY & PERSONALIZATION:
-- Guest Name: ${guest_name}
-- Guest Phone: ${guest_phone || 'Not available'}
-- Total Previous Bookings: ${total_bookings}
-- ${common_party_size ? `Common Party Size: ${common_party_size}` : 'No common party size pattern'}
-- ${frequent_special_requests.length > 0 ? `Frequent Requests: ${frequent_special_requests.join(', ')}` : 'No frequent special requests'}
-- ${last_visit_date ? `Last Visit: ${last_visit_date}` : 'No previous visits recorded'}
+        // This creates a language-neutral block of data.
+        // It contains only data points and instructions for the AI in English,
+        // which the AI will use to generate a response in the target language.
+        const guestDataBlock = `
+👤 GUEST DATA (for personalization):
+- Guest-Name: ${guest_name}
+- Total-Previous-Bookings: ${total_bookings}
+- Last-Visit: ${last_visit_date || 'N/A'}
 
 💡 PERSONALIZATION GUIDELINES:
-- ${total_bookings >= 3 ? `RETURNING GUEST: Greet warmly as a valued returning customer! Say "Welcome back, ${guest_name}!" or similar.` : `NEW/INFREQUENT GUEST: Treat as a regular new guest, but you can mention "${guest_name}" once you know their name.`}
-- Use this information naturally in conversation - don't just list their history!
-- Make the experience feel personal and welcoming for returning guests.`,
+- Use the data above to personalize your response in the user's language.
+- If Total-Previous-Bookings >= 3, greet them warmly as a valued returning guest (e.g., "Welcome back, [Guest Name]!").
+- Do not just list this data to the user. Use it to make your conversation sound more natural and welcoming.`;
 
-            ru: `
-👤 ИСТОРИЯ ГОСТЯ И ПЕРСОНАЛИЗАЦИЯ:
-- Имя гостя: ${guest_name}
-- Телефон гостя: ${guest_phone || 'Недоступен'}
-- Всего предыдущих бронирований: ${total_bookings}
-- ${common_party_size ? `Обычное количество гостей: ${common_party_size}` : 'Нет постоянного количества гостей'}
-- ${frequent_special_requests.length > 0 ? `Частые просьбы: ${frequent_special_requests.join(', ')}` : 'Нет частых особых просьб'}
-- ${last_visit_date ? `Последний визит: ${last_visit_date}` : 'Нет записей о предыдущих визитах'}
-
-💡 РУКОВОДСТВО ПО ПЕРСОНАЛИЗАЦИИ:
-- ${total_bookings >= 3 ? `ВОЗВРАЩАЮЩИЙСЯ ГОСТЬ: Тепло встречайте как ценного постоянного клиента! Скажите "Добро пожаловать снова, ${guest_name}!" или подобное.` : `НОВЫЙ/РЕДКИЙ ГОСТЬ: Относитесь как к обычному новому гостю, но можете упомянуть "${guest_name}", когда узнаете имя.`}
-- Используйте эту информацию естественно в разговоре - не просто перечисляйте историю!
-- Сделайте опыт личным и гостеприимным для возвращающихся гостей.`
-        };
-
-        return personalizedSections[language as keyof typeof personalizedSections] || personalizedSections.en;
+        return guestDataBlock;
     }
 
     /**
@@ -805,55 +753,3 @@ export function createMayaAgent(restaurantConfig: RestaurantConfig): MayaAgent {
 
     return new MayaAgent(defaultConfig, restaurantConfig);
 }
-
-// Log successful module initialization with enhanced capabilities
-console.log(`
-🎯 Enhanced Maya Agent with Question vs Command Detection Loaded! 🎯
-
-🔧 UX ENHANCEMENTS IMPLEMENTED:
-✅ Issue 4: Maya Over-Eagerness for General Questions - SOLVED
-   - Precise question vs command detection
-   - General questions → Find booking → Ask what to change
-   - Specific commands → Validate → Execute → Confirm
-   - No-op modification prevention
-
-🛡️ OVER-EAGERNESS PREVENTION FEATURES:
-✅ Enhanced message analysis with specific detail extraction
-✅ Precise distinction between general questions and specific commands
-✅ No-op modification prevention with intelligent validation
-✅ Natural question handling patterns from UX document
-✅ Pre-execution validation of modification parameters
-✅ Context-first approach for all general modification questions
-
-🧠 INTELLIGENCE FEATURES:
-✅ Enhanced question vs command detection in 10 languages
-✅ Specific detail extraction (times, dates, guest counts)
-✅ General modification pattern detection
-✅ Context-first modification handling
-✅ Tiered confidence decision-making
-✅ Context-aware reservation ID resolution
-✅ Multi-language pattern matching
-✅ Secure ownership validation
-✅ Proactive booking context establishment
-
-🛠️ Maya's Enhanced Tools:
-✅ find_existing_reservation (Enhanced with context-first usage)
-✅ modify_reservation (With comprehensive validation and no-op prevention)
-✅ cancel_reservation (Secure cancellation)
-✅ get_restaurant_info (Information provider)
-✅ get_guest_history (Personalization support)
-
-🎉 ENHANCED USER EXPERIENCE:
-✅ Natural question handling: "можно поменять бронь?" → Ask what to change
-✅ Specific command execution: "change to 8pm" → Execute immediately
-✅ No-op prevention: "change to 7pm" (already at 7pm) → Ask for clarification
-✅ Professional and efficient modification process
-✅ Context-first approach for better assistance
-
-🚀 Ready for Production with Complete Question vs Command Detection!
-
-Example Fixed Workflows:
-1. User: "можно поменять бронь?" → Maya: "Вижу вашу бронь на 6 августа в 19:30 на 2 человека. Что именно хотите изменить?"
-2. User: "change to 8pm" → Maya: "Меняю время с 19:30 на 20:00... Готово!"
-3. User: "change to 7pm" (already at 7pm) → Maya: "Ваша бронь уже на 19:00. Хотели другое время?"
-`);
