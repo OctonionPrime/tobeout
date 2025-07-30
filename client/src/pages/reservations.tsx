@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { RollingCalendar } from "@/components/ui/rolling-calendar";
 import { useRestaurantTimezone } from "@/components/layout/DashboardLayout";
+import { useWebSocketContext } from "@/components/websocket/WebSocketContext";
 
 // ✅ Helper function to safely parse PostgreSQL timestamps
 const parsePostgresTimestamp = (timestamp: string): DateTime | null => {
@@ -73,6 +74,9 @@ const extractReservationData = (reservationData: any) => {
 };
 
 export default function Reservations() {
+    // ✅ Get WebSocket connection status for real-time indicator
+    const { isConnected, connectionStatus } = useWebSocketContext();
+    
     // ✅ Get timezone and restaurant from context
     const { restaurantTimezone, restaurant, refreshRestaurant } = useRestaurantTimezone();
     const restaurantId = restaurant?.id || 1;
@@ -158,7 +162,7 @@ export default function Reservations() {
         };
     };
 
-    // ✅ Restaurant reservations query with timezone dependency
+    // ✅ Restaurant reservations query with REAL-TIME WEBSOCKET UPDATES (no more polling!)
     const { data: reservations, isLoading, error } = useQuery({
         queryKey: ["/api/reservations", restaurantId, restaurantTimezone, dateRangeFilter, statusFilter],
         queryFn: async () => {
@@ -190,7 +194,7 @@ export default function Reservations() {
                 throw error;
             }
         },
-        refetchInterval: 30000,
+        // ✅ REMOVED: refetchInterval: 30000 - Now using real-time WebSocket updates!
         refetchOnWindowFocus: true,
         enabled: !!restaurantId && !!restaurantTimezone,
         staleTime: 0,
@@ -749,6 +753,17 @@ export default function Reservations() {
                         </p>
                     </div>
                     <div className="mt-4 flex space-x-3 md:mt-0">
+                        {/* ✅ REAL-TIME STATUS INDICATOR */}
+                        {isConnected ? (
+                            <Badge variant="outline" className="border-green-500 text-green-700 bg-green-50">
+                                ● Live Updates
+                            </Badge>
+                        ) : (
+                            <Badge variant="destructive" className="animate-pulse">
+                                ● Disconnected
+                            </Badge>
+                        )}
+                        
                         <Button onClick={() => setIsReservationModalOpen(true)}>
                             <Plus className="mr-2 h-4 w-4" />
                             New Reservation

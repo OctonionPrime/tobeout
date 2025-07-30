@@ -1,6 +1,10 @@
 import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
-// 🔽 ADD THIS IMPORT AT THE TOP
+// 🔽 ADD WEBSOCKET IMPORTS
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
+import { WebSocketManager } from './services/websocket-manager.js';
+import { ExtendedWebSocketServer } from './types/websocket.js';
 import serveIndex from 'serve-index';
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
@@ -13,6 +17,7 @@ import { aiService } from './services/ai-service';
 // 🔧 ES MODULE FIX: Moved to top-level imports
 import fs from 'fs';
 import path from 'path';
+import { URL } from 'url'; // 👈 ADD URL IMPORT
 
 // 🔒 SUPER ADMIN: Authentication imports (moved from routes.ts)
 import bcrypt from "bcryptjs";
@@ -100,7 +105,7 @@ passport.use('local-tenant', new LocalStrategy(
                 console.log(`[Auth] Invalid password for tenant user: ${email}`);
                 return done(null, false, { message: "Incorrect password." });
             }
-            
+
             // Enhanced user object with isSuperAdmin flag
             const authenticatedUser: BaseTenantUser = {
                 id: user.id,
@@ -109,7 +114,7 @@ passport.use('local-tenant', new LocalStrategy(
                 role: user.role as 'restaurant' | 'staff',
                 isSuperAdmin: false
             };
-            
+
             console.log(`✅ [Auth] Tenant user authenticated: ${email} (ID: ${user.id})`);
             return done(null, authenticatedUser);
         } catch (err) {
@@ -125,26 +130,26 @@ passport.use('local-superadmin', new LocalStrategy(
     async (email, password, done) => {
         try {
             console.log(`[SuperAdmin] Super admin login attempt for: ${email}`);
-            
+
             const superAdmin = await storage.getSuperAdminByEmail(email);
             if (!superAdmin) {
                 console.log(`[SuperAdmin] Super admin not found: ${email}`);
                 return done(null, false, { message: "Invalid super admin credentials." });
             }
-            
+
             // ✅ FIXED: Verify password against the correct 'passwordHash' property
             const isValidPassword = await bcrypt.compare(password, superAdmin.passwordHash);
             if (!isValidPassword) {
                 console.log(`[SuperAdmin] Invalid password for super admin: ${email}`);
                 return done(null, false, { message: "Invalid super admin credentials." });
             }
-            
+
             // Check if super admin account is active
             if (superAdmin.isActive === false) { // Check for explicit false value
                 console.log(`[SuperAdmin] Inactive super admin attempted login: ${email}`);
                 return done(null, false, { message: "Super admin account is inactive." });
             }
-            
+
             const authenticatedSuperAdmin: SuperAdminUser = {
                 id: superAdmin.id,
                 email: superAdmin.email,
@@ -152,16 +157,16 @@ passport.use('local-superadmin', new LocalStrategy(
                 role: 'super_admin',
                 isSuperAdmin: true
             };
-            
+
             console.log(`✅ [SuperAdmin] Super admin authenticated: ${email} (ID: ${superAdmin.id})`);
-            
+
             // The logSuperAdminActivity function does not exist on the storage object yet.
             // We can comment this out to allow login to succeed. We can add this feature back later.
             // await storage.logSuperAdminActivity(superAdmin.id, 'login', {
             //     userAgent: 'web-dashboard',
             //     timestamp: new Date().toISOString()
             // });
-            
+
             return done(null, authenticatedSuperAdmin);
         } catch (err) {
             console.error(`[SuperAdmin] Error during super admin authentication:`, err);
@@ -205,7 +210,7 @@ passport.serializeUser((user: any, done) => {
 passport.deserializeUser(async (sessionData: any, done) => {
     try {
         let user: AuthenticatedUser;
-        
+
         if (sessionData.isSuperAdmin) {
             // Load super admin user
             const superAdmin = await storage.getSuperAdmin(sessionData.id);
@@ -213,7 +218,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
                 console.log(`[Auth] Inactive or missing super admin during deserialization: ID=${sessionData.id}`);
                 return done(null, false);
             }
-            
+
             user = {
                 id: superAdmin.id,
                 email: superAdmin.email,
@@ -229,7 +234,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
                 console.log(`[Auth] Missing tenant user during deserialization: ID=${sessionData.id}`);
                 return done(null, false);
             }
-            
+
             user = {
                 id: tenantUser.id,
                 email: tenantUser.email,
@@ -239,7 +244,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
             };
             console.log(`[Auth] Deserialized tenant user: ${tenantUser.email} (ID: ${tenantUser.id})`);
         }
-        
+
         done(null, user);
     } catch (err) {
         console.error(`[Auth] Error during user deserialization:`, err);
@@ -457,6 +462,8 @@ app.use('/reports', serveIndex('reports', { 'icons': true }));
 app.use('/analytics', express.static('analytics', { etag: false, lastModified: false })); // Recommended change
 app.use('/analytics', serveIndex('analytics', { 'icons': true }));
 
+// 🔌 WEBSOCKET MANAGER: Global variable to store WebSocket manager instance
+let wsManager: WebSocketManager | null = null;
 
 // Self-executing async function to initialize the server
 (async () => {
@@ -488,8 +495,40 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
             dashboardEnabled: process.env.ENABLE_FREE_DASHBOARD === 'true'
         });
 
-        // 🔒 Register all API routes (authentication is now set up above)
-        const server = await registerRoutes(app);
+        // 🔌 WEBSOCKET SETUP: Create HTTP server
+        console.log('🔌 [Server] Creating HTTP server with WebSocket support');
+        const httpServer = createServer(app);
+
+        // ✅ FIX: Create WebSocket server WITHOUT attaching it to the HTTP server automatically
+        const wss = new WebSocketServer({
+            noServer: true
+        }) as ExtendedWebSocketServer;
+
+        // Initialize WebSocket manager
+        wsManager = new WebSocketManager(wss);
+        console.log('✅ [Server] WebSocket manager initialized');
+
+        // Add broadcast methods to WebSocketServer for routes to use
+        wss.broadcast = (data: object) => {
+            wsManager!.broadcast(data as any);
+        };
+
+        wss.broadcastToTenant = (tenantId: number, data: object) => {
+            wsManager!.broadcastToTenant(tenantId, data as any);
+        };
+
+        // Log WebSocket initialization as business event
+        smartLog.businessEvent('websocket_initialized', {
+            path: '/ws',
+            tenantIsolation: true,
+            authenticationRequired: true
+        });
+
+        console.log('✅ [Server] WebSocket server initialized');
+
+        // 🔒 Register all API routes (pass WebSocket server to routes)
+        await registerRoutes(app, wss);
+        console.log('✅ [Server] Routes registered with WebSocket support');
 
         // [FIX] Corrected global error handling middleware with Smart Logging.
         // This should be placed AFTER all routes have been registered.
@@ -514,7 +553,7 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
         // In development mode, set up Vite for hot module replacement.
         // In production, serve the pre-built static client files.
         if (app.get("env") === "development") {
-            await setupVite(app, server);
+            await setupVite(app, httpServer);
         } else {
             serveStatic(app);
         }
@@ -524,8 +563,29 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
         await initializeAllTelegramBots();
         smartLog.info('Telegram bots initialized successfully');
 
+        // ✅ FIX: Add manual 'upgrade' handler to route WebSocket traffic
+        httpServer.on('upgrade', (request, socket, head) => {
+            // Use URL to parse the path
+            const pathname = request.url ? new URL(request.url, `http://${request.headers.host}`).pathname : '';
+
+            console.log(`[Upgrade] Handling upgrade request for path: ${pathname}`);
+
+            if (pathname === '/ws') {
+                // If the path is for our app's WebSocket, handle it
+                wss.handleUpgrade(request, socket, head, (ws) => {
+                    wss.emit('connection', ws, request);
+                });
+            } else {
+                // IMPORTANT: For any other path, do nothing.
+                // This allows Vite's HMR WebSocket to be handled by its own listener,
+                // which was attached in setupVite().
+                // If we were to destroy the socket here, HMR would break.
+                console.log(`[Upgrade] Path not /ws, ignoring for Vite HMR to handle.`);
+            }
+        });
+
         const port = process.env.PORT || 5000;
-        server.listen({
+        httpServer.listen({
             port,
             host: "0.0.0.0",
         }, () => {
@@ -538,7 +598,8 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
                 host: '0.0.0.0',
                 environment: process.env.NODE_ENV || 'development',
                 dashboardUrl: process.env.ENABLE_FREE_DASHBOARD === 'true' ? `http://localhost:${port}/dashboard` : null,
-                healthUrl: `http://localhost:${port}/health`
+                healthUrl: `http://localhost:${port}/health`,
+                websocketUrl: `ws://localhost:${port}/ws`
             });
 
             // 📊 Display useful URLs
@@ -550,9 +611,10 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
             console.log(`   📁 Log Files: http://localhost:${port}/logs/app.log`);
             console.log(`   📁 Reports Dir: http://localhost:${port}/reports/`);
             console.log(`   📁 Analytics Dir: http://localhost:${port}/analytics/`);
+            console.log(`   🔌 WebSocket: ws://localhost:${port}/ws`);
         });
 
-        // 📊 ENHANCED: Graceful shutdown logic with Smart Logging
+        // 📊 ENHANCED: Graceful shutdown logic with Smart Logging and WebSocket cleanup
         const shutdown = (signal: string) => {
             smartLog.info('Graceful shutdown initiated', {
                 signal,
@@ -567,11 +629,18 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
 
             console.log(`\nReceived ${signal}. Shutting down gracefully...`);
 
+            // 🔌 WEBSOCKET CLEANUP: Cleanup WebSocket connections
+            if (wsManager) {
+                console.log('🔌 [Server] Cleaning up WebSocket connections...');
+                wsManager.cleanup();
+                smartLog.info('WebSocket connections cleaned up');
+            }
+
             // Stop all active Telegram bots
             cleanupTelegramBots();
 
             // Close the HTTP server
-            server.close(() => {
+            httpServer.close(() => {
                 smartLog.info('HTTP server closed successfully');
                 console.log("✅ HTTP server closed.");
 

@@ -1,0 +1,2218 @@
+diff --git a/client/src/App.tsx b/client/src/App.tsx
+index b21b056..b794be8 100644
+--- a/client/src/App.tsx
++++ b/client/src/App.tsx
+@@ -3,6 +3,10 @@ import { queryClient } from "./lib/queryClient";
+ import { QueryClientProvider } from "@tanstack/react-query";
+ import { Toaster } from "@/components/ui/toaster";
+ import { TooltipProvider } from "@/components/ui/tooltip";
++
++// 🔌 WEBSOCKET INTEGRATION: Import WebSocket provider
++import { WebSocketProvider } from "@/components/websocket/WebSocketContext";
++
+ import NotFound from "@/pages/not-found";
+ import Dashboard from "@/pages/dashboard";
+ import Reservations from "@/pages/reservations";
+@@ -436,14 +440,17 @@ function App() {
+         <ErrorBoundary>
+             <QueryClientProvider client={queryClient}>
+                 <AuthProvider>
+-                    <TooltipProvider>
+-                        <Toaster />
+-                        <Router />
+-                    </TooltipProvider>
++                    {/* 🔌 WEBSOCKET INTEGRATION: Add WebSocket provider after AuthProvider */}
++                    <WebSocketProvider>
++                        <TooltipProvider>
++                            <Toaster />
++                            <Router />
++                        </TooltipProvider>
++                    </WebSocketProvider>
+                 </AuthProvider>
+             </QueryClientProvider>
+         </ErrorBoundary>
+     );
+ }
+ 
+-export default App;
++export default App;
+\ No newline at end of file
+diff --git a/client/src/components/layout/DashboardLayout.tsx b/client/src/components/layout/DashboardLayout.tsx
+index 5f60ca9..a476b2a 100644
+--- a/client/src/components/layout/DashboardLayout.tsx
++++ b/client/src/components/layout/DashboardLayout.tsx
+@@ -115,9 +115,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
+       }
+       
+       return data;
+-    },
+-    // ✅ CRITICAL: Remove stale time to ensure fresh data
+-    staleTime: 0,
++      },
++
++    staleTime: 1000 * 60 * 5,
+     gcTime: 1000 * 30, // Keep for 30 seconds only
+     refetchOnMount: true,
+     refetchOnWindowFocus: true,
+diff --git a/client/src/components/layout/Sidebar.tsx b/client/src/components/layout/Sidebar.tsx
+index ed49e19..bcd30e3 100644
+--- a/client/src/components/layout/Sidebar.tsx
++++ b/client/src/components/layout/Sidebar.tsx
+@@ -15,6 +15,9 @@ import {
+ import { Button } from "@/components/ui/button";
+ import { cn } from "@/lib/utils";
+ 
++// 🔌 WEBSOCKET INTEGRATION: Import compact WebSocket status component
++import { WebSocketStatusCompact } from '@/components/websocket/WebSocketStatus';
++
+ interface NavItemProps {
+   href: string;
+   icon: React.ReactNode;
+@@ -47,8 +50,14 @@ export function Sidebar() {
+       {/* Desktop Sidebar */}
+       <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-gray-200">
+         <div className="px-6 py-4 border-b border-gray-200">
+-          <h1 className="text-2xl font-semibold text-gray-800">ToBeOut</h1>
+-          <p className="text-sm text-gray-500">Restaurant Management</p>
++          <div className="flex items-center justify-between">
++            <div>
++              <h1 className="text-2xl font-semibold text-gray-800">ToBeOut</h1>
++              <p className="text-sm text-gray-500">Restaurant Management</p>
++            </div>
++            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status indicator */}
++            <WebSocketStatusCompact />
++          </div>
+         </div>
+ 
+         <nav className="flex-1 pt-4 pb-4 overflow-y-auto">
+@@ -105,7 +114,11 @@ export function Sidebar() {
+       {/* Mobile Header */}
+       <div className="lg:hidden fixed top-0 left-0 right-0 z-20 bg-white border-b border-gray-200">
+         <div className="flex items-center justify-between p-4">
+-          <h1 className="text-xl font-semibold text-gray-800">ToBeOut</h1>
++          <div className="flex items-center gap-3">
++            <h1 className="text-xl font-semibold text-gray-800">ToBeOut</h1>
++            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status for mobile header */}
++            <WebSocketStatusCompact />
++          </div>
+           <Button 
+             variant="ghost" 
+             size="icon" 
+@@ -122,7 +135,11 @@ export function Sidebar() {
+         <div className="lg:hidden fixed inset-0 z-30 bg-black bg-opacity-50">
+           <div className="absolute right-0 top-0 bottom-0 w-64 bg-white">
+             <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+-              <h2 className="text-lg font-semibold">Menu</h2>
++              <div className="flex items-center gap-2">
++                <h2 className="text-lg font-semibold">Menu</h2>
++                {/* 🔌 WEBSOCKET INTEGRATION: Add status to mobile menu header */}
++                <WebSocketStatusCompact />
++              </div>
+               <Button 
+                 variant="ghost" 
+                 size="icon" 
+@@ -244,4 +261,4 @@ export function Sidebar() {
+       )}
+     </>
+   );
+-}
++}
+\ No newline at end of file
+diff --git a/client/src/pages/dashboard.tsx b/client/src/pages/dashboard.tsx
+index b7cb0f4..b051fb5 100644
+--- a/client/src/pages/dashboard.tsx
++++ b/client/src/pages/dashboard.tsx
+@@ -16,6 +16,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
+ import { useToast } from "@/hooks/use-toast";
+ import { EnhancedAIAssistant } from '@/components/dashboard/EnhancedAIAssistant';
+ 
++// 🔌 WEBSOCKET INTEGRATION: Import WebSocket status component
++import { WebSocketStatus } from '@/components/websocket/WebSocketStatus';
++
+ export default function Dashboard() {
+     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
+     const [selectedReservationId, setSelectedReservationId] = useState<number | undefined>(undefined);
+@@ -144,7 +147,10 @@ export default function Dashboard() {
+                             )}
+                         </p>
+                     </div>
+-                    <div className="mt-4 md:mt-0 flex flex-wrap gap-2">
++                    <div className="mt-4 md:mt-0 flex flex-wrap gap-2 items-center">
++                        {/* 🔌 WEBSOCKET INTEGRATION: Add WebSocket status badge */}
++                        <WebSocketStatus />
++                        
+                         <Button
+                             className="inline-flex items-center"
+                             onClick={handleCreateReservation}
+@@ -152,6 +158,7 @@ export default function Dashboard() {
+                             <PlusCircle className="mr-2 h-4 w-4" />
+                             New Reservation
+                         </Button>
++                        
+                         <DropdownMenu>
+                             <DropdownMenuTrigger asChild>
+                                 <Button variant="outline" className="inline-flex items-center">
+@@ -252,4 +259,4 @@ export default function Dashboard() {
+             </AlertDialog>
+         </DashboardLayout>
+     );
+-}
++}
+\ No newline at end of file
+diff --git a/client/src/pages/modern-tables.tsx b/client/src/pages/modern-tables.tsx
+index 66b6781..72cfc44 100644
+--- a/client/src/pages/modern-tables.tsx
++++ b/client/src/pages/modern-tables.tsx
+@@ -15,9 +15,14 @@ import { useToast } from "@/hooks/use-toast";
+ import { cn } from "@/lib/utils";
+ import { apiRequest } from "@/lib/queryClient";
+ import { DashboardLayout } from "@/components/layout/DashboardLayout";
+-// ✅ CRITICAL FIX: Import timezone utilities from the correct path
+ import { getRestaurantDateTime, getRestaurantDateString, getTomorrowDateString } from "@/lib/utils";
+ 
++// ✅ NEW: Import WebSocket context and dnd-kit
++import { useWebSocketContext } from "@/components/websocket/WebSocketContext";
++import { DndContext, DragEndEvent } from '@dnd-kit/core';
++import { DraggableReservation } from '@/components/reservations/DraggableReservation';
++import { DroppableSlot } from '@/components/reservations/DroppableSlot';
++
+ interface TableData {
+   id: number;
+   name: string;
+@@ -56,13 +61,12 @@ interface Restaurant {
+   [key: string]: any;
+ }
+ 
+-// ✅ TYPE SAFETY FIX: Define mutation context type
+ interface MutationContext {
+   previousData?: any;
+ }
+ 
+ export default function ModernTables() {
+-  const [selectedDate, setSelectedDate] = useState(''); // ✅ FIXED: Initialize empty, set after restaurant loads
++  const [selectedDate, setSelectedDate] = useState('');
+   const [selectedTime, setSelectedTime] = useState("19:00");
+   const [activeView, setActiveView] = useState<"schedule" | "floorplan" | "grid" | "list">("schedule");
+   
+@@ -87,41 +91,35 @@ export default function ModernTables() {
+     guestName?: string;
+   } | null>(null);
+ 
+-  // Enhanced drag & drop state
+-  const [draggedReservation, setDraggedReservation] = useState<{
+-    reservationId: number;
+-    guestName: string;
+-    guestCount: number;
+-    currentTableId: number;
+-    currentTableName: string;
+-    currentTime: string;
+-    phone?: string;
+-  } | null>(null);
+-  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+-  const [dragOverSlot, setDragOverSlot] = useState<{tableId: number; time: string} | null>(null);
+-  const [isValidDropZone, setIsValidDropZone] = useState(false);
++  // ✅ REMOVED: All manual drag-and-drop state variables
++  // - draggedReservation
++  // - dragPosition
++  // - dragOverSlot
++  // - isValidDropZone
+   
+   const queryClient = useQueryClient();
+   const { toast } = useToast();
+ 
+-  // ✅ CRITICAL FIX: Get restaurant profile first without timezone in query key
++  // ✅ NEW: WebSocket context for real-time updates
++  const { isConnected } = useWebSocketContext();
++
++  // Get restaurant profile first
+   const { data: restaurant, isLoading: restaurantLoading, error: restaurantError } = useQuery<Restaurant>({
+     queryKey: ["/api/restaurants/profile"],
+     retry: 3,
+     staleTime: 30000,
+   });
+ 
+-  // ✅ CRITICAL FIX: Get actual restaurant timezone or fallback
+   const restaurantTimezone = restaurant?.timezone || 'Europe/Belgrade';
+ 
+-  // ✅ CRITICAL FIX: Set selectedDate after restaurant loads
++  // Set selectedDate after restaurant loads
+   React.useEffect(() => {
+     if (restaurant && !selectedDate) {
+       setSelectedDate(getRestaurantDateString(restaurantTimezone));
+     }
+   }, [restaurant, restaurantTimezone, selectedDate]);
+ 
+-  // ✅ CRITICAL FIX: Enhanced overnight-aware time slot generation
++  // Enhanced overnight-aware time slot generation
+   const timeSlots: string[] = React.useMemo(() => {
+     if (!restaurant?.openingTime || !restaurant?.closingTime) {
+       return [];
+@@ -135,21 +133,17 @@ export default function ModernTables() {
+       const openingMinutes = openHour * 60 + (openMin || 0);
+       const closingMinutes = closeHour * 60 + (closeMin || 0);
+       
+-      // ✅ CRITICAL FIX: Detect overnight operation
+       const isOvernightOperation = closingMinutes < openingMinutes;
+       
+       if (isOvernightOperation) {
+         console.log(`[ModernTables] 🌙 Overnight operation detected: ${restaurant.openingTime}-${restaurant.closingTime}`);
+         
+-        // ✅ Generate overnight time slots
+-        // Part 1: From opening time until midnight (e.g., 22:00 → 24:00)
+         for (let minutes = openingMinutes; minutes < 24 * 60; minutes += 60) {
+           const hour = Math.floor(minutes / 60);
+           const minute = minutes % 60;
+           slots.push(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
+         }
+         
+-        // Part 2: From midnight until closing time (e.g., 00:00 → 03:00)
+         for (let minutes = 0; minutes < closingMinutes; minutes += 60) {
+           const hour = Math.floor(minutes / 60);
+           const minute = minutes % 60;
+@@ -160,9 +154,8 @@ export default function ModernTables() {
+       } else {
+         console.log(`[ModernTables] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime}`);
+         
+-        // ✅ Standard operation: simple range
+-        const avgDuration = restaurant.avgReservationDuration || 120; // minutes
+-        const lastBookingTime = closingMinutes - avgDuration; // Don't allow bookings too close to closing
++        const avgDuration = restaurant.avgReservationDuration || 120;
++        const lastBookingTime = closingMinutes - avgDuration;
+         
+         for (let minutes = openingMinutes; minutes <= lastBookingTime; minutes += 60) {
+           const hour = Math.floor(minutes / 60);
+@@ -179,14 +172,14 @@ export default function ModernTables() {
+     return slots;
+   }, [restaurant]);
+ 
+-  // ✅ CRITICAL FIX: Get tables with proper timezone context
++  // Get tables with proper timezone context
+   const { data: tables, isLoading: tablesLoading, error: tablesError } = useQuery({
+     queryKey: ["/api/tables", restaurantTimezone],
+     enabled: !!restaurant,
+     retry: 3,
+   });
+ 
+-  // ✅ CRITICAL FIX: Enhanced schedule data fetching with comprehensive overnight support
++  // ✅ UPDATED: Removed refetchInterval for real-time WebSocket updates
+   const { data: scheduleData, isLoading, error: scheduleError } = useQuery({
+     queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone],
+     queryFn: async () => {
+@@ -197,7 +190,6 @@ export default function ModernTables() {
+       console.log(`🔍 [ModernTables] Fetching schedule for ${selectedDate} with timezone ${restaurantTimezone}`);
+       console.log(`🔍 [ModernTables] Time slots to check: ${timeSlots.length} slots`);
+ 
+-      // ✅ ENHANCED: Check if this is an overnight operation
+       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+ 
+@@ -216,7 +208,6 @@ export default function ModernTables() {
+           if (!response.ok) {
+             console.error(`❌ Failed to fetch availability for ${time}:`, response.status, response.statusText);
+             
+-            // ✅ ENHANCED: For overnight operations, provide more context in errors
+             if (isOvernight) {
+               console.error(`❌ [ModernTables] Overnight operation error at ${time} - this might be due to timezone handling`);
+             }
+@@ -227,7 +218,6 @@ export default function ModernTables() {
+           const data = await response.json();
+           const sortedTables = Array.isArray(data) ? data.sort((a: any, b: any) => a.id - b.id) : [];
+           
+-          // ✅ ENHANCED: Better logging for overnight operations
+           if (isOvernight && (time === timeSlots[0] || time === timeSlots[Math.floor(timeSlots.length/2)] || time === timeSlots[timeSlots.length-1])) {
+             console.log(`✅ [ModernTables] 🌙 Overnight slot ${time}: ${sortedTables.length} tables`);
+           } else if (!isOvernight && sortedTables.length > 0) {
+@@ -239,19 +229,17 @@ export default function ModernTables() {
+         } catch (error) {
+           console.error(`❌ Error fetching ${time}:`, error);
+           
+-          // ✅ ENHANCED: For overnight operations, provide empty data instead of failing completely
+           if (isOvernight) {
+             console.warn(`⚠️ [ModernTables] 🌙 Overnight slot ${time} failed, providing empty data`);
+             return { time, tables: [] };
+           }
+           
+-          throw error; // Re-throw for standard operations
++          throw error;
+         }
+       });
+       
+       const results = await Promise.allSettled(promises);
+       
+-      // ✅ ENHANCED: Handle mixed success/failure results better for overnight operations
+       const successfulResults = results
+         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
+         .map(result => result.value);
+@@ -272,22 +260,59 @@ export default function ModernTables() {
+       return successfulResults;
+     },
+     enabled: !!restaurant && !!selectedDate && timeSlots.length > 0,
+-    refetchInterval: 180000,
++    // ✅ REMOVED: refetchInterval (now using WebSocket for real-time updates)
+     refetchOnWindowFocus: true,
+     refetchOnMount: true,
+     retry: (failureCount, error) => {
+-      // ✅ ENHANCED: More lenient retry logic for overnight operations
+       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+       
+       if (isOvernight) {
+-        return failureCount < 1; // Only retry once for overnight operations
++        return failureCount < 1;
+       }
+-      return failureCount < 2; // Standard retry logic
++      return failureCount < 2;
+     },
+   });
+ 
+-  // ✅ CRITICAL FIX: Enhanced table creation with timezone context
++  // ✅ NEW: dnd-kit drag end handler (replaces all manual drag-and-drop handlers)
++  const handleDragEnd = (event: DragEndEvent) => {
++    const { active, over } = event;
++
++    // Exit if the item was dropped in a non-droppable area
++    if (!over) {
++      return;
++    }
++
++    // Exit if the item was dropped back into its original spot
++    if (active.id === over.id) {
++      return;
++    }
++
++    const reservationId = active.id as number;
++    const { tableId: newTableId, time: newTime } = over.data.current as { tableId: number, time: string };
++
++    // Check for capacity constraints
++    const draggedGuestCount = active.data.current?.guestCount;
++    const targetTable = over.data.current?.table;
++    
++    if (draggedGuestCount && targetTable && (draggedGuestCount < targetTable.minGuests || draggedGuestCount > targetTable.maxGuests)) {
++      toast({
++        title: "Move Failed",
++        description: `Table ${targetTable.name} cannot accommodate ${draggedGuestCount} guests.`,
++        variant: "destructive",
++      });
++      return;
++    }
++    
++    // Call the existing mutation to move the reservation
++    moveReservationMutation.mutate({
++      reservationId,
++      newTableId,
++      newTime,
++    });
++  };
++
++  // Enhanced table creation with timezone context
+   const addTableMutation = useMutation({
+     mutationFn: async (tableData: AddTableForm) => {
+       const payload = {
+@@ -297,7 +322,6 @@ export default function ModernTables() {
+         features: tableData.features ? tableData.features.split(',').map(f => f.trim()) : [],
+         comments: tableData.comments,
+         status: 'free',
+-        // ✅ CRITICAL FIX: Include restaurant context
+         restaurantTimezone: restaurantTimezone
+       };
+       
+@@ -325,17 +349,14 @@ export default function ModernTables() {
+       
+       console.log(`✅ [ModernTables] Table created:`, newTable);
+       
+-      // ✅ CRITICAL FIX: Comprehensive cache invalidation
+       queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
+       queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+       queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile"] });
+       
+-      // Force refetch of schedule data
+       queryClient.refetchQueries({ 
+         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
+       });
+       
+-      // Reset form and close modal
+       setAddTableForm({
+         name: "",
+         minGuests: 1,
+@@ -355,7 +376,7 @@ export default function ModernTables() {
+     }
+   });
+ 
+-  // ✅ CRITICAL FIX: Enhanced table deletion with timezone context
++  // Enhanced table deletion with timezone context
+   const deleteTableMutation = useMutation({
+     mutationFn: async (tableId: number) => {
+       console.log(`🗑️ [ModernTables] Deleting table ${tableId}`);
+@@ -380,11 +401,9 @@ export default function ModernTables() {
+       
+       console.log(`✅ [ModernTables] Table deleted successfully`);
+       
+-      // ✅ CRITICAL FIX: Comprehensive cache invalidation
+       queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
+       queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
+       
+-      // Force refetch
+       queryClient.refetchQueries({ 
+         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
+       });
+@@ -399,7 +418,7 @@ export default function ModernTables() {
+     }
+   });
+ 
+-  // ✅ TYPE SAFETY FIX: Enhanced reservation movement with proper mutation types
++  // Enhanced reservation movement with proper mutation types
+   const moveReservationMutation = useMutation<any, Error, { 
+     reservationId: number; 
+     newTableId: number; 
+@@ -432,19 +451,39 @@ export default function ModernTables() {
+       });
+ 
+       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
+-      const duration = 2;
++      // Calculate duration in hour slots based on restaurant's average reservation duration
++      const durationInSlots = Math.ceil((restaurant?.avgReservationDuration || 120) / 60);
+ 
+       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
+-        if (!old || !draggedReservation) return old;
++        if (!old) return old;
++        
++        // Find the current reservation to move
++        let currentReservation: any = null;
++        let currentTableId: number = 0;
++        let currentTime: string = '';
++        
++        // Find the reservation in the current data
++        for (const slot of old) {
++          for (const table of slot.tables) {
++            if (table.reservation?.id === reservationId) {
++              currentReservation = table.reservation;
++              currentTableId = table.id;
++              currentTime = slot.time;
++              break;
++            }
++          }
++          if (currentReservation) break;
++        }
+         
+-        const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
++        if (!currentReservation) return old;
++        
++        const sourceHour = parseInt(currentTime.split(':')[0]);
+         const targetHour = parseInt(newTime.split(':')[0]);
+         
+-        // ✅ TYPE SAFETY FIX: Proper array typing
+         const sourceSlots: string[] = [];
+         const targetSlots: string[] = [];
+         
+-        for (let i = 0; i < duration; i++) {
++        for (let i = 0; i < durationInSlots; i++) {
+           sourceSlots.push(`${(sourceHour + i).toString().padStart(2, '0')}:00`);
+           targetSlots.push(`${(targetHour + i).toString().padStart(2, '0')}:00`);
+         }
+@@ -452,7 +491,7 @@ export default function ModernTables() {
+         return old.map((slot: any) => ({
+           ...slot,
+           tables: slot.tables.map((table: any) => {
+-            if (table.id === draggedReservation.currentTableId && 
++            if (table.id === currentTableId && 
+                 sourceSlots.includes(slot.time) &&
+                 table.reservation?.id === reservationId) {
+               return { 
+@@ -467,12 +506,8 @@ export default function ModernTables() {
+                 ...table, 
+                 status: 'reserved',
+                 reservation: {
+-                  id: reservationId,
+-                  guestName: draggedReservation.guestName,
+-                  guestCount: draggedReservation.guestCount,
+-                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1]}`,
+-                  phone: draggedReservation.phone || '',
+-                  status: 'confirmed'
++                  ...currentReservation,
++                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1]}`
+                 }
+               };
+             }
+@@ -487,18 +522,16 @@ export default function ModernTables() {
+ 
+     onSuccess: (data: any, variables) => {
+       const { newTableId, newTime } = variables;
+-      const oldTableName = draggedReservation?.currentTableName || `Table ${draggedReservation?.currentTableId}`;
++      
++      // Find table names for the toast message
+       const newTableName = scheduleData?.find(slot => slot.time === newTime)
+         ?.tables?.find((t: any) => t.id === newTableId)?.name || `Table ${newTableId}`;
+ 
+       toast({
+         title: "Reservation Updated",
+-        description: `${draggedReservation?.guestName}'s reservation moved from ${draggedReservation?.currentTime} (${oldTableName}) to ${newTime} (${newTableName})`,
++        description: `Reservation moved to ${newTime} (${newTableName})`,
+       });
+       
+-      setDraggedReservation(null);
+-      setDragOverSlot(null);
+-      
+       queryClient.invalidateQueries({ 
+         queryKey: ["/api/reservations", restaurantTimezone] 
+       });
+@@ -517,13 +550,10 @@ export default function ModernTables() {
+         description: error.message || "Please try again",
+         variant: "destructive",
+       });
+-      
+-      setDraggedReservation(null);
+-      setDragOverSlot(null);
+     }
+   });
+ 
+-  // ✅ TYPE SAFETY FIX: Enhanced reservation cancellation with proper typing
++  // Enhanced reservation cancellation with proper typing
+   const cancelReservationMutation = useMutation<any, Error, number, MutationContext>({
+     mutationFn: async (reservationId: number) => {
+       const response = await fetch(`/api/reservations/${reservationId}`, {
+@@ -585,7 +615,7 @@ export default function ModernTables() {
+     },
+   });
+ 
+-  // ✅ TYPE SAFETY FIX: Enhanced quick move with proper typing
++  // Enhanced quick move with proper typing
+   const quickMoveMutation = useMutation<any, Error, { reservationId: number; direction: 'up' | 'down' }, MutationContext>({
+     mutationFn: async ({ reservationId, direction }) => {
+       const currentSlot = scheduleData?.find(slot => 
+@@ -598,7 +628,6 @@ export default function ModernTables() {
+       const currentHour = parseInt(currentSlot.time.split(':')[0]);
+       const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
+       
+-      // ✅ ENHANCED: Handle overnight operation boundaries
+       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
+         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+       
+@@ -606,7 +635,6 @@ export default function ModernTables() {
+         const openingHour = parseInt(restaurant.openingTime.split(':')[0]);
+         const closingHour = parseInt(restaurant.closingTime.split(':')[0]);
+         
+-        // For overnight operations, check boundaries differently
+         if (direction === 'up' && newHour < 0) {
+           throw new Error('Cannot move before midnight');
+         }
+@@ -614,13 +642,11 @@ export default function ModernTables() {
+           throw new Error('Cannot move past 24:00');
+         }
+         
+-        // Check if the new hour is within operating hours
+         const isValidHour = (newHour >= openingHour || newHour < closingHour);
+         if (!isValidHour) {
+           throw new Error(`Cannot move outside operating hours (${restaurant.openingTime} - ${restaurant.closingTime})`);
+         }
+       } else {
+-        // Standard operation checks
+         const openingHour = parseInt(restaurant?.openingTime?.split(':')[0] || '10');
+         const closingHour = parseInt(restaurant?.closingTime?.split(':')[0] || '22');
+         
+@@ -676,16 +702,16 @@ export default function ModernTables() {
+       const targetHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
+       const targetTime = `${targetHour.toString().padStart(2, '0')}:00`;
+       
+-      const duration = 2;
++      // Calculate duration in hour slots based on restaurant's average reservation duration
++      const durationInSlots = Math.ceil((restaurant?.avgReservationDuration || 120) / 60);
+       
+       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
+         if (!old) return old;
+         
+-        // ✅ TYPE SAFETY FIX: Proper array typing
+         const sourceSlots: string[] = [];
+         const targetSlots: string[] = [];
+         
+-        for (let i = 0; i < duration; i++) {
++        for (let i = 0; i < durationInSlots; i++) {
+           sourceSlots.push(`${(currentHour + i).toString().padStart(2, '0')}:00`);
+           targetSlots.push(`${(targetHour + i).toString().padStart(2, '0')}:00`);
+         }
+@@ -742,121 +768,18 @@ export default function ModernTables() {
+     },
+   });
+ 
+-  // Drag & Drop Event Handlers (unchanged)
+-  const handleDragStart = (
+-    e: React.DragEvent,
+-    reservation: {
+-      id: number;
+-      guestName: string;
+-      guestCount: number;
+-    },
+-    table: TableData,
+-    time: string
+-  ) => {
+-    setDraggedReservation({
+-      reservationId: reservation.id,
+-      guestName: reservation.guestName,
+-      guestCount: reservation.guestCount,
+-      currentTableId: table.id,
+-      currentTableName: table.name,
+-      currentTime: time
+-    });
+-    
+-    e.dataTransfer.effectAllowed = 'move';
+-  };
+-
+-  const checkReservationConflict = (targetTableId: number, targetTime: string, duration: number = 2): boolean => {
+-    if (!scheduleData || !draggedReservation) return false;
+-    
+-    const targetHour = parseInt(targetTime.split(':')[0]);
+-    
+-    for (let i = 0; i < duration; i++) {
+-      const hour = (targetHour + i).toString().padStart(2, '0');
+-      const timeSlot = `${hour}:00`;
+-      
+-      const slot = scheduleData.find(s => s.time === timeSlot);
+-      const table = slot?.tables?.find((t: any) => t.id === targetTableId);
+-      
+-      if (table?.reservation && table.reservation.id !== draggedReservation.reservationId) {
+-        return true;
+-      }
+-    }
+-    
+-    return false;
+-  };
+-
+-  const isMovingWithinSameReservation = (targetTableId: number, targetTime: string): boolean => {
+-    if (!scheduleData || !draggedReservation) return false;
+-    
+-    return draggedReservation.currentTableId === targetTableId && 
+-           draggedReservation.currentTime === targetTime;
+-  };
+-
+-  const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
+-    e.preventDefault();
+-    
+-    setDragOverSlot({ tableId, time });
+-    
+-    if (isMovingWithinSameReservation(tableId, time)) {
+-      setIsValidDropZone(false);
+-      e.dataTransfer.dropEffect = 'none';
+-      return;
+-    }
+-    
+-    const hasConflict = checkReservationConflict(tableId, time, 2);
+-    const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find((t: any) => t.id === tableId);
+-    const hasExistingReservation = targetSlot?.reservation && 
+-      targetSlot.reservation.id !== draggedReservation?.reservationId;
+-    
+-    const capacityMatch = draggedReservation ? 
+-      (targetSlot?.minGuests || 0) <= draggedReservation.guestCount && 
+-      draggedReservation.guestCount <= (targetSlot?.maxGuests || 0) : false;
+-    
+-    const isValidDrop = !hasConflict && !hasExistingReservation && capacityMatch;
+-    
+-    setIsValidDropZone(isValidDrop);
+-    e.dataTransfer.dropEffect = isValidDrop ? 'move' : 'none';
+-  };
+-
+-  const handleDragLeave = () => {
+-    setDragOverSlot(null);
+-    setIsValidDropZone(false);
+-  };
+-
+-  const handleDrop = (e: React.DragEvent, tableId: number, time: string) => {
+-    e.preventDefault();
+-    
+-    if (!draggedReservation) {
+-      setDraggedReservation(null);
+-      setDragOverSlot(null);
+-      return;
+-    }
+-
+-    if (draggedReservation.currentTableId === tableId && draggedReservation.currentTime === time) {
+-      setDraggedReservation(null);
+-      setDragOverSlot(null);
+-      return;
+-    }
+-
+-    if (!isValidDropZone) {
+-      setDraggedReservation(null);
+-      setDragOverSlot(null);
+-      return;
+-    }
++  // ✅ REMOVED: All manual drag-and-drop handlers
++  // - handleDragStart
++  // - handleDragOver
++  // - handleDragLeave
++  // - handleDrop
++  // - checkReservationConflict
++  // - isMovingWithinSameReservation
+ 
+-    moveReservationMutation.mutate({
+-      reservationId: draggedReservation.reservationId,
+-      newTableId: tableId,
+-      newTime: time
+-    });
+-  };
+-
+-  // ✅ TYPE SAFETY FIX: Status colors for modern design with proper typing
++  // Status colors for modern design with proper typing
+   const getStatusStyle = (status: string, hasReservation: boolean | undefined, isDragTarget = false) => {
+     if (isDragTarget) {
+-      return isValidDropZone
+-        ? "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105"
+-        : "bg-gradient-to-br from-red-400 to-red-500 text-white shadow-lg shadow-red-400/50 ring-2 ring-red-300";
++      return "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105";
+     }
+     
+     if (hasReservation) {
+@@ -877,7 +800,7 @@ export default function ModernTables() {
+     }
+   };
+ 
+-  // ✅ CRITICAL FIX: Enhanced form submission with validation
++  // Enhanced form submission with validation
+   const handleAddTable = (e: React.FormEvent) => {
+     e.preventDefault();
+     
+@@ -912,7 +835,7 @@ export default function ModernTables() {
+     addTableMutation.mutate(addTableForm);
+   };
+ 
+-  // ✅ CRITICAL FIX: Enhanced date formatting with timezone
++  // Enhanced date formatting with timezone
+   const formatCurrentDate = () => {
+     try {
+       if (!restaurantTimezone || !selectedDate) {
+@@ -937,7 +860,7 @@ export default function ModernTables() {
+     }
+   };
+ 
+-  // ✅ CRITICAL FIX: Enhanced date navigation with timezone
++  // Enhanced date navigation with timezone
+   const getTodayDateStr = () => {
+     return getRestaurantDateString(restaurantTimezone);
+   };
+@@ -946,7 +869,7 @@ export default function ModernTables() {
+     return getTomorrowDateString(restaurantTimezone);
+   };
+ 
+-  // ✅ CRITICAL FIX: Show loading state while restaurant loads
++  // Show loading state while restaurant loads
+   if (restaurantLoading) {
+     return (
+       <DashboardLayout>
+@@ -962,7 +885,7 @@ export default function ModernTables() {
+     );
+   }
+ 
+-  // ✅ CRITICAL FIX: Show error state if restaurant fails to load
++  // Show error state if restaurant fails to load
+   if (restaurantError || !restaurant) {
+     return (
+       <DashboardLayout>
+@@ -982,7 +905,7 @@ export default function ModernTables() {
+     );
+   }
+ 
+-  // ✅ ENHANCED: Check if this is an overnight operation
++  // Check if this is an overnight operation
+   const isOvernightOperation = restaurant?.openingTime && restaurant?.closingTime && 
+     (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
+ 
+@@ -996,7 +919,6 @@ export default function ModernTables() {
+               <div className="flex items-center gap-2">
+                 <Calendar className="h-5 w-5 text-blue-600" />
+                 <CardTitle className="text-lg">Table Management</CardTitle>
+-                {/* ✅ CRITICAL FIX: Show timezone and operation type info */}
+                 <Badge variant="outline" className="text-xs">
+                   {restaurantTimezone}
+                 </Badge>
+@@ -1008,6 +930,14 @@ export default function ModernTables() {
+                 )}
+               </div>
+               <div className="flex items-center gap-2">
++                {/* ✅ NEW: Live Status Indicator */}
++                {isConnected ? (
++                    <Badge variant="outline" className="border-green-500 text-green-700 bg-green-50">
++                        ● Live
++                    </Badge>
++                ) : (
++                    <Badge variant="destructive">● Disconnected</Badge>
++                )}
+                 <Button 
+                   onClick={() => setShowAddTableModal(true)}
+                   className="bg-green-600 hover:bg-green-700 text-white"
+@@ -1045,7 +975,7 @@ export default function ModernTables() {
+           </CardHeader>
+         </Card>
+ 
+-        {/* ✅ TYPE SAFETY FIX: Enhanced Table Statistics with proper array checking */}
++        {/* Table Statistics */}
+         {tablesLoading ? (
+           <Card className="bg-blue-50 border-blue-200">
+             <CardContent className="pt-4">
+@@ -1114,7 +1044,7 @@ export default function ModernTables() {
+                   Restaurant Management - {formatCurrentDate()}
+                 </h3>
+                 <p className="text-gray-500 dark:text-gray-400 mt-1">
+-                  Real-time availability across all tables • Auto-refreshes every 3 minutes
++                  Real-time availability across all tables • Live updates via WebSocket
+                   <span className="ml-2 text-blue-600">
+                     • {restaurantTimezone}
+                   </span>
+@@ -1171,7 +1101,6 @@ export default function ModernTables() {
+         <div className="p-6">
+           {activeView === 'schedule' && (
+             <>
+-              {/* ✅ CRITICAL FIX: Enhanced error handling and loading states for overnight */}
+               {scheduleError ? (
+                 <div className="text-center py-12">
+                   <p className="text-red-600 mb-4">
+@@ -1202,133 +1131,142 @@ export default function ModernTables() {
+                   )}
+                 </div>
+               ) : scheduleData && scheduleData.length > 0 && scheduleData[0]?.tables?.length > 0 ? (
+-                <div className="overflow-x-auto">
+-                  <div className="min-w-[800px]">
+-                    {/* Sticky Header */}
+-                    <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10 rounded-lg mb-4">
+-                      <div className="flex">
+-                        <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">
+-                          TIME
+-                          {isOvernightOperation && (
+-                            <div className="text-xs text-blue-600 mt-1">24h</div>
+-                          )}
+-                        </div>
+-                        <div className="flex overflow-x-auto gap-1 flex-1">
+-                          {scheduleData[0]?.tables?.map((table: TableData) => (
+-                            <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50 relative group">
+-                              <div className="font-medium text-xs text-gray-900 dark:text-gray-100">{table.name}</div>
+-                              <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center justify-center gap-1">
+-                                <Users className="h-3 w-3" />
+-                                {table.minGuests}-{table.maxGuests}
++                <DndContext onDragEnd={handleDragEnd}>
++                  <div className="overflow-x-auto">
++                    <div className="min-w-[800px]">
++                      {/* Sticky Header */}
++                      <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10 rounded-lg mb-4">
++                        <div className="flex">
++                          <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">
++                            TIME
++                            {isOvernightOperation && (
++                              <div className="text-xs text-blue-600 mt-1">24h</div>
++                            )}
++                          </div>
++                          <div className="flex overflow-x-auto gap-1 flex-1">
++                            {scheduleData[0]?.tables?.map((table: TableData) => (
++                              <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50 relative group">
++                                <div className="font-medium text-xs text-gray-900 dark:text-gray-100">{table.name}</div>
++                                <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center justify-center gap-1">
++                                  <Users className="h-3 w-3" />
++                                  {table.minGuests}-{table.maxGuests}
++                                </div>
++                                <Button
++                                  variant="destructive"
++                                  size="sm"
++                                  onClick={() => {
++                                    if (confirm(`Delete table ${table.name}? This cannot be undone.`)) {
++                                      deleteTableMutation.mutate(table.id);
++                                    }
++                                  }}
++                                  className="absolute -top-2 -right-2 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
++                                >
++                                  <X className="h-3 w-3" />
++                                </Button>
+                               </div>
+-                              <Button
+-                                variant="destructive"
+-                                size="sm"
+-                                onClick={() => {
+-                                  if (confirm(`Delete table ${table.name}? This cannot be undone.`)) {
+-                                    deleteTableMutation.mutate(table.id);
+-                                  }
+-                                }}
+-                                className="absolute -top-2 -right-2 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+-                              >
+-                                <X className="h-3 w-3" />
+-                              </Button>
+-                            </div>
+-                          ))}
++                            ))}
++                          </div>
+                         </div>
+                       </div>
+-                    </div>
+ 
+-                    {/* ✅ ENHANCED: Time Slots with overnight operation visual cues */}
+-                    <div className="space-y-1">
+-                      {scheduleData?.map((slot: ScheduleSlot) => {
+-                        const hour = parseInt(slot.time.split(':')[0]);
+-                        const isEarlyMorning = isOvernightOperation && hour < 6;
+-                        const isLateNight = isOvernightOperation && hour >= 22;
+-                        
+-                        return (
+-                          <div 
+-                            key={slot.time} 
+-                            className={cn(
+-                              "flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200",
+-                              isEarlyMorning && "bg-blue-50/30",
+-                              isLateNight && "bg-purple-50/30"
+-                            )}
+-                          >
+-                            <div className={cn(
+-                              "w-20 flex-shrink-0 px-4 py-3 text-sm font-medium border-r border-gray-200/50 dark:border-gray-700/50",
+-                              isEarlyMorning && "text-blue-700 dark:text-blue-300",
+-                              isLateNight && "text-purple-700 dark:text-purple-300",
+-                              !isEarlyMorning && !isLateNight && "text-gray-700 dark:text-gray-300"
+-                            )}>
+-                              {slot.time}
+-                              {isOvernightOperation && (
+-                                <div className="text-xs opacity-60">
+-                                  {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Day"}
+-                                </div>
++                      {/* Time Slots with overnight operation visual cues */}
++                      <div className="space-y-1">
++                        {scheduleData?.map((slot: ScheduleSlot) => {
++                          const hour = parseInt(slot.time.split(':')[0]);
++                          const isEarlyMorning = isOvernightOperation && hour < 6;
++                          const isLateNight = isOvernightOperation && hour >= 22;
++                          
++                          return (
++                            <div 
++                              key={slot.time} 
++                              className={cn(
++                                "flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200",
++                                isEarlyMorning && "bg-blue-50/30",
++                                isLateNight && "bg-purple-50/30"
+                               )}
+-                            </div>
+-                            <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
+-                              {slot.tables?.map((table: TableData) => {
+-                                const hasReservation = table.reservation && table.reservation.status === 'confirmed';
+-                                const isDragTarget = dragOverSlot?.tableId === table.id && dragOverSlot?.time === slot.time;
+-                                
+-                                return (
+-                                  <div
+-                                    key={table.id}
+-                                    className={cn(
+-                                      "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
+-                                      getStatusStyle(table.status, hasReservation, isDragTarget),
+-                                      !hasReservation && "hover:scale-105"
+-                                    )}
+-                                    draggable={hasReservation}
+-                                    onDragStart={(e) => hasReservation && table.reservation && handleDragStart(
+-                                      e,
+-                                      {
+-                                        id: table.reservation.id || 0,
+-                                        guestName: table.reservation.guestName,
+-                                        guestCount: table.reservation.guestCount
+-                                      },
+-                                      table,
+-                                      slot.time
+-                                    )}
+-                                    onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
+-                                    onDragLeave={handleDragLeave}
+-                                    onDrop={(e) => handleDrop(e, table.id, slot.time)}
+-                                    onContextMenu={(e) => {
+-                                      e.preventDefault();
+-                                      setContextMenu({
+-                                        x: e.clientX,
+-                                        y: e.clientY,
+-                                        reservationId: hasReservation ? table.reservation?.id : undefined,
+-                                        tableId: table.id,
+-                                        timeSlot: slot.time,
+-                                        guestName: hasReservation ? table.reservation?.guestName : undefined,
+-                                      });
+-                                    }}
+-                                  >
+-                                    <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
+-                                      {hasReservation && <Move className="h-3 w-3" />}
+-                                      {table.name}
+-                                    </div>
+-                                    {hasReservation && table.reservation && (
+-                                      <div className="text-xs opacity-75 mt-1 truncate">
+-                                        {table.reservation.guestName}
+-                                      </div>
+-                                    )}
+-                                    <div className="text-xs opacity-60 mt-1">
+-                                      {hasReservation ? `${table.reservation?.guestCount} guests` : table.status}
+-                                    </div>
++                            >
++                              <div className={cn(
++                                "w-20 flex-shrink-0 px-4 py-3 text-sm font-medium border-r border-gray-200/50 dark:border-gray-700/50",
++                                isEarlyMorning && "text-blue-700 dark:text-blue-300",
++                                isLateNight && "text-purple-700 dark:text-purple-300",
++                                !isEarlyMorning && !isLateNight && "text-gray-700 dark:text-gray-300"
++                              )}>
++                                {slot.time}
++                                {isOvernightOperation && (
++                                  <div className="text-xs opacity-60">
++                                    {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Day"}
+                                   </div>
+-                                );
+-                              })}
++                                )}
++                              </div>
++                              <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
++                                {slot.tables?.map((table: TableData) => {
++                                  const hasReservation = table.reservation && table.reservation.status === 'confirmed';
++                                  const uniqueSlotId = `${table.id}-${slot.time}`; // Unique ID for the droppable area
++                                  
++                                  return (
++                                    <div
++                                      key={table.id}
++                                      className={cn(
++                                        "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
++                                        getStatusStyle(table.status, hasReservation),
++                                        !hasReservation && "hover:scale-105"
++                                      )}
++                                      onContextMenu={(e) => {
++                                        e.preventDefault();
++                                        setContextMenu({
++                                          x: e.clientX,
++                                          y: e.clientY,
++                                          reservationId: hasReservation ? table.reservation?.id : undefined,
++                                          tableId: table.id,
++                                          timeSlot: slot.time,
++                                          guestName: hasReservation ? table.reservation?.guestName : undefined,
++                                        });
++                                      }}
++                                    >
++                                      {/* ✅ NEW: Use DraggableReservation and DroppableSlot components */}
++                                      {hasReservation && table.reservation ? (
++                                        <DraggableReservation 
++                                          id={table.reservation.id} 
++                                          data={{
++                                            guestName: table.reservation.guestName,
++                                            guestCount: table.reservation.guestCount,
++                                          }}
++                                        >
++                                          {/* The content of the reservation card */}
++                                          <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1 cursor-grab active:cursor-grabbing">
++                                            <Move className="h-3 w-3" />
++                                            {table.name}
++                                          </div>
++                                          <div className="text-xs opacity-75 mt-1 truncate">
++                                            {table.reservation.guestName}
++                                          </div>
++                                          <div className="text-xs opacity-60 mt-1">
++                                            {`${table.reservation.guestCount} guests`}
++                                          </div>
++                                        </DraggableReservation>
++                                      ) : (
++                                        <DroppableSlot 
++                                          id={uniqueSlotId}
++                                          data={{ tableId: table.id, time: slot.time, table: table }}
++                                        >
++                                          {/* The content of an empty, droppable slot */}
++                                          <div className="h-full flex flex-col justify-center">
++                                            <div className="text-xs font-bold opacity-90">{table.name}</div>
++                                            <div className="text-xs opacity-60 mt-1">{table.status}</div>
++                                          </div>
++                                        </DroppableSlot>
++                                      )}
++                                    </div>
++                                  );
++                                })}
++                              </div>
+                             </div>
+-                          </div>
+-                        );
+-                      })}
++                          );
++                        })}
++                      </div>
+                     </div>
+                   </div>
+-                </div>
++                </DndContext>
+               ) : (
+                 <div className="text-center py-12">
+                   <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+@@ -1365,7 +1303,7 @@ export default function ModernTables() {
+       </div>
+       </div>
+ 
+-      {/* ✅ CRITICAL FIX: Enhanced Add Table Modal */}
++      {/* Enhanced Add Table Modal */}
+       <Dialog open={showAddTableModal} onOpenChange={setShowAddTableModal}>
+         <DialogContent className="max-w-md">
+           <DialogHeader>
+@@ -1475,7 +1413,7 @@ export default function ModernTables() {
+         </DialogContent>
+       </Dialog>
+ 
+-      {/* Context Menu (unchanged) */}
++      {/* Context Menu */}
+       {contextMenu && (
+         <>
+           <div 
+diff --git a/client/src/pages/reservations.tsx b/client/src/pages/reservations.tsx
+index 6600783..0ad06a7 100644
+--- a/client/src/pages/reservations.tsx
++++ b/client/src/pages/reservations.tsx
+@@ -23,6 +23,7 @@ import {
+ } from "lucide-react";
+ import { RollingCalendar } from "@/components/ui/rolling-calendar";
+ import { useRestaurantTimezone } from "@/components/layout/DashboardLayout";
++import { useWebSocketContext } from "@/components/websocket/WebSocketContext";
+ 
+ // ✅ Helper function to safely parse PostgreSQL timestamps
+ const parsePostgresTimestamp = (timestamp: string): DateTime | null => {
+@@ -73,6 +74,9 @@ const extractReservationData = (reservationData: any) => {
+ };
+ 
+ export default function Reservations() {
++    // ✅ Get WebSocket connection status for real-time indicator
++    const { isConnected, connectionStatus } = useWebSocketContext();
++    
+     // ✅ Get timezone and restaurant from context
+     const { restaurantTimezone, restaurant, refreshRestaurant } = useRestaurantTimezone();
+     const restaurantId = restaurant?.id || 1;
+@@ -158,7 +162,7 @@ export default function Reservations() {
+         };
+     };
+ 
+-    // ✅ Restaurant reservations query with timezone dependency
++    // ✅ Restaurant reservations query with REAL-TIME WEBSOCKET UPDATES (no more polling!)
+     const { data: reservations, isLoading, error } = useQuery({
+         queryKey: ["/api/reservations", restaurantId, restaurantTimezone, dateRangeFilter, statusFilter],
+         queryFn: async () => {
+@@ -190,7 +194,7 @@ export default function Reservations() {
+                 throw error;
+             }
+         },
+-        refetchInterval: 30000,
++        // ✅ REMOVED: refetchInterval: 30000 - Now using real-time WebSocket updates!
+         refetchOnWindowFocus: true,
+         enabled: !!restaurantId && !!restaurantTimezone,
+         staleTime: 0,
+@@ -749,6 +753,17 @@ export default function Reservations() {
+                         </p>
+                     </div>
+                     <div className="mt-4 flex space-x-3 md:mt-0">
++                        {/* ✅ REAL-TIME STATUS INDICATOR */}
++                        {isConnected ? (
++                            <Badge variant="outline" className="border-green-500 text-green-700 bg-green-50">
++                                ● Live Updates
++                            </Badge>
++                        ) : (
++                            <Badge variant="destructive" className="animate-pulse">
++                                ● Disconnected
++                            </Badge>
++                        )}
++                        
+                         <Button onClick={() => setIsReservationModalOpen(true)}>
+                             <Plus className="mr-2 h-4 w-4" />
+                             New Reservation
+diff --git a/package-lock.json b/package-lock.json
+index 867dc09..0192fa5 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -10,6 +10,7 @@
+       "license": "MIT",
+       "dependencies": {
+         "@anthropic-ai/sdk": "^0.56.0",
++        "@dnd-kit/core": "^6.3.1",
+         "@google/generative-ai": "^0.24.1",
+         "@hookform/resolvers": "^3.10.0",
+         "@jridgewell/trace-mapping": "^0.3.25",
+@@ -573,6 +574,45 @@
+         "kuler": "^2.0.0"
+       }
+     },
++    "node_modules/@dnd-kit/accessibility": {
++      "version": "3.1.1",
++      "resolved": "https://registry.npmjs.org/@dnd-kit/accessibility/-/accessibility-3.1.1.tgz",
++      "integrity": "sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "^2.0.0"
++      },
++      "peerDependencies": {
++        "react": ">=16.8.0"
++      }
++    },
++    "node_modules/@dnd-kit/core": {
++      "version": "6.3.1",
++      "resolved": "https://registry.npmjs.org/@dnd-kit/core/-/core-6.3.1.tgz",
++      "integrity": "sha512-xkGBRQQab4RLwgXxoqETICr6S5JlogafbhNsidmrkVv2YRs5MLwpjoF2qpiGjQt8S9AoxtIV603s0GIUpY5eYQ==",
++      "license": "MIT",
++      "dependencies": {
++        "@dnd-kit/accessibility": "^3.1.1",
++        "@dnd-kit/utilities": "^3.2.2",
++        "tslib": "^2.0.0"
++      },
++      "peerDependencies": {
++        "react": ">=16.8.0",
++        "react-dom": ">=16.8.0"
++      }
++    },
++    "node_modules/@dnd-kit/utilities": {
++      "version": "3.2.2",
++      "resolved": "https://registry.npmjs.org/@dnd-kit/utilities/-/utilities-3.2.2.tgz",
++      "integrity": "sha512-+MKAJEOfaBe5SmV6t34p80MMKhjvUz0vRrvVJbPT0WElzaOJ/1xs+D+KDv+tD/NE5ujfrChEcshd4fLn0wpiqg==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "^2.0.0"
++      },
++      "peerDependencies": {
++        "react": ">=16.8.0"
++      }
++    },
+     "node_modules/@drizzle-team/brocli": {
+       "version": "0.10.2",
+       "resolved": "https://registry.npmjs.org/@drizzle-team/brocli/-/brocli-0.10.2.tgz",
+@@ -5224,9 +5264,9 @@
+       }
+     },
+     "node_modules/caniuse-lite": {
+-      "version": "1.0.30001677",
+-      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001677.tgz",
+-      "integrity": "sha512-fmfjsOlJUpMWu+mAAtZZZHz7UEwsUxIIvu1TJfO1HqFQvB/B+ii0xr9B5HpbZY/mC4XZ8SvjHJqtAY6pDPQEog==",
++      "version": "1.0.30001731",
++      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001731.tgz",
++      "integrity": "sha512-lDdp2/wrOmTRWuoB5DpfNkC0rJDU8DqRa6nYL6HK6sytw70QMopt/NIc/9SM7ylItlBWfACXk0tEn37UWM/+mg==",
+       "dev": true,
+       "funding": [
+         {
+diff --git a/package.json b/package.json
+index bdfd3e3..71ab6ad 100644
+--- a/package.json
++++ b/package.json
+@@ -16,6 +16,7 @@
+   },
+   "dependencies": {
+     "@anthropic-ai/sdk": "^0.56.0",
++    "@dnd-kit/core": "^6.3.1",
+     "@google/generative-ai": "^0.24.1",
+     "@hookform/resolvers": "^3.10.0",
+     "@jridgewell/trace-mapping": "^0.3.25",
+diff --git a/server/index.ts b/server/index.ts
+index d51e0f8..ab38fae 100644
+--- a/server/index.ts
++++ b/server/index.ts
+@@ -1,6 +1,10 @@
+ import 'dotenv/config';
+ import express, { type Request, Response, NextFunction } from "express";
+-// 🔽 ADD THIS IMPORT AT THE TOP
++// 🔽 ADD WEBSOCKET IMPORTS
++import { createServer } from "http";
++import { WebSocketServer } from "ws";
++import { WebSocketManager } from './services/websocket-manager.js';
++import { ExtendedWebSocketServer } from './types/websocket.js';
+ import serveIndex from 'serve-index';
+ import { registerRoutes } from "./routes";
+ import { setupVite, serveStatic, log } from "./vite";
+@@ -13,6 +17,7 @@ import { aiService } from './services/ai-service';
+ // 🔧 ES MODULE FIX: Moved to top-level imports
+ import fs from 'fs';
+ import path from 'path';
++import { URL } from 'url'; // 👈 ADD URL IMPORT
+ 
+ // 🔒 SUPER ADMIN: Authentication imports (moved from routes.ts)
+ import bcrypt from "bcryptjs";
+@@ -100,7 +105,7 @@ passport.use('local-tenant', new LocalStrategy(
+                 console.log(`[Auth] Invalid password for tenant user: ${email}`);
+                 return done(null, false, { message: "Incorrect password." });
+             }
+-            
++
+             // Enhanced user object with isSuperAdmin flag
+             const authenticatedUser: BaseTenantUser = {
+                 id: user.id,
+@@ -109,7 +114,7 @@ passport.use('local-tenant', new LocalStrategy(
+                 role: user.role as 'restaurant' | 'staff',
+                 isSuperAdmin: false
+             };
+-            
++
+             console.log(`✅ [Auth] Tenant user authenticated: ${email} (ID: ${user.id})`);
+             return done(null, authenticatedUser);
+         } catch (err) {
+@@ -125,26 +130,26 @@ passport.use('local-superadmin', new LocalStrategy(
+     async (email, password, done) => {
+         try {
+             console.log(`[SuperAdmin] Super admin login attempt for: ${email}`);
+-            
++
+             const superAdmin = await storage.getSuperAdminByEmail(email);
+             if (!superAdmin) {
+                 console.log(`[SuperAdmin] Super admin not found: ${email}`);
+                 return done(null, false, { message: "Invalid super admin credentials." });
+             }
+-            
++
+             // ✅ FIXED: Verify password against the correct 'passwordHash' property
+             const isValidPassword = await bcrypt.compare(password, superAdmin.passwordHash);
+             if (!isValidPassword) {
+                 console.log(`[SuperAdmin] Invalid password for super admin: ${email}`);
+                 return done(null, false, { message: "Invalid super admin credentials." });
+             }
+-            
++
+             // Check if super admin account is active
+             if (superAdmin.isActive === false) { // Check for explicit false value
+                 console.log(`[SuperAdmin] Inactive super admin attempted login: ${email}`);
+                 return done(null, false, { message: "Super admin account is inactive." });
+             }
+-            
++
+             const authenticatedSuperAdmin: SuperAdminUser = {
+                 id: superAdmin.id,
+                 email: superAdmin.email,
+@@ -152,16 +157,16 @@ passport.use('local-superadmin', new LocalStrategy(
+                 role: 'super_admin',
+                 isSuperAdmin: true
+             };
+-            
++
+             console.log(`✅ [SuperAdmin] Super admin authenticated: ${email} (ID: ${superAdmin.id})`);
+-            
++
+             // The logSuperAdminActivity function does not exist on the storage object yet.
+             // We can comment this out to allow login to succeed. We can add this feature back later.
+             // await storage.logSuperAdminActivity(superAdmin.id, 'login', {
+             //     userAgent: 'web-dashboard',
+             //     timestamp: new Date().toISOString()
+             // });
+-            
++
+             return done(null, authenticatedSuperAdmin);
+         } catch (err) {
+             console.error(`[SuperAdmin] Error during super admin authentication:`, err);
+@@ -205,7 +210,7 @@ passport.serializeUser((user: any, done) => {
+ passport.deserializeUser(async (sessionData: any, done) => {
+     try {
+         let user: AuthenticatedUser;
+-        
++
+         if (sessionData.isSuperAdmin) {
+             // Load super admin user
+             const superAdmin = await storage.getSuperAdmin(sessionData.id);
+@@ -213,7 +218,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
+                 console.log(`[Auth] Inactive or missing super admin during deserialization: ID=${sessionData.id}`);
+                 return done(null, false);
+             }
+-            
++
+             user = {
+                 id: superAdmin.id,
+                 email: superAdmin.email,
+@@ -229,7 +234,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
+                 console.log(`[Auth] Missing tenant user during deserialization: ID=${sessionData.id}`);
+                 return done(null, false);
+             }
+-            
++
+             user = {
+                 id: tenantUser.id,
+                 email: tenantUser.email,
+@@ -239,7 +244,7 @@ passport.deserializeUser(async (sessionData: any, done) => {
+             };
+             console.log(`[Auth] Deserialized tenant user: ${tenantUser.email} (ID: ${tenantUser.id})`);
+         }
+-        
++
+         done(null, user);
+     } catch (err) {
+         console.error(`[Auth] Error during user deserialization:`, err);
+@@ -457,6 +462,8 @@ app.use('/reports', serveIndex('reports', { 'icons': true }));
+ app.use('/analytics', express.static('analytics', { etag: false, lastModified: false })); // Recommended change
+ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+ 
++// 🔌 WEBSOCKET MANAGER: Global variable to store WebSocket manager instance
++let wsManager: WebSocketManager | null = null;
+ 
+ // Self-executing async function to initialize the server
+ (async () => {
+@@ -488,8 +495,40 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+             dashboardEnabled: process.env.ENABLE_FREE_DASHBOARD === 'true'
+         });
+ 
+-        // 🔒 Register all API routes (authentication is now set up above)
+-        const server = await registerRoutes(app);
++        // 🔌 WEBSOCKET SETUP: Create HTTP server
++        console.log('🔌 [Server] Creating HTTP server with WebSocket support');
++        const httpServer = createServer(app);
++
++        // ✅ FIX: Create WebSocket server WITHOUT attaching it to the HTTP server automatically
++        const wss = new WebSocketServer({
++            noServer: true
++        }) as ExtendedWebSocketServer;
++
++        // Initialize WebSocket manager
++        wsManager = new WebSocketManager(wss);
++        console.log('✅ [Server] WebSocket manager initialized');
++
++        // Add broadcast methods to WebSocketServer for routes to use
++        wss.broadcast = (data: object) => {
++            wsManager!.broadcast(data as any);
++        };
++
++        wss.broadcastToTenant = (tenantId: number, data: object) => {
++            wsManager!.broadcastToTenant(tenantId, data as any);
++        };
++
++        // Log WebSocket initialization as business event
++        smartLog.businessEvent('websocket_initialized', {
++            path: '/ws',
++            tenantIsolation: true,
++            authenticationRequired: true
++        });
++
++        console.log('✅ [Server] WebSocket server initialized');
++
++        // 🔒 Register all API routes (pass WebSocket server to routes)
++        await registerRoutes(app, wss);
++        console.log('✅ [Server] Routes registered with WebSocket support');
+ 
+         // [FIX] Corrected global error handling middleware with Smart Logging.
+         // This should be placed AFTER all routes have been registered.
+@@ -514,7 +553,7 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+         // In development mode, set up Vite for hot module replacement.
+         // In production, serve the pre-built static client files.
+         if (app.get("env") === "development") {
+-            await setupVite(app, server);
++            await setupVite(app, httpServer);
+         } else {
+             serveStatic(app);
+         }
+@@ -524,8 +563,29 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+         await initializeAllTelegramBots();
+         smartLog.info('Telegram bots initialized successfully');
+ 
++        // ✅ FIX: Add manual 'upgrade' handler to route WebSocket traffic
++        httpServer.on('upgrade', (request, socket, head) => {
++            // Use URL to parse the path
++            const pathname = request.url ? new URL(request.url, `http://${request.headers.host}`).pathname : '';
++
++            console.log(`[Upgrade] Handling upgrade request for path: ${pathname}`);
++
++            if (pathname === '/ws') {
++                // If the path is for our app's WebSocket, handle it
++                wss.handleUpgrade(request, socket, head, (ws) => {
++                    wss.emit('connection', ws, request);
++                });
++            } else {
++                // IMPORTANT: For any other path, do nothing.
++                // This allows Vite's HMR WebSocket to be handled by its own listener,
++                // which was attached in setupVite().
++                // If we were to destroy the socket here, HMR would break.
++                console.log(`[Upgrade] Path not /ws, ignoring for Vite HMR to handle.`);
++            }
++        });
++
+         const port = process.env.PORT || 5000;
+-        server.listen({
++        httpServer.listen({
+             port,
+             host: "0.0.0.0",
+         }, () => {
+@@ -538,7 +598,8 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+                 host: '0.0.0.0',
+                 environment: process.env.NODE_ENV || 'development',
+                 dashboardUrl: process.env.ENABLE_FREE_DASHBOARD === 'true' ? `http://localhost:${port}/dashboard` : null,
+-                healthUrl: `http://localhost:${port}/health`
++                healthUrl: `http://localhost:${port}/health`,
++                websocketUrl: `ws://localhost:${port}/ws`
+             });
+ 
+             // 📊 Display useful URLs
+@@ -550,9 +611,10 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+             console.log(`   📁 Log Files: http://localhost:${port}/logs/app.log`);
+             console.log(`   📁 Reports Dir: http://localhost:${port}/reports/`);
+             console.log(`   📁 Analytics Dir: http://localhost:${port}/analytics/`);
++            console.log(`   🔌 WebSocket: ws://localhost:${port}/ws`);
+         });
+ 
+-        // 📊 ENHANCED: Graceful shutdown logic with Smart Logging
++        // 📊 ENHANCED: Graceful shutdown logic with Smart Logging and WebSocket cleanup
+         const shutdown = (signal: string) => {
+             smartLog.info('Graceful shutdown initiated', {
+                 signal,
+@@ -567,11 +629,18 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+ 
+             console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+ 
++            // 🔌 WEBSOCKET CLEANUP: Cleanup WebSocket connections
++            if (wsManager) {
++                console.log('🔌 [Server] Cleaning up WebSocket connections...');
++                wsManager.cleanup();
++                smartLog.info('WebSocket connections cleaned up');
++            }
++
+             // Stop all active Telegram bots
+             cleanupTelegramBots();
+ 
+             // Close the HTTP server
+-            server.close(() => {
++            httpServer.close(() => {
+                 smartLog.info('HTTP server closed successfully');
+                 console.log("✅ HTTP server closed.");
+ 
+@@ -643,4 +712,4 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
+         console.error('❌ Application startup failed:', startupError);
+         process.exit(1);
+     }
+-})();
+\ No newline at end of file
++})();
+diff --git a/server/routes.ts b/server/routes.ts
+index 84e3e36..a87918e 100644
+--- a/server/routes.ts
++++ b/server/routes.ts
+@@ -1,5 +1,7 @@
+ import type { Express, Request, Response, NextFunction } from "express";
+ import { createServer, type Server } from "http";
++// 🔌 ADD WEBSOCKET IMPORTS
++import { ExtendedWebSocketServer } from './types/websocket.js';
+ import { storage } from "./storage";
+ import { db, pool, getDatabaseHealth } from "./db";
+ import {
+@@ -118,7 +120,12 @@ function isOvernightOperation(openingTime: string, closingTime: string): boolean
+     return closingMinutes < openingMinutes;
+ }
+ 
+-export async function registerRoutes(app: Express): Promise<Server> {
++// 🔌 WEBSOCKET INTEGRATION: Updated function signature to accept WebSocket server
++export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer): Promise<Server> {
++
++    // 🔌 WEBSOCKET SETUP: Store WebSocket server in Express app context
++    app.set('wss', wss);
++    console.log('✅ [Routes] WebSocket server stored in Express app context');
+ 
+     // 🔒 SUPER ADMIN: Authorization Middleware Functions
+     
+@@ -279,7 +286,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
+     });
+ 
+     // ============================================================================
+-    // 🔒 SUPER ADMIN: Tenant Management API Routes (NEW)
++    // 🔌 WEBSOCKET STATS ENDPOINT (Optional debugging endpoint)
++    // ============================================================================
++    app.get("/api/websocket/stats", isAuthenticated, tenantIsolation, async (req, res, next) => {
++        try {
++            const wsServer = req.app.get('wss') as ExtendedWebSocketServer;
++            
++            if (!wsServer) {
++                return res.status(503).json({ error: 'WebSocket server not available' });
++            }
++
++            let stats = {
++                connected: false,
++                totalConnections: 0,
++                authenticatedConnections: 0,
++                tenantGroups: 0,
++                tenantStats: {},
++                serverAvailable: true
++            };
++
++            try {
++                if (wsServer.clients) {
++                    stats.totalConnections = wsServer.clients.size;
++                    stats.connected = true;
++                }
++            } catch (error) {
++                console.error('[WebSocket Stats] Error getting stats:', error);
++                stats.serverAvailable = false;
++            }
++
++            res.json({
++                ...stats,
++                timestamp: new Date().toISOString(),
++                path: '/ws'
++            });
++        } catch (error) {
++            console.error('[WebSocket Stats] Endpoint error:', error);
++            next(error);
++        }
++    });
++
++    // ============================================================================
++    // 🔒 SUPER ADMIN: Tenant Management API Routes (Existing - no WebSocket needed)
+     // ============================================================================
+ 
+     // 🔒 SUPER ADMIN: Get all tenants with filtering and pagination
+@@ -555,9 +603,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
+ 
+             // If status changed to suspended, log it specifically
+             if (validatedData.status === 'suspended') {
+-                await storage.logTenantAudit(tenantId, 'suspended', 'Tenant suspended by super admin', {
+-                    adminId: (req.user as SuperAdminUser).id,
+-                    reason: validatedData.adminNotes || 'No reason provided'
++                await storage.logTenantAudit({
++                    restaurantId: tenantId,
++                    action: 'suspended',
++                    performedBy: 'super_admin',
++                    performedByType: 'super_admin',
++                    details: {
++                        adminId: (req.user as SuperAdminUser).id,
++                        reason: validatedData.adminNotes || 'No reason provided'
++                    }
+                 });
+             }
+ 
+@@ -603,17 +657,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             }
+ 
+             // Suspend the tenant
+-            await storage.suspendTenant(tenantId, {
+-                reason: reason || 'Suspended by administrator',
+-                suspendedBy: (req.user as SuperAdminUser).id,
+-                notifyOwner: notifyOwner
+-            });
++            await storage.suspendTenant(tenantId, reason || 'Suspended by administrator');
+ 
+             // Log the suspension
+-            await storage.logTenantAudit(tenantId, 'suspended', reason || 'Suspended by administrator', {
+-                adminId: (req.user as SuperAdminUser).id,
+-                adminEmail: (req.user as SuperAdminUser).email,
+-                notifyOwner: notifyOwner
++            await storage.logTenantAudit({
++                restaurantId: tenantId,
++                action: 'suspended',
++                performedBy: 'super_admin',
++                performedByType: 'super_admin',
++                details: {
++                    adminId: (req.user as SuperAdminUser).id,
++                    adminEmail: (req.user as SuperAdminUser).email,
++                    notifyOwner: notifyOwner,
++                    reason: reason || 'Suspended by administrator'
++                }
+             });
+ 
+             console.log(`✅ [SuperAdmin] Tenant ${tenantId} suspended successfully`);
+@@ -654,17 +711,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             }
+ 
+             // Reactivate the tenant
+-            await storage.reactivateTenant(tenantId, {
+-                notes: notes || 'Reactivated by administrator',
+-                reactivatedBy: (req.user as SuperAdminUser).id,
+-                notifyOwner: notifyOwner
+-            });
++            await storage.reactivateTenant(tenantId);
+ 
+             // Log the reactivation
+-            await storage.logTenantAudit(tenantId, 'reactivated', notes || 'Reactivated by administrator', {
+-                adminId: (req.user as SuperAdminUser).id,
+-                adminEmail: (req.user as SuperAdminUser).email,
+-                notifyOwner: notifyOwner
++            await storage.logTenantAudit({
++                restaurantId: tenantId,
++                action: 'reactivated',
++                performedBy: 'super_admin',
++                performedByType: 'super_admin',
++                details: {
++                    adminId: (req.user as SuperAdminUser).id,
++                    adminEmail: (req.user as SuperAdminUser).email,
++                    notifyOwner: notifyOwner,
++                    notes: notes || 'Reactivated by administrator'
++                }
+             });
+ 
+             console.log(`✅ [SuperAdmin] Tenant ${tenantId} reactivated successfully`);
+@@ -690,10 +750,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+ 
+             console.log(`[SuperAdmin] Fetching platform metrics: timeframe=${timeframe}`);
+ 
+-            const metrics = await storage.getPlatformMetrics({
+-                timeframe: timeframe as string,
+-                includeDetails: includeDetails === 'true'
+-            });
++            const metrics = await storage.getPlatformMetrics();
+ 
+             res.json({
+                 metrics: metrics,
+@@ -746,7 +803,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         const user = req.user as SuperAdminUser;
+         
+         try {
+-            const profile = await storage.getSuperAdminProfile(user.id);
++            const profile = await storage.getSuperAdmin(user.id);
+             
+             res.json({
+                 id: user.id,
+@@ -842,7 +899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // 🔒 Table routes with tenant isolation and usage tracking
++    // 🔒 Table routes with tenant isolation and usage tracking + WebSocket integration
+     app.get("/api/tables", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
+             const context = getTenantContext(req);
+@@ -887,8 +944,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
++    // 🔌 WEBSOCKET INTEGRATION: Table updates broadcast status changes
+     app.patch("/api/tables/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const context = getTenantContext(req);
+             const tableId = parseInt(req.params.id);
+             const table = await storage.getTable(tableId);
+@@ -902,6 +961,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             
+             CacheInvalidation.onTableChange(context.restaurant.id);
+             
++            // 🔌 WEBSOCKET: Broadcast table status change
++            if (validatedData.status && validatedData.status !== table.status) {
++                wss.broadcastToTenant(context.restaurant.id, {
++                    type: 'TABLE_STATUS_UPDATED',
++                    payload: {
++                        tableId: updatedTable.id,
++                        tableName: updatedTable.name,
++                        oldStatus: table.status,
++                        newStatus: updatedTable.status,
++                        timestamp: new Date().toISOString()
++                    }
++                });
++                console.log(`🔌 [WebSocket] Broadcasted table status change: ${table.name} ${table.status} → ${updatedTable.status}`);
++            }
++            
+             res.json(updatedTable);
+         } catch (error: any) {
+             if (error instanceof z.ZodError) {
+@@ -944,10 +1018,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
+ 
+     app.post("/api/guests", isAuthenticated, tenantIsolation, trackUsage('guest_added'), async (req, res, next) => {
+         try {
+-            const validatedData = insertGuestSchema.parse(req.body);
+-            let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string);
++            const context = getTenantContext(req);
++            const validatedData = insertGuestSchema.parse({
++                ...req.body,
++                restaurantId: context.restaurant.id,
++            });
++            let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string, context.restaurant.id);
+             if (guest) {
+-                guest = await storage.updateGuest(guest.id, validatedData);
++                guest = await storage.updateGuest(guest.id, validatedData, context.restaurant.id);
+             } else {
+                 guest = await storage.createGuest(validatedData);
+             }
+@@ -966,7 +1044,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             const guestId = parseInt(req.params.id);
+             const context = getTenantContext(req);
+ 
+-            const guest = await storage.getGuest(guestId);
++            const guest = await storage.getGuest(guestId, context.restaurant.id);
+             if (!guest) {
+                 return res.status(404).json({ message: "Guest not found" });
+             }
+@@ -1251,12 +1329,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
+     // ✅ ENHANCED: Available Times with Exact Time Support
+     app.get("/api/booking/available-times", isAuthenticated, tenantIsolation, async (req: Request, res: Response, next) => {
+         try {
+-            const { restaurantId, date, guests, exactTime } = req.query; // NEW: exactTime param
+             const context = getTenantContext(req);
+-            
+-            if (parseInt(restaurantId as string) !== context.restaurant.id) {
+-                return res.status(403).json({ message: "Access denied to this restaurant" });
+-            }
++            const { date, guests, exactTime } = req.query; // NEW: exactTime param
++            const restaurantId = context.restaurant.id;           
+             
+             if (!restaurantId || !date || !guests) {
+                 return res.status(400).json({ message: "Missing required parameters" });
+@@ -1467,9 +1542,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // ✅ CRITICAL SECURITY FIX: Reservation creation with authenticated tenant ID
++    // ============================================================================
++    // 🔌 WEBSOCKET INTEGRATION: Modified Reservation Routes
++    // ============================================================================
++
++    // ✅ CRITICAL SECURITY FIX + WEBSOCKET INTEGRATION: Reservation creation
+     app.post("/api/reservations", isAuthenticated, tenantIsolation, trackUsage('reservation_created'), async (req, res, next) => {
+         try {
++            // 🔌 GET WEBSOCKET SERVER from Express app context
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const context = getTenantContext(req);
+             const { guestName, guestPhone, date, time, guests: numGuests } = req.body;
+             
+@@ -1477,12 +1558,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
+             }
+             
+-            let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone);
++            let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone, context.restaurant.id);
+             if (!guest) {
+                 guest = await storage.createGuest({
+                     name: guestName,
+                     phone: guestPhone,
+                     email: req.body.guestEmail || null,
++                    restaurantId: context.restaurant.id,
+                 });
+             }
+             if (!guest) {
+@@ -1516,8 +1598,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             }
+ 
+             try {
+-                // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first, remove restaurantId from request
++                // 🔌 WEBSOCKET INTEGRATION: Pass WebSocket server to createReservation
+                 const bookingResult = await createReservation(
++                    wss, // 🔽 Pass WebSocket server for broadcasting
+                     context.restaurant.id, // ✅ Authenticated tenant ID from middleware
+                     {
+                         // ❌ REMOVED: restaurantId - no longer accepted by booking service
+@@ -1530,6 +1613,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                         booking_guest_name: guestName,
+                         lang: req.body.lang || context.restaurant.languages?.[0] || 'en',
+                         tableId: req.body.tableId || undefined,
++                        tenantContext: context, // Pass full context for limit checking
+                     }
+                 );
+ 
+@@ -1576,7 +1660,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                     bookingResult.reservation.duration || 120
+                 );
+ 
+-                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with UTC-based cache invalidation`);
++                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with WebSocket broadcasting`);
+ 
+                 return res.status(201).json({
+                     ...bookingResult.reservation,
+@@ -1676,10 +1760,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 existingReservation.duration || 120
+             );
+ 
+-            // ✅ BUG 3 FIX: REMOVED DEAD CODE BLOCK
+-            // The dead code that checked for validatedData.date && validatedData.time has been removed
+-            // because the validation schema only supports reservation_utc, not separate date/time fields
+-
+             const updatedReservation = await storage.updateReservation(reservationId, validatedData);
+ 
+             res.json(updatedReservation);
+@@ -1691,9 +1771,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // ✅ CRITICAL SECURITY FIX: Reservation cancellation with authenticated tenant ID
++    // ✅ CRITICAL SECURITY FIX + WEBSOCKET INTEGRATION: Reservation cancellation
+     app.delete("/api/reservations/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
++            // 🔌 GET WEBSOCKET SERVER from Express app context
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const context = getTenantContext(req);
+             const reservationId = parseInt(req.params.id);
+             const existingResult = await storage.getReservation(reservationId);
+@@ -1704,8 +1786,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
+ 
+             const existingReservation = existingResult.reservation;
+ 
+-            // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first
++            // 🔌 WEBSOCKET INTEGRATION: Pass WebSocket server to cancelReservation
+             await cancelReservation(
++                wss, // 🔽 Pass WebSocket server for broadcasting
+                 context.restaurant.id, // ✅ Authenticated tenant ID from middleware
+                 reservationId, 
+                 context.restaurant.languages?.[0] || 'en'
+@@ -1718,18 +1801,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 existingReservation.duration || 120
+             );
+ 
++            console.log(`✅ [Reservation Cancellation] Success - Reservation ID ${reservationId} cancelled with WebSocket broadcasting`);
++
+             res.json({ success: true, message: "Reservation canceled successfully." });
+ 
+         } catch (error) {
++            console.error('❌ [Reservation Cancellation] Error:', error);
+             next(error);
+         }
+     });
+ 
+-    // ✅ NEW: PHASE 3 - ENHANCED RESERVATION STATUS MANAGEMENT
+-    
+-    // Seat guests - transition from confirmed to seated
++    // ============================================================================
++    // 🔌 WEBSOCKET INTEGRATION: Reservation Status Management with Broadcasting
++    // ============================================================================
++
++    // Seat guests - transition from confirmed to seated + WebSocket broadcast
+     app.post("/api/reservations/:id/seat", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const { tableNotes, staffMember } = req.body;
+             const reservationId = parseInt(req.params.id);
+             const context = getTenantContext(req);
+@@ -1766,7 +1855,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 CacheInvalidation.onTableChange(context.restaurant.id);
+             }
+ 
+-            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'}`);
++            // 🔌 WEBSOCKET: Broadcast reservation status change
++            wss.broadcastToTenant(context.restaurant.id, {
++                type: 'RESERVATION_UPDATED',
++                payload: {
++                    id: reservationId,
++                    newStatus: 'seated',
++                    tableName: reservation.table?.name || 'Unknown Table',
++                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
++                    staffMember: staffMember || 'Unknown staff',
++                    timestamp: new Date().toISOString()
++                }
++            });
++
++            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'} + WebSocket broadcast`);
+ 
+             res.json({ 
+                 success: true, 
+@@ -1781,9 +1883,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // Complete visit - transition from seated/in_progress to completed
++    // Complete visit - transition from seated/in_progress to completed + WebSocket broadcast
+     app.post("/api/reservations/:id/complete", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const { feedback, totalAmount, staffMember } = req.body;
+             const reservationId = parseInt(req.params.id);
+             const context = getTenantContext(req);
+@@ -1825,7 +1928,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 visitCompleted: true,
+                 duration,
+                 totalSpent: totalAmount ? parseFloat(totalAmount) : 0
+-            });
++            }, context.restaurant.id);
+ 
+             // Free up table
+             if (reservation.reservation.tableId) {
+@@ -1837,7 +1940,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 CacheInvalidation.onTableChange(context.restaurant.id);
+             }
+ 
+-            console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0}`);
++            // 🔌 WEBSOCKET: Broadcast reservation completion
++            wss.broadcastToTenant(context.restaurant.id, {
++                type: 'RESERVATION_UPDATED',
++                payload: {
++                    id: reservationId,
++                    newStatus: 'completed',
++                    tableName: reservation.table?.name || 'Unknown Table',
++                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
++                    duration,
++                    totalAmount: totalAmount ? parseFloat(totalAmount) : null,
++                    staffMember: staffMember || 'Unknown staff',
++                    timestamp: new Date().toISOString()
++                }
++            });
++
++            console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0} + WebSocket broadcast`);
+ 
+             res.json({ 
+                 success: true, 
+@@ -1854,9 +1972,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // Mark as no-show
++    // Mark as no-show + WebSocket broadcast
+     app.post("/api/reservations/:id/no-show", isAuthenticated, tenantIsolation, async (req, res, next) => {
+         try {
++            const wss = req.app.get('wss') as ExtendedWebSocketServer;
+             const { reason, staffMember } = req.body;
+             const reservationId = parseInt(req.params.id);
+             const context = getTenantContext(req);
+@@ -1887,7 +2006,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             // Update guest analytics (negative impact)
+             await storage.updateGuestAnalytics(reservation.reservation.guestId, {
+                 noShowOccurred: true
+-            });
++            }, context.restaurant.id);
+ 
+             // Free up table
+             if (reservation.reservation.tableId) {
+@@ -1899,7 +2018,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
+                 CacheInvalidation.onTableChange(context.restaurant.id);
+             }
+ 
+-            console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'}`);
++            // 🔌 WEBSOCKET: Broadcast no-show status
++            wss.broadcastToTenant(context.restaurant.id, {
++                type: 'RESERVATION_UPDATED',
++                payload: {
++                    id: reservationId,
++                    newStatus: 'no_show',
++                    tableName: reservation.table?.name || 'Unknown Table',
++                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
++                    reason: reason || 'No reason provided',
++                    staffMember: staffMember || 'Unknown staff',
++                    timestamp: new Date().toISOString()
++                }
++            });
++
++            console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'} + WebSocket broadcast`);
+ 
+             res.json({ 
+                 success: true, 
+@@ -1950,7 +2083,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
+         }
+     });
+ 
+-    // ✅ NEW: PHASE 3 - MENU MANAGEMENT SYSTEM with feature gate
++    // ============================================================================
++    // ✅ MENU MANAGEMENT SYSTEM with feature gate (No WebSocket needed - configuration)
++    // ============================================================================
+ 
+     // Get menu items with advanced filtering
+     app.get("/api/menu-items", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
+@@ -1972,7 +2107,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
+             
+             // Group by category for better UI organization
+             const groupedItems = menuItems.reduce((acc, item) => {
+-                const cat = item.category || 'other';
++                const cat = item.categoryName || 'other';
+                 if (!acc[cat]) acc[cat] = [];
+                 acc[cat].push(item);
+                 return acc;
+@@ -2380,7 +2515,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
+ 
+             console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${context.restaurant.id} with greeting in ${context.restaurant.languages?.[0] || 'en'}`);
+ 
+-
+             // ✅ Get restaurant greeting based on restaurant language/country
+             let restaurantGreeting: string;
+             try {
+diff --git a/server/services/booking.ts b/server/services/booking.ts
+index 62d31ef..1f294c6 100644
+--- a/server/services/booking.ts
++++ b/server/services/booking.ts
+@@ -2,6 +2,7 @@
+ // ✅ CRITICAL SECURITY FIX: All functions now receive authenticated tenant ID
+ // ❌ NEVER trust client-provided restaurantId - always use server-validated tenant ID
+ // 🔧 BUG-20250725-001 FIX: Correctly pass authenticatedTenantId to storage.getGuest to fix tenant isolation bug.
++// 🔌 WEBSOCKET INTEGRATION: Real-time broadcasting for reservation events
+ 
+ import { storage } from '../storage';
+ import {
+@@ -9,6 +10,9 @@ import {
+     type AvailabilitySlot as ServiceAvailabilitySlot,
+ } from './availability.service';
+ 
++// 🔌 WEBSOCKET IMPORTS: Add WebSocket types for broadcasting
++import { ExtendedWebSocketServer } from '../types/websocket.js';
++
+ import type {
+     Restaurant,
+     Reservation as SchemaReservation,
+@@ -167,8 +171,9 @@ function detectConflictType(error: any): 'AVAILABILITY' | 'TRANSACTION' | 'DEADL
+     return 'AVAILABILITY'; // Default fallback
+ }
+ 
+-// ✅ CRITICAL SECURITY FIX: Function now receives authenticated tenant ID
++// ✅ CRITICAL SECURITY FIX + 🔌 WEBSOCKET INTEGRATION: Function now receives authenticated tenant ID and WebSocket server
+ export async function createReservation(
++    wss: ExtendedWebSocketServer, // 🔌 WebSocket server for real-time broadcasting
+     authenticatedTenantId: number, // ✅ From middleware - NEVER trust client
+     bookingRequest: BookingRequest
+ ): Promise<BookingResponse> {
+@@ -373,6 +378,25 @@ export async function createReservation(
+                 allCreatedReservationIds.push(primaryReservation.id);
+                 logger.info(`✅ Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName} with UTC timestamp.`);
+ 
++                // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about new reservation
++                try {
++                    wss.broadcastToTenant(authenticatedTenantId, {
++                        type: 'RESERVATION_CREATED',
++                        payload: {
++                            ...primaryReservation,
++                            guestName: nameForConfirmationMessage,
++                            tableName: selectedSlot.tableName,
++                            formattedTime: formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'),
++                            restaurantName: restaurant.name,
++                            isCombined: false
++                        }
++                    });
++                    logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CREATED for reservation ${primaryReservation.id} to tenant ${authenticatedTenantId}`);
++                } catch (wsError) {
++                    logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CREATED:`, wsError);
++                    // Don't fail the reservation for WebSocket errors
++                }
++
+                 const tableDetails = await storage.getTable(selectedSlot.tableId) as Table;
+ 
+                 return {
+@@ -521,6 +545,26 @@ export async function createReservation(
+                     }
+                 }
+ 
++                // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about new combined reservation
++                try {
++                    wss.broadcastToTenant(authenticatedTenantId, {
++                        type: 'RESERVATION_CREATED',
++                        payload: {
++                            ...primaryReservation,
++                            guestName: nameForConfirmationMessage,
++                            tableName: selectedSlot.tableName,
++                            isCombined: true,
++                            tablesInvolved: selectedSlot.constituentTables?.map(t => t.name).join(', '),
++                            formattedTime: formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'),
++                            restaurantName: restaurant.name
++                        }
++                    });
++                    logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CREATED for combined reservation ${primaryReservation.id} to tenant ${authenticatedTenantId}`);
++                } catch (wsError) {
++                    logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CREATED:`, wsError);
++                    // Don't fail the reservation for WebSocket errors
++                }
++
+                 return {
+                     success: true,
+                     reservation: primaryReservation,
+@@ -582,8 +626,9 @@ export async function createReservation(
+     }
+ }
+ 
+-// ✅ CRITICAL SECURITY FIX: Ensure user can only cancel their own restaurant's reservations
++// ✅ CRITICAL SECURITY FIX + 🔌 WEBSOCKET INTEGRATION: Ensure user can only cancel their own restaurant's reservations
+ export async function cancelReservation(
++    wss: ExtendedWebSocketServer, // 🔌 WebSocket server for real-time broadcasting
+     authenticatedTenantId: number, // ✅ From middleware
+     reservationId: number,
+     lang?: Language
+@@ -618,6 +663,9 @@ export async function cancelReservation(
+             return { success: false, message: locale.reservationAlreadyCancelled(reservationId) };
+         }
+ 
++        // Store guest name for WebSocket broadcast before cancellation
++        const guestName = reservation.booking_guest_name || reservationResult.guest?.name || 'Guest';
++
+         // Get restaurant for timezone context
+         const restaurant = await storage.getRestaurant(reservation.restaurantId);
+         const restaurantTimezone = restaurant?.timezone || 'Europe/Moscow';
+@@ -655,6 +703,26 @@ export async function cancelReservation(
+             logger.info(`Cancelled a linked part of a combined booking (Res ID: ${reservationId}).`);
+         }
+ 
++        // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about reservation cancellation
++        try {
++            wss.broadcastToTenant(authenticatedTenantId, {
++                type: 'RESERVATION_CANCELED',
++                payload: {
++                    id: reservationId,
++                    restaurantId: authenticatedTenantId,
++                    status: 'canceled',
++                    guestName: guestName,
++                    tableName: reservationResult.table?.name || 'Unknown Table',
++                    isCombined: isCombinedPrimary,
++                    timestamp: new Date().toISOString()
++                }
++            });
++            logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CANCELED for reservation ${reservationId} to tenant ${authenticatedTenantId}`);
++        } catch (wsError) {
++            logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CANCELED:`, wsError);
++            // Don't fail the cancellation for WebSocket errors
++        }
++
+         logger.info(`✅ Reservation ID ${reservationId} cancelled successfully (timezone: ${restaurantTimezone}).`);
+         return { success: true, message: locale.reservationCancelledSuccessfully };
+ 
+@@ -728,4 +796,4 @@ export async function findAlternativeSlots(
+         logger.error('Error in findAlternativeSlots (secure wrapper):', error);
+         return [];
+     }
+-}
++}
+\ No newline at end of file

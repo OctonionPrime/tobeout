@@ -2,12 +2,16 @@
 // ✅ CRITICAL SECURITY FIX: All functions now receive authenticated tenant ID
 // ❌ NEVER trust client-provided restaurantId - always use server-validated tenant ID
 // 🔧 BUG-20250725-001 FIX: Correctly pass authenticatedTenantId to storage.getGuest to fix tenant isolation bug.
+// 🔌 WEBSOCKET INTEGRATION: Real-time broadcasting for reservation events
 
 import { storage } from '../storage';
 import {
     getAvailableTimeSlots,
     type AvailabilitySlot as ServiceAvailabilitySlot,
 } from './availability.service';
+
+// 🔌 WEBSOCKET IMPORTS: Add WebSocket types for broadcasting
+import { ExtendedWebSocketServer } from '../types/websocket.js';
 
 import type {
     Restaurant,
@@ -167,8 +171,9 @@ function detectConflictType(error: any): 'AVAILABILITY' | 'TRANSACTION' | 'DEADL
     return 'AVAILABILITY'; // Default fallback
 }
 
-// ✅ CRITICAL SECURITY FIX: Function now receives authenticated tenant ID
+// ✅ CRITICAL SECURITY FIX + 🔌 WEBSOCKET INTEGRATION: Function now receives authenticated tenant ID and WebSocket server
 export async function createReservation(
+    wss: ExtendedWebSocketServer, // 🔌 WebSocket server for real-time broadcasting
     authenticatedTenantId: number, // ✅ From middleware - NEVER trust client
     bookingRequest: BookingRequest
 ): Promise<BookingResponse> {
@@ -373,6 +378,25 @@ export async function createReservation(
                 allCreatedReservationIds.push(primaryReservation.id);
                 logger.info(`✅ Single Reservation ID ${primaryReservation.id} created for Table ${selectedSlot.tableName} with UTC timestamp.`);
 
+                // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about new reservation
+                try {
+                    wss.broadcastToTenant(authenticatedTenantId, {
+                        type: 'RESERVATION_CREATED',
+                        payload: {
+                            ...primaryReservation,
+                            guestName: nameForConfirmationMessage,
+                            tableName: selectedSlot.tableName,
+                            formattedTime: formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'),
+                            restaurantName: restaurant.name,
+                            isCombined: false
+                        }
+                    });
+                    logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CREATED for reservation ${primaryReservation.id} to tenant ${authenticatedTenantId}`);
+                } catch (wsError) {
+                    logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CREATED:`, wsError);
+                    // Don't fail the reservation for WebSocket errors
+                }
+
                 const tableDetails = await storage.getTable(selectedSlot.tableId) as Table;
 
                 return {
@@ -521,6 +545,26 @@ export async function createReservation(
                     }
                 }
 
+                // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about new combined reservation
+                try {
+                    wss.broadcastToTenant(authenticatedTenantId, {
+                        type: 'RESERVATION_CREATED',
+                        payload: {
+                            ...primaryReservation,
+                            guestName: nameForConfirmationMessage,
+                            tableName: selectedSlot.tableName,
+                            isCombined: true,
+                            tablesInvolved: selectedSlot.constituentTables?.map(t => t.name).join(', '),
+                            formattedTime: formatTimeForRestaurant(displayTime, restaurantTimezone, bookingRequest.lang || 'en'),
+                            restaurantName: restaurant.name
+                        }
+                    });
+                    logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CREATED for combined reservation ${primaryReservation.id} to tenant ${authenticatedTenantId}`);
+                } catch (wsError) {
+                    logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CREATED:`, wsError);
+                    // Don't fail the reservation for WebSocket errors
+                }
+
                 return {
                     success: true,
                     reservation: primaryReservation,
@@ -582,8 +626,9 @@ export async function createReservation(
     }
 }
 
-// ✅ CRITICAL SECURITY FIX: Ensure user can only cancel their own restaurant's reservations
+// ✅ CRITICAL SECURITY FIX + 🔌 WEBSOCKET INTEGRATION: Ensure user can only cancel their own restaurant's reservations
 export async function cancelReservation(
+    wss: ExtendedWebSocketServer, // 🔌 WebSocket server for real-time broadcasting
     authenticatedTenantId: number, // ✅ From middleware
     reservationId: number,
     lang?: Language
@@ -617,6 +662,9 @@ export async function cancelReservation(
         if (reservation.status === 'canceled') {
             return { success: false, message: locale.reservationAlreadyCancelled(reservationId) };
         }
+
+        // Store guest name for WebSocket broadcast before cancellation
+        const guestName = reservation.booking_guest_name || reservationResult.guest?.name || 'Guest';
 
         // Get restaurant for timezone context
         const restaurant = await storage.getRestaurant(reservation.restaurantId);
@@ -653,6 +701,26 @@ export async function cancelReservation(
 
         if (isLinkedPart) {
             logger.info(`Cancelled a linked part of a combined booking (Res ID: ${reservationId}).`);
+        }
+
+        // 🔌 WEBSOCKET BROADCAST: Notify all connected clients about reservation cancellation
+        try {
+            wss.broadcastToTenant(authenticatedTenantId, {
+                type: 'RESERVATION_CANCELED',
+                payload: {
+                    id: reservationId,
+                    restaurantId: authenticatedTenantId,
+                    status: 'canceled',
+                    guestName: guestName,
+                    tableName: reservationResult.table?.name || 'Unknown Table',
+                    isCombined: isCombinedPrimary,
+                    timestamp: new Date().toISOString()
+                }
+            });
+            logger.info(`📢 [WebSocket] Broadcasted RESERVATION_CANCELED for reservation ${reservationId} to tenant ${authenticatedTenantId}`);
+        } catch (wsError) {
+            logger.error(`❌ [WebSocket] Failed to broadcast RESERVATION_CANCELED:`, wsError);
+            // Don't fail the cancellation for WebSocket errors
         }
 
         logger.info(`✅ Reservation ID ${reservationId} cancelled successfully (timezone: ${restaurantTimezone}).`);

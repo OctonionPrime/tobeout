@@ -1,5 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+// 🔌 ADD WEBSOCKET IMPORTS
+import { ExtendedWebSocketServer } from './types/websocket.js';
 import { storage } from "./storage";
 import { db, pool, getDatabaseHealth } from "./db";
 import {
@@ -118,7 +120,12 @@ function isOvernightOperation(openingTime: string, closingTime: string): boolean
     return closingMinutes < openingMinutes;
 }
 
-export async function registerRoutes(app: Express): Promise<Server> {
+// 🔌 WEBSOCKET INTEGRATION: Updated function signature to accept WebSocket server
+export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer): Promise<Server> {
+
+    // 🔌 WEBSOCKET SETUP: Store WebSocket server in Express app context
+    app.set('wss', wss);
+    console.log('✅ [Routes] WebSocket server stored in Express app context');
 
     // 🔒 SUPER ADMIN: Authorization Middleware Functions
     
@@ -279,7 +286,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // ============================================================================
-    // 🔒 SUPER ADMIN: Tenant Management API Routes (NEW)
+    // 🔌 WEBSOCKET STATS ENDPOINT (Optional debugging endpoint)
+    // ============================================================================
+    app.get("/api/websocket/stats", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const wsServer = req.app.get('wss') as ExtendedWebSocketServer;
+            
+            if (!wsServer) {
+                return res.status(503).json({ error: 'WebSocket server not available' });
+            }
+
+            let stats = {
+                connected: false,
+                totalConnections: 0,
+                authenticatedConnections: 0,
+                tenantGroups: 0,
+                tenantStats: {},
+                serverAvailable: true
+            };
+
+            try {
+                if (wsServer.clients) {
+                    stats.totalConnections = wsServer.clients.size;
+                    stats.connected = true;
+                }
+            } catch (error) {
+                console.error('[WebSocket Stats] Error getting stats:', error);
+                stats.serverAvailable = false;
+            }
+
+            res.json({
+                ...stats,
+                timestamp: new Date().toISOString(),
+                path: '/ws'
+            });
+        } catch (error) {
+            console.error('[WebSocket Stats] Endpoint error:', error);
+            next(error);
+        }
+    });
+
+    // ============================================================================
+    // 🔒 SUPER ADMIN: Tenant Management API Routes (Existing - no WebSocket needed)
     // ============================================================================
 
     // 🔒 SUPER ADMIN: Get all tenants with filtering and pagination
@@ -555,9 +603,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // If status changed to suspended, log it specifically
             if (validatedData.status === 'suspended') {
-                await storage.logTenantAudit(tenantId, 'suspended', 'Tenant suspended by super admin', {
-                    adminId: (req.user as SuperAdminUser).id,
-                    reason: validatedData.adminNotes || 'No reason provided'
+                await storage.logTenantAudit({
+                    restaurantId: tenantId,
+                    action: 'suspended',
+                    performedBy: 'super_admin',
+                    performedByType: 'super_admin',
+                    details: {
+                        adminId: (req.user as SuperAdminUser).id,
+                        reason: validatedData.adminNotes || 'No reason provided'
+                    }
                 });
             }
 
@@ -603,17 +657,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Suspend the tenant
-            await storage.suspendTenant(tenantId, {
-                reason: reason || 'Suspended by administrator',
-                suspendedBy: (req.user as SuperAdminUser).id,
-                notifyOwner: notifyOwner
-            });
+            await storage.suspendTenant(tenantId, reason || 'Suspended by administrator');
 
             // Log the suspension
-            await storage.logTenantAudit(tenantId, 'suspended', reason || 'Suspended by administrator', {
-                adminId: (req.user as SuperAdminUser).id,
-                adminEmail: (req.user as SuperAdminUser).email,
-                notifyOwner: notifyOwner
+            await storage.logTenantAudit({
+                restaurantId: tenantId,
+                action: 'suspended',
+                performedBy: 'super_admin',
+                performedByType: 'super_admin',
+                details: {
+                    adminId: (req.user as SuperAdminUser).id,
+                    adminEmail: (req.user as SuperAdminUser).email,
+                    notifyOwner: notifyOwner,
+                    reason: reason || 'Suspended by administrator'
+                }
             });
 
             console.log(`✅ [SuperAdmin] Tenant ${tenantId} suspended successfully`);
@@ -654,17 +711,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Reactivate the tenant
-            await storage.reactivateTenant(tenantId, {
-                notes: notes || 'Reactivated by administrator',
-                reactivatedBy: (req.user as SuperAdminUser).id,
-                notifyOwner: notifyOwner
-            });
+            await storage.reactivateTenant(tenantId);
 
             // Log the reactivation
-            await storage.logTenantAudit(tenantId, 'reactivated', notes || 'Reactivated by administrator', {
-                adminId: (req.user as SuperAdminUser).id,
-                adminEmail: (req.user as SuperAdminUser).email,
-                notifyOwner: notifyOwner
+            await storage.logTenantAudit({
+                restaurantId: tenantId,
+                action: 'reactivated',
+                performedBy: 'super_admin',
+                performedByType: 'super_admin',
+                details: {
+                    adminId: (req.user as SuperAdminUser).id,
+                    adminEmail: (req.user as SuperAdminUser).email,
+                    notifyOwner: notifyOwner,
+                    notes: notes || 'Reactivated by administrator'
+                }
             });
 
             console.log(`✅ [SuperAdmin] Tenant ${tenantId} reactivated successfully`);
@@ -690,10 +750,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             console.log(`[SuperAdmin] Fetching platform metrics: timeframe=${timeframe}`);
 
-            const metrics = await storage.getPlatformMetrics({
-                timeframe: timeframe as string,
-                includeDetails: includeDetails === 'true'
-            });
+            const metrics = await storage.getPlatformMetrics();
 
             res.json({
                 metrics: metrics,
@@ -746,7 +803,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const user = req.user as SuperAdminUser;
         
         try {
-            const profile = await storage.getSuperAdminProfile(user.id);
+            const profile = await storage.getSuperAdmin(user.id);
             
             res.json({
                 id: user.id,
@@ -842,7 +899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // 🔒 Table routes with tenant isolation and usage tracking
+    // 🔒 Table routes with tenant isolation and usage tracking + WebSocket integration
     app.get("/api/tables", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const context = getTenantContext(req);
@@ -887,8 +944,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
+    // 🔌 WEBSOCKET INTEGRATION: Table updates broadcast status changes
     app.patch("/api/tables/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const context = getTenantContext(req);
             const tableId = parseInt(req.params.id);
             const table = await storage.getTable(tableId);
@@ -901,6 +960,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const updatedTable = await storage.updateTable(tableId, validatedData);
             
             CacheInvalidation.onTableChange(context.restaurant.id);
+            
+            // 🔌 WEBSOCKET: Broadcast table status change
+            if (validatedData.status && validatedData.status !== table.status) {
+                wss.broadcastToTenant(context.restaurant.id, {
+                    type: 'TABLE_STATUS_UPDATED',
+                    payload: {
+                        tableId: updatedTable.id,
+                        tableName: updatedTable.name,
+                        oldStatus: table.status,
+                        newStatus: updatedTable.status,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+                console.log(`🔌 [WebSocket] Broadcasted table status change: ${table.name} ${table.status} → ${updatedTable.status}`);
+            }
             
             res.json(updatedTable);
         } catch (error: any) {
@@ -944,10 +1018,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     app.post("/api/guests", isAuthenticated, tenantIsolation, trackUsage('guest_added'), async (req, res, next) => {
         try {
-            const validatedData = insertGuestSchema.parse(req.body);
-            let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string);
+            const context = getTenantContext(req);
+            const validatedData = insertGuestSchema.parse({
+                ...req.body,
+                restaurantId: context.restaurant.id,
+            });
+            let guest: Guest | undefined = await storage.getGuestByPhone(validatedData.phone as string, context.restaurant.id);
             if (guest) {
-                guest = await storage.updateGuest(guest.id, validatedData);
+                guest = await storage.updateGuest(guest.id, validatedData, context.restaurant.id);
             } else {
                 guest = await storage.createGuest(validatedData);
             }
@@ -966,7 +1044,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const guestId = parseInt(req.params.id);
             const context = getTenantContext(req);
 
-            const guest = await storage.getGuest(guestId);
+            const guest = await storage.getGuest(guestId, context.restaurant.id);
             if (!guest) {
                 return res.status(404).json({ message: "Guest not found" });
             }
@@ -1251,12 +1329,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // ✅ ENHANCED: Available Times with Exact Time Support
     app.get("/api/booking/available-times", isAuthenticated, tenantIsolation, async (req: Request, res: Response, next) => {
         try {
-            const { restaurantId, date, guests, exactTime } = req.query; // NEW: exactTime param
             const context = getTenantContext(req);
-            
-            if (parseInt(restaurantId as string) !== context.restaurant.id) {
-                return res.status(403).json({ message: "Access denied to this restaurant" });
-            }
+            const { date, guests, exactTime } = req.query; // NEW: exactTime param
+            const restaurantId = context.restaurant.id;           
             
             if (!restaurantId || !date || !guests) {
                 return res.status(400).json({ message: "Missing required parameters" });
@@ -1467,9 +1542,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ CRITICAL SECURITY FIX: Reservation creation with authenticated tenant ID
+    // ============================================================================
+    // 🔌 WEBSOCKET INTEGRATION: Modified Reservation Routes
+    // ============================================================================
+
+    // ✅ CRITICAL SECURITY FIX + WEBSOCKET INTEGRATION: Reservation creation
     app.post("/api/reservations", isAuthenticated, tenantIsolation, trackUsage('reservation_created'), async (req, res, next) => {
         try {
+            // 🔌 GET WEBSOCKET SERVER from Express app context
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const context = getTenantContext(req);
             const { guestName, guestPhone, date, time, guests: numGuests } = req.body;
             
@@ -1477,12 +1558,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
             }
             
-            let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone);
+            let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone, context.restaurant.id);
             if (!guest) {
                 guest = await storage.createGuest({
                     name: guestName,
                     phone: guestPhone,
                     email: req.body.guestEmail || null,
+                    restaurantId: context.restaurant.id,
                 });
             }
             if (!guest) {
@@ -1516,8 +1598,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             try {
-                // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first, remove restaurantId from request
+                // 🔌 WEBSOCKET INTEGRATION: Pass WebSocket server to createReservation
                 const bookingResult = await createReservation(
+                    wss, // 🔽 Pass WebSocket server for broadcasting
                     context.restaurant.id, // ✅ Authenticated tenant ID from middleware
                     {
                         // ❌ REMOVED: restaurantId - no longer accepted by booking service
@@ -1530,6 +1613,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                         booking_guest_name: guestName,
                         lang: req.body.lang || context.restaurant.languages?.[0] || 'en',
                         tableId: req.body.tableId || undefined,
+                        tenantContext: context, // Pass full context for limit checking
                     }
                 );
 
@@ -1576,7 +1660,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     bookingResult.reservation.duration || 120
                 );
 
-                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with UTC-based cache invalidation`);
+                console.log(`✅ [Reservation Creation] Success - Reservation ID ${bookingResult.reservation.id} created with WebSocket broadcasting`);
 
                 return res.status(201).json({
                     ...bookingResult.reservation,
@@ -1676,10 +1760,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 existingReservation.duration || 120
             );
 
-            // ✅ BUG 3 FIX: REMOVED DEAD CODE BLOCK
-            // The dead code that checked for validatedData.date && validatedData.time has been removed
-            // because the validation schema only supports reservation_utc, not separate date/time fields
-
             const updatedReservation = await storage.updateReservation(reservationId, validatedData);
 
             res.json(updatedReservation);
@@ -1691,9 +1771,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ CRITICAL SECURITY FIX: Reservation cancellation with authenticated tenant ID
+    // ✅ CRITICAL SECURITY FIX + WEBSOCKET INTEGRATION: Reservation cancellation
     app.delete("/api/reservations/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
+            // 🔌 GET WEBSOCKET SERVER from Express app context
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const context = getTenantContext(req);
             const reservationId = parseInt(req.params.id);
             const existingResult = await storage.getReservation(reservationId);
@@ -1704,8 +1786,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const existingReservation = existingResult.reservation;
 
-            // ✅ CRITICAL SECURITY FIX: Pass authenticated tenant ID first
+            // 🔌 WEBSOCKET INTEGRATION: Pass WebSocket server to cancelReservation
             await cancelReservation(
+                wss, // 🔽 Pass WebSocket server for broadcasting
                 context.restaurant.id, // ✅ Authenticated tenant ID from middleware
                 reservationId, 
                 context.restaurant.languages?.[0] || 'en'
@@ -1718,18 +1801,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 existingReservation.duration || 120
             );
 
+            console.log(`✅ [Reservation Cancellation] Success - Reservation ID ${reservationId} cancelled with WebSocket broadcasting`);
+
             res.json({ success: true, message: "Reservation canceled successfully." });
 
         } catch (error) {
+            console.error('❌ [Reservation Cancellation] Error:', error);
             next(error);
         }
     });
 
-    // ✅ NEW: PHASE 3 - ENHANCED RESERVATION STATUS MANAGEMENT
-    
-    // Seat guests - transition from confirmed to seated
+    // ============================================================================
+    // 🔌 WEBSOCKET INTEGRATION: Reservation Status Management with Broadcasting
+    // ============================================================================
+
+    // Seat guests - transition from confirmed to seated + WebSocket broadcast
     app.post("/api/reservations/:id/seat", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const { tableNotes, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
@@ -1766,7 +1855,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
-            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'}`);
+            // 🔌 WEBSOCKET: Broadcast reservation status change
+            wss.broadcastToTenant(context.restaurant.id, {
+                type: 'RESERVATION_UPDATED',
+                payload: {
+                    id: reservationId,
+                    newStatus: 'seated',
+                    tableName: reservation.table?.name || 'Unknown Table',
+                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
+                    staffMember: staffMember || 'Unknown staff',
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+            console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'} + WebSocket broadcast`);
 
             res.json({ 
                 success: true, 
@@ -1781,9 +1883,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Complete visit - transition from seated/in_progress to completed
+    // Complete visit - transition from seated/in_progress to completed + WebSocket broadcast
     app.post("/api/reservations/:id/complete", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const { feedback, totalAmount, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
@@ -1825,7 +1928,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 visitCompleted: true,
                 duration,
                 totalSpent: totalAmount ? parseFloat(totalAmount) : 0
-            });
+            }, context.restaurant.id);
 
             // Free up table
             if (reservation.reservation.tableId) {
@@ -1837,7 +1940,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
-            console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0}`);
+            // 🔌 WEBSOCKET: Broadcast reservation completion
+            wss.broadcastToTenant(context.restaurant.id, {
+                type: 'RESERVATION_UPDATED',
+                payload: {
+                    id: reservationId,
+                    newStatus: 'completed',
+                    tableName: reservation.table?.name || 'Unknown Table',
+                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
+                    duration,
+                    totalAmount: totalAmount ? parseFloat(totalAmount) : null,
+                    staffMember: staffMember || 'Unknown staff',
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+            console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0} + WebSocket broadcast`);
 
             res.json({ 
                 success: true, 
@@ -1854,9 +1972,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // Mark as no-show
+    // Mark as no-show + WebSocket broadcast
     app.post("/api/reservations/:id/no-show", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
+            const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const { reason, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
@@ -1887,7 +2006,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Update guest analytics (negative impact)
             await storage.updateGuestAnalytics(reservation.reservation.guestId, {
                 noShowOccurred: true
-            });
+            }, context.restaurant.id);
 
             // Free up table
             if (reservation.reservation.tableId) {
@@ -1899,7 +2018,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
 
-            console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'}`);
+            // 🔌 WEBSOCKET: Broadcast no-show status
+            wss.broadcastToTenant(context.restaurant.id, {
+                type: 'RESERVATION_UPDATED',
+                payload: {
+                    id: reservationId,
+                    newStatus: 'no_show',
+                    tableName: reservation.table?.name || 'Unknown Table',
+                    guestName: reservation.reservation.booking_guest_name || reservation.guest?.name || 'Guest',
+                    reason: reason || 'No reason provided',
+                    staffMember: staffMember || 'Unknown staff',
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+            console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'} + WebSocket broadcast`);
 
             res.json({ 
                 success: true, 
@@ -1950,7 +2083,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
     });
 
-    // ✅ NEW: PHASE 3 - MENU MANAGEMENT SYSTEM with feature gate
+    // ============================================================================
+    // ✅ MENU MANAGEMENT SYSTEM with feature gate (No WebSocket needed - configuration)
+    // ============================================================================
 
     // Get menu items with advanced filtering
     app.get("/api/menu-items", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
@@ -1972,7 +2107,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             // Group by category for better UI organization
             const groupedItems = menuItems.reduce((acc, item) => {
-                const cat = item.category || 'other';
+                const cat = item.categoryName || 'other';
                 if (!acc[cat]) acc[cat] = [];
                 acc[cat].push(item);
                 return acc;
@@ -2379,7 +2514,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             console.log(`[API] Created Sofia chat session ${sessionId} for restaurant ${context.restaurant.id} with greeting in ${context.restaurant.languages?.[0] || 'en'}`);
-
 
             // ✅ Get restaurant greeting based on restaurant language/country
             let restaurantGreeting: string;

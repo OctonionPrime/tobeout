@@ -15,8 +15,13 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-// ✅ CRITICAL FIX: Import timezone utilities from the correct path
 import { getRestaurantDateTime, getRestaurantDateString, getTomorrowDateString } from "@/lib/utils";
+
+// ✅ NEW: Import WebSocket context and dnd-kit
+import { useWebSocketContext } from "@/components/websocket/WebSocketContext";
+import { DndContext, DragEndEvent } from '@dnd-kit/core';
+import { DraggableReservation } from '@/components/reservations/DraggableReservation';
+import { DroppableSlot } from '@/components/reservations/DroppableSlot';
 
 interface TableData {
   id: number;
@@ -56,13 +61,12 @@ interface Restaurant {
   [key: string]: any;
 }
 
-// ✅ TYPE SAFETY FIX: Define mutation context type
 interface MutationContext {
   previousData?: any;
 }
 
 export default function ModernTables() {
-  const [selectedDate, setSelectedDate] = useState(''); // ✅ FIXED: Initialize empty, set after restaurant loads
+  const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState("19:00");
   const [activeView, setActiveView] = useState<"schedule" | "floorplan" | "grid" | "list">("schedule");
   
@@ -87,41 +91,35 @@ export default function ModernTables() {
     guestName?: string;
   } | null>(null);
 
-  // Enhanced drag & drop state
-  const [draggedReservation, setDraggedReservation] = useState<{
-    reservationId: number;
-    guestName: string;
-    guestCount: number;
-    currentTableId: number;
-    currentTableName: string;
-    currentTime: string;
-    phone?: string;
-  } | null>(null);
-  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
-  const [dragOverSlot, setDragOverSlot] = useState<{tableId: number; time: string} | null>(null);
-  const [isValidDropZone, setIsValidDropZone] = useState(false);
+  // ✅ REMOVED: All manual drag-and-drop state variables
+  // - draggedReservation
+  // - dragPosition
+  // - dragOverSlot
+  // - isValidDropZone
   
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // ✅ CRITICAL FIX: Get restaurant profile first without timezone in query key
+  // ✅ NEW: WebSocket context for real-time updates
+  const { isConnected } = useWebSocketContext();
+
+  // Get restaurant profile first
   const { data: restaurant, isLoading: restaurantLoading, error: restaurantError } = useQuery<Restaurant>({
     queryKey: ["/api/restaurants/profile"],
     retry: 3,
     staleTime: 30000,
   });
 
-  // ✅ CRITICAL FIX: Get actual restaurant timezone or fallback
   const restaurantTimezone = restaurant?.timezone || 'Europe/Belgrade';
 
-  // ✅ CRITICAL FIX: Set selectedDate after restaurant loads
+  // Set selectedDate after restaurant loads
   React.useEffect(() => {
     if (restaurant && !selectedDate) {
       setSelectedDate(getRestaurantDateString(restaurantTimezone));
     }
   }, [restaurant, restaurantTimezone, selectedDate]);
 
-  // ✅ CRITICAL FIX: Enhanced overnight-aware time slot generation
+  // Enhanced overnight-aware time slot generation
   const timeSlots: string[] = React.useMemo(() => {
     if (!restaurant?.openingTime || !restaurant?.closingTime) {
       return [];
@@ -135,21 +133,17 @@ export default function ModernTables() {
       const openingMinutes = openHour * 60 + (openMin || 0);
       const closingMinutes = closeHour * 60 + (closeMin || 0);
       
-      // ✅ CRITICAL FIX: Detect overnight operation
       const isOvernightOperation = closingMinutes < openingMinutes;
       
       if (isOvernightOperation) {
         console.log(`[ModernTables] 🌙 Overnight operation detected: ${restaurant.openingTime}-${restaurant.closingTime}`);
         
-        // ✅ Generate overnight time slots
-        // Part 1: From opening time until midnight (e.g., 22:00 → 24:00)
         for (let minutes = openingMinutes; minutes < 24 * 60; minutes += 60) {
           const hour = Math.floor(minutes / 60);
           const minute = minutes % 60;
           slots.push(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`);
         }
         
-        // Part 2: From midnight until closing time (e.g., 00:00 → 03:00)
         for (let minutes = 0; minutes < closingMinutes; minutes += 60) {
           const hour = Math.floor(minutes / 60);
           const minute = minutes % 60;
@@ -160,9 +154,8 @@ export default function ModernTables() {
       } else {
         console.log(`[ModernTables] 📅 Standard operation: ${restaurant.openingTime}-${restaurant.closingTime}`);
         
-        // ✅ Standard operation: simple range
-        const avgDuration = restaurant.avgReservationDuration || 120; // minutes
-        const lastBookingTime = closingMinutes - avgDuration; // Don't allow bookings too close to closing
+        const avgDuration = restaurant.avgReservationDuration || 120;
+        const lastBookingTime = closingMinutes - avgDuration;
         
         for (let minutes = openingMinutes; minutes <= lastBookingTime; minutes += 60) {
           const hour = Math.floor(minutes / 60);
@@ -179,14 +172,14 @@ export default function ModernTables() {
     return slots;
   }, [restaurant]);
 
-  // ✅ CRITICAL FIX: Get tables with proper timezone context
+  // Get tables with proper timezone context
   const { data: tables, isLoading: tablesLoading, error: tablesError } = useQuery({
     queryKey: ["/api/tables", restaurantTimezone],
     enabled: !!restaurant,
     retry: 3,
   });
 
-  // ✅ CRITICAL FIX: Enhanced schedule data fetching with comprehensive overnight support
+  // ✅ UPDATED: Removed refetchInterval for real-time WebSocket updates
   const { data: scheduleData, isLoading, error: scheduleError } = useQuery({
     queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone],
     queryFn: async () => {
@@ -197,7 +190,6 @@ export default function ModernTables() {
       console.log(`🔍 [ModernTables] Fetching schedule for ${selectedDate} with timezone ${restaurantTimezone}`);
       console.log(`🔍 [ModernTables] Time slots to check: ${timeSlots.length} slots`);
 
-      // ✅ ENHANCED: Check if this is an overnight operation
       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
 
@@ -216,7 +208,6 @@ export default function ModernTables() {
           if (!response.ok) {
             console.error(`❌ Failed to fetch availability for ${time}:`, response.status, response.statusText);
             
-            // ✅ ENHANCED: For overnight operations, provide more context in errors
             if (isOvernight) {
               console.error(`❌ [ModernTables] Overnight operation error at ${time} - this might be due to timezone handling`);
             }
@@ -227,7 +218,6 @@ export default function ModernTables() {
           const data = await response.json();
           const sortedTables = Array.isArray(data) ? data.sort((a: any, b: any) => a.id - b.id) : [];
           
-          // ✅ ENHANCED: Better logging for overnight operations
           if (isOvernight && (time === timeSlots[0] || time === timeSlots[Math.floor(timeSlots.length/2)] || time === timeSlots[timeSlots.length-1])) {
             console.log(`✅ [ModernTables] 🌙 Overnight slot ${time}: ${sortedTables.length} tables`);
           } else if (!isOvernight && sortedTables.length > 0) {
@@ -239,19 +229,17 @@ export default function ModernTables() {
         } catch (error) {
           console.error(`❌ Error fetching ${time}:`, error);
           
-          // ✅ ENHANCED: For overnight operations, provide empty data instead of failing completely
           if (isOvernight) {
             console.warn(`⚠️ [ModernTables] 🌙 Overnight slot ${time} failed, providing empty data`);
             return { time, tables: [] };
           }
           
-          throw error; // Re-throw for standard operations
+          throw error;
         }
       });
       
       const results = await Promise.allSettled(promises);
       
-      // ✅ ENHANCED: Handle mixed success/failure results better for overnight operations
       const successfulResults = results
         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
         .map(result => result.value);
@@ -272,22 +260,59 @@ export default function ModernTables() {
       return successfulResults;
     },
     enabled: !!restaurant && !!selectedDate && timeSlots.length > 0,
-    refetchInterval: 180000,
+    // ✅ REMOVED: refetchInterval (now using WebSocket for real-time updates)
     refetchOnWindowFocus: true,
     refetchOnMount: true,
     retry: (failureCount, error) => {
-      // ✅ ENHANCED: More lenient retry logic for overnight operations
       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
       
       if (isOvernight) {
-        return failureCount < 1; // Only retry once for overnight operations
+        return failureCount < 1;
       }
-      return failureCount < 2; // Standard retry logic
+      return failureCount < 2;
     },
   });
 
-  // ✅ CRITICAL FIX: Enhanced table creation with timezone context
+  // ✅ NEW: dnd-kit drag end handler (replaces all manual drag-and-drop handlers)
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    // Exit if the item was dropped in a non-droppable area
+    if (!over) {
+      return;
+    }
+
+    // Exit if the item was dropped back into its original spot
+    if (active.id === over.id) {
+      return;
+    }
+
+    const reservationId = active.id as number;
+    const { tableId: newTableId, time: newTime } = over.data.current as { tableId: number, time: string };
+
+    // Check for capacity constraints
+    const draggedGuestCount = active.data.current?.guestCount;
+    const targetTable = over.data.current?.table;
+    
+    if (draggedGuestCount && targetTable && (draggedGuestCount < targetTable.minGuests || draggedGuestCount > targetTable.maxGuests)) {
+      toast({
+        title: "Move Failed",
+        description: `Table ${targetTable.name} cannot accommodate ${draggedGuestCount} guests.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    // Call the existing mutation to move the reservation
+    moveReservationMutation.mutate({
+      reservationId,
+      newTableId,
+      newTime,
+    });
+  };
+
+  // Enhanced table creation with timezone context
   const addTableMutation = useMutation({
     mutationFn: async (tableData: AddTableForm) => {
       const payload = {
@@ -297,7 +322,6 @@ export default function ModernTables() {
         features: tableData.features ? tableData.features.split(',').map(f => f.trim()) : [],
         comments: tableData.comments,
         status: 'free',
-        // ✅ CRITICAL FIX: Include restaurant context
         restaurantTimezone: restaurantTimezone
       };
       
@@ -325,17 +349,14 @@ export default function ModernTables() {
       
       console.log(`✅ [ModernTables] Table created:`, newTable);
       
-      // ✅ CRITICAL FIX: Comprehensive cache invalidation
       queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
       queryClient.invalidateQueries({ queryKey: ["/api/restaurants/profile"] });
       
-      // Force refetch of schedule data
       queryClient.refetchQueries({ 
         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
       });
       
-      // Reset form and close modal
       setAddTableForm({
         name: "",
         minGuests: 1,
@@ -355,7 +376,7 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ CRITICAL FIX: Enhanced table deletion with timezone context
+  // Enhanced table deletion with timezone context
   const deleteTableMutation = useMutation({
     mutationFn: async (tableId: number) => {
       console.log(`🗑️ [ModernTables] Deleting table ${tableId}`);
@@ -380,11 +401,9 @@ export default function ModernTables() {
       
       console.log(`✅ [ModernTables] Table deleted successfully`);
       
-      // ✅ CRITICAL FIX: Comprehensive cache invalidation
       queryClient.invalidateQueries({ queryKey: ["/api/tables"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tables/availability/schedule"] });
       
-      // Force refetch
       queryClient.refetchQueries({ 
         queryKey: ["/api/tables/availability/schedule", selectedDate, restaurantTimezone] 
       });
@@ -399,7 +418,7 @@ export default function ModernTables() {
     }
   });
 
-  // ✅ TYPE SAFETY FIX: Enhanced reservation movement with proper mutation types
+  // Enhanced reservation movement with proper mutation types
   const moveReservationMutation = useMutation<any, Error, { 
     reservationId: number; 
     newTableId: number; 
@@ -432,19 +451,39 @@ export default function ModernTables() {
       });
 
       const previousData = queryClient.getQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone]);
-      const duration = 2;
+      // Calculate duration in hour slots based on restaurant's average reservation duration
+      const durationInSlots = Math.ceil((restaurant?.avgReservationDuration || 120) / 60);
 
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
-        if (!old || !draggedReservation) return old;
+        if (!old) return old;
         
-        const sourceHour = parseInt(draggedReservation.currentTime.split(':')[0]);
+        // Find the current reservation to move
+        let currentReservation: any = null;
+        let currentTableId: number = 0;
+        let currentTime: string = '';
+        
+        // Find the reservation in the current data
+        for (const slot of old) {
+          for (const table of slot.tables) {
+            if (table.reservation?.id === reservationId) {
+              currentReservation = table.reservation;
+              currentTableId = table.id;
+              currentTime = slot.time;
+              break;
+            }
+          }
+          if (currentReservation) break;
+        }
+        
+        if (!currentReservation) return old;
+        
+        const sourceHour = parseInt(currentTime.split(':')[0]);
         const targetHour = parseInt(newTime.split(':')[0]);
         
-        // ✅ TYPE SAFETY FIX: Proper array typing
         const sourceSlots: string[] = [];
         const targetSlots: string[] = [];
         
-        for (let i = 0; i < duration; i++) {
+        for (let i = 0; i < durationInSlots; i++) {
           sourceSlots.push(`${(sourceHour + i).toString().padStart(2, '0')}:00`);
           targetSlots.push(`${(targetHour + i).toString().padStart(2, '0')}:00`);
         }
@@ -452,7 +491,7 @@ export default function ModernTables() {
         return old.map((slot: any) => ({
           ...slot,
           tables: slot.tables.map((table: any) => {
-            if (table.id === draggedReservation.currentTableId && 
+            if (table.id === currentTableId && 
                 sourceSlots.includes(slot.time) &&
                 table.reservation?.id === reservationId) {
               return { 
@@ -467,12 +506,8 @@ export default function ModernTables() {
                 ...table, 
                 status: 'reserved',
                 reservation: {
-                  id: reservationId,
-                  guestName: draggedReservation.guestName,
-                  guestCount: draggedReservation.guestCount,
-                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1]}`,
-                  phone: draggedReservation.phone || '',
-                  status: 'confirmed'
+                  ...currentReservation,
+                  timeSlot: `${slot.time}-${targetSlots[targetSlots.length - 1]}`
                 }
               };
             }
@@ -487,17 +522,15 @@ export default function ModernTables() {
 
     onSuccess: (data: any, variables) => {
       const { newTableId, newTime } = variables;
-      const oldTableName = draggedReservation?.currentTableName || `Table ${draggedReservation?.currentTableId}`;
+      
+      // Find table names for the toast message
       const newTableName = scheduleData?.find(slot => slot.time === newTime)
         ?.tables?.find((t: any) => t.id === newTableId)?.name || `Table ${newTableId}`;
 
       toast({
         title: "Reservation Updated",
-        description: `${draggedReservation?.guestName}'s reservation moved from ${draggedReservation?.currentTime} (${oldTableName}) to ${newTime} (${newTableName})`,
+        description: `Reservation moved to ${newTime} (${newTableName})`,
       });
-      
-      setDraggedReservation(null);
-      setDragOverSlot(null);
       
       queryClient.invalidateQueries({ 
         queryKey: ["/api/reservations", restaurantTimezone] 
@@ -517,13 +550,10 @@ export default function ModernTables() {
         description: error.message || "Please try again",
         variant: "destructive",
       });
-      
-      setDraggedReservation(null);
-      setDragOverSlot(null);
     }
   });
 
-  // ✅ TYPE SAFETY FIX: Enhanced reservation cancellation with proper typing
+  // Enhanced reservation cancellation with proper typing
   const cancelReservationMutation = useMutation<any, Error, number, MutationContext>({
     mutationFn: async (reservationId: number) => {
       const response = await fetch(`/api/reservations/${reservationId}`, {
@@ -585,7 +615,7 @@ export default function ModernTables() {
     },
   });
 
-  // ✅ TYPE SAFETY FIX: Enhanced quick move with proper typing
+  // Enhanced quick move with proper typing
   const quickMoveMutation = useMutation<any, Error, { reservationId: number; direction: 'up' | 'down' }, MutationContext>({
     mutationFn: async ({ reservationId, direction }) => {
       const currentSlot = scheduleData?.find(slot => 
@@ -598,7 +628,6 @@ export default function ModernTables() {
       const currentHour = parseInt(currentSlot.time.split(':')[0]);
       const newHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
       
-      // ✅ ENHANCED: Handle overnight operation boundaries
       const isOvernight = restaurant?.openingTime && restaurant?.closingTime && 
         (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
       
@@ -606,7 +635,6 @@ export default function ModernTables() {
         const openingHour = parseInt(restaurant.openingTime.split(':')[0]);
         const closingHour = parseInt(restaurant.closingTime.split(':')[0]);
         
-        // For overnight operations, check boundaries differently
         if (direction === 'up' && newHour < 0) {
           throw new Error('Cannot move before midnight');
         }
@@ -614,13 +642,11 @@ export default function ModernTables() {
           throw new Error('Cannot move past 24:00');
         }
         
-        // Check if the new hour is within operating hours
         const isValidHour = (newHour >= openingHour || newHour < closingHour);
         if (!isValidHour) {
           throw new Error(`Cannot move outside operating hours (${restaurant.openingTime} - ${restaurant.closingTime})`);
         }
       } else {
-        // Standard operation checks
         const openingHour = parseInt(restaurant?.openingTime?.split(':')[0] || '10');
         const closingHour = parseInt(restaurant?.closingTime?.split(':')[0] || '22');
         
@@ -676,16 +702,16 @@ export default function ModernTables() {
       const targetHour = direction === 'up' ? currentHour - 1 : currentHour + 1;
       const targetTime = `${targetHour.toString().padStart(2, '0')}:00`;
       
-      const duration = 2;
+      // Calculate duration in hour slots based on restaurant's average reservation duration
+      const durationInSlots = Math.ceil((restaurant?.avgReservationDuration || 120) / 60);
       
       queryClient.setQueryData(["/api/tables/availability/schedule", selectedDate, restaurantTimezone], (old: any) => {
         if (!old) return old;
         
-        // ✅ TYPE SAFETY FIX: Proper array typing
         const sourceSlots: string[] = [];
         const targetSlots: string[] = [];
         
-        for (let i = 0; i < duration; i++) {
+        for (let i = 0; i < durationInSlots; i++) {
           sourceSlots.push(`${(currentHour + i).toString().padStart(2, '0')}:00`);
           targetSlots.push(`${(targetHour + i).toString().padStart(2, '0')}:00`);
         }
@@ -742,121 +768,18 @@ export default function ModernTables() {
     },
   });
 
-  // Drag & Drop Event Handlers (unchanged)
-  const handleDragStart = (
-    e: React.DragEvent,
-    reservation: {
-      id: number;
-      guestName: string;
-      guestCount: number;
-    },
-    table: TableData,
-    time: string
-  ) => {
-    setDraggedReservation({
-      reservationId: reservation.id,
-      guestName: reservation.guestName,
-      guestCount: reservation.guestCount,
-      currentTableId: table.id,
-      currentTableName: table.name,
-      currentTime: time
-    });
-    
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  // ✅ REMOVED: All manual drag-and-drop handlers
+  // - handleDragStart
+  // - handleDragOver
+  // - handleDragLeave
+  // - handleDrop
+  // - checkReservationConflict
+  // - isMovingWithinSameReservation
 
-  const checkReservationConflict = (targetTableId: number, targetTime: string, duration: number = 2): boolean => {
-    if (!scheduleData || !draggedReservation) return false;
-    
-    const targetHour = parseInt(targetTime.split(':')[0]);
-    
-    for (let i = 0; i < duration; i++) {
-      const hour = (targetHour + i).toString().padStart(2, '0');
-      const timeSlot = `${hour}:00`;
-      
-      const slot = scheduleData.find(s => s.time === timeSlot);
-      const table = slot?.tables?.find((t: any) => t.id === targetTableId);
-      
-      if (table?.reservation && table.reservation.id !== draggedReservation.reservationId) {
-        return true;
-      }
-    }
-    
-    return false;
-  };
-
-  const isMovingWithinSameReservation = (targetTableId: number, targetTime: string): boolean => {
-    if (!scheduleData || !draggedReservation) return false;
-    
-    return draggedReservation.currentTableId === targetTableId && 
-           draggedReservation.currentTime === targetTime;
-  };
-
-  const handleDragOver = (e: React.DragEvent, tableId: number, time: string) => {
-    e.preventDefault();
-    
-    setDragOverSlot({ tableId, time });
-    
-    if (isMovingWithinSameReservation(tableId, time)) {
-      setIsValidDropZone(false);
-      e.dataTransfer.dropEffect = 'none';
-      return;
-    }
-    
-    const hasConflict = checkReservationConflict(tableId, time, 2);
-    const targetSlot = scheduleData?.find(slot => slot.time === time)?.tables?.find((t: any) => t.id === tableId);
-    const hasExistingReservation = targetSlot?.reservation && 
-      targetSlot.reservation.id !== draggedReservation?.reservationId;
-    
-    const capacityMatch = draggedReservation ? 
-      (targetSlot?.minGuests || 0) <= draggedReservation.guestCount && 
-      draggedReservation.guestCount <= (targetSlot?.maxGuests || 0) : false;
-    
-    const isValidDrop = !hasConflict && !hasExistingReservation && capacityMatch;
-    
-    setIsValidDropZone(isValidDrop);
-    e.dataTransfer.dropEffect = isValidDrop ? 'move' : 'none';
-  };
-
-  const handleDragLeave = () => {
-    setDragOverSlot(null);
-    setIsValidDropZone(false);
-  };
-
-  const handleDrop = (e: React.DragEvent, tableId: number, time: string) => {
-    e.preventDefault();
-    
-    if (!draggedReservation) {
-      setDraggedReservation(null);
-      setDragOverSlot(null);
-      return;
-    }
-
-    if (draggedReservation.currentTableId === tableId && draggedReservation.currentTime === time) {
-      setDraggedReservation(null);
-      setDragOverSlot(null);
-      return;
-    }
-
-    if (!isValidDropZone) {
-      setDraggedReservation(null);
-      setDragOverSlot(null);
-      return;
-    }
-
-    moveReservationMutation.mutate({
-      reservationId: draggedReservation.reservationId,
-      newTableId: tableId,
-      newTime: time
-    });
-  };
-
-  // ✅ TYPE SAFETY FIX: Status colors for modern design with proper typing
+  // Status colors for modern design with proper typing
   const getStatusStyle = (status: string, hasReservation: boolean | undefined, isDragTarget = false) => {
     if (isDragTarget) {
-      return isValidDropZone
-        ? "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105"
-        : "bg-gradient-to-br from-red-400 to-red-500 text-white shadow-lg shadow-red-400/50 ring-2 ring-red-300";
+      return "bg-gradient-to-br from-green-400 to-green-500 text-white shadow-lg shadow-green-400/50 ring-2 ring-green-300 scale-105";
     }
     
     if (hasReservation) {
@@ -877,7 +800,7 @@ export default function ModernTables() {
     }
   };
 
-  // ✅ CRITICAL FIX: Enhanced form submission with validation
+  // Enhanced form submission with validation
   const handleAddTable = (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -912,7 +835,7 @@ export default function ModernTables() {
     addTableMutation.mutate(addTableForm);
   };
 
-  // ✅ CRITICAL FIX: Enhanced date formatting with timezone
+  // Enhanced date formatting with timezone
   const formatCurrentDate = () => {
     try {
       if (!restaurantTimezone || !selectedDate) {
@@ -937,7 +860,7 @@ export default function ModernTables() {
     }
   };
 
-  // ✅ CRITICAL FIX: Enhanced date navigation with timezone
+  // Enhanced date navigation with timezone
   const getTodayDateStr = () => {
     return getRestaurantDateString(restaurantTimezone);
   };
@@ -946,7 +869,7 @@ export default function ModernTables() {
     return getTomorrowDateString(restaurantTimezone);
   };
 
-  // ✅ CRITICAL FIX: Show loading state while restaurant loads
+  // Show loading state while restaurant loads
   if (restaurantLoading) {
     return (
       <DashboardLayout>
@@ -962,7 +885,7 @@ export default function ModernTables() {
     );
   }
 
-  // ✅ CRITICAL FIX: Show error state if restaurant fails to load
+  // Show error state if restaurant fails to load
   if (restaurantError || !restaurant) {
     return (
       <DashboardLayout>
@@ -982,7 +905,7 @@ export default function ModernTables() {
     );
   }
 
-  // ✅ ENHANCED: Check if this is an overnight operation
+  // Check if this is an overnight operation
   const isOvernightOperation = restaurant?.openingTime && restaurant?.closingTime && 
     (parseInt(restaurant.closingTime.split(':')[0]) < parseInt(restaurant.openingTime.split(':')[0]));
 
@@ -996,7 +919,6 @@ export default function ModernTables() {
               <div className="flex items-center gap-2">
                 <Calendar className="h-5 w-5 text-blue-600" />
                 <CardTitle className="text-lg">Table Management</CardTitle>
-                {/* ✅ CRITICAL FIX: Show timezone and operation type info */}
                 <Badge variant="outline" className="text-xs">
                   {restaurantTimezone}
                 </Badge>
@@ -1008,6 +930,14 @@ export default function ModernTables() {
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {/* ✅ NEW: Live Status Indicator */}
+                {isConnected ? (
+                    <Badge variant="outline" className="border-green-500 text-green-700 bg-green-50">
+                        ● Live
+                    </Badge>
+                ) : (
+                    <Badge variant="destructive">● Disconnected</Badge>
+                )}
                 <Button 
                   onClick={() => setShowAddTableModal(true)}
                   className="bg-green-600 hover:bg-green-700 text-white"
@@ -1045,7 +975,7 @@ export default function ModernTables() {
           </CardHeader>
         </Card>
 
-        {/* ✅ TYPE SAFETY FIX: Enhanced Table Statistics with proper array checking */}
+        {/* Table Statistics */}
         {tablesLoading ? (
           <Card className="bg-blue-50 border-blue-200">
             <CardContent className="pt-4">
@@ -1114,7 +1044,7 @@ export default function ModernTables() {
                   Restaurant Management - {formatCurrentDate()}
                 </h3>
                 <p className="text-gray-500 dark:text-gray-400 mt-1">
-                  Real-time availability across all tables • Auto-refreshes every 3 minutes
+                  Real-time availability across all tables • Live updates via WebSocket
                   <span className="ml-2 text-blue-600">
                     • {restaurantTimezone}
                   </span>
@@ -1171,7 +1101,6 @@ export default function ModernTables() {
         <div className="p-6">
           {activeView === 'schedule' && (
             <>
-              {/* ✅ CRITICAL FIX: Enhanced error handling and loading states for overnight */}
               {scheduleError ? (
                 <div className="text-center py-12">
                   <p className="text-red-600 mb-4">
@@ -1202,133 +1131,142 @@ export default function ModernTables() {
                   )}
                 </div>
               ) : scheduleData && scheduleData.length > 0 && scheduleData[0]?.tables?.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <div className="min-w-[800px]">
-                    {/* Sticky Header */}
-                    <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10 rounded-lg mb-4">
-                      <div className="flex">
-                        <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">
-                          TIME
-                          {isOvernightOperation && (
-                            <div className="text-xs text-blue-600 mt-1">24h</div>
-                          )}
-                        </div>
-                        <div className="flex overflow-x-auto gap-1 flex-1">
-                          {scheduleData[0]?.tables?.map((table: TableData) => (
-                            <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50 relative group">
-                              <div className="font-medium text-xs text-gray-900 dark:text-gray-100">{table.name}</div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center justify-center gap-1">
-                                <Users className="h-3 w-3" />
-                                {table.minGuests}-{table.maxGuests}
+                <DndContext onDragEnd={handleDragEnd}>
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[800px]">
+                      {/* Sticky Header */}
+                      <div className="sticky top-0 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-750 border-b border-gray-200/50 dark:border-gray-700/50 px-4 py-2 z-10 rounded-lg mb-4">
+                        <div className="flex">
+                          <div className="w-20 flex-shrink-0 font-semibold text-gray-700 dark:text-gray-300 text-xs py-2">
+                            TIME
+                            {isOvernightOperation && (
+                              <div className="text-xs text-blue-600 mt-1">24h</div>
+                            )}
+                          </div>
+                          <div className="flex overflow-x-auto gap-1 flex-1">
+                            {scheduleData[0]?.tables?.map((table: TableData) => (
+                              <div key={table.id} className="w-24 flex-shrink-0 text-center bg-white/50 dark:bg-gray-700/50 rounded-lg p-1.5 border border-gray-200/50 dark:border-gray-600/50 relative group">
+                                <div className="font-medium text-xs text-gray-900 dark:text-gray-100">{table.name}</div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center justify-center gap-1">
+                                  <Users className="h-3 w-3" />
+                                  {table.minGuests}-{table.maxGuests}
+                                </div>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (confirm(`Delete table ${table.name}? This cannot be undone.`)) {
+                                      deleteTableMutation.mutate(table.id);
+                                    }
+                                  }}
+                                  className="absolute -top-2 -right-2 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="h-3 w-3" />
+                                </Button>
                               </div>
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => {
-                                  if (confirm(`Delete table ${table.name}? This cannot be undone.`)) {
-                                    deleteTableMutation.mutate(table.id);
-                                  }
-                                }}
-                                className="absolute -top-2 -right-2 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* ✅ ENHANCED: Time Slots with overnight operation visual cues */}
-                    <div className="space-y-1">
-                      {scheduleData?.map((slot: ScheduleSlot) => {
-                        const hour = parseInt(slot.time.split(':')[0]);
-                        const isEarlyMorning = isOvernightOperation && hour < 6;
-                        const isLateNight = isOvernightOperation && hour >= 22;
-                        
-                        return (
-                          <div 
-                            key={slot.time} 
-                            className={cn(
-                              "flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200",
-                              isEarlyMorning && "bg-blue-50/30",
-                              isLateNight && "bg-purple-50/30"
-                            )}
-                          >
-                            <div className={cn(
-                              "w-20 flex-shrink-0 px-4 py-3 text-sm font-medium border-r border-gray-200/50 dark:border-gray-700/50",
-                              isEarlyMorning && "text-blue-700 dark:text-blue-300",
-                              isLateNight && "text-purple-700 dark:text-purple-300",
-                              !isEarlyMorning && !isLateNight && "text-gray-700 dark:text-gray-300"
-                            )}>
-                              {slot.time}
-                              {isOvernightOperation && (
-                                <div className="text-xs opacity-60">
-                                  {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Day"}
-                                </div>
+                      {/* Time Slots with overnight operation visual cues */}
+                      <div className="space-y-1">
+                        {scheduleData?.map((slot: ScheduleSlot) => {
+                          const hour = parseInt(slot.time.split(':')[0]);
+                          const isEarlyMorning = isOvernightOperation && hour < 6;
+                          const isLateNight = isOvernightOperation && hour >= 22;
+                          
+                          return (
+                            <div 
+                              key={slot.time} 
+                              className={cn(
+                                "flex hover:bg-gray-50/50 dark:hover:bg-gray-800/50 rounded-lg transition-colors duration-200",
+                                isEarlyMorning && "bg-blue-50/30",
+                                isLateNight && "bg-purple-50/30"
                               )}
-                            </div>
-                            <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
-                              {slot.tables?.map((table: TableData) => {
-                                const hasReservation = table.reservation && table.reservation.status === 'confirmed';
-                                const isDragTarget = dragOverSlot?.tableId === table.id && dragOverSlot?.time === slot.time;
-                                
-                                return (
-                                  <div
-                                    key={table.id}
-                                    className={cn(
-                                      "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
-                                      getStatusStyle(table.status, hasReservation, isDragTarget),
-                                      !hasReservation && "hover:scale-105"
-                                    )}
-                                    draggable={hasReservation}
-                                    onDragStart={(e) => hasReservation && table.reservation && handleDragStart(
-                                      e,
-                                      {
-                                        id: table.reservation.id || 0,
-                                        guestName: table.reservation.guestName,
-                                        guestCount: table.reservation.guestCount
-                                      },
-                                      table,
-                                      slot.time
-                                    )}
-                                    onDragOver={(e) => handleDragOver(e, table.id, slot.time)}
-                                    onDragLeave={handleDragLeave}
-                                    onDrop={(e) => handleDrop(e, table.id, slot.time)}
-                                    onContextMenu={(e) => {
-                                      e.preventDefault();
-                                      setContextMenu({
-                                        x: e.clientX,
-                                        y: e.clientY,
-                                        reservationId: hasReservation ? table.reservation?.id : undefined,
-                                        tableId: table.id,
-                                        timeSlot: slot.time,
-                                        guestName: hasReservation ? table.reservation?.guestName : undefined,
-                                      });
-                                    }}
-                                  >
-                                    <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1">
-                                      {hasReservation && <Move className="h-3 w-3" />}
-                                      {table.name}
-                                    </div>
-                                    {hasReservation && table.reservation && (
-                                      <div className="text-xs opacity-75 mt-1 truncate">
-                                        {table.reservation.guestName}
-                                      </div>
-                                    )}
-                                    <div className="text-xs opacity-60 mt-1">
-                                      {hasReservation ? `${table.reservation?.guestCount} guests` : table.status}
-                                    </div>
+                            >
+                              <div className={cn(
+                                "w-20 flex-shrink-0 px-4 py-3 text-sm font-medium border-r border-gray-200/50 dark:border-gray-700/50",
+                                isEarlyMorning && "text-blue-700 dark:text-blue-300",
+                                isLateNight && "text-purple-700 dark:text-purple-300",
+                                !isEarlyMorning && !isLateNight && "text-gray-700 dark:text-gray-300"
+                              )}>
+                                {slot.time}
+                                {isOvernightOperation && (
+                                  <div className="text-xs opacity-60">
+                                    {isEarlyMorning ? "Early" : isLateNight ? "Night" : "Day"}
                                   </div>
-                                );
-                              })}
+                                )}
+                              </div>
+                              <div className="flex overflow-x-auto gap-1 flex-1 px-2 py-1">
+                                {slot.tables?.map((table: TableData) => {
+                                  const hasReservation = table.reservation && table.reservation.status === 'confirmed';
+                                  const uniqueSlotId = `${table.id}-${slot.time}`; // Unique ID for the droppable area
+                                  
+                                  return (
+                                    <div
+                                      key={table.id}
+                                      className={cn(
+                                        "w-24 flex-shrink-0 rounded-lg p-2 text-center transition-all duration-200",
+                                        getStatusStyle(table.status, hasReservation),
+                                        !hasReservation && "hover:scale-105"
+                                      )}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setContextMenu({
+                                          x: e.clientX,
+                                          y: e.clientY,
+                                          reservationId: hasReservation ? table.reservation?.id : undefined,
+                                          tableId: table.id,
+                                          timeSlot: slot.time,
+                                          guestName: hasReservation ? table.reservation?.guestName : undefined,
+                                        });
+                                      }}
+                                    >
+                                      {/* ✅ NEW: Use DraggableReservation and DroppableSlot components */}
+                                      {hasReservation && table.reservation ? (
+                                        <DraggableReservation 
+                                          id={table.reservation.id} 
+                                          data={{
+                                            guestName: table.reservation.guestName,
+                                            guestCount: table.reservation.guestCount,
+                                          }}
+                                        >
+                                          {/* The content of the reservation card */}
+                                          <div className="text-xs font-bold opacity-90 flex items-center justify-center gap-1 cursor-grab active:cursor-grabbing">
+                                            <Move className="h-3 w-3" />
+                                            {table.name}
+                                          </div>
+                                          <div className="text-xs opacity-75 mt-1 truncate">
+                                            {table.reservation.guestName}
+                                          </div>
+                                          <div className="text-xs opacity-60 mt-1">
+                                            {`${table.reservation.guestCount} guests`}
+                                          </div>
+                                        </DraggableReservation>
+                                      ) : (
+                                        <DroppableSlot 
+                                          id={uniqueSlotId}
+                                          data={{ tableId: table.id, time: slot.time, table: table }}
+                                        >
+                                          {/* The content of an empty, droppable slot */}
+                                          <div className="h-full flex flex-col justify-center">
+                                            <div className="text-xs font-bold opacity-90">{table.name}</div>
+                                            <div className="text-xs opacity-60 mt-1">{table.status}</div>
+                                          </div>
+                                        </DroppableSlot>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
-                </div>
+                </DndContext>
               ) : (
                 <div className="text-center py-12">
                   <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
@@ -1365,7 +1303,7 @@ export default function ModernTables() {
       </div>
       </div>
 
-      {/* ✅ CRITICAL FIX: Enhanced Add Table Modal */}
+      {/* Enhanced Add Table Modal */}
       <Dialog open={showAddTableModal} onOpenChange={setShowAddTableModal}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -1475,7 +1413,7 @@ export default function ModernTables() {
         </DialogContent>
       </Dialog>
 
-      {/* Context Menu (unchanged) */}
+      {/* Context Menu */}
       {contextMenu && (
         <>
           <div 

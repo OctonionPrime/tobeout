@@ -16,6 +16,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { EnhancedAIAssistant } from '@/components/dashboard/EnhancedAIAssistant';
 
+// 🔌 WEBSOCKET INTEGRATION: Import WebSocket status component
+import { WebSocketStatus } from '@/components/websocket/WebSocketStatus';
+
 export default function Dashboard() {
     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
     const [selectedReservationId, setSelectedReservationId] = useState<number | undefined>(undefined);
@@ -144,7 +147,10 @@ export default function Dashboard() {
                             )}
                         </p>
                     </div>
-                    <div className="mt-4 md:mt-0 flex flex-wrap gap-2">
+                    <div className="mt-4 md:mt-0 flex flex-wrap gap-2 items-center">
+                        {/* 🔌 WEBSOCKET INTEGRATION: Add WebSocket status badge */}
+                        <WebSocketStatus />
+                        
                         <Button
                             className="inline-flex items-center"
                             onClick={handleCreateReservation}
@@ -152,6 +158,7 @@ export default function Dashboard() {
                             <PlusCircle className="mr-2 h-4 w-4" />
                             New Reservation
                         </Button>
+                        
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <Button variant="outline" className="inline-flex items-center">

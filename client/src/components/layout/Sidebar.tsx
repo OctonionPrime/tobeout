@@ -15,6 +15,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+// 🔌 WEBSOCKET INTEGRATION: Import compact WebSocket status component
+import { WebSocketStatusCompact } from '@/components/websocket/WebSocketStatus';
+
 interface NavItemProps {
   href: string;
   icon: React.ReactNode;
@@ -47,8 +50,14 @@ export function Sidebar() {
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h1 className="text-2xl font-semibold text-gray-800">ToBeOut</h1>
-          <p className="text-sm text-gray-500">Restaurant Management</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold text-gray-800">ToBeOut</h1>
+              <p className="text-sm text-gray-500">Restaurant Management</p>
+            </div>
+            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status indicator */}
+            <WebSocketStatusCompact />
+          </div>
         </div>
 
         <nav className="flex-1 pt-4 pb-4 overflow-y-auto">
@@ -105,7 +114,11 @@ export function Sidebar() {
       {/* Mobile Header */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-20 bg-white border-b border-gray-200">
         <div className="flex items-center justify-between p-4">
-          <h1 className="text-xl font-semibold text-gray-800">ToBeOut</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-gray-800">ToBeOut</h1>
+            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status for mobile header */}
+            <WebSocketStatusCompact />
+          </div>
           <Button 
             variant="ghost" 
             size="icon" 
@@ -122,7 +135,11 @@ export function Sidebar() {
         <div className="lg:hidden fixed inset-0 z-30 bg-black bg-opacity-50">
           <div className="absolute right-0 top-0 bottom-0 w-64 bg-white">
             <div className="p-4 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-lg font-semibold">Menu</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold">Menu</h2>
+                {/* 🔌 WEBSOCKET INTEGRATION: Add status to mobile menu header */}
+                <WebSocketStatusCompact />
+              </div>
               <Button 
                 variant="ghost" 
                 size="icon" 

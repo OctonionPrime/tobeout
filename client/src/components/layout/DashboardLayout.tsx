@@ -115,9 +115,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       }
       
       return data;
-    },
-    // ✅ CRITICAL: Remove stale time to ensure fresh data
-    staleTime: 0,
+      },
+
+    staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 30, // Keep for 30 seconds only
     refetchOnMount: true,
     refetchOnWindowFocus: true,
