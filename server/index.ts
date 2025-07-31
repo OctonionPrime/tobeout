@@ -464,6 +464,7 @@ app.use('/analytics', serveIndex('analytics', { 'icons': true }));
 
 // 🔌 WEBSOCKET MANAGER: Global variable to store WebSocket manager instance
 let wsManager: WebSocketManager | null = null;
+export let wss: ExtendedWebSocketServer;
 
 // Self-executing async function to initialize the server
 (async () => {
@@ -499,12 +500,14 @@ let wsManager: WebSocketManager | null = null;
         console.log('🔌 [Server] Creating HTTP server with WebSocket support');
         const httpServer = createServer(app);
 
-        // ✅ FIX: Create WebSocket server WITHOUT attaching it to the HTTP server automatically
-        const wss = new WebSocketServer({
+        // ✅ FIX: Create a temporary instance and assign it to the exported 'wss' variable
+        const wssInstance = new WebSocketServer({ // 👈 RENAMED this constant
             noServer: true
         }) as ExtendedWebSocketServer;
 
-        // Initialize WebSocket manager
+        wss = wssInstance; // 👈 ASSIGNED the instance to your exported variable
+
+        // Initialize WebSocket manager using the assigned variable
         wsManager = new WebSocketManager(wss);
         console.log('✅ [Server] WebSocket manager initialized');
 
@@ -527,7 +530,7 @@ let wsManager: WebSocketManager | null = null;
         console.log('✅ [Server] WebSocket server initialized');
 
         // 🔒 Register all API routes (pass WebSocket server to routes)
-        await registerRoutes(app, wss);
+        await registerRoutes(app, wss); // This now correctly uses the exported wss instance
         console.log('✅ [Server] Routes registered with WebSocket support');
 
         // [FIX] Corrected global error handling middleware with Smart Logging.

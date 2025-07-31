@@ -19,7 +19,7 @@ import {
 import type { Language } from '../enhanced-conversation-manager';
 import type { TenantContext } from '../tenant-context'; // 🔧 Import TenantContext type
 import { smartLog } from '../smart-logging.service';
-
+import { wss } from '../../index';
 // 🚀 REDIS PHASE 3: Import Redis service for guest history caching
 import { redisService } from '../redis-service';
 
@@ -1516,6 +1516,7 @@ export async function create_reservation(
 
         // 🚨 PROCEED WITH RESERVATION CREATION
         const result = await createTelegramReservation(
+            wss,
             context.restaurantId,
             date,
             timeFormatted,

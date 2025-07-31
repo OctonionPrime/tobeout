@@ -15,6 +15,7 @@ import type {
 import type { Language } from './enhanced-conversation-manager';
 import type { AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service'; // Import AvailabilitySlot
 import type { TenantContext } from './tenant-context'; 
+import { wss } from '../index';
 
 // Updated result type
 export type CreateTelegramReservationResult = {
@@ -45,6 +46,7 @@ export type CreateTelegramReservationResult = {
 
 // ✅ CRITICAL FIX: Add restaurantTimezone parameter and proper confirmed name handling
 export async function createTelegramReservation(
+    wss: ExtendedWebSocketServer,
     restaurantId: number,
     date: string,
     time: string,
@@ -192,7 +194,7 @@ export async function createTelegramReservation(
             confirmedNameUsed: !!confirmedName
         });
 
-        const result: CoreBookingResponse = await coreCreateReservation(restaurantId, bookingServiceRequest);
+        const result: CoreBookingResponse = await coreCreateReservation(wss, restaurantId, bookingServiceRequest);
 
         if (result.success) {
             console.log(`[TelegramBooking] ✅ Core booking successful. Message: ${result.message}`);
