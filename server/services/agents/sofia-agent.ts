@@ -101,22 +101,6 @@ interface NameExtractionPattern {
     };
 }
 
-/**
- * 🚀 PRODUCTION-READY: Sofia Agent - Booking Specialist with Critical Fixes
- * 
- * This agent completely resolves critical issues through:
- * 1. Comprehensive multi-language pattern matching for name extraction
- * 2. Intelligent attempt limiting with graceful fallbacks
- * 3. Robust fuzzy matching for typos and variations
- * 4. Professional error handling for all edge cases
- * 5. Seamless integration with the fixed context manager
- * 6. 🚨 NEW: Correct date/year context to prevent 2023 assumptions (BUG-00184 FIXED)
- * 7. 🛠️ NEW: Last seating rule awareness (BUG FIX 1)
- * 8. 🛠️ NEW: Guest count confirmation for returning guests (BUG FIX 2)
- * 9. 🔧 CRITICAL: Final booking command positioned at end to prevent date hallucination
- * 10. 🚨 BUG #3 FIX: Prevents premature availability checks with strict validation
- * 11. 🚨 BUG #4 FIX: Eliminates circular references in pending confirmation structure
- */
 export class SofiaAgent extends BaseAgent {
     readonly name = 'Sofia';
     readonly description = 'Production-ready booking specialist with critical bug fixes applied';
@@ -246,10 +230,24 @@ export class SofiaAgent extends BaseAgent {
 `;
             }
         }
+        let preProcessedDataInstructions = '';
+        const { date, time } = context.conversationContext?.gatheringInfo || {};
 
+        // 1. Check if our normalization step has already run and provided clean data.
+        if (date && time) {
+            preProcessedDataInstructions = `
+            🚨 CRITICAL PRE-PROCESSED DATA:
+            - The date for this booking has been pre-validated as: ${date}
+            - The time for this booking has been pre-validated as: ${time}
+            - YOUR TASK: Accept this date and time as correct. DO NOT change or re-interpret them.
+            - Your ONLY job now is to gather the REMAINING information (e.g., number of guests).
+            `;
+        }
         return `You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}.
 
 ${languageInstruction}
+
+${preProcessedDataInstructions}
 
 🎯 YOUR ROLE: Expert Conversation Specialist
 Create smooth, efficient booking experiences by using context intelligently and maintaining natural flow.
@@ -273,6 +271,12 @@ ${isOvernightOperation(this.restaurantConfig.openingTime || '09:00', this.restau
 - TOMORROW: ${dateContext.tomorrowDate}
 - Current time: ${dateContext.currentTime}
 - Restaurant status: ${dateContext.isOpen ? 'OPEN 🟢' : 'CLOSED 🔴'}
+
+🕐 CURRENT TIME BOOKING RULES:
+- If user requests "now" or current time (${dateContext.currentTime}), validate against operating hours
+- If restaurant closes soon, inform guest of closing time
+- If restaurant is closed, suggest next available time
+- Always be transparent about current time constraints
 
 🚨 CRITICAL DATE PARSING RULES (PREVENTS 2023 BUG):
 - CURRENT YEAR: ${dateContext.currentYear}
@@ -336,6 +340,23 @@ When ANY booking validation fails and user provides new information:
 **RATIONALE:** Validation failures often indicate broader context changes.
 **EXCEPTION:** Skip re-confirmation if date/party size were explicitly confirmed in the last 2 exchanges.
 
+🚨 CRITICAL SUMMARY RULE:
+When summarizing booking details, you MUST ONLY mention details present in the 'gatheringInfo' context.
+- If 'gatheringInfo.guests' is missing, DO NOT mention party size
+- Instead, ask for it again: "How many guests will be joining you?"
+- This prevents misleading confirmations that create user confusion
+
+🚨 CRITICAL GUEST COUNT VALIDATION (BUG FIX):
+When users say collective numerals like:
+- Russian: "вчетвером" (we four), "втроем" (we three), "вдвоем" (we two)  
+- Serbian: "nas četvoro" (four of us), "u troje" (three of us)
+- Hungarian: "négyen leszünk" (we will be four), "hárman" (three of us)
+- German: "zu viert" (as four), "wir sind drei" (we are three)
+- French: "à quatre" (as four), "nous sommes trois" (we are three)
+
+These are VALID guest counts that must be extracted correctly.
+NEVER reject these natural language expressions.
+The system will validate them using multilingual patterns.
 🤝 CONVERSATION STYLE:
 - **Warm & Welcoming**: "I'd love to help you with that!"
 - **Efficient**: Acknowledge information already provided
@@ -1108,6 +1129,66 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
         }
 
         return matrix[str2.length][str1.length];
+    }
+
+    /**
+     * 🚨 NEW: Validate if requested time is current time and handle appropriately
+     */
+    private validateCurrentTimeBooking(
+        requestedTime: string,
+        restaurantTimezone: string
+    ): {
+        isCurrentTime: boolean,
+        isWithinOperatingHours: boolean,
+        minutesUntilClose?: number,
+        recommendation?: string
+    } {
+        try {
+            const currentTime = getRestaurantDateTime(restaurantTimezone);
+            const currentTimeString = currentTime.toFormat('HH:mm');
+
+            // Check if requested time is very close to current time (within 5 minutes)
+            const requestedDateTime = DateTime.fromFormat(requestedTime, 'HH:mm');
+            const diffMinutes = Math.abs(requestedDateTime.diff(currentTime, 'minutes').minutes);
+
+            const isCurrentTime = diffMinutes <= 5;
+
+            if (isCurrentTime) {
+                // Check restaurant operating hours
+                const operatingStatus = getRestaurantOperatingStatus(
+                    restaurantTimezone,
+                    this.restaurantConfig.openingTime || '09:00',
+                    this.restaurantConfig.closingTime || '23:00'
+                );
+
+                return {
+                    isCurrentTime: true,
+                    isWithinOperatingHours: operatingStatus.isOpen,
+                    minutesUntilClose: operatingStatus.minutesUntilClose,
+                    recommendation: !operatingStatus.isOpen
+                        ? 'Restaurant is currently closed'
+                        : operatingStatus.minutesUntilClose && operatingStatus.minutesUntilClose < 60
+                            ? `Note: Restaurant closes in ${operatingStatus.minutesUntilClose} minutes`
+                            : undefined
+                };
+            }
+
+            return {
+                isCurrentTime: false,
+                isWithinOperatingHours: true // We'll let normal validation handle this
+            };
+
+        } catch (error) {
+            this.logAgentAction('Error validating current time booking', {
+                error: (error as Error).message,
+                requestedTime,
+                restaurantTimezone
+            });
+            return {
+                isCurrentTime: false,
+                isWithinOperatingHours: true
+            };
+        }
     }
 
     /**

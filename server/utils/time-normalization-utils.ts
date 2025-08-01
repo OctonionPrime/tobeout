@@ -1,13 +1,50 @@
 // server/utils/time-normalization-utils.ts
 
-/**
- * 🚨 CRITICAL BUG FIX: Smart Time Normalization Utility
- * 
- * Handles the various ways people naturally type times in chat conversations.
- * Fixes the circular loop issue where "19-20" is interpreted as a range instead of "19:20".
- * 
- * This utility normalizes time patterns BEFORE AI processing to prevent ambiguity.
- */
+// In server/utils/time-normalization-utils.ts
+
+import { aiService } from '../services/ai-service'; // Import the aiService singleton
+import { TenantContext } from '../services/tenant-context'; // Import TenantContext type
+import { getRestaurantTimeContext } from './timezone-utils';
+import { smartLog } from '../services/smart-logging.service'; // Assuming smartLog is available here
+
+export async function normalizeAfterMidnightTime(
+    message: string,
+    tenantContext: TenantContext
+): Promise<{ date: string | null; time: string | null }> {
+
+    // Get the current date/time context to provide to the AI.
+    const timeContext = getRestaurantTimeContext(tenantContext.restaurant.timezone);
+
+    const prompt = `
+        You are a precise time extraction tool. The user is booking a table at a restaurant that is open past midnight.
+        The current date is ${timeContext.todayDate} (${timeContext.dayOfWeek}). The current time is ${timeContext.currentTime}.
+        Analyze the user's request: "${message}"
+        Your task is to extract the exact calendar date and 24-hour time for the booking.
+        - "today at 2 AM" refers to the current calendar date (${timeContext.todayDate}) at 02:00.
+        - "tonight at 2 AM" also refers to the current calendar date (${timeContext.todayDate}) at 02:00.
+
+        Return ONLY a valid JSON object with the format: { "date": "YYYY-MM-DD", "time": "HH:MM" }
+    `;
+
+    try {
+        const result = await aiService.generateJSON<{ date: string; time: string }>(
+            prompt,
+            {
+                context: 'high-precision-time-normalization',
+                model: 'gpt-4o' // Use a powerful model for this critical, single task.
+            },
+            tenantContext
+        );
+
+        if (result && result.date && result.time) {
+            return { date: result.date, time: result.time };
+        }
+        return { date: null, time: null };
+    } catch (error) {
+        smartLog.error('High-precision time normalization failed', error as Error, { message });
+        return { date: null, time: null };
+    }
+}
 
 export interface TimeNormalizationResult {
     normalizedMessage: string;

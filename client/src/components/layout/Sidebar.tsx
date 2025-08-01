@@ -10,12 +10,10 @@ import {
   Bot, 
   Settings, 
   Puzzle,
-  Menu
+  Menu as MenuIcon // Aliased to avoid conflict with mobile menu button
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-// 🔌 WEBSOCKET INTEGRATION: Import compact WebSocket status component
 import { WebSocketStatusCompact } from '@/components/websocket/WebSocketStatus';
 
 interface NavItemProps {
@@ -29,14 +27,14 @@ const NavItem = ({ href, icon, children, active }: NavItemProps) => (
   <Link href={href}>
     <div 
       className={cn(
-        "flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50 cursor-pointer",
-        active && "bg-blue-50 border-r-4 border-blue-500"
+        "flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors duration-150",
+        active && "bg-blue-50 border-r-4 border-blue-500 font-semibold"
       )}
     >
       <div className={cn("w-5", active ? "text-blue-500" : "text-gray-400")}>
         {icon}
       </div>
-      <span className="mx-3">{children}</span>
+      <span className={cn("mx-3", active ? "text-blue-600" : "text-gray-700")}>{children}</span>
     </div>
   </Link>
 );
@@ -44,6 +42,22 @@ const NavItem = ({ href, icon, children, active }: NavItemProps) => (
 export function Sidebar() {
   const [location] = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const navLinks = [
+    { href: "/dashboard", icon: <LayoutDashboard size={18} />, text: "Dashboard" },
+    { href: "/reservations", icon: <CalendarDays size={18} />, text: "Reservations" },
+    { href: "/tables", icon: <Utensils size={18} />, text: "Tables" },
+    { href: "/menu", icon: <MenuIcon size={18} />, text: "Menu" },
+    { href: "/guests", icon: <Users size={18} />, text: "Guests" },
+    { href: "/analytics", icon: <BarChart3 size={18} />, text: "Analytics" },
+  ];
+
+  const settingsLinks = [
+    { href: "/profile", icon: <Store size={18} />, text: "Restaurant Profile" },
+    { href: "/ai-settings", icon: <Bot size={18} />, text: "AI Assistant" },
+    { href: "/preferences", icon: <Settings size={18} />, text: "Preferences" },
+    { href: "/integrations", icon: <Puzzle size={18} />, text: "Integrations" },
+  ];
 
   return (
     <>
@@ -55,7 +69,6 @@ export function Sidebar() {
               <h1 className="text-2xl font-semibold text-gray-800">ToBeOut</h1>
               <p className="text-sm text-gray-500">Restaurant Management</p>
             </div>
-            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status indicator */}
             <WebSocketStatusCompact />
           </div>
         </div>
@@ -64,42 +77,24 @@ export function Sidebar() {
           <div className="px-4 mb-2">
             <h2 className="text-xs uppercase tracking-wider text-gray-500 font-semibold">Main</h2>
           </div>
-          <NavItem href="/dashboard" icon={<LayoutDashboard size={18} />} active={location === "/dashboard"}>
-            Dashboard
-          </NavItem>
-          <NavItem href="/reservations" icon={<CalendarDays size={18} />} active={location === "/reservations"}>
-            Reservations
-          </NavItem>
-          <NavItem href="/tables" icon={<Utensils size={18} />} active={location === "/tables"}>
-            Tables
-          </NavItem>
-          <NavItem href="/guests" icon={<Users size={18} />} active={location === "/guests"}>
-            Guests
-          </NavItem>
-          <NavItem href="/analytics" icon={<BarChart3 size={18} />} active={location === "/analytics"}>
-            Analytics
-          </NavItem>
+          {navLinks.map(link => (
+            <NavItem key={link.href} href={link.href} icon={link.icon} active={location === link.href}>
+              {link.text}
+            </NavItem>
+          ))}
 
           <div className="px-4 mt-6 mb-2">
             <h2 className="text-xs uppercase tracking-wider text-gray-500 font-semibold">Settings</h2>
           </div>
-          <NavItem href="/profile" icon={<Store size={18} />} active={location === "/profile"}>
-            Restaurant Profile
-          </NavItem>
-          <NavItem href="/ai-settings" icon={<Bot size={18} />} active={location === "/ai-settings"}>
-            AI Assistant
-          </NavItem>
-          <NavItem href="/preferences" icon={<Settings size={18} />} active={location === "/preferences"}>
-            Preferences
-          </NavItem>
-          <NavItem href="/integrations" icon={<Puzzle size={18} />} active={location === "/integrations"}>
-            Integrations
-          </NavItem>
+          {settingsLinks.map(link => (
+            <NavItem key={link.href} href={link.href} icon={link.icon} active={location === link.href}>
+              {link.text}
+            </NavItem>
+          ))}
         </nav>
 
         <div className="border-t border-gray-200 p-4">
           <div className="flex items-center">
-            {/* This will use actual user data from the authentication context */}
             <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-500">
               <Users size={18} />
             </div>
@@ -116,7 +111,6 @@ export function Sidebar() {
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold text-gray-800">ToBeOut</h1>
-            {/* 🔌 WEBSOCKET INTEGRATION: Add compact status for mobile header */}
             <WebSocketStatusCompact />
           </div>
           <Button 
@@ -125,19 +119,18 @@ export function Sidebar() {
             onClick={() => setIsMobileMenuOpen(true)}
             className="text-gray-500 hover:text-gray-600"
           >
-            <Menu size={24} />
+            <MenuIcon size={24} />
           </Button>
         </div>
       </div>
 
       {/* Mobile Navigation Menu */}
       {isMobileMenuOpen && (
-        <div className="lg:hidden fixed inset-0 z-30 bg-black bg-opacity-50">
-          <div className="absolute right-0 top-0 bottom-0 w-64 bg-white">
+        <div className="lg:hidden fixed inset-0 z-30 bg-black bg-opacity-50" onClick={() => setIsMobileMenuOpen(false)}>
+          <div className="absolute right-0 top-0 bottom-0 w-64 bg-white" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-gray-200 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-semibold">Menu</h2>
-                {/* 🔌 WEBSOCKET INTEGRATION: Add status to mobile menu header */}
                 <WebSocketStatusCompact />
               </div>
               <Button 
@@ -147,114 +140,25 @@ export function Sidebar() {
                 className="text-gray-500"
               >
                 <span className="sr-only">Close</span>
-                <span aria-hidden="true">&times;</span>
+                <span aria-hidden="true" className="text-2xl">&times;</span>
               </Button>
             </div>
             <nav className="p-4">
-              <Link href="/dashboard">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/dashboard" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Dashboard
-                </a>
-              </Link>
-              <Link href="/reservations">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/reservations" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Reservations
-                </a>
-              </Link>
-              <Link href="/tables">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/tables" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Tables
-                </a>
-              </Link>
-              <Link href="/guests">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/guests" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Guests
-                </a>
-              </Link>
-              <Link href="/profile">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/profile" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Restaurant Profile
-                </a>
-              </Link>
-              <Link href="/ai-settings">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/ai-settings" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  AI Assistant
-                </a>
-              </Link>
-              <Link href="/preferences">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/preferences" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Preferences
-                </a>
-              </Link>
-              <Link href="/integrations">
-                <a 
-                  className={cn(
-                    "block py-2 px-4 rounded mb-1",
-                    location === "/integrations" 
-                      ? "text-blue-500 bg-blue-50" 
-                      : "text-gray-700 hover:bg-gray-50"
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Integrations
-                </a>
-              </Link>
+              {[...navLinks, ...settingsLinks].map(link => (
+                 <Link key={link.href} href={link.href}>
+                    <a 
+                      className={cn(
+                        "block py-2 px-4 rounded mb-1",
+                        location === link.href 
+                          ? "text-blue-500 bg-blue-50" 
+                          : "text-gray-700 hover:bg-gray-50"
+                      )}
+                      onClick={() => setIsMobileMenuOpen(false)}
+                    >
+                      {link.text}
+                    </a>
+                  </Link>
+              ))}
             </nav>
           </div>
         </div>

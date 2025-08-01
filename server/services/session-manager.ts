@@ -35,6 +35,7 @@ export interface BookingSession {
         name?: string;
         phone?: string;
         comments?: string;
+        internalDiagnostics?: string;
     };
     conversationHistory: Array<{
         role: 'user' | 'assistant';

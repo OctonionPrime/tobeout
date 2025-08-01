@@ -8,7 +8,7 @@ import { runGuardrails, requiresConfirmation, type GuardrailResult } from './gua
 import type { Restaurant } from '@shared/schema';
 import { DateTime } from 'luxon';
 import { normalizeTimePatterns } from '../utils/time-normalization-utils';
-
+import { sanitizeInternalComments } from '../utils/sanitization-utils';
 // 🚀 REDIS INTEGRATION: Import Redis service for session persistence
 import { redisService } from './redis-service';
 
@@ -16,12 +16,13 @@ import { redisService } from './redis-service';
 import {
     getRestaurantDateTime,
     getRestaurantTimeContext,
-    isValidTimezone
+    isValidTimezone,
+    getRestaurantOperatingStatus 
 } from '../utils/timezone-utils';
 
-// ✅ STEP 3B.1: Using ContextManager for all context resolution and management
+// ✅ Using ContextManager for all context resolution and management
 import { contextManager } from './context-manager';
-
+import { ValidationPatternLoader } from '../validation/pattern-loader';
 // 🚨 CRITICAL FIX BUG-20250725-001: Import tenant context manager for proper context loading
 import { tenantContextManager } from './tenant-context';
 import type { TenantContext } from './tenant-context';
@@ -561,7 +562,7 @@ export class EnhancedConversationManager {
      * BEFORE: Method created all fields with potential undefined values, overwriting existing session data
      * AFTER: Method only includes fields that actually have values, preserving existing session state
      */
-    private validateExtractedData(extraction: any, originalMessage: string): any {
+    private async validateExtractedData(extraction: any, originalMessage: string, session: BookingSessionWithAgent): Promise<any> {
         const validated: any = {};
 
         // ✅ CONTEXT AMNESIA FIX: Only add fields that actually have values
@@ -588,7 +589,7 @@ export class EnhancedConversationManager {
         }
 
         if (extraction.guests) {
-            const validatedGuests = this.validateGuestsField(extraction.guests, originalMessage);
+            const validatedGuests = this.validateGuestsField(extraction.guests, originalMessage, session);
             if (validatedGuests) validated.guests = validatedGuests;
         }
 
@@ -626,7 +627,8 @@ export class EnhancedConversationManager {
                 language: session.language,
                 restaurantContext: true,
                 sessionId: session.sessionId,
-                logChanges: true
+                logChanges: true,
+                restaurantTimezone: session.timezone
             });
             const normalizedMessage = normalizationResult.normalizedMessage;
 
@@ -640,6 +642,7 @@ EXISTING CONFIRMED INFO: ${JSON.stringify(session.gatheringInfo)}
 LAST ASSISTANT MESSAGE: "${lastAssistantMessage}"
 USER'S LATEST MESSAGE: "${normalizedMessage}"
 CURRENT DATE CONTEXT: Today is ${dateContext.todayDate}.
+CURRENT TIME CONTEXT: Current restaurant time is ${dateContext.currentTime}.
 
 YOUR CRITICAL TASK:
 - Analyze ONLY the "USER'S LATEST MESSAGE".
@@ -647,6 +650,12 @@ YOUR CRITICAL TASK:
 - If the user provides a new value for a field that ALREADY EXISTS (e.g., they change the date), your JSON output should contain the NEW value.
 - If a field is NOT MENTIONED in the user's latest message, DO NOT include it in your JSON output.
 - Do NOT invent or assume details. Your output must only contain information from the latest message.
+
+**CRITICAL TIME HANDLING RULES:**
+- If the message contains specific times like "19:30", "7 PM", extract as "time"
+- If the message was normalized from "now" expressions (check if time matches current time ${dateContext.currentTime}), extract as "time"
+- If the user says current/immediate time expressions, this means they want to book NOW, extract current time
+- DO NOT put temporal expressions in comments if they represent the desired booking time
 
 **CRITICAL TIME LOOP PREVENTION RULE:**
 - IF the "LAST ASSISTANT MESSAGE" asked the user to clarify a time (e.g., "please select a specific time")
@@ -685,7 +694,8 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
   "time": "Time in HH:MM format (null if not in CURRENT message)",
   "guests": "Number of people (null if not in CURRENT message)",
   "name": "Guest name if mentioned (null if not in CURRENT message)",
-  "comments": "Special requests or ambiguous time clarifications (null if not in CURRENT message)"
+  "comments": "Special requests EXPLICITLY MADE BY THE USER (null if none)",
+  "internalDiagnostics": "YOUR reasoning, notes on ambiguity, or system observations (null if none)"
 }`;
             // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
             const extraction = await aiService.generateJSON(prompt, {
@@ -695,7 +705,15 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             }, session.tenantContext!);
 
             // ✅ BUG-20250727-001 FIX: Use the fixed validateExtractedData method
-            const validatedExtraction = this.validateExtractedData(extraction, normalizedMessage);
+            const validatedExtraction = await this.validateExtractedData(extraction, normalizedMessage, session);
+
+            if (extraction.internalDiagnostics) {
+                session.gatheringInfo.internalDiagnostics = (session.gatheringInfo.internalDiagnostics || '') + ` | ${extraction.internalDiagnostics}`;
+                smartLog.info('Internal diagnostics from AI captured', {
+                    sessionId: session.sessionId,
+                    diagnostics: extraction.internalDiagnostics
+                });
+            }
 
             // ✅ NAME MISMATCH DETECTION: Check if user requested a different name than guest history
             if (validatedExtraction.name && session.guestHistory?.guest_name && 
@@ -927,7 +945,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
     /**
      * 🚨 CRITICAL: Validate guests field to prevent hallucination
      */
-    private validateGuestsField(value: any, originalMessage: string): number | undefined {
+    private validateGuestsField(value: any, originalMessage: string, session: BookingSessionWithAgent): number | undefined {
         if (typeof value === 'string') {
             const numValue = parseInt(value, 10);
             if (!isNaN(numValue)) {
@@ -939,26 +957,49 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             return undefined;
         }
 
+        // 🚀 CRITICAL FIX: Load patterns dynamically based on session language
+        const patterns = ValidationPatternLoader.loadGuestPatterns(session.language || 'en');
         const cleanMessage = originalMessage.toLowerCase();
 
-        const guestIndicators = [
-            String(value),
-            /\d+\s*(people|person|guest|человек|людей|гостей|osoba|ljudi|fő|személy|personen|person|personnes|personne|personas|persona|persone|pessoa|pessoas|personen|persoon)/i,
-            'table for', 'столик на', 'sto za', 'asztal', 'tisch für', 'table pour', 'mesa para', 'tavolo per', 'mesa para', 'tafel voor'
-        ];
-
-        const hasGuestIndicator = guestIndicators.some(indicator => {
-            if (typeof indicator === 'string') {
-                return cleanMessage.includes(indicator);
-            } else {
-                return indicator.test(cleanMessage);
+        // Check collective numerals FIRST (THE MAIN FIX)
+        if (patterns.collectiveNumerals) {
+            for (const [term, expectedValue] of Object.entries(patterns.collectiveNumerals)) {
+                if (cleanMessage.includes(term.toLowerCase()) && value === expectedValue) {
+                    smartLog.info('Collective numeral validation success', {
+                        term,
+                        expectedValue,
+                        language: session.language,
+                        bugFixed: 'RUSSIAN_COLLECTIVE_NUMERALS'
+                    });
+                    return value;
+                }
             }
-        });
+        }
+
+        // Check phrase patterns
+        if (patterns.phrases) {
+            const hasPhrase = patterns.phrases.some(phrase =>
+                cleanMessage.includes(phrase.toLowerCase())
+            );
+            if (hasPhrase && value >= 1 && value <= 50) {
+                smartLog.info('Phrase pattern validation success', {
+                    value,
+                    language: session.language,
+                    matchedPhrase: patterns.phrases.find(p => cleanMessage.includes(p.toLowerCase()))
+                });
+                return value;
+            }
+        }
+
+        // Keep existing regex as fallback
+        const guestIndicators = patterns.regexPatterns.map(pattern => new RegExp(pattern, 'gi'));
+        const hasGuestIndicator = guestIndicators.some(regex => regex.test(originalMessage));
 
         if (!hasGuestIndicator) {
-            smartLog.warn('Guest count extraction prevented - no guest indicators in message', {
+            smartLog.warn('Guest count extraction prevented - no indicators found', {
                 extractedGuests: value,
-                originalMessage,
+                originalMessage: originalMessage.substring(0, 100),
+                language: session.language,
                 preventedHallucination: true
             });
             return undefined;
@@ -2521,6 +2562,7 @@ Respond with JSON only:
         validationStatus?: any
     ): string {
         const { name, phone, date, time, guests, comments } = bookingData;
+        const sanitizedComment = sanitizeInternalComments(comments);
         const templates: Record<string, string> = {
             en: `🎉 Reservation Confirmed! 
 
@@ -2531,7 +2573,7 @@ Respond with JSON only:
 • Date: ${date}
 • Time: ${time}
 • Guests: ${guests}
-${comments ? `• Special requests: ${comments}` : ''}
+${sanitizedComment ? `• Special requests: ${sanitizedComment}` : ''}
 
 ✅ All details validated and confirmed.
 📞 We'll call if any changes are needed.`,
@@ -2544,7 +2586,7 @@ ${comments ? `• Special requests: ${comments}` : ''}
 • Дата: ${date}  
 • Время: ${time}
 • Гостей: ${guests}
-${comments ? `• Особые пожелания: ${comments}` : ''}
+${sanitizedComment ? `• Особые пожелания: ${sanitizedComment}` : ''}
 
 ✅ Все данные проверены и подтверждены.
 📞 Перезвоним при необходимости.`,
@@ -2557,7 +2599,7 @@ ${comments ? `• Особые пожелания: ${comments}` : ''}
 • Datum: ${date}
 • Vreme: ${time}
 • Gostiju: ${guests}
-${comments ? `• Posebni zahtevi: ${comments}` : ''}
+${sanitizedComment ? `• Posebni zahtevi: ${sanitizedComment}` : ''}
 
 ✅ Svi podaci provereni i potvrđeni.
 📞 Pozvaćemo ako su potrebne izmene.`,
@@ -2570,7 +2612,7 @@ ${comments ? `• Posebni zahtevi: ${comments}` : ''}
 • Dátum: ${date}
 • Idő: ${time}
 • Vendégek: ${guests}
-${comments ? `• Különleges kérések: ${comments}` : ''}
+${sanitizedComment ? `• Különleges kérések: ${sanitizedComment}` : ''}
 
 ✅ Minden adat ellenőrizve és megerősítve.
 📞 Felhívjuk, ha változásokra van szükség.`,
@@ -2583,7 +2625,7 @@ ${comments ? `• Különleges kérések: ${comments}` : ''}
 • Datum: ${date}
 • Zeit: ${time}
 • Gäste: ${guests}
-${comments ? `• Besondere Wünsche: ${comments}` : ''}
+${sanitizedComment ? `• Besondere Wünsche: ${sanitizedComment}` : ''}
 
 ✅ Alle Details validiert und bestätigt.
 📞 Wir rufen an, falls Änderungen nötig sind.`,
@@ -2596,7 +2638,7 @@ ${comments ? `• Besondere Wünsche: ${comments}` : ''}
 • Date : ${date}
 • Heure : ${time}
 • Convives : ${guests}
-${comments ? `• Demandes spéciales : ${comments}` : ''}
+${sanitizedComment ? `• Demandes spéciales : ${sanitizedComment}` : ''}
 
 ✅ Tous les détails validés et confirmés.
 📞 Nous vous appellerons si des changements sont nécessaires.`,
@@ -2609,7 +2651,7 @@ ${comments ? `• Demandes spéciales : ${comments}` : ''}
 • Fecha: ${date}
 • Hora: ${time}
 • Comensales: ${guests}
-${comments ? `• Solicitudes especiales: ${comments}` : ''}
+${sanitizedComment ? `• Solicitudes especiales: ${sanitizedComment}` : ''}
 
 ✅ Todos los detalles validados y confirmados.
 📞 Te llamaremos si necesitamos cambios.`,
@@ -2622,7 +2664,7 @@ ${comments ? `• Solicitudes especiales: ${comments}` : ''}
 • Data: ${date}
 • Ora: ${time}
 • Ospiti: ${guests}
-${comments ? `• Richieste speciali: ${comments}` : ''}
+${sanitizedComment ? `• Richieste speciali: ${sanitizedComment}` : ''}
 
 ✅ Tutti i dettagli validati e confermati.
 📞 Ti chiameremo se servono modifiche.`,
@@ -2635,7 +2677,7 @@ ${comments ? `• Richieste speciali: ${comments}` : ''}
 • Data: ${date}
 • Hora: ${time}
 • Convidados: ${guests}
-${comments ? `• Solicitações especiais: ${comments}` : ''}
+${sanitizedComment ? `• Solicitações especiais: ${sanitizedComment}` : ''}
 
 ✅ Todos os detalhes validados e confirmados.
 📞 Ligaremos se precisarmos de alterações.`,
@@ -2648,7 +2690,7 @@ ${comments ? `• Solicitações especiais: ${comments}` : ''}
 • Datum: ${date}
 • Tijd: ${time}
 • Gasten: ${guests}
-${comments ? `• Speciale verzoeken: ${comments}` : ''}
+${sanitizedComment ? `• Speciale verzoeken: ${sanitizedComment}` : ''}
 
 ✅ Alle details gevalideerd en bevestigd.
 📞 We bellen als er wijzigingen nodig zijn.`
@@ -2841,6 +2883,38 @@ ${comments ? `• Speciale verzoeken: ${comments}` : ''}
         }
 
         const isFirstMessage = session.conversationHistory.length === 0;
+
+        if (isFirstMessage) {
+            // 1. Get the restaurant's current operational status.
+            const restaurantStatus = getRestaurantOperatingStatus(
+                session.timezone,
+                session.tenantContext.restaurant.openingTime,
+                session.tenantContext.restaurant.closingTime
+            );
+
+            // 2. Check if we're in the after-midnight window (e.g., between 00:00 and 03:00).
+            const isAfterMidnightNow = restaurantStatus.isOpen && restaurantStatus.isOvernightOperation;
+
+            // 3. Check for ambiguous "today" + "at night" phrases.
+            const containsAmbiguousTime = /сегодня|today|tonight/i.test(sanitizedMessage) && /ночи|night|am|a.m./i.test(sanitizedMessage);
+
+            if (isAfterMidnightNow && containsAmbiguousTime) {
+                smartLog.info('After-midnight edge case detected. Engaging high-precision time normalization.', { sessionId });
+
+                // 4. Call the new high-precision normalization function (created in Step 2).
+                const normalizedTime = await normalizeAfterMidnightTime(
+                    sanitizedMessage,
+                    session.tenantContext
+                );
+
+                // 5. If successful, inject the clean, unambiguous date and time into the session.
+                if (normalizedTime.date && normalizedTime.time) {
+                    session.gatheringInfo.date = normalizedTime.date;
+                    session.gatheringInfo.time = normalizedTime.time;
+                    smartLog.info('Successfully injected normalized date and time into session.', { sessionId, date: normalizedTime.date, time: normalizedTime.time });
+                }
+            }
+        }
 
         // 🚨 FIX: Make language detection a blocking step at the start of the conversation
         if (isFirstMessage && !session.languageLocked) {

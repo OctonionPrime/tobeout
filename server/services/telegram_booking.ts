@@ -16,6 +16,7 @@ import type { Language } from './enhanced-conversation-manager';
 import type { AvailabilitySlot as ServiceAvailabilitySlot } from './availability.service'; // Import AvailabilitySlot
 import type { TenantContext } from './tenant-context'; 
 import { wss } from '../index';
+import { sanitizeInternalComments } from '../utils/sanitization-utils';
 
 // Updated result type
 export type CreateTelegramReservationResult = {

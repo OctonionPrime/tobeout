@@ -18,6 +18,7 @@ import AISettings from "@/pages/ai-settings";
 import Preferences from "@/pages/preferences";
 import Integrations from "@/pages/integrations";
 import Login from "@/pages/auth/login";
+import MenuPage from "@/pages/menu"; // ✨ IMPORT THE NEW MENU PAGE
 
 // 🔒 SUPER ADMIN: Import admin components
 import AdminLogin from "@/pages/auth/admin-login";
@@ -379,6 +380,13 @@ function Router() {
             <Route path="/guests">
                 <ProtectedRoute>
                     <Guests />
+                </ProtectedRoute>
+            </Route>
+
+            {/* ✨ ADDED MENU ROUTE */}
+            <Route path="/menu">
+                <ProtectedRoute>
+                    <MenuPage />
                 </ProtectedRoute>
             </Route>
 

@@ -490,14 +490,14 @@ async function findCombinableTwoTableSlots(
         );
     });
 
-    if (availableTablesInSlot.length < 2) return [];
+    if (filteredCombinableTables.length < 2) return [];
 
-    availableTablesInSlot.sort((a, b) => a.maxGuests - b.maxGuests);
+    filteredCombinableTables.sort((a, b) => a.maxGuests - b.maxGuests);
 
-    for (let i = 0; i < availableTablesInSlot.length; i++) {
-        for (let j = i + 1; j < availableTablesInSlot.length; j++) {
-            const table1 = availableTablesInSlot[i];
-            const table2 = availableTablesInSlot[j];
+    for (let i = 0; i < filteredCombinableTables.length; i++) {
+        for (let j = i + 1; j < filteredCombinableTables.length; j++) {
+            const table1 = filteredCombinableTables[i];
+            const table2 = filteredCombinableTables[j];
 
             const combinedMinCapacity = table1.minGuests + table2.minGuests;
             const combinedMaxCapacity = table1.maxGuests + table2.maxGuests;

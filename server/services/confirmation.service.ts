@@ -7,6 +7,7 @@ import { aiService } from './ai-service';
 import { agentFunctions } from './agents/agent-tools';
 import { smartLog } from './smart-logging.service';
 import type { TenantContext } from './tenant-context';
+import { sanitizeInternalComments } from '../utils/sanitization-utils'; 
 
 // Import types from ECM (these should eventually be moved to a shared types file)
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
@@ -181,6 +182,8 @@ export class ConfirmationService {
             };
 
             // Generate confirmation question
+            const sanitizedComments = sanitizeInternalComments(bookingData.comments); // Add this line
+
             const confirmationQuestion = await TranslationService.translateMessage(
                 `I have all the details for your reservation:
 
@@ -189,7 +192,7 @@ export class ConfirmationService {
 • ${bookingData.date} at ${bookingData.time}
 • Name: ${bookingData.name}
 • Phone: ${bookingData.phone}
-${bookingData.comments ? `• Special requests: ${bookingData.comments}` : ''}
+${sanitizedComments ? `• Special requests: ${sanitizedComments}` : ''}
 
 Shall I go ahead and confirm this booking?`,
                 session.language,

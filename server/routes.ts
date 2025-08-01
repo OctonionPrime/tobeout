@@ -8,6 +8,8 @@ import {
     insertUserSchema, insertRestaurantSchema,
     insertTableSchema, insertGuestSchema,
     insertReservationSchema, insertIntegrationSettingSchema,
+    // ✅ NEW: Import the floor schema
+    insertFloorSchema,
     reservations,
     type Guest
 } from "@shared/schema";
@@ -31,11 +33,11 @@ import { enhancedConversationManager } from "./services/enhanced-conversation-ma
 
 // Multi-tenant security middleware
 import { tenantIsolation, strictTenantValidation, trackUsage, getTenantContext } from "./middleware/tenant-isolation";
-import { 
-    requireFeature, 
-    requireAiChat, 
-    requireMenuManagement, 
-    requireGuestAnalytics, 
+import {
+    requireFeature,
+    requireAiChat,
+    requireMenuManagement,
+    requireGuestAnalytics,
     requireAdvancedReporting,
     requireTelegramBot
 } from "./middleware/feature-flags";
@@ -109,14 +111,14 @@ function isOvernightOperation(openingTime: string, closingTime: string): boolean
         }
         return hours * 60 + minutes;
     };
-    
+
     const openingMinutes = parseTime(openingTime);
     const closingMinutes = parseTime(closingTime);
-    
+
     if (openingMinutes === null || closingMinutes === null) {
         return false;
     }
-    
+
     return closingMinutes < openingMinutes;
 }
 
@@ -128,7 +130,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     console.log('✅ [Routes] WebSocket server stored in Express app context');
 
     // 🔒 SUPER ADMIN: Authorization Middleware Functions
-    
+
     // Basic authentication check (existing)
     const isAuthenticated = (req: Request, res: Response, next: Function) => {
         if (req.isAuthenticated()) {
@@ -146,9 +148,9 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 return next();
             }
         }
-        
+
         console.log(`[SuperAdmin] Access denied - user not authenticated as super admin`);
-        res.status(403).json({ 
+        res.status(403).json({
             message: "Super admin access required",
             code: 'INSUFFICIENT_PERMISSIONS'
         });
@@ -261,7 +263,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         if (user) {
             console.log(`[Auth] Logout: ${user.email} (${user.isSuperAdmin ? 'Super Admin' : 'Tenant User'})`);
         }
-        
+
         req.logout((err) => {
             if (err) {
                 return next(err);
@@ -291,7 +293,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     app.get("/api/websocket/stats", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const wsServer = req.app.get('wss') as ExtendedWebSocketServer;
-            
+
             if (!wsServer) {
                 return res.status(503).json({ error: 'WebSocket server not available' });
             }
@@ -333,11 +335,11 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     // 🔒 SUPER ADMIN: Get all tenants with filtering and pagination
     app.get("/api/superadmin/tenants", isSuperAdmin, logSuperAdminActivity('list_tenants'), async (req, res, next) => {
         try {
-            const { 
-                page = 1, 
-                limit = 20, 
-                status, 
-                plan, 
+            const {
+                page = 1,
+                limit = 20,
+                status,
+                plan,
                 search,
                 sortBy = 'created_at',
                 sortOrder = 'desc'
@@ -387,7 +389,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     app.get("/api/superadmin/tenants/:id", isSuperAdmin, logSuperAdminActivity('view_tenant'), async (req, res, next) => {
         try {
             const tenantId = parseInt(req.params.id);
-            
+
             if (isNaN(tenantId)) {
                 return res.status(400).json({ message: "Invalid tenant ID" });
             }
@@ -428,20 +430,20 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 subdomain: z.string().min(2, "Subdomain must be at least 2 characters").regex(/^[a-z0-9-]+$/, "Subdomain can only contain lowercase letters, numbers, and hyphens"),
                 plan: z.enum(['starter', 'professional', 'enterprise']),
                 timezone: z.string().default('UTC'),
-                
+
                 // Owner details
                 ownerName: z.string().min(1, "Owner name is required"),
                 ownerEmail: z.string().email("Valid email is required"),
                 ownerPhone: z.string().optional(),
                 initialPassword: z.string().min(6, "Password must be at least 6 characters"),
-                
+
                 // ✅ FIX 4: Ensure boolean coercion with proper defaults
                 enableAiChat: z.boolean().default(true),
                 enableTelegramBot: z.boolean().default(false),
                 enableGuestAnalytics: z.boolean().default(true),
                 enableAdvancedReporting: z.boolean().default(false),
                 enableMenuManagement: z.boolean().default(true),
-                
+
                 // Optional settings
                 maxTables: z.number().optional(),
                 maxUsers: z.number().optional(),
@@ -466,11 +468,11 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     enableMenuManagement: typeof validatedData.enableMenuManagement,
                 }
             });
-            
+
             // Check if subdomain is already taken
             const existingTenant = await storage.getTenantBySubdomain(validatedData.subdomain);
             if (existingTenant) {
-                return res.status(409).json({ 
+                return res.status(409).json({
                     message: "Subdomain already exists",
                     field: "subdomain"
                 });
@@ -479,7 +481,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             // Check if owner email is already used
             const existingUser = await storage.getUserByEmail(validatedData.ownerEmail);
             if (existingUser) {
-                return res.status(409).json({ 
+                return res.status(409).json({
                     message: "Email address already registered",
                     field: "ownerEmail"
                 });
@@ -533,9 +535,9 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         } catch (error: any) {
             console.error('[SuperAdmin] Error creating tenant:', error);
             if (error instanceof z.ZodError) {
-                return res.status(400).json({ 
-                    message: "Validation failed", 
-                    errors: error.errors 
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: error.errors
                 });
             }
             next(error);
@@ -546,7 +548,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     app.patch("/api/superadmin/tenants/:id", isSuperAdmin, logSuperAdminActivity('update_tenant'), async (req, res, next) => {
         try {
             const tenantId = parseInt(req.params.id);
-            
+
             if (isNaN(tenantId)) {
                 return res.status(400).json({ message: "Invalid tenant ID" });
             }
@@ -559,26 +561,26 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 plan: z.enum(['starter', 'professional', 'enterprise']).optional(),
                 status: z.enum(['active', 'suspended', 'terminated']).optional(),
                 timezone: z.string().optional(),
-                
+
                 // Feature flags
                 enableAiChat: z.boolean().optional(),
                 enableTelegramBot: z.boolean().optional(),
                 enableGuestAnalytics: z.boolean().optional(),
                 enableAdvancedReporting: z.boolean().optional(),
                 enableMenuManagement: z.boolean().optional(),
-                
+
                 // Limits
                 maxTables: z.number().optional(),
                 maxUsers: z.number().optional(),
                 maxReservationsPerMonth: z.number().optional(),
-                
+
                 // Settings
                 customSettings: z.record(z.any()).optional(),
                 adminNotes: z.string().optional()
             });
 
             const validatedData = updateTenantSchema.parse(req.body);
-            
+
             console.log(`[SuperAdmin] Updating tenant ${tenantId}:`, Object.keys(validatedData));
 
             // Check if tenant exists
@@ -591,7 +593,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             if (validatedData.subdomain && validatedData.subdomain !== existingTenant.subdomain) {
                 const subdomainTaken = await storage.getTenantBySubdomain(validatedData.subdomain);
                 if (subdomainTaken) {
-                    return res.status(409).json({ 
+                    return res.status(409).json({
                         message: "Subdomain already exists",
                         field: "subdomain"
                     });
@@ -626,9 +628,9 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         } catch (error: any) {
             console.error('[SuperAdmin] Error updating tenant:', error);
             if (error instanceof z.ZodError) {
-                return res.status(400).json({ 
-                    message: "Validation failed", 
-                    errors: error.errors 
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: error.errors
                 });
             }
             next(error);
@@ -801,10 +803,10 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     // 🔒 SUPER ADMIN: Super admin profile and settings
     app.get("/api/superadmin/profile", isSuperAdmin, async (req, res) => {
         const user = req.user as SuperAdminUser;
-        
+
         try {
             const profile = await storage.getSuperAdmin(user.id);
-            
+
             res.json({
                 id: user.id,
                 email: user.email,
@@ -823,6 +825,23 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     // ============================================================================
     // 🔒 REGULAR TENANT ROUTES (Enhanced with tenant isolation)
     // ============================================================================
+
+    // ✅ NEW: Advanced Analytics Endpoint
+    app.get("/api/analytics/overview", isAuthenticated, tenantIsolation, requireAdvancedReporting, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const days = req.query.days ? parseInt(req.query.days as string) : 30;
+
+            console.log(`📊 [Analytics] Requesting overview for restaurant ${context.restaurant.id} for last ${days} days.`);
+
+            const overviewData = await storage.getAnalyticsOverview(context.restaurant.id, context.restaurant.timezone, days);
+
+            res.json(overviewData);
+        } catch (error) {
+            console.error('❌ [Analytics] Error generating overview:', error);
+            next(error);
+        }
+    });
 
     // 🔒 Restaurant routes with tenant isolation
     app.get("/api/restaurants/profile", isAuthenticated, tenantIsolation, async (req, res, next) => {
@@ -865,7 +884,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const restaurantId = parseInt(req.params.id);
-            
+
             if (context.restaurant.id !== restaurantId) {
                 return res.status(403).json({ message: "Access denied" });
             }
@@ -899,12 +918,97 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         }
     });
 
+    // ============================================================================
+    // ✨ NEW: FLOOR PLAN MANAGEMENT
+    // ============================================================================
+
+    // ✅ NEW: Get all floors for the tenant
+    app.get("/api/floors", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const floors = await storage.getFloors(context.restaurant.id);
+            res.json(floors);
+        } catch (error) {
+            console.error(`❌ [Floors] Error fetching floors for restaurant ${getTenantContext(req).restaurant.id}:`, error);
+            next(error);
+        }
+    });
+
+    // ✅ NEW: Create a new floor
+    app.post("/api/floors", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const validatedData = insertFloorSchema.parse({
+                ...req.body,
+                restaurantId: context.restaurant.id,
+            });
+            const newFloor = await storage.createFloor(validatedData);
+            console.log(`✅ [Floors] Created new floor '${newFloor.name}' for restaurant ${context.restaurant.id}`);
+            res.status(201).json(newFloor);
+        } catch (error) {
+            console.error(`❌ [Floors] Error creating floor for restaurant ${getTenantContext(req).restaurant.id}:`, error);
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ message: "Validation failed", errors: error.errors });
+            }
+            next(error);
+        }
+    });
+
+    // ✅ NEW: Update a floor
+    app.patch("/api/floors/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const floorId = parseInt(req.params.id);
+            const floor = await storage.getFloor(floorId);
+
+            if (!floor || floor.restaurantId !== context.restaurant.id) {
+                return res.status(404).json({ message: "Floor not found or access denied" });
+            }
+
+            const validatedData = insertFloorSchema.partial().parse(req.body);
+            const updatedFloor = await storage.updateFloor(floorId, validatedData);
+            console.log(`✅ [Floors] Updated floor ${floorId} for restaurant ${context.restaurant.id}`);
+            res.json(updatedFloor);
+        } catch (error) {
+            console.error(`❌ [Floors] Error updating floor ${req.params.id}:`, error);
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ message: "Validation failed", errors: error.errors });
+            }
+            next(error);
+        }
+    });
+
+    // ✅ NEW: Delete a floor
+    app.delete("/api/floors/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const floorId = parseInt(req.params.id);
+            const floor = await storage.getFloor(floorId);
+
+            if (!floor || floor.restaurantId !== context.restaurant.id) {
+                return res.status(404).json({ message: "Floor not found or access denied" });
+            }
+
+            await storage.deleteFloor(floorId);
+            console.log(`✅ [Floors] Deleted floor ${floorId} from restaurant ${context.restaurant.id}`);
+            res.json({ success: true, message: "Floor deleted successfully." });
+        } catch (error) {
+            console.error(`❌ [Floors] Error deleting floor ${req.params.id}:`, error);
+            next(error);
+        }
+    });
+
+
     // 🔒 Table routes with tenant isolation and usage tracking + WebSocket integration
+    // 🔄 MODIFIED: Now accepts a 'floorId' query parameter to filter tables
     app.get("/api/tables", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const context = getTenantContext(req);
-            const tables = await storage.getTables(context.restaurant.id);
-            console.log(`🔍 [Tables] Found ${tables.length} tables for restaurant ${context.restaurant.id}`);
+            const { floorId } = req.query;
+
+            const tables = await storage.getTables(context.restaurant.id, floorId ? Number(floorId) : undefined);
+
+            console.log(`🔍 [Tables] Found ${tables.length} tables for restaurant ${context.restaurant.id}${floorId ? ` on floor ${floorId}` : ''}`);
             res.json(tables);
         } catch (error) {
             console.error('❌ [Tables] Error fetching tables:', error);
@@ -912,20 +1016,22 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         }
     });
 
+    // 🔄 MODIFIED: Now accepts floor plan fields during table creation
     app.post("/api/tables", isAuthenticated, tenantIsolation, trackUsage('table_created'), async (req, res, next) => {
         try {
             const context = getTenantContext(req);
+            // The validation now picks up the new floor plan fields from the body
             const validatedData = insertTableSchema.parse({
                 ...req.body,
                 restaurantId: context.restaurant.id,
             });
-            
+
             // 🔒 Pass tenant context for limit checking
             const newTable = await storage.createTable(validatedData, context);
-            
+
             CacheInvalidation.onTableChange(context.restaurant.id);
-            
-            console.log(`✅ [Tables] Created new table: ${newTable.name} (ID: ${newTable.id})`);
+
+            console.log(`✅ [Tables] Created new table '${newTable.name}' on floor ${newTable.floorId}`);
             res.status(201).json(newTable);
         } catch (error: any) {
             console.error('❌ [Tables] Error creating table:', error);
@@ -934,7 +1040,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }
             // Handle tenant limit errors
             if (error.message.includes('limit')) {
-                return res.status(402).json({ 
+                return res.status(402).json({
                     message: error.message,
                     code: 'LIMIT_EXCEEDED',
                     upgradeRequired: true
@@ -951,16 +1057,16 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const context = getTenantContext(req);
             const tableId = parseInt(req.params.id);
             const table = await storage.getTable(tableId);
-            
+
             if (!table || table.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Table not found" });
             }
-            
+
             const validatedData = insertTableSchema.partial().parse(req.body);
             const updatedTable = await storage.updateTable(tableId, validatedData);
-            
+
             CacheInvalidation.onTableChange(context.restaurant.id);
-            
+
             // 🔌 WEBSOCKET: Broadcast table status change
             if (validatedData.status && validatedData.status !== table.status) {
                 wss.broadcastToTenant(context.restaurant.id, {
@@ -975,7 +1081,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 });
                 console.log(`🔌 [WebSocket] Broadcasted table status change: ${table.name} ${table.status} → ${updatedTable.status}`);
             }
-            
+
             res.json(updatedTable);
         } catch (error: any) {
             if (error instanceof z.ZodError) {
@@ -985,20 +1091,50 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         }
     });
 
+    // ✅ NEW: Update a table's position on the floor plan
+    app.patch("/api/tables/:id/position", isAuthenticated, tenantIsolation, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const tableId = parseInt(req.params.id);
+            const { posX, posY, rotation } = req.body;
+
+            // Basic validation
+            if (typeof posX !== 'number' || typeof posY !== 'number') {
+                return res.status(400).json({ message: "posX and posY must be numbers." });
+            }
+
+            const table = await storage.getTable(tableId);
+            if (!table || table.restaurantId !== context.restaurant.id) {
+                return res.status(404).json({ message: "Table not found" });
+            }
+
+            const updatedTable = await storage.updateTable(tableId, { posX, posY, rotation });
+
+            // Invalidate cache that depends on table data
+            CacheInvalidation.onTableChange(context.restaurant.id);
+            console.log(`✅ [Tables] Updated position for table ${tableId}: (${posX}, ${posY})`);
+
+            res.json(updatedTable);
+        } catch (error) {
+            console.error(`❌ [Tables] Error updating position for table ${req.params.id}:`, error);
+            next(error);
+        }
+    });
+
     app.delete("/api/tables/:id", isAuthenticated, tenantIsolation, async (req, res, next) => {
         try {
             const context = getTenantContext(req);
             const tableId = parseInt(req.params.id);
             const table = await storage.getTable(tableId);
-            
+
             if (!table || table.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Table not found" });
             }
-            
+
             await storage.deleteTable(tableId);
-            
+
             CacheInvalidation.onTableChange(context.restaurant.id);
-            
+
             res.json({ success: true });
         } catch (error) {
             next(error);
@@ -1050,17 +1186,17 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }
 
             const reservationHistory = await storage.getGuestReservationHistory(guestId, context.restaurant.id);
-            
+
             // Calculate additional analytics
             const completedVisits = reservationHistory.filter(r => r.reservation.status === 'completed');
-            const completionRate = reservationHistory.length > 0 ? 
+            const completionRate = reservationHistory.length > 0 ?
                 Math.round((completedVisits.length / reservationHistory.length) * 100) : 100;
 
             // Calculate loyalty status
             const getLoyaltyStatus = (guest: any): string => {
                 const visits = guest.visit_count || 0;
                 const reputationScore = guest.reputation_score || 100;
-                
+
                 if (visits >= 20 && reputationScore >= 95) return 'VIP';
                 if (visits >= 10 && reputationScore >= 90) return 'Frequent';
                 if (visits >= 5 && reputationScore >= 85) return 'Regular';
@@ -1078,18 +1214,18 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     if (hour < 21) return 'evening';
                     return 'late';
                 });
-                
+
                 const counts = timeSlots.reduce((acc, slot) => {
                     acc[slot] = (acc[slot] || 0) + 1;
                     return acc;
                 }, {} as Record<string, number>);
-                
+
                 return Object.entries(counts)
-                    .sort(([,a], [,b]) => b - a)
+                    .sort(([, a], [, b]) => b - a)
                     .slice(0, 2)
                     .map(([slot]) => slot);
             };
-            
+
             const analytics = {
                 guest: {
                     ...guest,
@@ -1100,7 +1236,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 reputationScore: guest.reputation_score || 100,
                 vipLevel: guest.vip_level || 0,
                 completionRate,
-                averageSpending: guest.total_spent && guest.visit_count ? 
+                averageSpending: guest.total_spent && guest.visit_count ?
                     (parseFloat(guest.total_spent) / guest.visit_count).toFixed(2) : '0.00',
                 totalSpent: guest.total_spent || '0.00',
                 lastVisit: guest.last_visit_date,
@@ -1126,7 +1262,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     approach: (() => {
                         const visits = guest.visit_count || 0;
                         const reputation = guest.reputation_score || 100;
-                        
+
                         if (visits >= 10) return "VIP treatment - recognize their loyalty and offer premium service";
                         if (visits >= 5) return "Regular guest - personalized service based on their history";
                         if (reputation < 80) return "Handle with care - previous issues noted, ensure exceptional service";
@@ -1150,7 +1286,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const { date, time } = req.query;
             const context = getTenantContext(req);
-            
+
             if (!date || !time) {
                 return res.status(400).json({ message: "Date and time are required" });
             }
@@ -1158,8 +1294,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             console.log(`🔍 [Table Availability] Checking for date=${date}, time=${time} in timezone ${context.restaurant.timezone}`);
 
             // ✅ DYNAMIC: Check if restaurant operates overnight (works for ANY times)
-            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime && 
-                               isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
+            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime &&
+                isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
 
             if (isOvernight) {
                 console.log(`🌙 [Table Availability] Detected overnight operation: ${context.restaurant.openingTime} to ${context.restaurant.closingTime}`);
@@ -1168,35 +1304,35 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const cacheKey = CacheKeys.tableAvailability(context.restaurant.id, `${date}_${time}`);
             const tableAvailabilityData = await withCache(cacheKey, async () => {
                 const tablesData = await storage.getTables(context.restaurant.id);
-                
+
                 if (tablesData.length === 0) {
                     console.log(`⚠️ [Table Availability] No tables found for restaurant ${context.restaurant.id} - this might be why frontend shows empty arrays`);
                     return [];
                 }
-                
+
                 console.log(`📋 [Table Availability] Found ${tablesData.length} tables for restaurant ${context.restaurant.id}`);
-                
+
                 // ✅ DYNAMIC: Enhanced reservation fetching for overnight operations
                 let reservationsData;
                 if (isOvernight) {
                     // Get reservations from current date
-                    const currentDateReservations = await storage.getReservations(context.restaurant.id, { 
+                    const currentDateReservations = await storage.getReservations(context.restaurant.id, {
                         date: date as string,
                         timezone: context.restaurant.timezone
                     });
-                    
+
                     // For overnight operations, also check previous day if checking early morning hours
                     const checkHour = parseInt((time as string).split(':')[0]);
                     const closingHour = parseInt((context.restaurant.closingTime || '0:00').split(':')[0]);
-                    
+
                     if (checkHour < closingHour) { // Early morning hours (before closing time)
                         const previousDate = DateTime.fromISO(date as string, { zone: context.restaurant.timezone })
                             .minus({ days: 1 }).toISODate();
-                        const previousDateReservations = await storage.getReservations(context.restaurant.id, { 
+                        const previousDateReservations = await storage.getReservations(context.restaurant.id, {
                             date: previousDate,
                             timezone: context.restaurant.timezone
                         });
-                        
+
                         reservationsData = [...currentDateReservations, ...previousDateReservations];
                         console.log(`🌙 [Table Availability] Overnight operation: ${currentDateReservations.length} current + ${previousDateReservations.length} previous day reservations`);
                     } else {
@@ -1204,7 +1340,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     }
                 } else {
                     // Standard operation - just get current date reservations
-                    reservationsData = await storage.getReservations(context.restaurant.id, { 
+                    reservationsData = await storage.getReservations(context.restaurant.id, {
                         date: date as string,
                         timezone: context.restaurant.timezone
                     });
@@ -1216,8 +1352,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 const availabilityResult = tablesData.map(table => {
                     const tableReservations = reservationsData.filter(r => {
                         const actualReservation = r.reservation || r;
-                        return actualReservation.tableId === table.id && 
-                               ['confirmed', 'created'].includes(actualReservation.status || '');
+                        return actualReservation.tableId === table.id &&
+                            ['confirmed', 'created'].includes(actualReservation.status || '');
                     });
 
                     if (tableReservations.length > 0) {
@@ -1236,7 +1372,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                             duration: r.reservation?.duration || r.duration,
                             id: r.reservation?.id || r.id
                         };
-                        
+
                         // Note the "!" to invert the result
                         // If the table is NOT available, it is occupied
                         return !isTableAvailableAtTimeSlot(
@@ -1262,7 +1398,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                                 duration: r.reservation?.duration || r.duration,
                                 id: r.reservation?.id || r.id
                             };
-                            
+
                             return !isTableAvailableAtTimeSlot(
                                 table.id,
                                 time as string,
@@ -1281,7 +1417,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                             const guest = conflictingReservation.guest || {};
 
                             const reservationDateTime = parsePostgresTimestamp(actualReservation.reservation_utc);
-                            
+
                             if (reservationDateTime.isValid) {
                                 const reservationLocal = reservationDateTime.setZone(context.restaurant.timezone);
                                 const startTime = reservationLocal.toFormat('HH:mm:ss');
@@ -1300,22 +1436,22 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                         }
                     }
 
-                    return { 
-                        ...table, 
-                        status: isOccupied ? 'reserved' : 'available', 
+                    return {
+                        ...table,
+                        status: isOccupied ? 'reserved' : 'available',
                         reservation: conflictingReservationData
                     };
                 });
 
                 console.log(`✅ [Table Availability] Processed ${availabilityResult.length} tables with timezone ${context.restaurant.timezone} (overnight: ${isOvernight})`);
-                
+
                 if (availabilityResult.length === 0) {
                     console.log(`❌ [Table Availability] RETURNING EMPTY ARRAY - Check table creation and restaurant association`);
                 } else {
-                    console.log(`✅ [Table Availability] Returning ${availabilityResult.length} tables:`, 
+                    console.log(`✅ [Table Availability] Returning ${availabilityResult.length} tables:`,
                         availabilityResult.map(t => ({ id: t.id, name: t.name, status: t.status })));
                 }
-                
+
                 return availabilityResult;
             }, 30);
 
@@ -1331,30 +1467,30 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const { date, guests, exactTime } = req.query; // NEW: exactTime param
-            const restaurantId = context.restaurant.id;           
-            
+            const restaurantId = context.restaurant.id;
+
             if (!restaurantId || !date || !guests) {
                 return res.status(400).json({ message: "Missing required parameters" });
             }
-            
+
             console.log(`[Routes] Getting available times for restaurant ${restaurantId}, date ${date}, guests ${guests} in timezone ${context.restaurant.timezone}${exactTime ? ` (exact time: ${exactTime})` : ''}`);
-            
+
             // ✅ NEW: Handle exact time checking
             if (exactTime) {
                 console.log(`[Routes] 🎯 Exact time check: ${exactTime} for ${guests} guests on ${date}`);
-                
+
                 const availableSlots = await getAvailableTimeSlots(
                     parseInt(restaurantId as string),
                     date as string,
                     parseInt(guests as string),
-                    { 
+                    {
                         requestedTime: exactTime as string,
                         exactTimeOnly: true, // NEW: Only check this exact time
                         timezone: context.restaurant.timezone,
                         allowCombinations: true
                     }
                 );
-                
+
                 return res.json({
                     exactTimeRequested: exactTime,
                     available: availableSlots.length > 0,
@@ -1375,34 +1511,34 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     minTimeIncrement: context.restaurant.minTimeIncrement || 15 // NEW: Include restaurant setting
                 });
             }
-            
+
             // ✅ EXISTING LOGIC (enhanced with restaurant settings):
-            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime && 
-                               isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
-            
+            const isOvernight = context.restaurant.openingTime && context.restaurant.closingTime &&
+                isOvernightOperation(context.restaurant.openingTime, context.restaurant.closingTime);
+
             // Use restaurant's configured slot interval
             const slotInterval = context.restaurant.slotInterval || 30; // NEW: Use restaurant setting
-            
+
             // ✅ ENHANCED: maxResults calculation for overnight operations
             let maxResults: number;
             let operatingHours: number;
-            
+
             if (isOvernight) {
                 // Calculate total operating hours for overnight operations
                 const parseTime = (timeStr: string): number => {
                     const parts = timeStr.split(':');
                     return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
                 };
-                
+
                 const openingMinutes = parseTime(context.restaurant.openingTime || '10:00');
                 const closingMinutes = parseTime(context.restaurant.closingTime || '22:00');
-                
+
                 // ✅ DYNAMIC: For overnight operations, calculate correctly (works for ANY times)
                 operatingHours = (24 * 60 - openingMinutes + closingMinutes) / 60;
-                
+
                 // ✅ DYNAMIC: More generous slot calculation for overnight operations
                 maxResults = Math.max(80, Math.floor(operatingHours * 2.5)); // Extra buffer for overnight
-                
+
                 console.log(`[Routes] 🌙 Overnight operation detected: ${context.restaurant.openingTime}-${context.restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
             } else {
                 // Standard operation
@@ -1410,22 +1546,22 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     const parts = timeStr.split(':');
                     return parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
                 };
-                
+
                 const openingMinutes = parseTime(context.restaurant.openingTime || '10:00');
                 const closingMinutes = parseTime(context.restaurant.closingTime || '22:00');
                 operatingHours = (closingMinutes - openingMinutes) / 60;
-                
+
                 maxResults = Math.max(30, Math.floor(operatingHours * 2));
-                
+
                 console.log(`[Routes] 📅 Standard operation: ${context.restaurant.openingTime}-${context.restaurant.closingTime} (${operatingHours.toFixed(1)} hours), maxResults=${maxResults}`);
             }
-            
+
             // ✅ ENHANCED: Pass restaurant configuration to getAvailableTimeSlots
             const availableSlots = await getAvailableTimeSlots(
                 parseInt(restaurantId as string),
                 date as string,
                 parseInt(guests as string),
-                { 
+                {
                     maxResults: maxResults,
                     timezone: context.restaurant.timezone,
                     lang: 'en',
@@ -1438,7 +1574,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     }
                 }
             );
-            
+
             // ✅ ENHANCED: Better slot information with overnight support
             const timeSlots = availableSlots.map(slot => ({
                 time: slot.time,
@@ -1449,7 +1585,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 canAccommodate: true,
                 tablesCount: slot.isCombined ? (slot.constituentTables?.length || 1) : 1,
                 isCombined: slot.isCombined || false,
-                message: slot.isCombined 
+                message: slot.isCombined
                     ? `${slot.tableName} available (seats up to ${slot.tableCapacity.max})`
                     : `Table ${slot.tableName} available (seats up to ${slot.tableCapacity.max})`,
                 slotType: (() => {
@@ -1464,11 +1600,11 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     return 'standard';
                 })()
             }));
-            
+
             console.log(`[Routes] 📊 Found ${timeSlots.length} available time slots for ${context.restaurant.timezone} ${isOvernight ? '(overnight operation)' : '(standard operation)'}`);
-            
+
             // ✅ ENHANCED: Response with restaurant time configuration
-            res.json({ 
+            res.json({
                 availableSlots: timeSlots,
                 isOvernightOperation: isOvernight,
                 operatingHours: {
@@ -1477,16 +1613,16 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     totalHours: operatingHours
                 },
                 timezone: context.restaurant.timezone,
-                
+
                 // ✅ NEW: Include restaurant's flexible time configuration
                 slotInterval: slotInterval, // Restaurant's preferred slot interval
                 allowAnyTime: context.restaurant.allowAnyTime !== false, // Whether any time booking is allowed
                 minTimeIncrement: context.restaurant.minTimeIncrement || 15, // Minimum time precision
-                
+
                 totalSlotsGenerated: timeSlots.length,
                 maxSlotsRequested: maxResults,
                 reservationDuration: context.restaurant.avgReservationDuration || 120,
-                
+
                 debugInfo: {
                     openingTime: context.restaurant.openingTime,
                     closingTime: context.restaurant.closingTime,
@@ -1497,7 +1633,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     operatingHours: operatingHours,
                     calculatedMaxResults: maxResults,
                     actualSlotsReturned: timeSlots.length,
-                    
+
                     // ✅ NEW: Debug info for time configuration
                     restaurantSlotInterval: context.restaurant.slotInterval,
                     restaurantAllowAnyTime: context.restaurant.allowAnyTime,
@@ -1532,7 +1668,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const context = getTenantContext(req);
             const reservationId = parseInt(req.params.id);
             const reservation = await storage.getReservation(reservationId);
-            
+
             if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
@@ -1553,11 +1689,11 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const wss = req.app.get('wss') as ExtendedWebSocketServer;
             const context = getTenantContext(req);
             const { guestName, guestPhone, date, time, guests: numGuests } = req.body;
-            
+
             if (!guestName || !guestPhone || !date || !time || !numGuests) {
                 return res.status(400).json({ message: "Missing required fields: guestName, guestPhone, date, time, guests" });
             }
-            
+
             let guest: Guest | undefined = await storage.getGuestByPhone(guestPhone, context.restaurant.id);
             if (!guest) {
                 guest = await storage.createGuest({
@@ -1573,27 +1709,27 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             // ✅ DYNAMIC: Convert date/time to UTC timestamp before booking
             const restaurantTimezone = req.body.timezone || context.restaurant.timezone;
-            
+
             let localDateTime: DateTime;
             let reservation_utc: string;
-            
+
             try {
                 localDateTime = DateTime.fromISO(`${date}T${time}`, { zone: restaurantTimezone });
                 if (!localDateTime.isValid) {
                     throw new Error(`Invalid date/time combination: ${date}T${time} in timezone ${restaurantTimezone}`);
                 }
-                
+
                 reservation_utc = localDateTime.toUTC().toISO();
                 if (!reservation_utc) {
                     throw new Error('Failed to convert to UTC timestamp');
                 }
-                
+
                 console.log(`📅 [Reservation] Converting ${date}T${time} (${restaurantTimezone}) -> ${reservation_utc} (UTC)`);
             } catch (conversionError) {
                 console.error('❌ [Reservation] DateTime conversion failed:', conversionError);
-                return res.status(400).json({ 
-                    message: "Invalid date/time format or timezone", 
-                    details: conversionError instanceof Error ? conversionError.message : 'Unknown conversion error' 
+                return res.status(400).json({
+                    message: "Invalid date/time format or timezone",
+                    details: conversionError instanceof Error ? conversionError.message : 'Unknown conversion error'
                 });
             }
 
@@ -1790,7 +1926,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             await cancelReservation(
                 wss, // 🔽 Pass WebSocket server for broadcasting
                 context.restaurant.id, // ✅ Authenticated tenant ID from middleware
-                reservationId, 
+                reservationId,
                 context.restaurant.languages?.[0] || 'en'
             );
 
@@ -1822,16 +1958,16 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const { tableNotes, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
-            
+
             // Validate current status
             const reservation = await storage.getReservation(reservationId);
             if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
-            
+
             if (!['confirmed', 'created'].includes(reservation.reservation.status)) {
-                return res.status(400).json({ 
-                    message: `Cannot seat guests - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be seated.` 
+                return res.status(400).json({
+                    message: `Cannot seat guests - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be seated.`
                 });
             }
 
@@ -1847,10 +1983,10 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             // Update table status if there's a table assigned
             if (reservation.reservation.tableId) {
-                await storage.updateTable(reservation.reservation.tableId, { 
-                    status: 'occupied' 
+                await storage.updateTable(reservation.reservation.tableId, {
+                    status: 'occupied'
                 });
-                
+
                 // Invalidate table cache
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
@@ -1870,8 +2006,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             console.log(`✅ [Reservation Status] Seated guests for reservation ${reservationId} by ${staffMember || 'Unknown staff'} + WebSocket broadcast`);
 
-            res.json({ 
-                success: true, 
+            res.json({
+                success: true,
                 message: "Guests have been seated successfully",
                 reservationId,
                 newStatus: 'seated',
@@ -1890,22 +2026,22 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const { feedback, totalAmount, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
-            
+
             const reservation = await storage.getReservation(reservationId);
             if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
             if (!['seated', 'in_progress'].includes(reservation.reservation.status)) {
-                return res.status(400).json({ 
-                    message: `Cannot complete visit - reservation status is ${reservation.reservation.status}. Only seated or in-progress reservations can be completed.` 
+                return res.status(400).json({
+                    message: `Cannot complete visit - reservation status is ${reservation.reservation.status}. Only seated or in-progress reservations can be completed.`
                 });
             }
 
             // Calculate visit duration
             const seatedTime = await storage.getStatusChangeTime(reservationId, 'seated');
-            const duration = seatedTime ? 
-                Math.round((Date.now() - seatedTime.getTime()) / 60000) : 
+            const duration = seatedTime ?
+                Math.round((Date.now() - seatedTime.getTime()) / 60000) :
                 reservation.reservation.duration;
 
             // Update reservation
@@ -1916,8 +2052,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }, {
                 changedBy: 'staff',
                 changeReason: 'Visit completed by staff',
-                metadata: { 
-                    staffMember: staffMember || 'Unknown staff', 
+                metadata: {
+                    staffMember: staffMember || 'Unknown staff',
                     actualDuration: duration,
                     totalAmount: totalAmount ? parseFloat(totalAmount) : null
                 }
@@ -1932,10 +2068,10 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             // Free up table
             if (reservation.reservation.tableId) {
-                await storage.updateTable(reservation.reservation.tableId, { 
-                    status: 'free' 
+                await storage.updateTable(reservation.reservation.tableId, {
+                    status: 'free'
                 });
-                
+
                 // Invalidate table cache
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
@@ -1957,8 +2093,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             console.log(`✅ [Reservation Status] Completed visit for reservation ${reservationId}, duration: ${duration}min, amount: $${totalAmount || 0} + WebSocket broadcast`);
 
-            res.json({ 
-                success: true, 
+            res.json({
+                success: true,
                 message: "Visit completed successfully",
                 reservationId,
                 newStatus: 'completed',
@@ -1979,15 +2115,15 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const { reason, staffMember } = req.body;
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
-            
+
             const reservation = await storage.getReservation(reservationId);
             if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
 
             if (!['confirmed', 'created'].includes(reservation.reservation.status)) {
-                return res.status(400).json({ 
-                    message: `Cannot mark as no-show - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be marked as no-show.` 
+                return res.status(400).json({
+                    message: `Cannot mark as no-show - reservation status is ${reservation.reservation.status}. Only confirmed reservations can be marked as no-show.`
                 });
             }
 
@@ -1997,8 +2133,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }, {
                 changedBy: 'staff',
                 changeReason: 'Marked as no-show by staff',
-                metadata: { 
-                    staffMember: staffMember || 'Unknown staff', 
+                metadata: {
+                    staffMember: staffMember || 'Unknown staff',
                     reason: reason || 'No reason provided'
                 }
             });
@@ -2010,10 +2146,10 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             // Free up table
             if (reservation.reservation.tableId) {
-                await storage.updateTable(reservation.reservation.tableId, { 
-                    status: 'free' 
+                await storage.updateTable(reservation.reservation.tableId, {
+                    status: 'free'
                 });
-                
+
                 // Invalidate table cache
                 CacheInvalidation.onTableChange(context.restaurant.id);
             }
@@ -2034,8 +2170,8 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             console.log(`⚠️ [Reservation Status] Marked reservation ${reservationId} as no-show: ${reason || 'No reason provided'} + WebSocket broadcast`);
 
-            res.json({ 
-                success: true, 
+            res.json({
+                success: true,
                 message: "Reservation marked as no-show",
                 reservationId,
                 newStatus: 'no_show',
@@ -2053,17 +2189,17 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const reservationId = parseInt(req.params.id);
             const context = getTenantContext(req);
-            
+
             // Verify reservation belongs to this restaurant
             const reservation = await storage.getReservation(reservationId);
             if (!reservation || reservation.reservation.restaurantId !== context.restaurant.id) {
                 return res.status(404).json({ message: "Reservation not found" });
             }
-            
+
             const history = await storage.getReservationStatusHistory(reservationId);
-            
+
             console.log(`📋 [Reservation History] Retrieved ${history.length} status changes for reservation ${reservationId}`);
-            
+
             res.json({
                 reservationId,
                 history: history.map(entry => ({
@@ -2084,7 +2220,79 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
     });
 
     // ============================================================================
-    // ✅ MENU MANAGEMENT SYSTEM with feature gate (No WebSocket needed - configuration)
+    // ✨ NEW: MENU CATEGORY MANAGEMENT with feature gate
+    // ============================================================================
+
+    // Get all menu categories for the restaurant
+    app.get("/api/menu-categories", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const categories = await storage.getMenuCategories(context.restaurant.id);
+            res.json(categories);
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    // Create a new menu category
+    app.post("/api/menu-categories", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const { name, description } = req.body;
+            if (!name) {
+                return res.status(400).json({ message: "Category name is required" });
+            }
+            const newCategory = await storage.createMenuCategory({
+                restaurantId: context.restaurant.id,
+                name,
+                description,
+                // A simple slug generation
+                slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^\w-]+/g, ''),
+            });
+            res.status(201).json(newCategory);
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    // Update a menu category
+    app.patch("/api/menu-categories/:id", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const categoryId = parseInt(req.params.id);
+            const category = await storage.getMenuCategory(categoryId);
+
+            if (!category || category.restaurantId !== context.restaurant.id) {
+                return res.status(404).json({ message: "Category not found" });
+            }
+
+            const updatedCategory = await storage.updateMenuCategory(categoryId, req.body);
+            res.json(updatedCategory);
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    // Delete a menu category
+    app.delete("/api/menu-categories/:id", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
+        try {
+            const context = getTenantContext(req);
+            const categoryId = parseInt(req.params.id);
+            const category = await storage.getMenuCategory(categoryId);
+
+            if (!category || category.restaurantId !== context.restaurant.id) {
+                return res.status(404).json({ message: "Category not found" });
+            }
+
+            await storage.deleteMenuCategory(categoryId);
+            res.json({ success: true, message: "Category deleted successfully." });
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    // ============================================================================
+    // ✅ UPGRADED: MENU MANAGEMENT SYSTEM with feature gate
     // ============================================================================
 
     // Get menu items with advanced filtering
@@ -2092,7 +2300,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const { category, available, search, popular, limit } = req.query;
-            
+
             const filters = {
                 category: category as string,
                 availableOnly: available === 'true',
@@ -2104,7 +2312,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             console.log(`🍽️ [Menu Items] Fetching menu items for restaurant ${context.restaurant.id} with filters:`, filters);
 
             const menuItems = await storage.getMenuItems(context.restaurant.id, filters);
-            
+
             // Group by category for better UI organization
             const groupedItems = menuItems.reduce((acc, item) => {
                 const cat = item.categoryName || 'other';
@@ -2138,34 +2346,24 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         }
     });
 
-    // ✅ BUG 1 FIX: Create new menu item with category name lookup
+    // Create new menu item with on-the-fly category creation
     app.post("/api/menu-items", isAuthenticated, tenantIsolation, requireMenuManagement, async (req, res, next) => {
         try {
             const context = getTenantContext(req);
 
-            // Basic validation schema for menu items
             const menuItemSchema = z.object({
                 name: z.string().min(1, "Name is required"),
                 description: z.string().optional(),
                 price: z.string().or(z.number()).transform(val => String(val)),
                 category: z.string().min(1, "Category is required"),
-                allergens: z.array(z.string()).optional(),
-                dietaryTags: z.array(z.string()).optional(),
                 isAvailable: z.boolean().default(true),
                 isPopular: z.boolean().default(false),
-                isNew: z.boolean().default(false),
-                preparationTime: z.number().optional(),
-                spicyLevel: z.number().min(0).max(5).default(0)
             });
 
             const validatedData = menuItemSchema.parse(req.body);
 
-            // ✅ BUG 1 FIX: Look up the category ID from the category name
-            const category = await storage.getMenuCategoryByName(context.restaurant.id, validatedData.category);
-
-            if (!category) {
-                return res.status(400).json({ message: `Category '${validatedData.category}' not found.` });
-            }
+            // ✨ UPGRADED LOGIC: This now finds OR creates the category automatically.
+            const category = await storage.getOrCreateMenuCategoryByName(context.restaurant.id, validatedData.category);
 
             const newItem = await storage.createMenuItem({
                 name: validatedData.name,
@@ -2173,18 +2371,13 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 description: validatedData.description,
                 isAvailable: validatedData.isAvailable,
                 isPopular: validatedData.isPopular,
-                isNew: validatedData.isNew,
-                preparationTime: validatedData.preparationTime,
-                spicyLevel: validatedData.spicyLevel,
-                allergens: validatedData.allergens,
-                dietaryTags: validatedData.dietaryTags,
                 restaurantId: context.restaurant.id,
-                categoryId: category.id  // ✅ BUG 1 FIX: Use the correct numeric categoryId
+                categoryId: category.id  // Use the ID from the found or newly created category
             });
-            
+
             // Invalidate menu cache
             cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
-            
+
             console.log(`✅ [Menu Items] Created new item: ${newItem.name} (${validatedData.category}) - ${newItem.price}`);
 
             res.status(201).json({
@@ -2194,9 +2387,9 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         } catch (error: any) {
             console.error('[Menu Items] Error creating item:', error);
             if (error instanceof z.ZodError) {
-                return res.status(400).json({ 
-                    message: "Validation failed", 
-                    errors: error.errors 
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: error.errors
                 });
             }
             next(error);
@@ -2208,7 +2401,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const itemId = parseInt(req.params.id);
-            
+
             // Verify the item belongs to this restaurant
             const existingItem = await storage.getMenuItem(itemId);
             if (!existingItem || existingItem.restaurantId !== context.restaurant.id) {
@@ -2216,10 +2409,10 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }
 
             const updatedItem = await storage.updateMenuItem(itemId, req.body);
-            
+
             // Invalidate menu cache
             cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
-            
+
             console.log(`✅ [Menu Items] Updated item ${itemId}: ${updatedItem.name}`);
 
             res.json({
@@ -2237,7 +2430,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const itemId = parseInt(req.params.id);
-            
+
             // Verify the item belongs to this restaurant
             const existingItem = await storage.getMenuItem(itemId);
             if (!existingItem || existingItem.restaurantId !== context.restaurant.id) {
@@ -2245,14 +2438,14 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             }
 
             await storage.deleteMenuItem(itemId);
-            
+
             // Invalidate menu cache
             cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
-            
+
             console.log(`🗑️ [Menu Items] Deleted item ${itemId}: ${existingItem.name}`);
 
-            res.json({ 
-                success: true, 
+            res.json({
+                success: true,
                 message: "Menu item deleted successfully",
                 deletedItem: { id: itemId, name: existingItem.name }
             });
@@ -2279,14 +2472,14 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             console.log(`🔄 [Menu Items] Bulk ${action} update for ${items.length} items in restaurant ${context.restaurant.id}`);
 
             const results = await storage.bulkUpdateMenuItems(context.restaurant.id, items, action);
-            
+
             // Invalidate cache
             cache.invalidatePattern(`menu_items_${context.restaurant.id}`);
-            
+
             console.log(`✅ [Menu Items] Bulk ${action} completed: ${results.length} items processed`);
-            
-            res.json({ 
-                success: true, 
+
+            res.json({
+                success: true,
                 action,
                 updatedCount: results.length,
                 items: results,
@@ -2303,7 +2496,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const { q: query, category, dietary, priceMin, priceMax } = req.query;
-            
+
             if (!query || typeof query !== 'string') {
                 return res.status(400).json({ message: "Search query is required" });
             }
@@ -2382,7 +2575,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const type = req.params.type;
-            
+
             // Check feature access for telegram
             if (type === 'telegram' && !context.features.telegramBot) {
                 return res.status(402).json({
@@ -2406,11 +2599,11 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const settings = await storage.getIntegrationSettings(context.restaurant.id, 'telegram');
-            
+
             if (!settings || !settings.enabled || !settings.token) {
                 return res.status(400).json({ message: "Telegram bot is not configured or enabled" });
             }
-            
+
             try {
                 const TelegramBot = require('node-telegram-bot-api');
                 const bot = new TelegramBot(settings.token);
@@ -2450,7 +2643,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
         try {
             const context = getTenantContext(req);
             const type = req.params.type;
-            
+
             // Check feature access for telegram
             if (type === 'telegram' && !context.features.telegramBot) {
                 return res.status(402).json({
@@ -2472,7 +2665,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                 settings: customSettings
             });
             const savedSettings = await storage.saveIntegrationSettings(validatedData);
-            
+
             if (type === 'telegram' && savedSettings.enabled && savedSettings.token) {
                 try {
                     await initializeTelegramBot(context.restaurant.id);
@@ -2549,16 +2742,16 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             const { sessionId, message } = req.body;
 
             if (!sessionId || !message) {
-                return res.status(400).json({ 
-                    message: "Session ID and message are required" 
+                return res.status(400).json({
+                    message: "Session ID and message are required"
                 });
             }
 
             // Validate session exists
             const session = enhancedConversationManager.getSession(sessionId);
             if (!session) {
-                return res.status(404).json({ 
-                    message: "Session not found. Please create a new session." 
+                return res.status(404).json({
+                    message: "Session not found. Please create a new session."
                 });
             }
 
@@ -2598,18 +2791,18 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
         } catch (error) {
             console.error('[API] Error handling Sofia message:', error);
-            
+
             // Provide helpful error response
             const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-            
+
             if (errorMessage.includes('Session') && errorMessage.includes('not found')) {
-                return res.status(404).json({ 
-                    message: "Your session has expired. Please refresh the page to start a new conversation." 
+                return res.status(404).json({
+                    message: "Your session has expired. Please refresh the page to start a new conversation."
                 });
             }
 
-            res.status(500).json({ 
-                message: "I encountered an error. Please try again or refresh the page." 
+            res.status(500).json({
+                message: "I encountered an error. Please try again or refresh the page."
             });
         }
     });
@@ -2626,7 +2819,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             // Verify user has access to this restaurant
             const context = getTenantContext(req);
-            
+
             if (context.restaurant.id !== session.restaurantId) {
                 return res.status(403).json({ message: "Access denied" });
             }
@@ -2680,9 +2873,9 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
 
             console.log(`[API] Ended Sofia chat session ${sessionId}`);
 
-            res.json({ 
+            res.json({
                 message: "Session ended successfully",
-                sessionId 
+                sessionId
             });
 
         } catch (error) {
@@ -2878,7 +3071,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
             return res.json({
                 restaurantId: context.restaurant.id,
                 restaurantName: context.restaurant.name,
-                
+
                 // Raw database values
                 rawFeatures: {
                     enableAiChat: rawRestaurant?.enableAiChat,
@@ -2887,14 +3080,14 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     enableAdvancedReporting: rawRestaurant?.enableAdvancedReporting,
                     enableMenuManagement: rawRestaurant?.enableMenuManagement,
                 },
-                
+
                 // Tenant context features (processed)
                 contextFeatures: context.features,
-                
+
                 // Plan and status
                 tenantPlan: context.restaurant.tenantPlan,
                 tenantStatus: context.restaurant.tenantStatus,
-                
+
                 // Feature checks
                 featureChecks: {
                     aiChat: context.features.aiChat,
@@ -2903,7 +3096,7 @@ export async function registerRoutes(app: Express, wss: ExtendedWebSocketServer)
                     guestAnalytics: context.features.guestAnalytics,
                     advancedReporting: context.features.advancedReporting,
                 },
-                
+
                 debugTimestamp: new Date().toISOString()
             });
 

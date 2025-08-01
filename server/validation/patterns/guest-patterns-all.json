@@ -1,0 +1,287 @@
+{
+  "en": {
+    "collectiveNumerals": {
+      "just me": 1, "by myself": 1, "alone": 1, "solo": 1,
+      "two of us": 2, "the two of us": 2, "we two": 2, "both of us": 2,
+      "three of us": 3, "the three of us": 3, "we three": 3, "all three": 3,
+      "four of us": 4, "the four of us": 4, "we four": 4, "all four": 4,
+      "five of us": 5, "the five of us": 5, "we five": 5, "all five": 5,
+      "six of us": 6, "the six of us": 6, "we six": 6, "all six": 6,
+      "seven of us": 7, "the seven of us": 7, "we seven": 7, "all seven": 7,
+      "eight of us": 8, "the eight of us": 8, "we eight": 8, "all eight": 8,
+      "nine of us": 9, "the nine of us": 9, "we nine": 9, "all nine": 9,
+      "ten of us": 10, "the ten of us": 10, "we ten": 10, "all ten": 10,
+      "eleven of us": 11, "twelve of us": 12, "dozen of us": 12,
+      "party of two": 2, "party of three": 3, "party of four": 4, "party of five": 5,
+      "party of six": 6, "party of seven": 7, "party of eight": 8, "party of nine": 9,
+      "party of ten": 10, "party of eleven": 11, "party of twelve": 12,
+      "group of two": 2, "group of three": 3, "group of four": 4, "group of five": 5,
+      "group of six": 6, "group of seven": 7, "group of eight": 8, "group of nine": 9,
+      "group of ten": 10, "group of twelve": 12, "group of fifteen": 15, "group of twenty": 20
+    },
+    "phrases": [
+      "party of", "table for", "group of", "there will be", "reservation for", "book for",
+      "we'll be", "there's gonna be", "we're expecting", "our group", "our party",
+      "including me", "plus me", "we need a table", "can you seat", "expecting about",
+      "roughly", "approximately", "around", "about", "give or take"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(people|person|guests|pax|folks|individuals)",
+      "table\\s+for\\s+\\d+",
+      "party\\s+of\\s+\\d+",
+      "group\\s+of\\s+\\d+",
+      "\\d+\\s*in\\s*our\\s*(group|party)",
+      "\\d+\\s*including\\s*me",
+      "about\\s+\\d+\\s*(people|guests)",
+      "around\\s+\\d+\\s*(people|guests)",
+      "roughly\\s+\\d+\\s*(people|guests)"
+    ]
+  },
+  "ru": {
+    "collectiveNumerals": {
+      "один": 1, "одна": 1, "одним": 1, "одной": 1, "сам": 1, "сама": 1, "одиночка": 1,
+      "вдвоем": 2, "втроем": 3, "вчетвером": 4, "впятером": 5, "вшестером": 6,
+      "всемером": 7, "ввосьмером": 8, "вдевятером": 9, "вдесятером": 10,
+      "нас двое": 2, "нас трое": 3, "нас четверо": 4, "нас пятеро": 5, "нас шестеро": 6,
+      "нас семеро": 7, "нас восьмеро": 8, "нас девятеро": 9, "нас десятеро": 10,
+      "мы вдвоем": 2, "мы втроем": 3, "мы вчетвером": 4, "мы впятером": 5, "мы вшестером": 6,
+      "будем двое": 2, "будем трое": 3, "будем четверо": 4, "будем пятеро": 5,
+      "придем двое": 2, "придем трое": 3, "придем четверо": 4, "придем впятером": 5,
+      "компания из двух": 2, "компания из трех": 3, "компания из четырех": 4,
+      "компания из пяти": 5, "компания из шести": 6, "компания из семи": 7,
+      "компания из восьми": 8, "компания из девяти": 9, "компания из десяти": 10,
+      "группа из двух": 2, "группа из трех": 3, "группа из четырех": 4, "группа из пяти": 5,
+      "двоих": 2, "троих": 3, "четверых": 4, "пятерых": 5, "шестерых": 6, "семерых": 7
+    },
+    "phrases": [
+      "нас будет", "мы будем", "компания из", "столик на", "бронь на", "резерв на",
+      "группа из", "человек будет", "придем", "приедем", "мы компанией", "нас группой",
+      "включая меня", "со мной", "плюс я", "примерно", "около", "приблизительно",
+      "где-то", "человек примерно", "порядка", "в районе"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(человек|людей|персон|гостей|особ)",
+      "столик\\s+на\\s+\\d+",
+      "бронь\\s+на\\s+\\d+",
+      "компания\\s+из\\s+\\d+",
+      "группа\\s+из\\s+\\d+",
+      "\\d+\\s*человек\\s*будет",
+      "примерно\\s+\\d+\\s*(человек|людей)",
+      "около\\s+\\d+\\s*(человек|людей)",
+      "где-то\\s+\\d+\\s*(человек|людей)"
+    ]
+  },
+  "sr": {
+    "collectiveNumerals": {
+      "sam": 1, "sama": 1, "jedan": 1, "jedna": 1, "solo": 1,
+      "u dvoje": 2, "u troje": 3, "u četvoro": 4, "u petoro": 5, "u šestoro": 6,
+      "u sedmoro": 7, "u osmoro": 8, "u devetoro": 9, "u desetoro": 10,
+      "nas dvoje": 2, "nas troje": 3, "nas četvoro": 4, "nas petoro": 5, "nas šestoro": 6,
+      "biće nas dvoje": 2, "biće nas troje": 3, "biće nas četvoro": 4, "biće nas petoro": 5,
+      "doći ćemo dvoje": 2, "doći ćemo troje": 3, "doći ćemo četvoro": 4,
+      "grupa od dva": 2, "grupa od tri": 3, "grupa od četiri": 4, "grupa od pet": 5,
+      "grupa od šest": 6, "grupa od sedam": 7, "grupa od osam": 8, "grupa od devet": 9,
+      "kompanija od dva": 2, "kompanija od tri": 3, "kompanija od četiri": 4
+    },
+    "phrases": [
+      "biće nas", "mi ćemo", "grupa od", "sto za", "rezervacija za", "dolazimo",
+      "doći ćemo", "nas grupa", "kompanija od", "uključujući mene", "sa mnom",
+      "otprilike", "oko", "približno", "negde", "više-manje"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(osoba|ljudi|gostiju|osobe)",
+      "sto\\s+za\\s+\\d+",
+      "rezervacija\\s+za\\s+\\d+",
+      "grupa\\s+od\\s+\\d+",
+      "\\d+\\s*nas\\s*će\\s*biti",
+      "otprilike\\s+\\d+\\s*(osoba|ljudi)",
+      "oko\\s+\\d+\\s*(osoba|ljudi)",
+      "negde\\s+\\d+\\s*(osoba|ljudi)"
+    ]
+  },
+  "hu": {
+    "collectiveNumerals": {
+      "egyedül": 1, "magam": 1, "csak én": 1,
+      "ketten": 2, "hárman": 3, "négyen": 4, "öten": 5, "hatan": 6,
+      "heten": 7, "nyolcan": 8, "kilencen": 9, "tizen": 10, "tizenegyen": 11, "tizenketten": 12,
+      "ketten leszünk": 2, "hárman leszünk": 3, "négyen leszünk": 4, "öten leszünk": 5,
+      "hatan leszünk": 6, "heten leszünk": 7, "nyolcan leszünk": 8,
+      "ketten jövünk": 2, "hárman jövünk": 3, "négyen jövünk": 4, "öten jövünk": 5,
+      "két fős": 2, "három fős": 3, "négy fős": 4, "öt fős": 5, "hat fős": 6,
+      "csoport ketten": 2, "csoport hárman": 3, "csoport négyen": 4,
+      "társaság ketten": 2, "társaság hárman": 3, "társaság négyen": 4
+    },
+    "phrases": [
+      "leszünk", "mi leszünk", "csoport", "asztal", "foglalás", "jövünk", "érkezünk",
+      "társaság", "including me", "velem együtt", "körülbelül", "nagyjából", "kb",
+      "mintegy", "valahol", "úgy", "vagy"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(fő|személy|vendég|ember)",
+      "asztal\\s+\\d+\\s*főre",
+      "foglalás\\s+\\d+\\s*főre",
+      "\\d+\\s*fős\\s*(csoport|társaság)",
+      "körülbelül\\s+\\d+\\s*(fő|személy)",
+      "nagyjából\\s+\\d+\\s*(fő|személy)",
+      "kb\\s+\\d+\\s*(fő|személy)"
+    ]
+  },
+  "de": {
+    "collectiveNumerals": {
+      "allein": 1, "alleine": 1, "nur ich": 1, "ich allein": 1,
+      "zu zweit": 2, "zu dritt": 3, "zu viert": 4, "zu fünft": 5, "zu sechst": 6,
+      "zu siebt": 7, "zu acht": 8, "zu neunt": 9, "zu zehnt": 10,
+      "wir sind zwei": 2, "wir sind drei": 3, "wir sind vier": 4, "wir sind fünf": 5,
+      "wir sind sechs": 6, "wir sind sieben": 7, "wir sind acht": 8,
+      "wir kommen zu zweit": 2, "wir kommen zu dritt": 3, "wir kommen zu viert": 4,
+      "gruppe von zwei": 2, "gruppe von drei": 3, "gruppe von vier": 4, "gruppe von fünf": 5,
+      "gesellschaft von zwei": 2, "gesellschaft von drei": 3, "gesellschaft von vier": 4
+    },
+    "phrases": [
+      "wir sind", "wir kommen", "tisch für", "reservierung für", "gruppe von",
+      "gesellschaft", "inklusive mir", "mit mir", "ungefähr", "etwa", "circa",
+      "rund", "gegen", "um die", "so um die"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(personen|person|leute|gäste)",
+      "tisch\\s+für\\s+\\d+",
+      "reservierung\\s+für\\s+\\d+",
+      "gruppe\\s+von\\s+\\d+",
+      "\\d+\\s*personen\\s*gruppe",
+      "ungefähr\\s+\\d+\\s*(personen|leute)",
+      "etwa\\s+\\d+\\s*(personen|leute)",
+      "circa\\s+\\d+\\s*(personen|leute)"
+    ]
+  },
+  "fr": {
+    "collectiveNumerals": {
+      "seul": 1, "seule": 1, "tout seul": 1, "toute seule": 1, "moi seul": 1,
+      "à deux": 2, "à trois": 3, "à quatre": 4, "à cinq": 5, "à six": 6,
+      "à sept": 7, "à huit": 8, "à neuf": 9, "à dix": 10, "à onze": 11, "à douze": 12,
+      "nous sommes deux": 2, "nous sommes trois": 3, "nous sommes quatre": 4, "nous sommes cinq": 5,
+      "nous sommes six": 6, "nous sommes sept": 7, "nous sommes huit": 8,
+      "nous venons à deux": 2, "nous venons à trois": 3, "nous venons à quatre": 4,
+      "groupe de deux": 2, "groupe de trois": 3, "groupe de quatre": 4, "groupe de cinq": 5,
+      "tablée de deux": 2, "tablée de trois": 3, "tablée de quatre": 4
+    },
+    "phrases": [
+      "nous sommes", "nous serons", "table pour", "réservation pour", "nous venons",
+      "groupe de", "tablée de", "y compris moi", "avec moi", "environ", "à peu près",
+      "approximativement", "vers", "dans les", "aux alentours de"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(personnes|personne|convives|couverts)",
+      "table\\s+pour\\s+\\d+",
+      "réservation\\s+pour\\s+\\d+",
+      "groupe\\s+de\\s+\\d+",
+      "\\d+\\s*couverts",
+      "environ\\s+\\d+\\s*(personnes|convives)",
+      "à peu près\\s+\\d+\\s*(personnes|convives)",
+      "vers\\s+\\d+\\s*(personnes|convives)"
+    ]
+  },
+  "es": {
+    "collectiveNumerals": {
+      "solo": 1, "sola": 1, "yo solo": 1, "yo sola": 1, "únicamente yo": 1,
+      "somos dos": 2, "somos tres": 3, "somos cuatro": 4, "somos cinco": 5, "somos seis": 6,
+      "somos siete": 7, "somos ocho": 8, "somos nueve": 9, "somos diez": 10,
+      "de a dos": 2, "de a tres": 3, "de a cuatro": 4, "de a cinco": 5,
+      "venimos dos": 2, "venimos tres": 3, "venimos cuatro": 4, "venimos cinco": 5,
+      "grupo de dos": 2, "grupo de tres": 3, "grupo de cuatro": 4, "grupo de cinco": 5,
+      "partido de dos": 2, "partido de tres": 3, "partido de cuatro": 4
+    },
+    "phrases": [
+      "somos", "seremos", "mesa para", "reserva para", "venimos", "grupo de",
+      "partido de", "incluyéndome", "conmigo", "aproximadamente", "más o menos",
+      "cerca de", "alrededor de", "como", "unos", "sobre"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(personas|persona|comensales|gente)",
+      "mesa\\s+para\\s+\\d+",
+      "reserva\\s+para\\s+\\d+",
+      "grupo\\s+de\\s+\\d+",
+      "\\d+\\s*comensales",
+      "aproximadamente\\s+\\d+\\s*(personas|comensales)",
+      "más o menos\\s+\\d+\\s*(personas|comensales)",
+      "alrededor de\\s+\\d+\\s*(personas|comensales)"
+    ]
+  },
+  "it": {
+    "collectiveNumerals": {
+      "da solo": 1, "da sola": 1, "solo io": 1, "sola io": 1, "unicamente io": 1,
+      "siamo in due": 2, "siamo in tre": 3, "siamo in quattro": 4, "siamo in cinque": 5,
+      "siamo in sei": 6, "siamo in sette": 7, "siamo in otto": 8, "siamo in nove": 9,
+      "in due": 2, "in tre": 3, "in quattro": 4, "in cinque": 5, "in sei": 6,
+      "veniamo in due": 2, "veniamo in tre": 3, "veniamo in quattro": 4,
+      "gruppo di due": 2, "gruppo di tre": 3, "gruppo di quattro": 4, "gruppo di cinque": 5,
+      "compagnia di due": 2, "compagnia di tre": 3, "compagnia di quattro": 4
+    },
+    "phrases": [
+      "siamo in", "saremo in", "tavolo per", "prenotazione per", "veniamo in",
+      "gruppo di", "compagnia di", "includendo me", "con me", "circa", "più o meno",
+      "approssimativamente", "intorno a", "sui", "verso i"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(persone|persona|ospiti|commensali)",
+      "tavolo\\s+per\\s+\\d+",
+      "prenotazione\\s+per\\s+\\d+",
+      "gruppo\\s+di\\s+\\d+",
+      "\\d+\\s*persone\\s*gruppo",
+      "circa\\s+\\d+\\s*(persone|ospiti)",
+      "più o meno\\s+\\d+\\s*(persone|ospiti)",
+      "intorno a\\s+\\d+\\s*(persone|ospiti)"
+    ]
+  },
+  "pt": {
+    "collectiveNumerals": {
+      "sozinho": 1, "sozinha": 1, "só eu": 1, "apenas eu": 1, "unicamente eu": 1,
+      "somos dois": 2, "somos três": 3, "somos quatro": 4, "somos cinco": 5, "somos seis": 6,
+      "somos sete": 7, "somos oito": 8, "somos nove": 9, "somos dez": 10,
+      "nós dois": 2, "nós três": 3, "nós quatro": 4, "nós cinco": 5,
+      "vimos dois": 2, "vimos três": 3, "vimos quatro": 4, "vimos cinco": 5,
+      "grupo de dois": 2, "grupo de três": 3, "grupo de quatro": 4, "grupo de cinco": 5,
+      "turma de dois": 2, "turma de três": 3, "turma de quatro": 4
+    },
+    "phrases": [
+      "somos", "seremos", "mesa para", "reserva para", "vimos", "grupo de",
+      "turma de", "incluindo eu", "comigo", "aproximadamente", "mais ou menos",
+      "cerca de", "por volta de", "uns", "umas", "em torno de"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(pessoas|pessoa|convidados|comensais)",
+      "mesa\\s+para\\s+\\d+",
+      "reserva\\s+para\\s+\\d+",
+      "grupo\\s+de\\s+\\d+",
+      "\\d+\\s*pessoas\\s*grupo",
+      "aproximadamente\\s+\\d+\\s*(pessoas|convidados)",
+      "mais ou menos\\s+\\d+\\s*(pessoas|convidados)",
+      "cerca de\\s+\\d+\\s*(pessoas|convidados)"
+    ]
+  },
+  "nl": {
+    "collectiveNumerals": {
+      "alleen": 1, "in m'n eentje": 1, "alleen ik": 1, "enkel ik": 1,
+      "met z'n tweeën": 2, "met z'n drieën": 3, "met z'n vieren": 4, "met z'n vijven": 5,
+      "met z'n zessen": 6, "met z'n zevenen": 7, "met z'n achten": 8, "met z'n negenen": 9,
+      "we zijn met twee": 2, "we zijn met drie": 3, "we zijn met vier": 4, "we zijn met vijf": 5,
+      "we komen met twee": 2, "we komen met drie": 3, "we komen met vier": 4,
+      "groep van twee": 2, "groep van drie": 3, "groep van vier": 4, "groep van vijf": 5,
+      "gezelschap van twee": 2, "gezelschap van drie": 3, "gezelschap van vier": 4
+    },
+    "phrases": [
+      "we zijn met", "we komen met", "tafel voor", "reservering voor", "groep van",
+      "gezelschap van", "inclusief mij", "met mij", "ongeveer", "zo'n", "rond de",
+      "tegen de", "pakweg", "ruwweg"
+    ],
+    "regexPatterns": [
+      "\\d+\\s*(personen|persoon|gasten|mensen)",
+      "tafel\\s+voor\\s+\\d+",
+      "reservering\\s+voor\\s+\\d+",
+      "groep\\s+van\\s+\\d+",
+      "\\d+\\s*personen\\s*groep",
+      "ongeveer\\s+\\d+\\s*(personen|gasten)",
+      "zo'n\\s+\\d+\\s*(personen|gasten)",
+      "rond de\\s+\\d+\\s*(personen|gasten)"
+    ]
+  }
+}
