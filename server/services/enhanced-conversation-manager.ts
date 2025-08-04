@@ -17,7 +17,8 @@ import {
     getRestaurantDateTime,
     getRestaurantTimeContext,
     isValidTimezone,
-    getRestaurantOperatingStatus 
+    getRestaurantOperatingStatus,
+    normalizeAfterMidnightTime
 } from '../utils/timezone-utils';
 
 // ✅ Using ContextManager for all context resolution and management
@@ -352,11 +353,66 @@ export class EnhancedConversationManager {
     }
 
     /**
+     * 🚨 CRITICAL FIX: After-midnight time normalization for edge cases
+     */
+    private async normalizeAfterMidnightTime(
+        message: string,
+        tenantContext: TenantContext
+    ): Promise<{ date?: string; time?: string }> {
+        const timerId = smartLog.startTimer('after_midnight_normalization');
+        try {
+            const prompt = `You are a time normalization agent for after-midnight restaurant bookings.
+
+USER MESSAGE: "${message}"
+CURRENT TIME: ${new Date().toISOString()}
+RESTAURANT TIMEZONE: ${tenantContext.restaurant.timezone || 'Europe/Belgrade'}
+
+TASK: If this message contains ambiguous "today" + night time references during after-midnight hours, 
+normalize to specific date and time.
+
+EXAMPLES:
+- "today at 2am" at 01:00 → tomorrow's date + 02:00
+- "tonight at 11pm" at 02:00 → today's date + 23:00
+
+Return JSON:
+{
+  "date": "YYYY-MM-DD or null",
+  "time": "HH:MM or null"
+}`;
+
+            const result = await aiService.generateJSON(prompt, {
+                maxTokens: 150,
+                temperature: 0.0,
+                context: 'after-midnight-normalization'
+            }, tenantContext);
+
+            smartLog.info('After-midnight normalization completed', {
+                originalMessage: message,
+                normalizedDate: result.date,
+                normalizedTime: result.time,
+                processingTime: smartLog.endTimer(timerId)
+            });
+
+            return {
+                date: result.date || undefined,
+                time: result.time || undefined
+            };
+
+        } catch (error) {
+            smartLog.endTimer(timerId);
+            smartLog.error('After-midnight normalization failed', error as Error, {
+                message: message.substring(0, 100)
+            });
+            return {};
+        }
+    }
+
+    /**
      * 🚨 CIRCULAR REFERENCE FIX: Creates a clean function context without circular references for storage
      */
     private createCleanFunctionContext(
-        session: BookingSessionWithAgent, 
-        agent: any, 
+        session: BookingSessionWithAgent,
+        agent: any,
         sessionId: string
     ): Omit<ToolFunctionContext, 'session'> {
         return {
@@ -452,6 +508,195 @@ export class EnhancedConversationManager {
         }
 
         return aiDetection.detectedLanguage;
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Enhanced language detection with context preservation
+     * Fixes Bug #1: Language Detection Override for Ambiguous Input
+     */
+    private async detectLanguageWithContextPreservation(
+        message: string,
+        session: BookingSessionWithAgent,
+        tenantContext: TenantContext
+    ): Promise<{
+        detectedLanguage: Language;
+        confidence: number;
+        preserved: boolean;
+        reasoning: string;
+    }> {
+        const timerId = smartLog.startTimer('context_aware_language_detection');
+
+        try {
+            // 🔒 CRITICAL: Preserve established language for ambiguous input
+            const isAmbiguous = this.isAmbiguousInput(message);
+            const hasEstablishedLanguage = session.language !== 'auto' && session.languageLocked;
+
+            if (isAmbiguous && hasEstablishedLanguage) {
+                smartLog.info('Language preserved for ambiguous input', {
+                    sessionId: session.sessionId,
+                    message: message.substring(0, 50),
+                    preservedLanguage: session.language,
+                    reason: 'ambiguous_input_with_established_language'
+                });
+
+                return {
+                    detectedLanguage: session.language,
+                    confidence: 0.95,
+                    preserved: true,
+                    reasoning: `Preserved session language '${session.language}' for ambiguous input`
+                };
+            }
+
+            // 🔒 CRITICAL: Check language lock strength
+            if (session.languageLocked && session.conversationHistory.length >= 3) {
+                const lockStrength = this.calculateLanguageLockStrength(session);
+
+                if (lockStrength === 'hard') {
+                    return {
+                        detectedLanguage: session.language,
+                        confidence: 0.98,
+                        preserved: true,
+                        reasoning: `Hard language lock active for '${session.language}'`
+                    };
+                }
+            }
+
+            // 🔧 ENHANCED: AI detection with context
+            const aiDetection = await this.runLanguageDetectionAgent(
+                message,
+                session.conversationHistory,
+                session.language,
+                tenantContext
+            );
+
+            // 🔒 CRITICAL: Validate language change is justified
+            const shouldChangeLanguage = this.shouldAllowLanguageChange(
+                session.language,
+                aiDetection.detectedLanguage,
+                aiDetection.confidence,
+                session
+            );
+
+            if (!shouldChangeLanguage) {
+                smartLog.info('Language change rejected by validation', {
+                    sessionId: session.sessionId,
+                    currentLanguage: session.language,
+                    detectedLanguage: aiDetection.detectedLanguage,
+                    confidence: aiDetection.confidence,
+                    reason: 'insufficient_confidence_or_lock'
+                });
+
+                return {
+                    detectedLanguage: session.language,
+                    confidence: 0.9,
+                    preserved: true,
+                    reasoning: 'Language change validation failed'
+                };
+            }
+
+            smartLog.info('Language detection completed with validation', {
+                sessionId: session.sessionId,
+                detectedLanguage: aiDetection.detectedLanguage,
+                confidence: aiDetection.confidence,
+                preserved: false,
+                processingTime: smartLog.endTimer(timerId)
+            });
+
+            return {
+                detectedLanguage: aiDetection.detectedLanguage,
+                confidence: aiDetection.confidence,
+                preserved: false,
+                reasoning: aiDetection.reasoning
+            };
+
+        } catch (error) {
+            smartLog.endTimer(timerId);
+            smartLog.error('Enhanced language detection failed', error as Error, {
+                sessionId: session.sessionId,
+                message: message.substring(0, 50)
+            });
+
+            // Fallback to session language or English
+            return {
+                detectedLanguage: session.language || 'en',
+                confidence: 0.5,
+                preserved: true,
+                reasoning: 'Error fallback to existing language'
+            };
+        }
+    }
+
+    /**
+     * 🔍 CRITICAL: Detect ambiguous input patterns
+     */
+    private isAmbiguousInput(message: string): boolean {
+        const trimmed = message.trim();
+
+        // Pure numbers
+        if (/^\d+$/.test(trimmed)) return true;
+
+        // Very short responses
+        if (trimmed.length <= 2) return true;
+
+        // Only special characters/punctuation
+        if (/^[^\w\s]*$/.test(trimmed)) return true;
+
+        // Common yes/no responses (language agnostic)
+        const commonResponses = ['ok', 'да', 'ne', 'yes', 'no', 'ок', 'к'];
+        if (commonResponses.includes(trimmed.toLowerCase())) return true;
+
+        return false;
+    }
+
+    /**
+     * 🔒 CRITICAL: Calculate language lock strength
+     */
+    private calculateLanguageLockStrength(session: BookingSessionWithAgent): 'hard' | 'soft' | 'none' {
+        const conversationLength = session.conversationHistory.length;
+        const turnsSinceLanguageSet = session.turnCount || 0;
+
+        // Hard lock after substantial conversation
+        if (conversationLength >= 6 && turnsSinceLanguageSet >= 3) {
+            return 'hard';
+        }
+
+        // Soft lock after some conversation
+        if (conversationLength >= 3 && session.languageLocked) {
+            return 'soft';
+        }
+
+        return 'none';
+    }
+
+    /**
+     * 🔒 CRITICAL: Validate if language change should be allowed
+     */
+    private shouldAllowLanguageChange(
+        currentLanguage: Language,
+        newLanguage: Language,
+        confidence: number,
+        session: BookingSessionWithAgent
+    ): boolean {
+        // Same language - always allow
+        if (currentLanguage === newLanguage) return true;
+
+        // Auto language - always allow change
+        if (currentLanguage === 'auto') return true;
+
+        const lockStrength = this.calculateLanguageLockStrength(session);
+
+        // Hard lock: Only allow with very high confidence
+        if (lockStrength === 'hard' && confidence < 0.95) {
+            return false;
+        }
+
+        // Soft lock: Require high confidence and multiple turns
+        if (lockStrength === 'soft' &&
+            (confidence < 0.9 || (session.turnCount || 0) < 3)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -619,6 +864,7 @@ export class EnhancedConversationManager {
         session: BookingSessionWithAgent
     ): Promise<CompleteBookingInfoResult> {
         const timerId = smartLog.startTimer('context_aware_extraction');
+        let normalizedMessage = message; // Initialize with original message
 
         try {
             // 🚨 BUG FIX: Smart time normalization BEFORE AI processing
@@ -630,7 +876,7 @@ export class EnhancedConversationManager {
                 logChanges: true,
                 restaurantTimezone: session.timezone
             });
-            const normalizedMessage = normalizationResult.normalizedMessage;
+            normalizedMessage = normalizationResult.normalizedMessage;
 
             const dateContext = getRestaurantTimeContext(session.timezone);
             const lastAssistantMessage = session.conversationHistory.slice(-1).find(m => m.role === 'assistant')?.content || '';
@@ -716,9 +962,9 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             }
 
             // ✅ NAME MISMATCH DETECTION: Check if user requested a different name than guest history
-            if (validatedExtraction.name && session.guestHistory?.guest_name && 
+            if (validatedExtraction.name && session.guestHistory?.guest_name &&
                 validatedExtraction.name !== session.guestHistory.guest_name) {
-                
+
                 smartLog.info('Name mismatch detected - user requested different name than profile', {
                     sessionId: session.sessionId,
                     profileName: session.guestHistory.guest_name,
@@ -764,7 +1010,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
                 confidence: result.confidence,
                 contextAmnesiaFixed: true,
                 contextPreserved: true,
-                nameMismatchDetected: !!(validatedExtraction.name && session.guestHistory?.guest_name && 
+                nameMismatchDetected: !!(validatedExtraction.name && session.guestHistory?.guest_name &&
                     validatedExtraction.name !== session.guestHistory.guest_name),
                 processingTime: smartLog.endTimer(timerId)
             });
@@ -893,14 +1139,14 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
         }
 
         const cleanMessage = originalMessage.toLowerCase();
-        
+
         // ✅ ENHANCED: Check for time range patterns like "19-20" and suggest interpretation
         const timeRangePattern = /(\d{1,2})-(\d{1,2})/;
         const rangeMatch = cleanMessage.match(timeRangePattern);
         if (rangeMatch && value.includes('-')) {
             const startHour = parseInt(rangeMatch[1]);
             const endHour = parseInt(rangeMatch[2]);
-            
+
             // If it's a valid hour range, suggest the start time
             if (startHour >= 0 && startHour <= 23 && endHour >= 0 && endHour <= 23 && endHour > startHour) {
                 const suggestedTime = `${startHour.toString().padStart(2, '0')}:00`;
@@ -1498,7 +1744,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
     }
 
     /**
-     * ✅ BUG #2 COMPLETE FIX: Enhanced session reset for new booking requests 
+     * ✅ BUG #2 COMPLETE FIX: Enhanced session reset for new booking requests
      * Updated to support explicit identity preservation at handleMessage level
      */
     private resetSessionForNewBooking(session: BookingSessionWithAgent, reason: string, preserveIdentity: boolean = true) {
@@ -2216,13 +2462,6 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
         return false; // No context shift detected
     }
 
-    /**
-     * ✅ OVERSEER EXTRACTION: Streamlined overseer decision using dedicated OverseerAgent
-     * * NOTE: The overseer-agent.ts file needs to be updated with the following changes:
-     * 1. Add RULE 1.6 for common booking request patterns (like "можно стол")
-     * 2. Add INTERVENTION RULES section to prevent unnecessary clarifications
-     * 3. Update the ambiguous message detection to be less aggressive
-     */
     private async runOverseer(
         session: BookingSessionWithAgent,
         userMessage: string
@@ -2267,6 +2506,7 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
     }
 
     /**
+     * 🚨 CRITICAL FIX #5: Enhanced language detection prompt with ambiguous input handling
      * Language Detection Agent using AIService with proper tenant context
      */
     private async runLanguageDetectionAgent(
@@ -2285,7 +2525,9 @@ Extract ONLY the relevant fields from the "USER'S LATEST MESSAGE":
             const historyContext = conversationHistory.length > 0
                 ? conversationHistory.slice(-3).map(msg => `${msg.role}: ${msg.content}`).join('\n')
                 : 'First message';
-            const prompt = `You are a Language Detection Agent for a restaurant booking system. Analyze the user's message and determine the language.
+
+            // 🚨 ENHANCED PROMPT with ambiguous input handling
+            const prompt = `You are a Language Detection Agent for a restaurant booking system with CRITICAL context preservation rules.
 
 CONVERSATION HISTORY:
 ${historyContext}
@@ -2293,86 +2535,101 @@ ${historyContext}
 USER'S CURRENT MESSAGE: "${message}"
 CURRENT SESSION LANGUAGE: ${currentLanguage || 'none set'}
 
+🚨 CRITICAL AMBIGUOUS INPUT RULES:
+If the message is:
+- Pure numbers (e.g., "31", "7", "15")
+- Very short responses (e.g., "ok", "да", "k")  
+- Only punctuation/symbols
+- Common yes/no words
+
+AND current session language is set (not 'auto'):
+→ ALWAYS return the current session language with confidence 0.95
+→ NEVER change established conversation language for ambiguous input
+
 SUPPORTED LANGUAGES:
-- en (English)
-- ru (Russian)
-- sr (Serbian)
-- hu (Hungarian)
-- de (German)
-- fr (French)
-- es (Spanish)
-- it (Italian)
-- pt (Portuguese)
+- en (English)     - ru (Russian)      - sr (Serbian)
+- hu (Hungarian)   - de (German)       - fr (French)  
+- es (Spanish)     - it (Italian)      - pt (Portuguese)
 - nl (Dutch)
 
 ANALYSIS RULES:
-1. If this is the first substantive message (not just "hi"), detect primary language
-2. Handle typos and variations gracefully (e.g., "helo" = "hello")
-3. For mixed languages, choose the dominant one
-4. For ambiguous short messages ("ok", "yes"), keep current language if set
-5. Consider context from conversation history
-6. shouldLock = true for first language detection, false for confirmations/short responses
+1. Check if input is ambiguous (numbers, short responses, punctuation)
+2. If ambiguous AND session language exists → preserve session language
+3. If substantive text → detect actual language
+4. For mixed languages, choose the dominant one
+5. Handle typos gracefully (e.g., "helo" = "hello")
+6. shouldLock = true only for first clear language detection
+
+LANGUAGE CHANGE REQUIREMENTS:
+- Only change language for substantive, non-ambiguous text
+- Require high confidence (>0.85) to override established language
+- Consider conversation context and length
 
 EXAMPLES:
-- "Szia! Szeretnék asztalt foglalni" → Hungarian (high confidence, lock)
-- "Helo, I want table" → English (medium confidence, lock)
-- "ok" → keep current (low confidence, don't lock)
-- "да, подтверждаю" → Russian (high confidence, lock)
+- Message: "31" + Current: "ru" → Russian (preserve context)
+- Message: "ok" + Current: "sr" → Serbian (preserve context)  
+- Message: "Привет, хочу столик" + Current: "en" → Russian (clear change)
+- Message: "yes, da" + Current: "ru" → Russian (mixed but preserve)
 
 Respond with JSON only:
 {
   "detectedLanguage": "language_code",
   "confidence": 0.0-1.0,
-  "reasoning": "explanation of decision",
+  "reasoning": "detailed explanation of decision including ambiguity check",
   "shouldLock": true/false
 }`;
-            // ✅ CRITICAL FIX: Always pass tenantContext to the AI service
+
             const response = await aiService.generateJSON(prompt, {
                 maxTokens: 200,
                 temperature: 0.0,
-                context: 'LanguageAgent'
+                context: 'EnhancedLanguageAgent'
             }, tenantContext);
+
             const result = {
                 detectedLanguage: response.detectedLanguage || 'en',
                 confidence: response.confidence || 0.5,
-                reasoning: response.reasoning || 'AIService detection',
+                reasoning: response.reasoning || 'Enhanced AIService detection with context preservation',
                 shouldLock: response.shouldLock || false
             };
-            smartLog.info('Language detection completed', {
+
+            smartLog.info('Enhanced language detection completed', {
                 message: message.substring(0, 100),
+                currentLanguage,
                 detected: result.detectedLanguage,
                 confidence: result.confidence,
                 reasoning: result.reasoning,
                 shouldLock: result.shouldLock,
                 tenantId: tenantContext.restaurant.id,
-                processingTime: smartLog.endTimer(timerId)
+                processingTime: smartLog.endTimer(timerId),
+                bugFixed: 'ENHANCED_CONTEXT_PRESERVATION'
             });
-            if (currentLanguage && currentLanguage !== result.detectedLanguage && result.confidence > 0.8) {
-                smartLog.businessEvent('language_changed', {
-                    fromLanguage: currentLanguage,
-                    toLanguage: result.detectedLanguage,
-                    confidence: result.confidence,
-                    reasoning: result.reasoning
-                });
-            }
+
             return result;
+
         } catch (error) {
             smartLog.endTimer(timerId);
-            smartLog.error('Language detection failed', error as Error, {
+            smartLog.error('Enhanced language detection failed', error as Error, {
                 message: message.substring(0, 100),
                 currentLanguage,
                 tenantId: tenantContext?.restaurant?.id
             });
-            const text = message.toLowerCase();
-            let fallbackLanguage: Language = 'en';
-            if (/[\u0400-\u04FF]/.test(message)) fallbackLanguage = 'ru';
-            else if (text.includes('szia') || text.includes('szeretnék')) fallbackLanguage = 'hu';
-            else if (text.includes('hallo') || text.includes('ich')) fallbackLanguage = 'de';
-            else if (text.includes('bonjour') || text.includes('je')) fallbackLanguage = 'fr';
+
+            // Enhanced fallback logic
+            let fallbackLanguage: Language = currentLanguage || 'en';
+
+            // Only change fallback if we have clear language indicators
+            if (!currentLanguage || currentLanguage === 'auto') {
+                const text = message.toLowerCase();
+                if (/[\u0400-\u04FF]/.test(message)) fallbackLanguage = 'ru';
+                else if (text.includes('szia') || text.includes('szeretnék')) fallbackLanguage = 'hu';
+                else if (text.includes('hallo') || text.includes('ich')) fallbackLanguage = 'de';
+                else if (text.includes('bonjour') || text.includes('je')) fallbackLanguage = 'fr';
+            }
+
             return {
                 detectedLanguage: fallbackLanguage,
                 confidence: 0.3,
-                reasoning: 'Fallback detection due to error',
+                reasoning: 'Enhanced fallback detection with context preservation',
                 shouldLock: true
             };
         }
@@ -2817,6 +3074,7 @@ ${sanitizedComment ? `• Speciale verzoeken: ${sanitizedComment}` : ''}
      * 🚨 BUG-20250727-002 FIX: AI Guest Count Hallucination - Programmatic confirmation enforcement added
      * 🚨 BUG #2 FIXED: Context Amnesia on Subsequent Bookings - Enhanced identity extraction
      * 🚨 CIRCULAR REFERENCE FIX: Fixed circular reference in pendingNameClarification storage
+     * 🚨 CRITICAL FIX #2: Updated message handling to use enhanced language detection
      */
     async handleMessage(sessionId: string, message: string): Promise<{
         response: string;
@@ -2902,7 +3160,7 @@ ${sanitizedComment ? `• Speciale verzoeken: ${sanitizedComment}` : ''}
                 smartLog.info('After-midnight edge case detected. Engaging high-precision time normalization.', { sessionId });
 
                 // 4. Call the new high-precision normalization function (created in Step 2).
-                const normalizedTime = await normalizeAfterMidnightTime(
+                const normalizedTime = await this.normalizeAfterMidnightTime(
                     sanitizedMessage,
                     session.tenantContext
                 );
@@ -2946,7 +3204,6 @@ ${sanitizedComment ? `• Speciale verzoeken: ${sanitizedComment}` : ''}
         try {
             let hasBooking = false;
             let reservationId: number | undefined;
-            const isFirstMessage = session.conversationHistory.length === 0;
 
             // ✅ PHASE 1 REFACTORING: Check for pending confirmations FIRST using ConfirmationService
             if (session.pendingConfirmation || session.pendingNameClarification) {
@@ -3154,46 +3411,63 @@ ${sanitizedComment ? `• Speciale verzoeken: ${sanitizedComment}` : ''}
                 };
             }
 
-            // Language detection with caching
+            // 🚨 CRITICAL FIX #2: Use enhanced language detection with context preservation
             const shouldRunDetection = !session.languageLocked ||
                 session.conversationHistory.length <= 1 ||
                 sanitizedMessage.length > 10;
 
             if (shouldRunDetection) {
-                // ✅ CRITICAL FIX: Always pass tenantContext to detectLanguageWithCache
-                const detectionResult = await this.runLanguageDetectionAgent(
+                // ✅ CRITICAL FIX: Use enhanced detection with context preservation
+                const detectionResult = await this.detectLanguageWithContextPreservation(
                     sanitizedMessage,
-                    session.conversationHistory,
-                    session.language,
+                    session,
                     session.tenantContext
                 );
-                const detectedLanguage = detectionResult.detectedLanguage;
 
-                const shouldChangeLanguage = session.languageLocked
-                    ? (detectedLanguage !== session.language && detectionResult.confidence > 0.85) // Only change if confident when locked
-                    : (detectedLanguage !== session.language);
+                const shouldUpdateLanguage = session.language !== detectionResult.detectedLanguage;
 
-                if (shouldChangeLanguage) {
-                    const wasLocked = session.languageLocked;
-                    smartLog.info('Language updated', {
-                        sessionId,
+                if (shouldUpdateLanguage && !detectionResult.preserved) {
+                    smartLog.info('Language updated with enhanced validation', {
+                        sessionId: session.sessionId,
                         fromLanguage: session.language,
-                        toLanguage: detectedLanguage,
-                        wasLocked
+                        toLanguage: detectionResult.detectedLanguage,
+                        confidence: detectionResult.confidence,
+                        reasoning: detectionResult.reasoning,
+                        bugFixed: 'LANGUAGE_SWITCHING_BUGS'
                     });
-                    session.language = detectedLanguage;
-                    if (!wasLocked) {
+
+                    session.language = detectionResult.detectedLanguage;
+
+                    // Lock language after first substantial detection
+                    if (!session.languageLocked && detectionResult.confidence > 0.8) {
                         session.languageLocked = true;
                         session.languageDetectionLog = {
                             detectedAt: new Date().toISOString(),
                             firstMessage: sanitizedMessage,
-                            confidence: 0.8,
-                            reasoning: 'Cached detection'
+                            confidence: detectionResult.confidence,
+                            reasoning: detectionResult.reasoning
                         };
                     }
+
+                    smartLog.businessEvent('language_changed_validated', {
+                        sessionId: session.sessionId,
+                        fromLanguage: session.language,
+                        toLanguage: detectionResult.detectedLanguage,
+                        confidence: detectionResult.confidence,
+                        preserved: detectionResult.preserved,
+                        lockApplied: session.languageLocked
+                    });
+                } else if (detectionResult.preserved) {
+                    smartLog.info('Language change prevented by context preservation', {
+                        sessionId: session.sessionId,
+                        currentLanguage: session.language,
+                        detectedLanguage: detectionResult.detectedLanguage,
+                        reason: detectionResult.reasoning
+                    });
                 }
             }
 
+            // Rest of the method continues with existing logic...
             // Overseer decision
             const overseerDecision = await this.runOverseer(session, sanitizedMessage);
             if (overseerDecision.intervention) {
@@ -3821,7 +4095,7 @@ REQUIRED CONFIRMATION PATTERNS:
                     });
 
                     // Override the final instructions to the AI
-                    
+
                     finalSystemPrompt += `
 
 🚨 CRITICAL INSTRUCTION:
@@ -3841,7 +4115,7 @@ REQUIRED ACTION:
 
                     smartLog.businessEvent('hallucinated_booking_prevention', {
                         sessionId,
-                        lastToolCall: lastActionTool.toolCall.name, // Use name property
+                        lastToolCall: lastActionTool.toolCall.function.name,
                         preventionTriggered: true,
                         promptModified: true
                     });

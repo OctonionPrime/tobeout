@@ -708,9 +708,6 @@ export class DatabaseStorage implements IStorage {
                 whereConditions.push(inArray(reservations.status, validStatuses));
             }
             console.log(`📋 [Storage] Filtering by status: ${validStatuses.join(', ')}`);
-        } else {
-            whereConditions.push(ne(reservations.status, 'canceled'));
-            console.log(`📋 [Storage] No status filter provided, excluding canceled reservations`);
         }
 
         if (filters?.upcoming && filters.timezone) {
@@ -721,27 +718,26 @@ export class DatabaseStorage implements IStorage {
             }
         }
 
-        const results = await db
-            .select({
-                reservation: reservations,
-                guest: guests,
-                table: tables
-            })
-            .from(reservations)
-            .innerJoin(guests, and(
-                eq(reservations.guestId, guests.id),
-                eq(guests.restaurantId, restaurantId)
-            ))
-            .innerJoin(tables, eq(reservations.tableId, tables.id))
-            .where(and(...whereConditions))
-            .orderBy(reservations.reservation_utc);
+        const results = await db.query.reservations.findMany({
+            where: and(...whereConditions),
+            orderBy: [desc(reservations.reservation_utc)],
+            with: {
+                guest: true,
+                table: true,
+            }
+        });
 
-        console.log(`📋 [Storage] Found ${results.length} reservations with ${whereConditions.length} conditions${filters?.excludeReservationId ? ` (excluded reservation ${filters.excludeReservationId})` : ''}`);
+        console.log(`📋 [Storage] Found ${results.length} reservations with ${whereConditions.length} conditions using relational query.`);
 
-        return results.map(r => ({
-            ...r,
-            guestName: r.reservation.booking_guest_name || r.guest.name,
-        }));
+        return results.map(r => {
+            const guestName = r.booking_guest_name || r.guest?.name || 'Guest';
+            return {
+                reservation: r,
+                guest: r.guest,
+                table: r.table,
+                guestName: guestName,
+            };
+        });
     }
 
     async getReservation(id: number): Promise<any | undefined> {

@@ -5,6 +5,7 @@
 // 🚀 PERFORMANCE FIX: GPT is now the primary provider to address Claude instability.
 // 🚀 STABILITY FIX: Added a circuit breaker to prevent repeated calls to a failing AI provider.
 // 🚀 UX FIX: Reduced API timeouts from 30s to 8s.
+// 🚨 LANGUAGE BUG FIX: Complete language validation system with fallback messages
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -12,6 +13,9 @@ import { smartLog } from './smart-logging.service';
 import { TenantContext } from './tenant-context';
 import fs from 'fs';
 import path from 'path';
+
+// 🚨 LANGUAGE VALIDATION: Add Language type for validation
+export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
 
 export interface AIServiceOptions {
     model?: 'haiku' | 'sonnet' | 'gpt-4o-mini' | 'gpt-4o' | 'gpt-3.5-turbo'; // Now optional
@@ -105,12 +109,13 @@ export class AIService {
             apiKey: process.env.OPENAI_API_KEY
         });
 
-        smartLog.info('AIService initialized with tenant isolation', {
+        smartLog.info('AIService initialized with tenant isolation and language validation', {
             claudeAvailable: !!process.env.ANTHROPIC_API_KEY,
             openaiAvailable: !!process.env.OPENAI_API_KEY,
             primaryProvider: 'OpenAI', // 🚀 PERFORMANCE FIX
             fallbackSystem: 'OpenAI -> Claude',
             tenantIsolationEnabled: true,
+            languageValidationEnabled: true, // 🚨 NEW
             securityLevel: 'HIGH'
         });
     }
@@ -120,6 +125,254 @@ export class AIService {
             AIService.instance = new AIService();
         }
         return AIService.instance;
+    }
+
+    // ===== 🚨 LANGUAGE VALIDATION SYSTEM =====
+
+    /**
+     * 🚨 CRITICAL FIX: Validate AI response language and provide fallbacks
+     * Fixes Bug: AI responses not matching expected conversation language
+     */
+    private validateResponseLanguage(
+        response: string, 
+        expectedLanguage: Language, 
+        context: string,
+        tenantContext: TenantContext
+    ): string {
+        // Skip validation for auto/English - but still log for monitoring
+        if (expectedLanguage === 'auto' || expectedLanguage === 'en') {
+            smartLog.info('Language validation skipped for English/auto', {
+                tenantId: tenantContext.restaurant.id,
+                expectedLanguage,
+                context,
+                responseLength: response.length
+            });
+            return response;
+        }
+        
+        const validationTimerId = smartLog.startTimer('language_validation');
+        
+        try {
+            // 🔍 Language validation patterns with enhanced detection
+            const languageValidation: Record<Language, RegExp> = {
+                'ru': /[\u0400-\u04FF]/,      // Cyrillic characters
+                'sr': /[\u0400-\u04FF]/,      // Cyrillic characters  
+                'hu': /[áéíóöőúüű]/,          // Hungarian diacritics
+                'de': /[äöüßÄÖÜ]/,           // German characters
+                'fr': /[àâäéèêëïîôöùûüÿç]/,  // French diacritics
+                'es': /[áéíóúüñ¿¡]/,         // Spanish characters
+                'it': /[àèéìíîòóùú]/,        // Italian diacritics
+                'pt': /[áàâãéêíóôõúç]/,      // Portuguese diacritics
+                'nl': /[áéíóúè]/,            // Dutch diacritics
+                'en': /[a-zA-Z]/,            // English characters
+                'auto': /[a-zA-Z]/           // Default to English
+            };
+            
+            const pattern = languageValidation[expectedLanguage];
+            const isValidLanguage = pattern && pattern.test(response);
+            
+            // 🔍 Additional validation: Check for common English words in non-English responses
+            const commonEnglishWords = [
+                'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+                'hello', 'hi', 'thank', 'please', 'sorry', 'yes', 'no', 'okay', 'sure',
+                'booking', 'reservation', 'table', 'restaurant', 'available', 'time', 'date',
+                'welcome', 'help', 'assist', 'would', 'could', 'should', 'will', 'can'
+            ];
+            
+            const responseWords = response.toLowerCase().split(/\s+/);
+            const englishWordCount = responseWords.filter(word => 
+                commonEnglishWords.some(englishWord => word.includes(englishWord))
+            ).length;
+            
+            const englishWordRatio = responseWords.length > 0 ? englishWordCount / responseWords.length : 0;
+            
+            // 🚨 Validation failure conditions
+            const hasLanguageCharacters = isValidLanguage;
+            const tooManyEnglishWords = englishWordRatio > 0.3; // More than 30% English words
+            const isLikelyWrongLanguage = !hasLanguageCharacters || tooManyEnglishWords;
+            
+            if (isLikelyWrongLanguage) {
+                smartLog.warn('Language validation failed - response not in expected language', {
+                    tenantId: tenantContext.restaurant.id,
+                    expectedLanguage,
+                    responseLength: response.length,
+                    context,
+                    hasLanguageCharacters,
+                    englishWordRatio: Math.round(englishWordRatio * 100) / 100,
+                    responsePreview: response.substring(0, 100),
+                    validationTime: smartLog.endTimer(validationTimerId),
+                    bugFixed: 'LANGUAGE_VALIDATION_SYSTEM'
+                });
+                
+                // 🛡️ Return safe fallback message in expected language
+                const fallbackMessage = this.getLanguageFallbackMessage(expectedLanguage, context);
+                
+                smartLog.businessEvent('language_validation_fallback', {
+                    tenantId: tenantContext.restaurant.id,
+                    expectedLanguage,
+                    context,
+                    fallbackUsed: true,
+                    originalResponseLength: response.length,
+                    fallbackMessageLength: fallbackMessage.length
+                });
+                
+                return fallbackMessage;
+            }
+            
+            // ✅ Validation passed
+            smartLog.info('Language validation successful', {
+                tenantId: tenantContext.restaurant.id,
+                expectedLanguage,
+                context,
+                responseLength: response.length,
+                hasLanguageCharacters,
+                englishWordRatio: Math.round(englishWordRatio * 100) / 100,
+                validationTime: smartLog.endTimer(validationTimerId)
+            });
+            
+            return response;
+            
+        } catch (error) {
+            smartLog.error('Language validation error - using fallback', error as Error, {
+                tenantId: tenantContext.restaurant.id,
+                expectedLanguage,
+                context,
+                validationTime: smartLog.endTimer(validationTimerId)
+            });
+            
+            // 🛡️ Safe fallback on validation error
+            return this.getLanguageFallbackMessage(expectedLanguage, context);
+        }
+    }
+
+    /**
+     * 🛡️ CRITICAL: Get safe fallback messages in correct language
+     */
+    private getLanguageFallbackMessage(language: Language, context: string): string {
+        // 🗣️ Context-aware fallback messages in multiple languages
+        const fallbackMessages: Record<Language, Record<string, string>> = {
+            'ru': {
+                'Overseer': 'Извините, у меня технические проблемы с определением агента. Давайте продолжим с текущим разговором.',
+                'Sofia': 'Извините, у меня технические проблемы с бронированием. Попробуйте ещё раз, пожалуйста.',
+                'Maya': 'Извините, у меня технические проблемы с управлением бронированием. Попробуйте ещё раз.',
+                'Conductor': 'Извините, у меня технические проблемы с переводом запроса. Попробуйте ещё раз.',
+                'Apollo': 'Извините, у меня технические проблемы с проверкой доступности. Попробуйте ещё раз.',
+                'LanguageAgent': 'Извините, у меня проблемы с определением языка. Продолжаю на русском.',
+                'default': 'Извините, у меня технические проблемы. Попробуйте ещё раз.'
+            },
+            'sr': {
+                'Overseer': 'Izvinjavam se, imam tehničke probleme sa određivanjem agenta. Nastavimo sa trenutnim razgovorom.',
+                'Sofia': 'Izvinjavam se, imam tehničke probleme sa rezervacijom. Molim pokušajte ponovo.',
+                'Maya': 'Izvinjavam se, imam tehničke probleme sa upravljanjem rezervacije. Pokušajte ponovo.',
+                'Conductor': 'Izvinjavam se, imam tehničke probleme sa prevodom zahteva. Pokušajte ponovo.',
+                'Apollo': 'Izvinjavam se, imam tehničke probleme sa proverom dostupnosti. Pokušajte ponovo.',
+                'LanguageAgent': 'Izvinjavam se, imam probleme sa prepoznavanjem jezika. Nastavljam na srpskom.',
+                'default': 'Izvinjavam se, imam tehničke probleme. Pokušajte ponovo.'
+            },
+            'hu': {
+                'Overseer': 'Elnézést, technikai problémáim vannak az ügynök meghatározásával. Folytassuk a jelenlegi beszélgetést.',
+                'Sofia': 'Elnézést, technikai problémáim vannak a foglalással. Kérem próbálja újra.',
+                'Maya': 'Elnézést, technikai problémáim vannak a foglalás kezelésével. Próbálja újra.',
+                'Conductor': 'Elnézést, technikai problémáim vannak a kérés fordításával. Próbálja újra.',
+                'Apollo': 'Elnézést, technikai problémáim vannak az elérhetőség ellenőrzésével. Próbálja újra.',
+                'LanguageAgent': 'Elnézést, problémáim vannak a nyelv felismerésével. Folytatom magyarul.',
+                'default': 'Elnézést, technikai problémáim vannak. Kérem próbálja újra.'
+            },
+            'de': {
+                'Overseer': 'Entschuldigung, ich habe technische Probleme bei der Agenten-Bestimmung. Setzen wir das aktuelle Gespräch fort.',
+                'Sofia': 'Entschuldigung, ich habe technische Probleme mit der Buchung. Bitte versuchen Sie es erneut.',
+                'Maya': 'Entschuldigung, ich habe technische Probleme mit der Buchungsverwaltung. Versuchen Sie es erneut.',
+                'Conductor': 'Entschuldigung, ich habe technische Probleme mit der Anfrage-Übersetzung. Versuchen Sie es erneut.',
+                'Apollo': 'Entschuldigung, ich habe technische Probleme mit der Verfügbarkeitsprüfung. Versuchen Sie es erneut.',
+                'LanguageAgent': 'Entschuldigung, ich habe Probleme mit der Spracherkennung. Ich setze auf Deutsch fort.',
+                'default': 'Entschuldigung, ich habe technische Probleme. Bitte versuchen Sie es erneut.'
+            },
+            'fr': {
+                'Overseer': 'Désolé, j\'ai des problèmes techniques pour déterminer l\'agent. Continuons la conversation actuelle.',
+                'Sofia': 'Désolé, j\'ai des problèmes techniques avec la réservation. Veuillez réessayer.',
+                'Maya': 'Désolé, j\'ai des problèmes techniques avec la gestion des réservations. Réessayez.',
+                'Conductor': 'Désolé, j\'ai des problèmes techniques avec la traduction de la demande. Réessayez.',
+                'Apollo': 'Désolé, j\'ai des problèmes techniques avec la vérification de disponibilité. Réessayez.',
+                'LanguageAgent': 'Désolé, j\'ai des problèmes avec la reconnaissance de langue. Je continue en français.',
+                'default': 'Désolé, j\'ai des problèmes techniques. Veuillez réessayer.'
+            },
+            'es': {
+                'Overseer': 'Lo siento, tengo problemas técnicos para determinar el agente. Continuemos con la conversación actual.',
+                'Sofia': 'Lo siento, tengo problemas técnicos con la reserva. Por favor inténtelo de nuevo.',
+                'Maya': 'Lo siento, tengo problemas técnicos con la gestión de reservas. Inténtelo de nuevo.',
+                'Conductor': 'Lo siento, tengo problemas técnicos con la traducción de solicitud. Inténtelo de nuevo.',
+                'Apollo': 'Lo siento, tengo problemas técnicos con la verificación de disponibilidad. Inténtelo de nuevo.',
+                'LanguageAgent': 'Lo siento, tengo problemas con el reconocimiento de idioma. Continúo en español.',
+                'default': 'Lo siento, tengo problemas técnicos. Por favor inténtelo de nuevo.'
+            },
+            'it': {
+                'Overseer': 'Scusa, ho problemi tecnici nel determinare l\'agente. Continuiamo con la conversazione attuale.',
+                'Sofia': 'Scusa, ho problemi tecnici con la prenotazione. Per favore riprova.',
+                'Maya': 'Scusa, ho problemi tecnici con la gestione delle prenotazioni. Riprova.',
+                'Conductor': 'Scusa, ho problemi tecnici con la traduzione della richiesta. Riprova.',
+                'Apollo': 'Scusa, ho problemi tecnici con la verifica della disponibilità. Riprova.',
+                'LanguageAgent': 'Scusa, ho problemi con il riconoscimento della lingua. Continuo in italiano.',
+                'default': 'Scusa, ho problemi tecnici. Per favore riprova.'
+            },
+            'pt': {
+                'Overseer': 'Desculpe, estou com problemas técnicos para determinar o agente. Vamos continuar com a conversa atual.',
+                'Sofia': 'Desculpe, estou com problemas técnicos com a reserva. Tente novamente.',
+                'Maya': 'Desculpe, estou com problemas técnicos com o gerenciamento de reservas. Tente novamente.',
+                'Conductor': 'Desculpe, estou com problemas técnicos com a tradução da solicitação. Tente novamente.',
+                'Apollo': 'Desculpe, estou com problemas técnicos com a verificação de disponibilidade. Tente novamente.',
+                'LanguageAgent': 'Desculpe, estou com problemas com o reconhecimento de idioma. Continuo em português.',
+                'default': 'Desculpe, estou com problemas técnicos. Tente novamente.'
+            },
+            'nl': {
+                'Overseer': 'Sorry, ik heb technische problemen met het bepalen van de agent. Laten we doorgaan met het huidige gesprek.',
+                'Sofia': 'Sorry, ik heb technische problemen met de reservering. Probeer het opnieuw.',
+                'Maya': 'Sorry, ik heb technische problemen met reserveringsbeheer. Probeer het opnieuw.',
+                'Conductor': 'Sorry, ik heb technische problemen met het vertalen van verzoek. Probeer het opnieuw.',
+                'Apollo': 'Sorry, ik heb technische problemen met beschikbaarheidscontrole. Probeer het opnieuw.',
+                'LanguageAgent': 'Sorry, ik heb problemen met taalherkenning. Ik ga verder in het Nederlands.',
+                'default': 'Sorry, ik heb technische problemen. Probeer het opnieuw.'
+            },
+            'en': {
+                'Overseer': 'Sorry, I\'m having technical issues determining the agent. Let\'s continue with the current conversation.',
+                'Sofia': 'Sorry, I\'m having technical issues with booking. Please try again.',
+                'Maya': 'Sorry, I\'m having technical issues with reservation management. Please try again.',
+                'Conductor': 'Sorry, I\'m having technical issues with request translation. Please try again.',
+                'Apollo': 'Sorry, I\'m having technical issues with availability checking. Please try again.',
+                'LanguageAgent': 'Sorry, I\'m having issues with language recognition. Continuing in English.',
+                'default': 'Sorry, I\'m having technical issues. Please try again.'
+            },
+            'auto': {
+                'Overseer': 'Sorry, I\'m having technical issues determining the agent. Let\'s continue with the current conversation.',
+                'Sofia': 'Sorry, I\'m having technical issues with booking. Please try again.',
+                'Maya': 'Sorry, I\'m having technical issues with reservation management. Please try again.',
+                'Conductor': 'Sorry, I\'m having technical issues with request translation. Please try again.',
+                'Apollo': 'Sorry, I\'m having technical issues with availability checking. Please try again.',
+                'LanguageAgent': 'Sorry, I\'m having issues with language recognition. Continuing in English.',
+                'default': 'Sorry, I\'m having technical issues. Please try again.'
+            }
+        };
+        
+        // 🎯 Get context-specific fallback message
+        const languageMessages = fallbackMessages[language] || fallbackMessages['en'];
+        const contextKey = this.mapContextToAgent(context);
+        
+        return languageMessages[contextKey] || languageMessages['default'];
+    }
+
+    /**
+     * 🎯 Map context string to agent name for fallback messages
+     */
+    private mapContextToAgent(context: string): string {
+        const contextLower = context.toLowerCase();
+        
+        if (contextLower.includes('overseer') || contextLower.includes('routing')) return 'Overseer';
+        if (contextLower.includes('sofia') || contextLower.includes('booking')) return 'Sofia';
+        if (contextLower.includes('maya') || contextLower.includes('reservation')) return 'Maya';
+        if (contextLower.includes('conductor') || contextLower.includes('conductor')) return 'Conductor';
+        if (contextLower.includes('apollo') || contextLower.includes('availability')) return 'Apollo';
+        if (contextLower.includes('language')) return 'LanguageAgent';
+        
+        return 'default';
     }
 
     // ===== 🔒 TENANT VALIDATION AND SECURITY =====
@@ -231,12 +484,14 @@ export class AIService {
         fallbackModel: string;
         temperature: number;
         maxTokens: number;
+        primaryLanguage?: Language; // 🚨 NEW: Add language config
     } {
         return {
             primaryModel: tenantContext.restaurant.primaryAiModel || 'gpt-4o-mini',
             fallbackModel: tenantContext.restaurant.fallbackAiModel || 'haiku', // Fallback to Claude
             temperature: parseFloat(tenantContext.restaurant.aiTemperature?.toString() || '0.7'),
-            maxTokens: 1000 // Could be plan-dependent
+            maxTokens: 1000, // Could be plan-dependent
+            primaryLanguage: (tenantContext.restaurant.primaryLanguage as Language) || 'en' // 🚨 NEW
         };
     }
 
@@ -244,6 +499,7 @@ export class AIService {
 
     /**
      * 🔒 Generate content with complete tenant validation and circuit breaker logic
+     * 🚨 ENHANCED: Now includes language validation for all responses
      */
     async generateContent(
         prompt: string,
@@ -272,14 +528,15 @@ export class AIService {
         const overallTimerId = smartLog.startTimer('ai_content_generation');
         const startTime = Date.now();
 
-        smartLog.info('AI content generation started with tenant validation', {
+        smartLog.info('AI content generation started with tenant validation and language checking', {
             tenantId: tenantContext.restaurant.id,
             tenantPlan: tenantContext.restaurant.tenantPlan,
             model: finalOptions.model,
             context: finalOptions.context,
             promptLength: prompt.length,
             maxTokens: finalOptions.maxTokens,
-            temperature: finalOptions.temperature
+            temperature: finalOptions.temperature,
+            primaryLanguage: tenantConfig.primaryLanguage // 🚨 NEW
         });
 
         try {
@@ -309,10 +566,22 @@ export class AIService {
                 }
             }
 
+            // 🚨 CRITICAL: Language validation for all AI responses
+            result = this.validateResponseLanguage(
+                result, 
+                tenantConfig.primaryLanguage || 'en', 
+                finalOptions.context!,
+                tenantContext
+            );
+
             // 🔒 Track usage for billing
             this.trackTenantAIUsage(tenantContext, tokensUsed);
-            smartLog.info('Content generation successful', {
-                processingTime: smartLog.endTimer(overallTimerId)
+            smartLog.info('Content generation successful with language validation', {
+                tenantId: tenantContext.restaurant.id,
+                context: finalOptions.context,
+                primaryLanguage: tenantConfig.primaryLanguage,
+                processingTime: smartLog.endTimer(overallTimerId),
+                bugFixed: 'LANGUAGE_VALIDATION_SYSTEM'
             });
             return result;
 
@@ -1212,7 +1481,7 @@ setInterval(() => {
     AIService.generateAIReport();
 }, 60 * 60 * 1000);
 
-smartLog.info('AIService loaded with complete tenant isolation', {
+smartLog.info('AIService loaded with complete tenant isolation and language validation', {
     features: [
         'Claude + OpenAI fallback system',
         'Performance monitoring',
@@ -1223,8 +1492,10 @@ smartLog.info('AIService loaded with complete tenant isolation', {
         '🚨 CRITICAL FIX: Tool call fallback support with message transformation',
         '🔒 COMPLETE TENANT ISOLATION: Feature validation, usage tracking, billing integration',
         '🔒 PLAN ENFORCEMENT: Monthly limits per tenant plan',
-        '🔒 SECURITY VALIDATION: All AI operations require tenant context'
+        '🔒 SECURITY VALIDATION: All AI operations require tenant context',
+        '🚨 LANGUAGE VALIDATION SYSTEM: Multi-language response validation with fallbacks' // 🚨 NEW
     ],
     securityLevel: 'HIGH',
-    tenantIsolationEnabled: true
+    tenantIsolationEnabled: true,
+    languageValidationEnabled: true // 🚨 NEW
 });

@@ -15,19 +15,97 @@ export class MayaAgent extends BaseAgent {
     ];
 
     /**
+     * 🚨 CRITICAL FIX: Language enforcement rules for Maya Agent
+     */
+    private getLanguageEnforcementRules(language: Language): string {
+        const languageNames: Record<Language, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+
+        const currentLanguageName = languageNames[language] || 'English';
+        
+        return `🚨 CRITICAL MAYA LANGUAGE ENFORCEMENT RULES:
+
+**MANDATORY LANGUAGE**: You MUST respond ONLY in ${currentLanguageName}.
+
+**FORBIDDEN ACTIONS**:
+❌ NEVER switch languages mid-response
+❌ NEVER mix languages in a single response  
+❌ NEVER respond in English if conversation language is ${currentLanguageName}
+❌ NEVER change language without explicit user request
+
+**REQUIRED BEHAVIOR**:
+✅ ALL responses must be in ${currentLanguageName}
+✅ Maintain warm, professional tone in ${currentLanguageName}
+✅ Use natural, fluent ${currentLanguageName} expressions
+✅ If unsure about translation, stay in ${currentLanguageName}
+
+**LANGUAGE CONSISTENCY CHECK**:
+Before sending any response, verify it's entirely in ${currentLanguageName}.
+If you detect any English words or other languages, rewrite completely in ${currentLanguageName}.
+
+**RESERVATION MANAGEMENT EXAMPLES IN ${currentLanguageName}**:
+${this.getReservationExamples(language)}
+
+Current conversation language: **${currentLanguageName}** (LOCKED)`;
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Language-specific reservation management conversation examples
+     */
+    private getReservationExamples(language: Language): string {
+        const examples: Record<Language, string> = {
+            'en': `- "I found your reservation for July 15th at 7:30 PM for 4 people. What would you like to change?"
+- "I can move your booking to 8:00 PM. Would that work better for you?"
+- "Your reservation has been successfully modified to July 20th at 8:00 PM for 6 people."`,
+            'ru': `- "Нашла вашу бронь на 15 июля в 19:30 на 4 человека. Что хотите изменить?"
+- "Могу перенести на 20:00. Подойдёт ли это время?"
+- "Ваша бронь успешно изменена на 20 июля в 20:00 на 6 человек."`,
+            'sr': `- "Našla sam vašu rezervaciju za 15. jul u 19:30 za 4 osobe. Šta želite da promenite?"
+- "Mogu da pomerim na 20:00. Da li bi vam to odgovaralo?"
+- "Vaša rezervacija je uspešno promenjena na 20. jul u 20:00 za 6 osoba."`,
+            'hu': `- "Megtaláltam a foglalását július 15-re 19:30-ra 4 főre. Mit szeretne módosítani?"
+- "Át tudom tenni 20:00-ra. Ez megfelelne Önnek?"
+- "A foglalása sikeresen módosítva július 20-ra 20:00-ra 6 főre."`,
+            'de': `- "Ich habe Ihre Reservierung für den 15. Juli um 19:30 für 4 Personen gefunden. Was möchten Sie ändern?"
+- "Ich kann sie auf 20:00 Uhr verschieben. Würde das besser passen?"
+- "Ihre Reservierung wurde erfolgreich auf den 20. Juli um 20:00 für 6 Personen geändert."`,
+            'fr': `- "J'ai trouvé votre réservation pour le 15 juillet à 19h30 pour 4 personnes. Que souhaitez-vous modifier?"
+- "Je peux la déplacer à 20h00. Cela vous conviendrait-il mieux?"
+- "Votre réservation a été modifiée avec succès au 20 juillet à 20h00 pour 6 personnes."`,
+            'es': `- "Encontré su reserva para el 15 de julio a las 19:30 para 4 personas. ¿Qué le gustaría cambiar?"
+- "Puedo moverla a las 20:00. ¿Le funcionaría mejor?"
+- "Su reserva se ha modificado exitosamente al 20 de julio a las 20:00 para 6 personas."`,
+            'it': `- "Ho trovato la sua prenotazione per il 15 luglio alle 19:30 per 4 persone. Cosa vorrebbe modificare?"
+- "Posso spostarla alle 20:00. Le andrebbe meglio?"
+- "La sua prenotazione è stata modificata con successo al 20 luglio alle 20:00 per 6 persone."`,
+            'pt': `- "Encontrei sua reserva para 15 de julho às 19:30 para 4 pessoas. O que gostaria de alterar?"
+- "Posso mover para as 20:00. Funcionaria melhor para você?"
+- "Sua reserva foi modificada com sucesso para 20 de julho às 20:00 para 6 pessoas."`,
+            'nl': `- "Ik heb uw reservering gevonden voor 15 juli om 19:30 voor 4 personen. Wat wilt u veranderen?"
+- "Ik kan het naar 20:00 verplaatsen. Zou dat beter uitkomen?"
+- "Uw reservering is succesvol gewijzigd naar 20 juli om 20:00 voor 6 personen."`,
+            'auto': `- "I found your reservation for July 15th at 7:30 PM for 4 people. What would you like to change?"
+- "I can move your booking to 8:00 PM. Would that work better for you?"
+- "Your reservation has been successfully modified to July 20th at 8:00 PM for 6 people."`
+        };
+
+        return examples[language] || examples['en'];
+    }
+
+    /**
      * Generate Maya's system prompt with precise question vs command detection
      * Now includes specific instructions for handling general questions vs specific commands
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
         
+        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        const languageEnforcement = this.getLanguageEnforcementRules(language);
+        
         const currentTime = new Date().toISOString();
-
-        const languageInstruction = `🌍 CRITICAL LANGUAGE RULE:
-- User's language: ${language}
-- You MUST respond in ${language} for ALL messages
-- Maintain warm, professional tone in ${language}
-- If unsure of translation, use simple clear ${language}`;
 
         const contextAwarenessSection = conversationContext ? `
 
@@ -207,9 +285,9 @@ This enhanced approach ensures users get the most natural, helpful experience wh
 - Always include guest count and key details for clarity
 `;
 
-        return `You are Maya, the intelligent reservation management specialist for ${this.restaurantConfig.name}.
+        return `${languageEnforcement}
 
-${languageInstruction}
+You are Maya, the intelligent reservation management specialist for ${this.restaurantConfig.name}.
 
 🎯 **YOUR ROLE & CORE DIRECTIVE**
 - You are an intelligent assistant that helps guests with EXISTING reservations
@@ -262,6 +340,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
                 messageType: messageAnalysis.type,
                 hasSpecificDetails: messageAnalysis.hasSpecificDetails,
                 hasGuestHistory,
+                conversationLanguage: context.language || 'auto',
                 detectedPatterns: messageAnalysis.detectedPatterns
             });
 
@@ -285,6 +364,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
             console.log(`🎯 [Maya-Enhanced] Processed with question vs command detection: "${message.substring(0, 50)}..."`);
             console.log(`🎯 [Maya-Enhanced] Message type: ${messageAnalysis.type}`);
             console.log(`🎯 [Maya-Enhanced] Has specific details: ${messageAnalysis.hasSpecificDetails}`);
+            console.log(`🎯 [Maya-Enhanced] Conversation language: ${context.language || 'auto'}`);
             
             return {
                 content: response,
@@ -294,11 +374,13 @@ This enhanced approach provides users with intelligent, context-aware assistance
                     confidence: 0.9,
                     decisionModel: 'enhanced-question-vs-command-detection',
                     contextResolutionUsed: context.enableContextResolution || false,
+                    conversationLanguage: context.language || 'auto',
                     messageType: messageAnalysis.type,
                     hasSpecificDetails: messageAnalysis.hasSpecificDetails,
                     guestHistoryAvailable: hasGuestHistory,
                     overEagernessPrevention: true,
-                    noOpPrevention: true
+                    noOpPrevention: true,
+                    bugFixesApplied: ['LANGUAGE_ENFORCEMENT', 'QUESTION_VS_COMMAND_DETECTION']
                 }
             };
         } catch (error) {
@@ -724,6 +806,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
             reservationTools: ['find_existing_reservation', 'modify_reservation', 'cancel_reservation'],
             securityValidation: true,
             multiLanguageSupport: true,
+            languageEnforcement: true, // NEW
             naturalConversationFlow: true,
             enhancedUXPatterns: true // NEW
         };

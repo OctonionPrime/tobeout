@@ -187,6 +187,87 @@ export class SofiaAgent extends BaseAgent {
     }
 
     /**
+     * 🚨 CRITICAL FIX: Language enforcement rules for Sofia Agent
+     */
+    private getLanguageEnforcementRules(language: Language): string {
+        const languageNames: Record<Language, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+
+        const currentLanguageName = languageNames[language] || 'English';
+        
+        return `🚨 CRITICAL SOFIA LANGUAGE ENFORCEMENT RULES:
+
+**MANDATORY LANGUAGE**: You MUST respond ONLY in ${currentLanguageName}.
+
+**FORBIDDEN ACTIONS**:
+❌ NEVER switch languages mid-response
+❌ NEVER mix languages in a single response  
+❌ NEVER respond in English if conversation language is ${currentLanguageName}
+❌ NEVER change language without explicit user request
+
+**REQUIRED BEHAVIOR**:
+✅ ALL responses must be in ${currentLanguageName}
+✅ Maintain warm, professional tone in ${currentLanguageName}
+✅ Use natural, fluent ${currentLanguageName} expressions
+✅ If unsure about translation, stay in ${currentLanguageName}
+
+**LANGUAGE CONSISTENCY CHECK**:
+Before sending any response, verify it's entirely in ${currentLanguageName}.
+If you detect any English words or other languages, rewrite completely in ${currentLanguageName}.
+
+**BOOKING CONVERSATION EXAMPLES IN ${currentLanguageName}**:
+${this.getBookingExamples(language)}
+
+Current conversation language: **${currentLanguageName}** (LOCKED)`;
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Language-specific booking conversation examples
+     */
+    private getBookingExamples(language: Language): string {
+        const examples: Record<Language, string> = {
+            'en': `- "I'd love to help you with a reservation! What date and time work for you?"
+- "Perfect! I have availability at 7:30 PM. How many guests will be joining you?"
+- "🎉 Wonderful! Your table is reserved for tonight at 8:00 PM for 4 guests."`,
+            'ru': `- "Буду рада помочь с бронированием! Какие дата и время вам подходят?"
+- "Отлично! Есть место в 19:30. Сколько гостей будет?"
+- "🎉 Замечательно! Ваш столик забронирован на сегодня в 20:00 на 4 человека."`,
+            'sr': `- "Rado ću pomoći sa rezervacijom! Koji datum i vreme vam odgovaraju?"
+- "Odlično! Imamo slobodno u 19:30. Koliko gostiju će biti?"
+- "🎉 Sjajno! Vaš sto je rezervisan za večeras u 20:00 za 4 osobe."`,
+            'hu': `- "Szívesen segítek az asztalfoglalásban! Milyen dátum és időpont lenne megfelelő?"
+- "Tökéletes! Van szabad hely 19:30-kor. Hány vendég lesz?"
+- "🎉 Remek! Az asztal le van foglalva ma estére 20:00-ra 4 főre."`,
+            'de': `- "Ich helfe gerne bei der Reservierung! Welches Datum und welche Uhrzeit passen Ihnen?"
+- "Perfekt! Wir haben um 19:30 Uhr frei. Wie viele Gäste werden es sein?"
+- "🎉 Wunderbar! Ihr Tisch ist für heute Abend um 20:00 Uhr für 4 Personen reserviert."`,
+            'fr': `- "Je serais ravie de vous aider avec une réservation! Quels date et heure vous conviennent?"
+- "Parfait! Nous avons de la place à 19h30. Combien de convives serez-vous?"
+- "🎉 Magnifique! Votre table est réservée ce soir à 20h00 pour 4 personnes."`,
+            'es': `- "¡Estaré encantada de ayudarle con una reserva! ¿Qué fecha y hora le convienen?"
+- "¡Perfecto! Tenemos disponibilidad a las 19:30. ¿Cuántos comensales serán?"
+- "🎉 ¡Maravilloso! Su mesa está reservada para esta noche a las 20:00 para 4 personas."`,
+            'it': `- "Sarei felice di aiutarla con una prenotazione! Che data e orario le vanno bene?"
+- "Perfetto! Abbiamo disponibilità alle 19:30. Quanti ospiti sarete?"
+- "🎉 Meraviglioso! Il suo tavolo è prenotato per stasera alle 20:00 per 4 persone."`,
+            'pt': `- "Ficaria feliz em ajudá-lo com uma reserva! Que data e horário funcionam para você?"
+- "Perfeito! Temos disponibilidade às 19h30. Quantos convidados serão?"
+- "🎉 Maravilhoso! Sua mesa está reservada para hoje à noite às 20h00 para 4 pessoas."`,
+            'nl': `- "Ik help u graag met een reservering! Welke datum en tijd passen u?"
+- "Perfect! We hebben plaats om 19:30. Met hoeveel gasten komt u?"
+- "🎉 Geweldig! Uw tafel is gereserveerd voor vanavond om 20:00 voor 4 personen."`,
+            'auto': `- "I'd love to help you with a reservation! What date and time work for you?"
+- "Perfect! I have availability at 7:30 PM. How many guests will be joining you?"
+- "🎉 Wonderful! Your table is reserved for tonight at 8:00 PM for 4 guests."`
+        };
+
+        return examples[language] || examples['en'];
+    }
+
+    /**
      * 🔧 STREAMLINED: System prompt optimized for conversation flow
      * 🚨 ENHANCED: Added explicit date parsing rules to prevent 2023 assumptions (BUG-00184 FIX)
      * 🔧 CRITICAL FIX: Final booking command moved to the very end to prevent date hallucination
@@ -195,12 +276,14 @@ export class SofiaAgent extends BaseAgent {
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
 
+        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        const languageEnforcement = this.getLanguageEnforcementRules(language);
+
         const dateContext = this.getRestaurantContext();
         const personalizedSection = this.getPersonalizedSection(guestHistory, language);
         const conversationInstructions = this.getConversationInstructions(conversationContext);
         const nameInstructions = this.getNameClarificationInstructions(conversationContext);
         const businessHoursInstructions = this.getBusinessHoursInstructions();
-        const languageInstruction = `🌍 LANGUAGE: Respond in ${language} with warm, professional tone.`;
         
         // 🚨 BUG #3 FIX: Add strict availability check validation rules
         const availabilityValidationRules = this.getAvailabilityValidationRules();
@@ -234,18 +317,27 @@ export class SofiaAgent extends BaseAgent {
         const { date, time } = context.conversationContext?.gatheringInfo || {};
 
         // 1. Check if our normalization step has already run and provided clean data.
-        if (date && time) {
-            preProcessedDataInstructions = `
-            🚨 CRITICAL PRE-PROCESSED DATA:
-            - The date for this booking has been pre-validated as: ${date}
-            - The time for this booking has been pre-validated as: ${time}
-            - YOUR TASK: Accept this date and time as correct. DO NOT change or re-interpret them.
-            - Your ONLY job now is to gather the REMAINING information (e.g., number of guests).
-            `;
-        }
-        return `You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}.
+        if (date || time) {
+            let instructions = `
+    🚨 CRITICAL PRE-PROCESSED DATA:
+    Your task is to accept the following pre-validated information as correct. DO NOT change or re-interpret it.
+    `;
 
-${languageInstruction}
+            if (date) {
+                instructions += `\n    - The date for this booking is confirmed as: ${date}`;
+            }
+            if (time) {
+                instructions += `\n    - The time for this booking is confirmed as: ${time}`;
+            }
+
+            instructions += `
+    - Your ONLY job now is to gather the REMAINING information.
+    `;
+            preProcessedDataInstructions = instructions;
+        }
+        return `${languageEnforcement}
+
+You are Sofia, the friendly booking specialist for ${this.restaurantConfig.name}.
 
 ${preProcessedDataInstructions}
 
@@ -435,7 +527,8 @@ The system will validate them using multilingual patterns.
                 hasGuestHistory: !!context.guestHistory,
                 hasPendingConfirmation: !!context.conversationContext?.pendingConfirmation,
                 sessionTurn: context.conversationContext?.sessionTurnCount || 1,
-                bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+                conversationLanguage: context.language || 'auto',
+                bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE', 'LANGUAGE_ENFORCEMENT']
             });
 
             // 🚨 DIAGNOSTIC: This should NEVER be reached if ECM routing works
@@ -444,7 +537,8 @@ The system will validate them using multilingual patterns.
                 smartLog.error('CONFIRMATION ROUTING FAILURE: Sofia Agent received pending confirmation', new Error('ROUTING_BYPASS'), {
                     sessionId: context.sessionId,
                     confirmationType: pendingConfirmation.type,
-                    shouldBeHandledByECM: true
+                    shouldBeHandledByECM: true,
+                    conversationLanguage: context.language || 'auto'
                 });
                 // Continue with existing logic as fallback
                 return await this.handleNameClarificationResponse(message, context);
@@ -462,9 +556,10 @@ The system will validate them using multilingual patterns.
                         processingTimeMs: Date.now() - startTime,
                         action: 'personalized_greeting',
                         usedGuestContext: !!context.guestHistory,
+                        conversationLanguage: context.language || 'auto',
                         isProductionReady: true,
                         dateContextFixed: true, // 🚨 NEW: Mark date fix applied
-                        bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+                        bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE', 'LANGUAGE_ENFORCEMENT']
                     }
                 };
             }
@@ -490,9 +585,10 @@ The system will validate them using multilingual patterns.
                     processingTimeMs: Date.now() - startTime,
                     modelUsed: 'sonnet',
                     usedGuestContext: !!context.guestHistory,
+                    conversationLanguage: context.language || 'auto',
                     isProductionReady: true,
                     dateContextFixed: true, // 🚨 NEW: Mark date fix applied
-                    bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE']
+                    bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE', 'LANGUAGE_ENFORCEMENT']
                 }
             };
 
@@ -529,6 +625,7 @@ The system will validate them using multilingual patterns.
                 requestName: pendingConfirmation.requestName,
                 currentAttempt: pendingConfirmation.attempts + 1,
                 maxAttempts: pendingConfirmation.maxAttempts,
+                conversationLanguage: context.language || 'auto',
                 hasCleanOriginalContext: this.validateCleanContext(pendingConfirmation.originalContext)
             });
 
@@ -556,7 +653,8 @@ The system will validate them using multilingual patterns.
         } catch (error) {
             this.logAgentAction('❌ ERROR in name clarification handling', {
                 error: (error as Error).message,
-                pendingState: pendingConfirmation
+                pendingState: pendingConfirmation,
+                conversationLanguage: context.language || 'auto'
             });
             return this.createErrorResponse('Name clarification processing failed', startTime);
         }
@@ -868,6 +966,7 @@ The system will validate them using multilingual patterns.
             maxAttempts: pendingConfirmation.maxAttempts,
             dbName: pendingConfirmation.dbName,
             requestName: pendingConfirmation.requestName,
+            conversationLanguage: context.language || 'auto',
             bugFixApplied: 'BUG_4_INFINITE_LOOP_PREVENTION'
         });
 
@@ -905,6 +1004,7 @@ The system will validate them using multilingual patterns.
                 processingTimeMs: Date.now() - startTime,
                 action: 'max_attempts_fallback',
                 fallbackName,
+                conversationLanguage: context.language || 'auto',
                 infiniteLoopPrevented: true,
                 attemptCount: pendingConfirmation.attempts,
                 bugFixesApplied: ['BUG_4_INFINITE_LOOP_PREVENTION']
@@ -925,6 +1025,7 @@ The system will validate them using multilingual patterns.
             chosenName,
             attempts: pendingConfirmation.attempts + 1,
             originalBooking: pendingConfirmation.originalBookingData,
+            conversationLanguage: context.language || 'auto',
             bugFixApplied: 'BUG_4_CLEAN_PROGRESSION'
         });
 
@@ -959,6 +1060,7 @@ The system will validate them using multilingual patterns.
                 processingTimeMs: Date.now() - startTime,
                 action: 'name_choice_success',
                 chosenName,
+                conversationLanguage: context.language || 'auto',
                 attemptCount: pendingConfirmation.attempts + 1,
                 clarificationResolved: true,
                 bugFixesApplied: ['BUG_4_CLEAN_PROGRESSION']
@@ -980,7 +1082,8 @@ The system will validate them using multilingual patterns.
 
         this.logAgentAction('❌ Name extraction failed - providing clearer guidance', {
             attempts: pendingConfirmation.attempts,
-            remainingAttempts: pendingConfirmation.maxAttempts - pendingConfirmation.attempts
+            remainingAttempts: pendingConfirmation.maxAttempts - pendingConfirmation.attempts,
+            conversationLanguage: context.language || 'auto'
         });
 
         // Generate increasingly clear guidance based on attempt number
@@ -998,6 +1101,7 @@ The system will validate them using multilingual patterns.
                 confidence: 0.7,
                 processingTimeMs: Date.now() - startTime,
                 action: 'extraction_failure_guidance',
+                conversationLanguage: context.language || 'auto',
                 attemptCount: pendingConfirmation.attempts,
                 remainingAttempts: pendingConfirmation.maxAttempts - pendingConfirmation.attempts
             }

@@ -5,6 +5,7 @@
 // ✅ OPTIMIZED: Intelligent alternative time finding with user preference analysis
 // ✅ MULTILINGUAL: Full support for all system languages with contextual responses
 // ✅ PROFESSIONAL: Production-grade error handling and comprehensive logging
+// 🚨 LANGUAGE BUG FIX: Complete language enforcement system for availability specialist
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -18,7 +19,9 @@ import {
     isValidTimezone,
     isOvernightOperation
 } from '../../utils/timezone-utils';
-import type { Language } from '../enhanced-conversation-manager';
+
+// 🚨 LANGUAGE ENFORCEMENT: Add Language type for comprehensive validation
+export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
 
 /**
  * 🔧 ENHANCED: Availability failure context interface
@@ -84,25 +87,322 @@ export class ApolloAgent extends BaseAgent {
 
     constructor(config: AgentConfig, restaurantConfig: RestaurantConfig) {
         super(config, restaurantConfig);
-        this.logAgentAction('Apollo Agent initialized - availability specialist ready');
+        this.logAgentAction('Apollo Agent initialized - availability specialist ready with language enforcement', {
+            agent: this.name,
+            capabilities: this.capabilities,
+            languageEnforcementEnabled: true // 🚨 NEW
+        });
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Comprehensive language enforcement rules for Apollo agent
+     * Prevents language mixing in availability recovery and alternative time presentation
+     */
+    private getLanguageEnforcementRules(language: Language): string {
+        const languageNames: Record<Language, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+
+        const currentLanguageName = languageNames[language] || 'English';
+        
+        return `🚨 CRITICAL APOLLO LANGUAGE ENFORCEMENT RULES:
+
+**MANDATORY LANGUAGE**: You MUST respond ONLY in ${currentLanguageName}.
+
+**FORBIDDEN ACTIONS**:
+❌ NEVER switch languages mid-response
+❌ NEVER mix languages in a single response  
+❌ NEVER respond in English if conversation language is ${currentLanguageName}
+❌ NEVER change language without explicit user request
+
+**REQUIRED BEHAVIOR**:
+✅ ALL responses must be in ${currentLanguageName}
+✅ Maintain empathetic, solution-focused tone in ${currentLanguageName}
+✅ Use natural expressions in ${currentLanguageName}
+✅ Present availability alternatives in ${currentLanguageName}
+✅ Facilitate booking handoffs in ${currentLanguageName}
+
+**APOLLO-SPECIFIC LANGUAGE REQUIREMENTS**:
+✅ Empathetic disappointment responses in ${currentLanguageName}
+✅ Alternative time presentations in ${currentLanguageName}
+✅ Availability explanations in ${currentLanguageName}
+✅ Booking selection guidance in ${currentLanguageName}
+✅ Handoff preparation messages in ${currentLanguageName}
+
+Current conversation language: **${currentLanguageName}** (LOCKED)`;
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Language-specific availability specialist examples
+     * Provides natural templates for availability recovery conversations in multiple languages
+     */
+    private getAvailabilityExamples(language: Language): string {
+        const examples: Record<Language, string> = {
+            'en': `
+**APOLLO AVAILABILITY EXAMPLES IN ENGLISH:**
+
+📋 **Empathetic Opening:**
+User: "Is 7 PM available for 4 people tomorrow?"
+Apollo: "I understand you're looking for 7 PM tomorrow for 4 guests. Let me check our availability and find you some excellent options!"
+
+📋 **Alternative Presentation:**
+Apollo: "I found some great alternatives close to your preferred 7 PM time:
+• 6:30 PM - Just 30 minutes earlier, perfect for a relaxed start
+• 7:30 PM - Prime dining time with excellent service
+• 8:00 PM - Quieter atmosphere, ideal for intimate conversation
+Which of these works best for you?"
+
+📋 **Selection Guidance:**
+User: "The 6:30 PM sounds good."
+Apollo: "Perfect choice! 6:30 PM gives you a wonderful head start on the evening. Let me connect you with Sofia to complete your booking."
+
+📋 **Handoff Signals:**
+Apollo: "Excellent! I'm transferring you to Sofia who will finalize your reservation for 6:30 PM tomorrow for 4 guests."`,
+
+            'ru': `
+**ПРИМЕРЫ ДОСТУПНОСТИ APOLLO НА РУССКОМ:**
+
+📋 **Понимающее начало:**
+Пользователь: "Есть ли места на 19:00 завтра на 4 человека?"
+Apollo: "Понимаю, что вы ищете время на 19:00 завтра на 4 гостей. Позвольте проверить наличие и найти отличные варианты!"
+
+📋 **Презентация альтернатив:**
+Apollo: "Нашел несколько отличных вариантов близко к желаемому времени 19:00:
+• 18:30 - Всего на 30 минут раньше, отлично для спокойного начала
+• 19:30 - Прайм-тайм для ужина с превосходным обслуживанием
+• 20:00 - Более спокойная атмосфера, идеально для интимной беседы
+Какой из этих вариантов вам больше подходит?"
+
+📋 **Помощь в выборе:**
+Пользователь: "18:30 звучит хорошо."
+Apollo: "Отличный выбор! 18:30 даст вам прекрасное начало вечера. Соединяю с Софией для завершения бронирования."
+
+📋 **Сигналы передачи:**
+Apollo: "Превосходно! Передаю вас Софии, которая оформит вашу бронь на 18:30 завтра на 4 гостей."`,
+
+            'sr': `
+**PRIMERI DOSTUPNOSTI APOLLO NA SRPSKOM:**
+
+📋 **Razumevajući početak:**
+Korisnik: "Da li je dostupno u 19:00 sutra za 4 osobe?"
+Apollo: "Razumem da tražite vreme u 19:00 sutra za 4 gosta. Dozvolite da proverim dostupnost i nađem odlične opcije!"
+
+📋 **Prezentacija alternativa:**
+Apollo: "Našao sam nekoliko odličnih opcija blizu vašeg željenog vremena 19:00:
+• 18:30 - Samo 30 minuta ranije, savršeno za opušten početak
+• 19:30 - Najbolje vreme za večeru sa odličnom uslugom
+• 20:00 - Mirnija atmosfera, idealno za intimnu konverzaciju
+Koja od ovih opcija vam najbolje odgovara?"
+
+📋 **Pomoć u izboru:**
+Korisnik: "18:30 zvuči dobro."
+Apollo: "Odličan izbor! 18:30 vam omogućava divan početak večeri. Povezujem vas sa Sofijom da završi rezervaciju."
+
+📋 **Signali prenosa:**
+Apollo: "Odlično! Prebacujem vas na Sofiju koja će finalizovati vašu rezervaciju za 18:30 sutra za 4 gosta."`,
+
+            'hu': `
+**APOLLO ELÉRHETŐSÉG PÉLDÁK MAGYARUL:**
+
+📋 **Megértő kezdés:**
+Felhasználó: "Elérhető-e holnap 19:00-ra 4 főre?"
+Apollo: "Értem, hogy holnap 19:00-ra keres helyet 4 vendégnek. Hadd nézzem meg az elérhetőséget és találjak kiváló opciókat!"
+
+📋 **Alternatívák bemutatása:**
+Apollo: "Találtam néhány nagyszerű opciót a kívánt 19:00-hoz közel:
+• 18:30 - Csak 30 perccel korábban, tökéletes a nyugodt kezdéshez
+• 19:30 - Prémium vacsoraidő kiváló kiszolgálással
+• 20:00 - Csendesebb légkör, ideális intim beszélgetéshez
+Melyik felel meg legjobban?"
+
+📋 **Választási segítség:**
+Felhasználó: "A 18:30 jól hangzik."
+Apollo: "Tökéletes választás! A 18:30 csodálatos kezdetet ad az estének. Kapcsolom Sofiával a foglalás befejezéséhez."
+
+📋 **Átadási jelek:**
+Apollo: "Kiváló! Átirányítom Sofiához, aki véglegesíti a foglalását holnap 18:30-ra 4 vendégre."`,
+
+            'de': `
+**APOLLO VERFÜGBARKEITSBEISPIELE AUF DEUTSCH:**
+
+📋 **Verständnisvoller Beginn:**
+Benutzer: "Ist morgen um 19:00 für 4 Personen verfügbar?"
+Apollo: "Ich verstehe, dass Sie morgen um 19:00 für 4 Gäste suchen. Lassen Sie mich die Verfügbarkeit prüfen und ausgezeichnete Optionen finden!"
+
+📋 **Alternativpräsentation:**
+Apollo: "Ich habe einige großartige Optionen nahe Ihrer gewünschten Zeit 19:00 gefunden:
+• 18:30 - Nur 30 Minuten früher, perfekt für einen entspannten Start
+• 19:30 - Prime-Time zum Abendessen mit ausgezeichnetem Service
+• 20:00 - Ruhigere Atmosphäre, ideal für intime Gespräche
+Welche Option passt am besten zu Ihnen?"
+
+📋 **Auswahlhilfe:**
+Benutzer: "18:30 klingt gut."
+Apollo: "Perfekte Wahl! 18:30 gibt Ihnen einen wunderbaren Start in den Abend. Ich verbinde Sie mit Sofia für die Buchungsabwicklung."
+
+📋 **Übergabesignale:**
+Apollo: "Ausgezeichnet! Ich leite Sie an Sofia weiter, die Ihre Reservierung für morgen 18:30 für 4 Gäste finalisiert."`,
+
+            'fr': `
+**EXEMPLES DE DISPONIBILITÉ APOLLO EN FRANÇAIS:**
+
+📋 **Début compréhensif:**
+Utilisateur: "Y a-t-il de la place demain à 19h00 pour 4 personnes?"
+Apollo: "Je comprends que vous cherchez demain à 19h00 pour 4 convives. Permettez-moi de vérifier la disponibilité et de trouver d'excellentes options!"
+
+📋 **Présentation des alternatives:**
+Apollo: "J'ai trouvé quelques excellentes options près de votre heure souhaitée 19h00:
+• 18h30 - Seulement 30 minutes plus tôt, parfait pour un début détendu
+• 19h30 - Heure de pointe pour le dîner avec un excellent service
+• 20h00 - Atmosphère plus calme, idéale pour une conversation intime
+Laquelle de ces options vous convient le mieux?"
+
+📋 **Aide à la sélection:**
+Utilisateur: "18h30 sonne bien."
+Apollo: "Parfait choix! 18h30 vous donne un merveilleux début de soirée. Je vous connecte avec Sofia pour finaliser votre réservation."
+
+📋 **Signaux de transfert:**
+Apollo: "Excellent! Je vous transfère à Sofia qui finalisera votre réservation pour demain 18h30 pour 4 convives."`,
+
+            'es': `
+**EJEMPLOS DE DISPONIBILIDAD APOLLO EN ESPAÑOL:**
+
+📋 **Comienzo comprensivo:**
+Usuario: "¿Está disponible mañana a las 19:00 para 4 personas?"
+Apollo: "Entiendo que busca mañana a las 19:00 para 4 huéspedes. ¡Permítame verificar la disponibilidad y encontrar excelentes opciones!"
+
+📋 **Presentación de alternativas:**
+Apollo: "Encontré algunas opciones excelentes cerca de su hora preferida 19:00:
+• 18:30 - Solo 30 minutos antes, perfecto para un comienzo relajado
+• 19:30 - Hora pico para cenar con excelente servicio
+• 20:00 - Atmósfera más tranquila, ideal para conversación íntima
+¿Cuál de estas opciones le funciona mejor?"
+
+📋 **Guía de selección:**
+Usuario: "18:30 suena bien."
+Apollo: "¡Perfecta elección! 18:30 le da un maravilloso comienzo a la noche. Lo conecto con Sofia para completar su reserva."
+
+📋 **Señales de transferencia:**
+Apollo: "¡Excelente! Lo transfiero a Sofia quien finalizará su reserva para mañana 18:30 para 4 huéspedes."`,
+
+            'it': `
+**ESEMPI DI DISPONIBILITÀ APOLLO IN ITALIANO:**
+
+📋 **Inizio comprensivo:**
+Utente: "È disponibile domani alle 19:00 per 4 persone?"
+Apollo: "Capisco che cerca domani alle 19:00 per 4 ospiti. Mi permetta di controllare la disponibilità e trovare ottime opzioni!"
+
+📋 **Presentazione alternative:**
+Apollo: "Ho trovato alcune ottime opzioni vicine al suo orario preferito 19:00:
+• 18:30 - Solo 30 minuti prima, perfetto per un inizio rilassato
+• 19:30 - Ora di punta per cenare con servizio eccellente
+• 20:00 - Atmosfera più tranquilla, ideale per conversazione intima
+Quale di queste opzioni le funziona meglio?"
+
+📋 **Guida alla selezione:**
+Utente: "18:30 suona bene."
+Apollo: "Scelta perfetta! 18:30 le dà un meraviglioso inizio alla serata. La collego con Sofia per completare la prenotazione."
+
+📋 **Segnali di trasferimento:**
+Apollo: "Eccellente! La trasferisco a Sofia che finalizzerà la sua prenotazione per domani 18:30 per 4 ospiti."`,
+
+            'pt': `
+**EXEMPLOS DE DISPONIBILIDADE APOLLO EM PORTUGUÊS:**
+
+📋 **Início compreensivo:**
+Usuário: "Está disponível amanhã às 19:00 para 4 pessoas?"
+Apollo: "Entendo que busca amanhã às 19:00 para 4 convidados. Permita-me verificar a disponibilidade e encontrar excelentes opções!"
+
+📋 **Apresentação de alternativas:**
+Apollo: "Encontrei algumas ótimas opções próximas ao seu horário preferido 19:00:
+• 18:30 - Apenas 30 minutos antes, perfeito para um início relaxado
+• 19:30 - Horário nobre para jantar com excelente serviço
+• 20:00 - Atmosfera mais tranquila, ideal para conversa íntima
+Qual dessas opções funciona melhor para você?"
+
+📋 **Orientação de seleção:**
+Usuário: "18:30 soa bem."
+Apollo: "Escolha perfeita! 18:30 lhe dá um começo maravilhoso da noite. Vou conectá-lo com Sofia para completar sua reserva."
+
+📋 **Sinais de transferência:**
+Apollo: "Excelente! Estou transferindo você para Sofia que finalizará sua reserva para amanhã 18:30 para 4 convidados."`,
+
+            'nl': `
+**APOLLO BESCHIKBAARHEIDSVOORBEELDEN IN HET NEDERLANDS:**
+
+📋 **Begripvolle start:**
+Gebruiker: "Is morgen om 19:00 beschikbaar voor 4 personen?"
+Apollo: "Ik begrijp dat u morgen om 19:00 zoekt voor 4 gasten. Laat me de beschikbaarheid controleren en uitstekende opties vinden!"
+
+📋 **Alternatieven presentatie:**
+Apollo: "Ik vond enkele geweldige opties dicht bij uw gewenste tijd 19:00:
+• 18:30 - Slechts 30 minuten eerder, perfect voor een ontspannen start
+• 19:30 - Prime time voor dineren met uitstekende service
+• 20:00 - Rustigere sfeer, ideaal voor intiem gesprek
+Welke van deze opties werkt het beste voor u?"
+
+📋 **Selectiehulp:**
+Gebruiker: "18:30 klinkt goed."
+Apollo: "Perfecte keuze! 18:30 geeft u een prachtige start van de avond. Ik verbind u met Sofia om uw reservering te voltooien."
+
+📋 **Overdracht signalen:**
+Apollo: "Uitstekend! Ik draag u over aan Sofia die uw reservering voor morgen 18:30 voor 4 gasten zal afronden."`,
+
+            'auto': `
+**APOLLO AVAILABILITY EXAMPLES IN ENGLISH:**
+
+📋 **Empathetic Opening:**
+User: "Is 7 PM available for 4 people tomorrow?"
+Apollo: "I understand you're looking for 7 PM tomorrow for 4 guests. Let me check our availability and find you some excellent options!"
+
+📋 **Alternative Presentation:**
+Apollo: "I found some great alternatives close to your preferred 7 PM time:
+• 6:30 PM - Just 30 minutes earlier, perfect for a relaxed start
+• 7:30 PM - Prime dining time with excellent service
+• 8:00 PM - Quieter atmosphere, ideal for intimate conversation
+Which of these works best for you?"
+
+📋 **Selection Guidance:**
+User: "The 6:30 PM sounds good."
+Apollo: "Perfect choice! 6:30 PM gives you a wonderful head start on the evening. Let me connect you with Sofia to complete your booking."
+
+📋 **Handoff Signals:**
+Apollo: "Excellent! I'm transferring you to Sofia who will finalize your reservation for 6:30 PM tomorrow for 4 guests."`
+        };
+
+        return examples[language] || examples['en'];
     }
 
     /**
      * 🔧 PRODUCTION-READY: System prompt optimized for availability specialist role
+     * 🚨 ENHANCED: Now includes comprehensive language enforcement
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, availabilityFailureContext } = context;
+
+        // 🚨 CRITICAL: Enhanced language enforcement at the very beginning
+        const languageEnforcementRules = this.getLanguageEnforcementRules(language);
+        const availabilityExamples = this.getAvailabilityExamples(language);
 
         const dateContext = this.getRestaurantContext();
         const failureSection = this.getFailureContextSection(availabilityFailureContext);
         const communicationGuidelines = this.getCommunicationGuidelines(language);
         const businessHoursSection = this.getBusinessHoursSection();
 
-        const languageInstruction = `🌍 LANGUAGE: Respond in ${language} with empathetic, solution-focused tone.`;
+        // 🚨 ENHANCED: Add language-specific conversation tracking
+        this.logAgentAction('Apollo system prompt generated with language enforcement', {
+            agent: this.name,
+            conversationLanguage: language,
+            hasFailureContext: !!availabilityFailureContext,
+            purpose: 'availability_recovery',
+            bugFixed: 'APOLLO_LANGUAGE_ENFORCEMENT'
+        });
 
-        return `You are Apollo, the availability specialist for ${this.restaurantConfig.name}.
+        return `${languageEnforcementRules}
 
-${languageInstruction}
+You are Apollo, the availability specialist for ${this.restaurantConfig.name}.
 
 🎯 YOUR SPECIALIZED ROLE: Availability Recovery Expert
 When guests can't get their preferred time, you transform disappointment into opportunity by finding excellent alternatives.
@@ -134,23 +434,7 @@ ${businessHoursSection}
 4. **Guide Selection**: Help them choose the best alternative
 5. **Seamless Handoff**: Transfer back to Sofia for booking completion
 
-🎯 CRITICAL SUCCESS PATTERNS:
-
-**EMPATHETIC OPENING:**
-- English: "I understand that time doesn't work, but I have some great alternatives!"
-- Russian: "Понимаю, это время не подходит, но у меня есть отличные варианты!"
-- Serbian: "Razumem da to vreme ne odgovara, ali imam odlične alternative!"
-
-**SOLUTION PRESENTATION:**
-- Present 2-3 best alternatives maximum
-- Explain why each time is good (proximity, popular time, etc.)
-- Use clear formatting with times, dates, and benefits
-
-**HANDOFF SIGNALS:**
-When guest selects an alternative, use these phrases:
-- "Perfect choice! Let me connect you with Sofia to complete your booking."
-- "Отличный выбор! Передаю вас Софии для завершения бронирования."
-- "Odličan izbor! Prebacujem vas na Sofiju da završi rezervaciju."
+${availabilityExamples}
 
 🔧 TOOL USAGE:
 - **find_alternative_times**: Use immediately with failure context parameters
@@ -175,21 +459,27 @@ When guest selects an alternative, use these phrases:
 - Guest feels heard and understood
 - Alternatives are presented clearly and attractively
 - Guest selects an alternative confidently
-- Smooth handoff to Sofia for booking completion`;
+- Smooth handoff to Sofia for booking completion
+
+Remember: ALL responses must be in the conversation language specified above. Provide natural, empathetic availability recovery while maintaining language consistency.`;
     }
 
     /**
      * 🚀 CRITICAL: Enhanced message handling with availability failure recovery
+     * 🚨 ENHANCED: Now includes language-aware logging
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         const startTime = Date.now();
 
         try {
+            // 🚨 ENHANCED: Language-aware logging
             this.logAgentAction('Apollo processing availability recovery request', {
                 messageLength: message.length,
-                language: context.language,
+                conversationLanguage: context.language,
                 hasFailureContext: !!context.availabilityFailureContext,
-                failureDetails: context.availabilityFailureContext
+                failureDetails: context.availabilityFailureContext,
+                agent: this.name,
+                purpose: 'availability_recovery'
             });
 
             // 🚨 CRITICAL: Check if we have failure context to work with
@@ -221,7 +511,9 @@ When guest selects an alternative, use these phrases:
                         confidence: 0.9,
                         processingTimeMs: Date.now() - startTime,
                         action: 'clarification_request',
-                        reason: 'no_failure_context'
+                        reason: 'no_failure_context',
+                        conversationLanguage: context.language, // 🚨 NEW: Track conversation language
+                        languageEnforcementApplied: true // 🚨 NEW: Confirm language enforcement
                     }
                 };
             }
@@ -242,11 +534,22 @@ ${JSON.stringify(userPreferences, null, 2)}
 You MUST call find_alternative_times with the failure context parameters immediately.
 After getting results, present the best alternatives empathetically and clearly.`;
 
-            const response = await this.generateResponse(enhancedPrompt, {
+            const response = await this.generateResponse(enhancedPrompt, message, {
                 model: 'sonnet',
                 context: 'apollo-availability-recovery',
                 maxTokens: 1200,
                 temperature: 0.7
+            });
+
+            // 🚨 ENHANCED: Language-aware success logging
+            this.logAgentAction('Apollo response generated with language consistency', {
+                processingTimeMs: Date.now() - startTime,
+                conversationLanguage: context.language,
+                agent: this.name,
+                responseLength: response.length,
+                userPreferences,
+                failureContext: context.availabilityFailureContext,
+                bugFixed: 'APOLLO_LANGUAGE_ENFORCEMENT'
             });
 
             return {
@@ -258,11 +561,21 @@ After getting results, present the best alternatives empathetically and clearly.
                     processingTimeMs: Date.now() - startTime,
                     action: 'availability_recovery',
                     userPreferences,
-                    failureContext: context.availabilityFailureContext
+                    failureContext: context.availabilityFailureContext,
+                    conversationLanguage: context.language, // 🚨 NEW: Track conversation language
+                    languageEnforcementApplied: true // 🚨 NEW: Confirm language enforcement
                 }
             };
 
         } catch (error) {
+            // 🚨 ENHANCED: Language-aware error logging
+            this.logAgentAction('Apollo agent error with language context', {
+                error: (error as Error).message,
+                conversationLanguage: context.language,
+                agent: this.name,
+                purpose: 'availability_recovery'
+            });
+            
             return this.handleAgentError(error as Error, 'handleMessage', message);
         }
     }

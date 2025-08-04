@@ -51,7 +51,8 @@ export class OverseerAgent {
                 activeReservationId: session.activeReservationId || null,
                 turnCount: session.turnCount || 0,
                 hasAvailabilityFailure: availabilityFailure?.hasFailure || false,
-                hasGuestHistory: !!session.guestHistory
+                hasGuestHistory: !!session.guestHistory,
+                conversationLanguage: session.language || 'auto'
             });
 
             const systemPrompt = this.generateSystemPrompt(session, userMessage, availabilityFailure);
@@ -78,6 +79,8 @@ export class OverseerAgent {
                 reasoning: result.reasoning,
                 isNewBookingRequest: result.isNewBookingRequest,
                 availabilityFailureDetected: availabilityFailure?.hasFailure || false,
+                conversationLanguage: session.language || 'auto',
+                interventionGenerated: !!result.intervention,
                 processingTime: smartLog.endTimer(timerId)
             });
 
@@ -88,7 +91,8 @@ export class OverseerAgent {
                     toAgent: result.agentToUse,
                     reason: result.reasoning,
                     userTrigger: userMessage.substring(0, 100),
-                    isNewBookingRequest: result.isNewBookingRequest
+                    isNewBookingRequest: result.isNewBookingRequest,
+                    conversationLanguage: session.language || 'auto'
                 });
             }
 
@@ -99,14 +103,16 @@ export class OverseerAgent {
             smartLog.error('Overseer decision failed', error as Error, {
                 sessionId: session.sessionId,
                 userMessage: userMessage.substring(0, 100),
-                currentAgent: session.currentAgent
+                currentAgent: session.currentAgent,
+                conversationLanguage: session.language || 'auto'
             });
 
             // Fallback logic (preserve existing behavior)
             if (session.currentAgent && session.currentAgent !== 'conductor') {
                 smartLog.info('Overseer fallback: keeping current agent', {
                     sessionId: session.sessionId,
-                    currentAgent: session.currentAgent
+                    currentAgent: session.currentAgent,
+                    conversationLanguage: session.language || 'auto'
                 });
                 return {
                     agentToUse: session.currentAgent,
@@ -124,6 +130,70 @@ export class OverseerAgent {
     }
 
     /**
+     * 🚨 CRITICAL FIX: Language enforcement rules for Overseer interventions
+     */
+    private getLanguageEnforcementRules(language: string): string {
+        const languageNames: Record<string, string> = {
+            'en': 'English', 'ru': 'Russian', 'sr': 'Serbian', 'hu': 'Hungarian',
+            'de': 'German', 'fr': 'French', 'es': 'Spanish', 'it': 'Italian',
+            'pt': 'Portuguese', 'nl': 'Dutch', 'auto': 'English'
+        };
+
+        const currentLanguageName = languageNames[language] || 'English';
+        
+        return `🚨 CRITICAL OVERSEER LANGUAGE RULES:
+
+**CONVERSATION LANGUAGE**: ${currentLanguageName} (LOCKED)
+
+**IF YOU GENERATE INTERVENTION MESSAGES**:
+❌ NEVER respond in English if conversation is in ${currentLanguageName}
+❌ NEVER mix languages in intervention messages
+✅ ALL intervention messages MUST be in ${currentLanguageName}
+✅ Maintain natural ${currentLanguageName} expressions
+
+**JSON RESPONSE LANGUAGE**:
+- The "reasoning" field should be in English (for system logs)
+- The "intervention" field (if present) MUST be in ${currentLanguageName}
+
+**EXAMPLES OF CORRECT INTERVENTION MESSAGES**:
+${this.getInterventionExamples(language)}
+
+This ensures seamless language consistency across all agent handoffs.`;
+    }
+
+    /**
+     * 🚨 CRITICAL FIX: Language-specific intervention examples
+     */
+    private getInterventionExamples(language: string): string {
+        const examples: Record<string, string> = {
+            'en': `- "I'd be happy to help you with your booking. Could you please clarify what you'd like to do?"
+- "Let me connect you with the right specialist for your request."`,
+            'ru': `- "Буду рад помочь вам с бронированием. Не могли бы вы уточнить, что именно вы хотите сделать?"
+- "Позвольте соединить вас с подходящим специалистом для вашего запроса."`,
+            'sr': `- "Rado ću vam pomoći sa rezervacijom. Možete li da pojasnite šta želite da uradite?"
+- "Dozvolite da vas povežem sa odgovarajućim specijalistom za vaš zahtev."`,
+            'hu': `- "Szívesen segítek az asztalfoglalásban. Tudná pontosítani, mit szeretne tenni?"
+- "Engedje meg, hogy a megfelelő szakemberrel kapcsoljam össze."`,
+            'de': `- "Ich helfe Ihnen gerne bei Ihrer Reservierung. Könnten Sie bitte präzisieren, was Sie tun möchten?"
+- "Lassen Sie mich Sie mit dem richtigen Spezialisten für Ihre Anfrage verbinden."`,
+            'fr': `- "Je serais ravi de vous aider avec votre réservation. Pourriez-vous préciser ce que vous aimeriez faire?"
+- "Permettez-moi de vous connecter avec le bon spécialiste pour votre demande."`,
+            'es': `- "Estaré encantado de ayudarle con su reserva. ¿Podría aclarar qué le gustaría hacer?"
+- "Permítame conectarle con el especialista adecuado para su solicitud."`,
+            'it': `- "Sarei felice di aiutarla con la sua prenotazione. Potrebbe chiarire cosa vorrebbe fare?"
+- "Mi permetta di metterla in contatto con lo specialista giusto per la sua richiesta."`,
+            'pt': `- "Ficarei feliz em ajudá-lo com sua reserva. Poderia esclarecer o que gostaria de fazer?"
+- "Permita-me conectá-lo com o especialista certo para sua solicitação."`,
+            'nl': `- "Ik help u graag met uw reservering. Kunt u verduidelijken wat u wilt doen?"
+- "Laat me u verbinden met de juiste specialist voor uw verzoek."`,
+            'auto': `- "I'd be happy to help you with your booking. Could you please clarify what you'd like to do?"
+- "Let me connect you with the right specialist for your request."`
+        };
+
+        return examples[language] || examples['en'];
+    }
+
+    /**
      * Generate the comprehensive system prompt for agent selection
      */
     private generateSystemPrompt(
@@ -131,6 +201,10 @@ export class OverseerAgent {
         userMessage: string,
         availabilityFailure?: any
     ): string {
+        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        const language = session.language || 'en';
+        const languageEnforcement = this.getLanguageEnforcementRules(language);
+
         const recentHistory = session.conversationHistory
             .slice(-6)
             .map(msg => `${msg.role}: ${msg.content}`)
@@ -143,7 +217,8 @@ export class OverseerAgent {
             turnCount: session.turnCount || 0,
             agentTurnCount: session.agentTurnCount || 0,
             platform: session.platform,
-            hasGuestHistory: !!session.guestHistory
+            hasGuestHistory: !!session.guestHistory,
+            conversationLanguage: language
         };
 
         const availabilityFailureContext = availabilityFailure?.hasFailure ? `
@@ -154,7 +229,9 @@ export class OverseerAgent {
 - Reason: ${availabilityFailure.failureReason}
 ` : 'No recent availability failures detected.';
 
-        return `You are the master "Overseer" for a restaurant booking system. Analyze the conversation and decide which agent should handle the user's request.
+        return `${languageEnforcement}
+
+You are the master "Overseer" for a restaurant booking system. Analyze the conversation and decide which agent should handle the user's request.
 
 ## AGENT ROLES:
 - **Sofia (booking):** Handles ONLY NEW reservations. Use for availability checks, creating new bookings.
@@ -169,6 +246,7 @@ export class OverseerAgent {
 - **Turn Count:** ${sessionState.turnCount}
 - **Agent Turn Count:** ${sessionState.agentTurnCount}
 - **Platform:** ${sessionState.platform}
+- **Conversation Language:** ${sessionState.conversationLanguage}
 
 ## RECENT CONVERSATION:
 ${recentHistory}
@@ -253,12 +331,14 @@ DO NOT generate intervention for:
 - When user provides booking details (date, time, guests)
 - Simple continuations of current conversation
 
+🚨 REMEMBER: If you generate an intervention message, it MUST be in ${sessionState.conversationLanguage}.
+
 Respond with ONLY a JSON object:
 
 {
   "reasoning": "Brief explanation of your decision based on the rules and context",
   "agentToUse": "booking" | "reservations" | "conductor" | "availability",
-  "intervention": null | "Message if user seems stuck and needs clarification",
+  "intervention": null | "Message if user seems stuck and needs clarification (MUST be in ${sessionState.conversationLanguage})",
   "isNewBookingRequest": true/false
 }`;
     }
