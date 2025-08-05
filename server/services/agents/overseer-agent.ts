@@ -58,7 +58,7 @@ export class OverseerAgent {
             const systemPrompt = this.generateSystemPrompt(session, userMessage, availabilityFailure);
 
             const decision = await aiService.generateJSON(systemPrompt, {
-                model: 'gpt-4o', // 🚀 UPGRADE: Using a more powerful HARDCODED ON PURPOSE model for critical decisions
+                model: 'gpt-4o', 
                 maxTokens: 1000,
                 temperature: 0.2,
                 context: 'Overseer'
@@ -130,7 +130,7 @@ export class OverseerAgent {
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language enforcement rules for Overseer interventions
+     * Language enforcement rules for Overseer interventions
      */
     private getLanguageEnforcementRules(language: string): string {
         const languageNames: Record<string, string> = {
@@ -162,7 +162,7 @@ This ensures seamless language consistency across all agent handoffs.`;
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language-specific intervention examples
+     * Language-specific intervention examples
      */
     private getInterventionExamples(language: string): string {
         const examples: Record<string, string> = {
@@ -201,7 +201,7 @@ This ensures seamless language consistency across all agent handoffs.`;
         userMessage: string,
         availabilityFailure?: any
     ): string {
-        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        // Add language enforcement at the very beginning
         const language = session.language || 'en';
         const languageEnforcement = this.getLanguageEnforcementRules(language);
 

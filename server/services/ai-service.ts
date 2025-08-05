@@ -1,11 +1,4 @@
 // server/services/ai-service.ts
-// 📊 SMART LOGGING INTEGRATION: Complete AI operation monitoring and fallback tracking
-// 🚨 CRITICAL BUG FIX: Tool-use message transformation for Claude compatibility
-// 🔒 SECURITY FIX: Complete tenant isolation and feature validation
-// 🚀 PERFORMANCE FIX: GPT is now the primary provider to address Claude instability.
-// 🚀 STABILITY FIX: Added a circuit breaker to prevent repeated calls to a failing AI provider.
-// 🚀 UX FIX: Reduced API timeouts from 30s to 8s.
-// 🚨 LANGUAGE BUG FIX: Complete language validation system with fallback messages
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
@@ -37,7 +30,7 @@ export interface TenantAIUsage {
     totalRequests: number;
 }
 
-// 🚀 STABILITY FIX: Circuit Breaker implementation
+// Circuit Breaker implementation
 class CircuitBreaker {
     private failures = 0;
     private lastFailureTime: number | null = null;
@@ -84,7 +77,7 @@ export class AIService {
         openai: { requests: 0, failures: 0, totalTime: 0, successfulRequests: 0 }
     };
 
-    // 🚀 STABILITY FIX: Add circuit breakers for each provider
+    // Add circuit breakers for each provider
     private openaiCircuitBreaker = new CircuitBreaker();
     private claudeCircuitBreaker = new CircuitBreaker();
 
@@ -112,10 +105,10 @@ export class AIService {
         smartLog.info('AIService initialized with tenant isolation and language validation', {
             claudeAvailable: !!process.env.ANTHROPIC_API_KEY,
             openaiAvailable: !!process.env.OPENAI_API_KEY,
-            primaryProvider: 'OpenAI', // 🚀 PERFORMANCE FIX
+            primaryProvider: 'OpenAI', 
             fallbackSystem: 'OpenAI -> Claude',
             tenantIsolationEnabled: true,
-            languageValidationEnabled: true, // 🚨 NEW
+            languageValidationEnabled: true, 
             securityLevel: 'HIGH'
         });
     }
@@ -130,8 +123,8 @@ export class AIService {
     // ===== 🚨 LANGUAGE VALIDATION SYSTEM =====
 
     /**
-     * 🚨 CRITICAL FIX: Validate AI response language and provide fallbacks
-     * Fixes Bug: AI responses not matching expected conversation language
+     * 🚨 Validate AI response language and provide fallbacks
+     * AI responses not matching expected conversation language
      */
     private validateResponseLanguage(
         response: string, 
@@ -536,14 +529,14 @@ export class AIService {
             promptLength: prompt.length,
             maxTokens: finalOptions.maxTokens,
             temperature: finalOptions.temperature,
-            primaryLanguage: tenantConfig.primaryLanguage // 🚨 NEW
+            primaryLanguage: tenantConfig.primaryLanguage 
         });
 
         try {
             let result: string;
             let tokensUsed = 0;
 
-            // 🚀 PERFORMANCE FIX: Try OpenAI first
+            // Try OpenAI first
             const primaryIsGPT = finalOptions.model.startsWith('gpt');
 
             if (primaryIsGPT) {
@@ -722,14 +715,14 @@ export class AIService {
         // Get tenant-specific configuration
         const tenantConfig = this.getTenantAIConfig(tenantContext);
         const {
-            model = tenantConfig.primaryModel, // ✅ USE THIS LINE
+            model = tenantConfig.primaryModel, 
             messages,
             tools,
             tool_choice,
             maxTokens = tenantConfig.maxTokens,
             temperature = tenantConfig.temperature,
             context = 'unknown-completion',
-            timeout = 8000 // 🚀 UX FIX: Reduced timeout
+            timeout = 8000 
         } = otherOptions;
 
         const overallTimerId = smartLog.startTimer('ai_chat_completion');
@@ -745,7 +738,7 @@ export class AIService {
         });
 
         try {
-            // 🚀 PERFORMANCE FIX: Try OpenAI first
+            // OpenAI first
             const openaiModel = this.mapToOpenAIModel(model);
             const completion = await this.tryOpenAIChatCompletion({ ...otherOptions, model: openaiModel, tenantContext });
 
@@ -981,7 +974,7 @@ export class AIService {
                     temperature: options.temperature || 0.2,
                     messages: [{ role: 'user', content: prompt }]
                 }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Claude request timeout')), options.timeout || 8000)) // 🚀 UX FIX
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Claude request timeout')), options.timeout || 8000)) 
             ]) as Anthropic.Messages.Message;
 
             const response = result.content[0];
@@ -1127,7 +1120,7 @@ export class AIService {
                     temperature: options.temperature || 0.2
                 }),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('OpenAI request timeout')), options.timeout || 8000) // 🚀 UX FIX
+                    setTimeout(() => reject(new Error('OpenAI request timeout')), options.timeout || 8000) 
                 )
             ]) as OpenAI.Chat.Completions.ChatCompletion;
 
@@ -1481,21 +1474,3 @@ setInterval(() => {
     AIService.generateAIReport();
 }, 60 * 60 * 1000);
 
-smartLog.info('AIService loaded with complete tenant isolation and language validation', {
-    features: [
-        'Claude + OpenAI fallback system',
-        'Performance monitoring',
-        'Error tracking',
-        'Health checks',
-        'Periodic reporting',
-        'Business event logging',
-        '🚨 CRITICAL FIX: Tool call fallback support with message transformation',
-        '🔒 COMPLETE TENANT ISOLATION: Feature validation, usage tracking, billing integration',
-        '🔒 PLAN ENFORCEMENT: Monthly limits per tenant plan',
-        '🔒 SECURITY VALIDATION: All AI operations require tenant context',
-        '🚨 LANGUAGE VALIDATION SYSTEM: Multi-language response validation with fallbacks' // 🚨 NEW
-    ],
-    securityLevel: 'HIGH',
-    tenantIsolationEnabled: true,
-    languageValidationEnabled: true // 🚨 NEW
-});

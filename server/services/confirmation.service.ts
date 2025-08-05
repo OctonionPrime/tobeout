@@ -1,7 +1,4 @@
 // server/services/confirmation.service.ts
-// ✅ EXTRACTED FROM ENHANCED CONVERSATION MANAGER
-// 🚨 CRITICAL: Dedicated service for handling all confirmation workflows
-// Extracted as part of Phase 1 refactoring to reduce ECM complexity from 2000+ to ~1500 lines
 
 import { aiService } from './ai-service';
 import { agentFunctions } from './agents/agent-tools';
@@ -121,17 +118,6 @@ Return only the translation, no explanations.`;
     }
 }
 
-/**
- * 🎯 MAIN SERVICE: Dedicated service for handling all confirmation workflows
- * Extracted from EnhancedConversationManager as part of Phase 1 refactoring
- * 
- * Responsibilities:
- * - Process pending confirmations from user responses
- * - Handle name clarification workflows with infinite loop prevention
- * - Execute confirmed bookings and cancellations
- * - Generate detailed confirmation messages
- * - AI-powered confirmation analysis
- */
 export class ConfirmationService {
     
     /**
@@ -266,7 +252,7 @@ Shall I go ahead and confirm this booking?`,
                 sessionId: session.sessionId,
                 userMessage: message.substring(0, 100),
                 confirmationType: session.pendingNameClarification ? 'name_clarification' : 'regular',
-                pendingAction: session.pendingConfirmation?.summary // <-- FIX: ADDED '?'
+                pendingAction: session.pendingConfirmation?.summary 
             });
 
             // Handle name clarification separately (has different workflow)
@@ -1018,8 +1004,7 @@ YOUR JSON: {}
                 guests: result.data.guests || args.guests,
                 comments: result.data.comments || args.specialRequests || ''
             };
-
-            // ✅ THE SMART FIX STARTS HERE
+            
             // Update session state after a successful booking or cancellation
             if (toolCall.function.name === 'create_reservation' || toolCall.function.name === 'cancel_reservation') {
                 session.hasActiveReservation = toolCall.function.name === 'create_reservation' ? reservationId : undefined;
@@ -1043,8 +1028,7 @@ YOUR JSON: {}
                 session.hasAskedDate = false;
                 session.hasAskedTime = false;
                 session.hasAskedPartySize = false;
-            }
-            // ✅ THE SMART FIX ENDS HERE
+            }            
 
             const detailedConfirmation = this.generateDetailedConfirmation(
                 reservationId,
@@ -1074,7 +1058,7 @@ YOUR JSON: {}
             };
             
         } else {
-            // 🚨 FIX: Add specific handling for name mismatch error
+            // Add specific handling for name mismatch error
             if (result.error?.code === 'NAME_CLARIFICATION_NEEDED') {
                 const { dbName, requestName } = result.error.details;
 

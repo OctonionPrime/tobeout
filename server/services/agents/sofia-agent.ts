@@ -16,7 +16,7 @@ import {
 import type { Language } from '../enhanced-conversation-manager';
 
 /**
- * 🔧 ENHANCED: Guest history interface with comprehensive tracking
+ * Guest history interface with comprehensive tracking
  */
 interface GuestHistory {
     guest_name: string;
@@ -30,7 +30,7 @@ interface GuestHistory {
 }
 
 /**
- * 🚨 CRITICAL BUG #4 FIX: Enhanced pending confirmation state with circular reference prevention
+ * Enhanced pending confirmation state with circular reference prevention
  */
 interface PendingConfirmation {
     type: 'name_clarification';
@@ -44,16 +44,16 @@ interface PendingConfirmation {
         guests: number;
         specialRequests?: string;
     };
-    // 🚨 CRITICAL BUG #4 FIX: Store only essential context, not full session object
+    // Store only essential context, not full session object
     originalContext: {
         restaurantId: number;
         timezone: string;
         sessionId: string;
         language: string;
-        // 🚨 CRITICAL: DO NOT include session, restaurantConfig, or other complex objects
+        // DO NOT include session, restaurantConfig, or other complex objects
         // that could create circular references during Redis serialization
     };
-    // 🆕 CRITICAL: Add attempt tracking to prevent infinite loops
+    // Add attempt tracking to prevent infinite loops
     attempts: number;
     maxAttempts: number;
     createdAt: Date;
@@ -61,7 +61,7 @@ interface PendingConfirmation {
 }
 
 /**
- * 🔧 ENHANCED: Conversation context with comprehensive state tracking
+ * Conversation context with comprehensive state tracking
  */
 interface ConversationContext {
     isReturnVisit: boolean;
@@ -86,7 +86,7 @@ interface ConversationContext {
 }
 
 /**
- * 🆕 CRITICAL FIX: Name choice extraction patterns for different languages
+ * Name choice extraction patterns for different languages
  */
 interface NameExtractionPattern {
     language: string;
@@ -112,11 +112,11 @@ export class SofiaAgent extends BaseAgent {
         'get_guest_history'
     ];
 
-    // 🆕 CRITICAL FIX: Maximum clarification attempts to prevent infinite loops
+    // Maximum clarification attempts to prevent infinite loops
     private readonly MAX_CLARIFICATION_ATTEMPTS = 3;
     private readonly CLARIFICATION_TIMEOUT_MINUTES = 5;
 
-    // 🆕 CRITICAL FIX: Comprehensive multi-language name extraction patterns
+    // Comprehensive multi-language name extraction patterns
     private readonly nameExtractionPatterns: NameExtractionPattern[] = [
         {
             language: 'en',
@@ -187,7 +187,7 @@ export class SofiaAgent extends BaseAgent {
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language enforcement rules for Sofia Agent
+     * Language enforcement rules for Sofia Agent
      */
     private getLanguageEnforcementRules(language: Language): string {
         const languageNames: Record<Language, string> = {
@@ -225,7 +225,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language-specific booking conversation examples
+     * Language-specific booking conversation examples
      */
     private getBookingExamples(language: Language): string {
         const examples: Record<Language, string> = {
@@ -267,16 +267,10 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
         return examples[language] || examples['en'];
     }
 
-    /**
-     * 🔧 STREAMLINED: System prompt optimized for conversation flow
-     * 🚨 ENHANCED: Added explicit date parsing rules to prevent 2023 assumptions (BUG-00184 FIX)
-     * 🔧 CRITICAL FIX: Final booking command moved to the very end to prevent date hallucination
-     * 🚨 BUG #3 FIX: Added strict availability check validation rules
-     */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
 
-        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        // Add language enforcement at the very beginning
         const languageEnforcement = this.getLanguageEnforcementRules(language);
 
         const dateContext = this.getRestaurantContext();
@@ -285,10 +279,9 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
         const nameInstructions = this.getNameClarificationInstructions(conversationContext);
         const businessHoursInstructions = this.getBusinessHoursInstructions();
         
-        // 🚨 BUG #3 FIX: Add strict availability check validation rules
+        // Add strict availability check validation rules
         const availabilityValidationRules = this.getAvailabilityValidationRules();
-
-        // 🚨 CRITICAL HALLUCINATION FIX LOGIC (MOVED TO THE END)
+        
         let finalBookingCommand = '';
         if (context.conversationContext?.gatheringInfo) {
             const { name, phone, date, time, guests } = context.conversationContext.gatheringInfo;
@@ -316,7 +309,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
         let preProcessedDataInstructions = '';
         const { date, time } = context.conversationContext?.gatheringInfo || {};
 
-        // 1. Check if our normalization step has already run and provided clean data.
+        // 1. Check if normalization step has already run and provided clean data.
         if (date || time) {
             let instructions = `
     🚨 CRITICAL PRE-PROCESSED DATA:
@@ -470,7 +463,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚨 BUG #3 FIX: Strict availability check validation rules
+     * Strict availability check validation rules
      * Prevents premature availability checks with assumed guest counts
      */
     private getAvailabilityValidationRules(): string {
@@ -515,7 +508,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚀 CRITICAL FIX: Enhanced message handling with comprehensive name clarification
+     * Enhanced message handling with comprehensive name clarification
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         const startTime = Date.now();
@@ -531,7 +524,7 @@ The system will validate them using multilingual patterns.
                 bugFixesApplied: ['PREMATURE_AVAILABILITY', 'CIRCULAR_REFERENCE', 'LANGUAGE_ENFORCEMENT']
             });
 
-            // 🚨 DIAGNOSTIC: This should NEVER be reached if ECM routing works
+            // This should NEVER be reached if ECM routing works
             const pendingConfirmation = context.conversationContext?.pendingConfirmation;
             if (pendingConfirmation && pendingConfirmation.type === 'name_clarification') {
                 smartLog.error('CONFIRMATION ROUTING FAILURE: Sofia Agent received pending confirmation', new Error('ROUTING_BYPASS'), {
@@ -544,7 +537,7 @@ The system will validate them using multilingual patterns.
                 return await this.handleNameClarificationResponse(message, context);
             }
 
-            // 🎯 INTELLIGENT: First message with personalized greeting
+            // First message with personalized greeting
             if (context.conversationContext?.sessionTurnCount === 1) {
                 const greeting = this.generateIntelligentGreeting(context);
                 return {
@@ -597,16 +590,6 @@ The system will validate them using multilingual patterns.
         }
     }
 
-    /**
-     * 🚨 CRITICAL FIX: Comprehensive name clarification response handler
-     * 
-     * This method completely prevents infinite loops through:
-     * 1. Robust multi-language pattern matching
-     * 2. Intelligent attempt limiting with graceful fallbacks
-     * 3. Fuzzy matching for typos and variations
-     * 4. Clear escalation paths for edge cases
-     * 5. 🚨 BUG #4 FIX: Ensures no circular references in pending confirmation creation
-     */
     private async handleNameClarificationResponse(
         message: string, 
         context: AgentContext
@@ -629,12 +612,12 @@ The system will validate them using multilingual patterns.
                 hasCleanOriginalContext: this.validateCleanContext(pendingConfirmation.originalContext)
             });
 
-            // 🚨 CRITICAL: Check attempt limit to prevent infinite loops
+            // Check attempt limit to prevent infinite loops
             if (pendingConfirmation.attempts >= pendingConfirmation.maxAttempts) {
                 return this.handleMaxAttemptsReached(pendingConfirmation, context, startTime);
             }
 
-            // 🔍 ENHANCED: Multi-stage name extraction with comprehensive patterns
+            // Multi-stage name extraction with comprehensive patterns
             const chosenName = await this.extractNameChoiceComprehensive(
                 message,
                 pendingConfirmation.dbName,
@@ -643,10 +626,10 @@ The system will validate them using multilingual patterns.
             );
 
             if (chosenName) {
-                // ✅ SUCCESS: Name extracted - proceed with booking
+                // Name extracted - proceed with booking
                 return this.proceedWithNameChoice(chosenName, pendingConfirmation, context, startTime);
             } else {
-                // ❌ EXTRACTION FAILED: Increment attempt and provide clearer guidance
+                // Increment attempt and provide clearer guidance
                 return this.handleExtractionFailure(pendingConfirmation, context, startTime);
             }
 
@@ -661,7 +644,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚨 BUG #4 FIX: Validate that original context is clean (no circular references)
+     * Validate that original context is clean (no circular references)
      */
     private validateCleanContext(originalContext: any): boolean {
         try {
@@ -694,7 +677,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚨 BUG #4 FIX: Create clean pending confirmation with safe serialization
+     * Create clean pending confirmation with safe serialization
      */
     private createCleanPendingConfirmation(
         dbName: string,
@@ -702,13 +685,13 @@ The system will validate them using multilingual patterns.
         originalBookingData: any,
         context: AgentContext
     ): PendingConfirmation {
-        // 🚨 CRITICAL BUG #4 FIX: Create clean context object without circular references
+        // Create clean context object without circular references
         const cleanOriginalContext = {
             restaurantId: this.restaurantConfig.id,
             timezone: this.restaurantConfig.timezone,
             sessionId: context.sessionId || 'unknown',
             language: context.language || 'en'
-            // 🚨 CRITICAL: DO NOT include session, restaurantConfig, or other complex objects
+            // DO NOT include session, restaurantConfig, or other complex objects
         };
 
         const pendingConfirmation: PendingConfirmation = {
@@ -723,7 +706,7 @@ The system will validate them using multilingual patterns.
             lastAttemptAt: undefined
         };
 
-        // 🚨 BUG #4 FIX: Validate serialization before returning
+        // Validate serialization before returning
         try {
             const testSerialization = JSON.stringify(pendingConfirmation);
             if (testSerialization.length === 0) {
@@ -750,7 +733,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚀 CRITICAL FIX: Comprehensive name choice extraction with multi-language support
+     * Comprehensive name choice extraction with multi-language support
      */
     private async extractNameChoiceComprehensive(
         userMessage: string,
@@ -817,7 +800,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔍 ENHANCED: Pattern-based name extraction
+     * Pattern-based name extraction
      */
     private extractWithPatterns(
         message: string,
@@ -842,7 +825,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔍 ENHANCED: Yes/No response extraction
+     * Yes/No response extraction
      */
     private extractFromYesNoResponse(
         message: string,
@@ -871,7 +854,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔍 ENHANCED: Fuzzy matching for typos and variations
+     * Fuzzy matching for typos and variations
      */
     private extractWithFuzzyMatching(
         message: string,
@@ -899,7 +882,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔍 ENHANCED: Contextual pattern extraction (first/second, 1/2, etc.)
+     * Contextual pattern extraction (first/second, 1/2, etc.)
      */
     private extractFromContextualPatterns(
         message: string,
@@ -930,7 +913,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔧 HELPER: Check if extracted text matches a name
+     * Check if extracted text matches a name
      */
     private isNameMatch(extracted: string, targetName: string): boolean {
         const extractedClean = extracted.toLowerCase().trim();
@@ -954,7 +937,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🚨 CRITICAL: Handle maximum attempts reached (prevents infinite loops)
+     * Handle maximum attempts reached (prevents infinite loops)
      */
     private handleMaxAttemptsReached(
         pendingConfirmation: PendingConfirmation,
@@ -970,7 +953,7 @@ The system will validate them using multilingual patterns.
             bugFixApplied: 'BUG_4_INFINITE_LOOP_PREVENTION'
         });
 
-        // 🎯 GRACEFUL FALLBACK: Auto-select requested name and proceed
+        // Auto-select requested name and proceed
         const fallbackName = pendingConfirmation.requestName;
         
         const messages = {
@@ -985,7 +968,7 @@ The system will validate them using multilingual patterns.
 
         return {
             content: fallbackMessage,
-            // 🎯 CRITICAL: Include tool call to proceed with booking using fallback name
+            // Include tool call to proceed with booking using fallback name
             toolCalls: [{
                 function: {
                     name: 'create_reservation',
@@ -1013,7 +996,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * ✅ SUCCESS: Proceed with extracted name choice
+     * Proceed with extracted name choice
      */
     private proceedWithNameChoice(
         chosenName: string,
@@ -1041,7 +1024,7 @@ The system will validate them using multilingual patterns.
 
         return {
             content: proceedMessage,
-            // 🎯 INCLUDE: Tool call to complete the booking with chosen name
+            // Tool call to complete the booking with chosen name
             toolCalls: [{
                 function: {
                     name: 'create_reservation',
@@ -1069,7 +1052,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * ❌ EXTRACTION FAILED: Provide clearer guidance and increment attempts
+     * Provide clearer guidance and increment attempts
      */
     private handleExtractionFailure(
         pendingConfirmation: PendingConfirmation,
@@ -1109,7 +1092,7 @@ The system will validate them using multilingual patterns.
     }
 
     /**
-     * 🔧 PROGRESSIVE: Generate increasingly clear clarification messages
+     * Generate increasingly clear clarification messages
      */
     private generateProgressiveClarification(
         pendingConfirmation: PendingConfirmation,
@@ -1208,7 +1191,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🔧 HELPER: Calculate Levenshtein distance for fuzzy matching
+     * Calculate Levenshtein distance for fuzzy matching
      */
     private calculateLevenshteinDistance(str1: string, str2: string): number {
         const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
@@ -1236,7 +1219,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🚨 NEW: Validate if requested time is current time and handle appropriately
+     * Validate if requested time is current time and handle appropriately
      */
     private validateCurrentTimeBooking(
         requestedTime: string,
@@ -1296,7 +1279,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🔒 SECURITY: Input sanitization
+     * Input sanitization
      */
     private sanitizeInput(input: string): string {
         return input
@@ -1308,7 +1291,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🔧 HELPER: Create standardized error response
+     * Create standardized error response
      */
     private createErrorResponse(errorMessage: string, startTime: number): AgentResponse {
         return {
@@ -1329,7 +1312,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🎯 INTELLIGENT: Generate personalized greeting based on context
+     * Generate personalized greeting based on context
      */
     private generateIntelligentGreeting(context: AgentContext): string {
         const { guestHistory, language, conversationContext } = context;
@@ -1349,7 +1332,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🛠️ BUG FIX 2 APPLIED: Force the AI to Confirm Guest Count for returning guests
+     * Force the AI to Confirm Guest Count for returning guests
      * 
      * This method now changes the logic to formulate a direct question when a common party size is known,
      * preventing the AI from making unverified assumptions about party size.
@@ -1380,7 +1363,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🆕 NEW: New guest welcoming greeting
+     * New guest welcoming greeting
      */
     private getNewGuestGreeting(language: Language): string {
         const greetings = {
@@ -1393,7 +1376,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🔄 SUBSEQUENT: Subsequent booking greeting
+     * Subsequent booking greeting
      */
     private getSubsequentBookingGreeting(language: Language): string {
         const greetings = {
@@ -1406,7 +1389,7 @@ Or simply type "1" or "2" to choose. After this, I'll automatically use "${reque
     }
 
     /**
-     * 🔧 ENHANCED: Get name clarification instructions for system prompt
+     * Get name clarification instructions for system prompt
      */
     private getNameClarificationInstructions(conversationContext?: ConversationContext): string {
         const pendingConfirmation = conversationContext?.pendingConfirmation;
@@ -1451,7 +1434,7 @@ This prevents infinite clarification loops and ensures smooth user experience.`;
     }
 
     /**
-     * 🔧 STREAMLINED: Get personalized section for system prompt
+     * Get personalized section for system prompt
      */
     private getPersonalizedSection(guestHistory: GuestHistory | null, language: Language): string {
         if (!guestHistory || guestHistory.total_bookings === 0) {
@@ -1479,7 +1462,7 @@ ${common_party_size ? `- Usual party size: ${common_party_size} ⚠️ MUST CONF
     }
 
     /**
-     * 🔧 ENHANCED: Get conversation instructions
+     * Get conversation instructions
      */
     private getConversationInstructions(conversationContext?: ConversationContext): string {
         if (!conversationContext) return '';
@@ -1505,7 +1488,7 @@ ${flags.length > 0 ? flags.join('\n') : '🆕 Fresh conversation - no questions 
     }
 
     /**
-     * 🛠️ BUG FIX 1 APPLIED: Make the AI Aware of the "Last Seating" Rule
+     * Make the AI Aware of the "Last Seating" Rule
      * 
      * This method now calculates the last possible booking time and inserts it directly 
      * into the agent's system prompt to prevent confusion about closing times.
@@ -1535,8 +1518,8 @@ ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late u
     }
 
     /**
-     * 🔧 ENHANCED: Get restaurant context for date/time awareness
-     * 🚨 CRITICAL FIX BUG-00184: Extract current year explicitly for AI prompt
+     * Get restaurant context for date/time awareness
+     * Extract current year explicitly for AI prompt
      */
     private getRestaurantContext() {
         try {
@@ -1577,7 +1560,7 @@ ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late u
     }
 
     /**
-     * 🔧 GET: Available tools for Sofia agent
+     * Available tools for Sofia agent
      */
     getTools() {
         return agentTools.filter(tool =>
@@ -1586,7 +1569,7 @@ ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late u
     }
 
     /**
-     * 🔧 COMPATIBILITY: Legacy method support
+     * Legacy method support
      */
     updateInstructions(
         context: string, 
@@ -1605,7 +1588,7 @@ ${isOvernight ? '- Highlight late availability: "Great news - we\'re open late u
     }
 
     /**
-     * 🔧 COMPATIBILITY: Legacy greeting method
+     * Legacy greeting method
      */
     getPersonalizedGreeting(
         guestHistory: GuestHistory | null, 

@@ -1,16 +1,14 @@
 // src/agents/base-agent.ts
-// This version resolves the MISSING_TENANT_CONTEXT bug by correctly propagating
-// the tenant context from the agent's execution context to the underlying AIService.
 
 import { aiService } from '../ai-service';
 import { contextManager } from '../context-manager';
 import type { Language } from '../enhanced-conversation-manager';
-// ✅ BUG-B-1 FIX: Import TenantContext to use in the AgentContext interface
+// Import TenantContext to use in the AgentContext interface
 import type { TenantContext } from '../tenant-context';
 
 /**
  * Context information passed to agents for processing user requests.
- * ✅ BUG-B-1 FIX: Added the required 'tenantContext' property.
+ * Added the required 'tenantContext' property.
  */
 export interface AgentContext {
     restaurantId: number;
@@ -137,7 +135,7 @@ export abstract class BaseAgent {
     abstract getTools(): any[];
 
     /**
-     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Updated signature to accept AgentContext for tenant validation.
      * Generate text content using AIService with automatic fallback.
      */
     protected async generateResponse(
@@ -155,14 +153,14 @@ export abstract class BaseAgent {
         const startTime = Date.now();
 
         try {
-            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
+            // Pass the tenantContext from the AgentContext to the AIService.
             const response = await aiService.generateContent(prompt, {
                 model: options.model || this.config.primaryModel || 'haiku',
                 maxTokens: options.maxTokens || this.config.maxTokens || 1000,
                 temperature: options.temperature !== undefined ? options.temperature : (this.config.temperature || 0.2),
                 context: options.context || `${this.name}-generation`,
                 timeout: options.timeout || 30000
-            }, context.tenantContext); // This is the critical fix.
+            }, context.tenantContext); 
 
             const processingTime = Date.now() - startTime;
             this.updatePerformanceMetrics(processingTime);
@@ -188,7 +186,7 @@ export abstract class BaseAgent {
     }
 
     /**
-     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Updated signature to accept AgentContext for tenant validation.
      * Generate and parse JSON content with schema validation.
      */
     protected async generateJSON<T>(
@@ -206,7 +204,7 @@ export abstract class BaseAgent {
         const startTime = Date.now();
 
         try {
-            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
+            // Pass the tenantContext from the AgentContext to the AIService.
             const response = await aiService.generateJSON<T>(prompt, {
                 model: options.model || this.config.primaryModel || 'haiku',
                 maxTokens: options.maxTokens || this.config.maxTokens || 1000,
@@ -214,7 +212,7 @@ export abstract class BaseAgent {
                 context: options.context || `${this.name}-json`,
                 schema: options.schema,
                 retryOnInvalidJSON: options.retryOnInvalidJSON !== false
-            }, context.tenantContext); // This is the critical fix.
+            }, context.tenantContext); 
 
             const processingTime = Date.now() - startTime;
             this.updatePerformanceMetrics(processingTime);
@@ -238,7 +236,7 @@ export abstract class BaseAgent {
     }
 
     /**
-     * ✅ BUG-B-1 FIX: Updated signature to accept AgentContext for tenant validation.
+     * Updated signature to accept AgentContext for tenant validation.
      * Translate text to target language using AIService.
      */
     protected async translate(
@@ -268,13 +266,13 @@ Context: ${translationContext} message for restaurant booking system
 Keep the same tone, emojis, and professional style.
 Return only the translation, no explanations.`;
 
-            // ✅ BUG-B-1 FIX: Pass the tenantContext from the AgentContext to the AIService.
+            // Pass the tenantContext from the AgentContext to the AIService.
             const translation = await aiService.generateContent(prompt, {
                 model: 'haiku',
                 maxTokens: Math.min(text.length * 2 + 100, 500),
                 temperature: 0.2,
                 context: `${this.name}-translation-${translationContext}`
-            }, context.tenantContext); // This is the critical fix.
+            }, context.tenantContext);
 
             const processingTime = Date.now() - startTime;
             this.logAgentAction('Translated text', {
@@ -507,7 +505,7 @@ Return only the translation, no explanations.`;
     }
 
     /**
-     * ✅ BUG-B-1 FIX: Updated signature to accept TenantContext for AI operations.
+     * Updated signature to accept TenantContext for AI operations.
      * Health check for agent functionality.
      */
     async healthCheck(tenantContext: TenantContext): Promise<{
@@ -538,7 +536,7 @@ Return only the translation, no explanations.`;
 
         // Test AI service
         try {
-            // ✅ BUG-B-1 FIX: Pass the mock AgentContext to generateResponse.
+            // Pass the mock AgentContext to generateResponse.
             await this.generateResponse("Say 'OK'", "health check", mockAgentContext, {
                 maxTokens: 10,
                 context: 'health-check',
@@ -562,7 +560,7 @@ Return only the translation, no explanations.`;
 
         // Test translation
         try {
-            // ✅ BUG-B-1 FIX: Pass the mock AgentContext to translate.
+            // Pass the mock AgentContext to translate.
             await this.translate('Hello', 'ru', mockAgentContext, 'info');
             checks.translation = true;
             details.push('Translation service working');

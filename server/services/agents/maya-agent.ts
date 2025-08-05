@@ -15,7 +15,7 @@ export class MayaAgent extends BaseAgent {
     ];
 
     /**
-     * 🚨 CRITICAL FIX: Language enforcement rules for Maya Agent
+     * Language enforcement rules for Maya Agent
      */
     private getLanguageEnforcementRules(language: Language): string {
         const languageNames: Record<Language, string> = {
@@ -53,7 +53,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language-specific reservation management conversation examples
+     * Language-specific reservation management conversation examples
      */
     private getReservationExamples(language: Language): string {
         const examples: Record<Language, string> = {
@@ -102,7 +102,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
         
-        // 🔒 CRITICAL: Add language enforcement at the very beginning
+        // Add language enforcement at the very beginning
         const languageEnforcement = this.getLanguageEnforcementRules(language);
         
         const currentTime = new Date().toISOString();
@@ -122,7 +122,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
 ⚠️ CRITICAL: DO NOT ask for information you have already requested in this conversation!
 ✅ Instead, use the information already provided or acknowledge it naturally.` : '';
 
-        // 🎯 Critical action rules with precise question vs command detection
+        // Critical action rules with precise question vs command detection
         const ENHANCED_CRITICAL_ACTION_RULES = `
 🚨 **MAYA'S ENHANCED EXECUTION RULES - QUESTION vs COMMAND DETECTION (HIGHEST PRIORITY)** 🚨
 
@@ -390,7 +390,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
     }
 
     /**
-     * 🎯 NEW: Comprehensive message analysis for precise question vs command detection
+     * Comprehensive message analysis for precise question vs command detection
      * This is the key enhancement that prevents over-eagerness
      */
     private analyzeUserMessage(message: string, language: Language): {
@@ -401,11 +401,11 @@ This enhanced approach provides users with intelligent, context-aware assistance
     } {
         const lowerMessage = message.toLowerCase().trim();
         
-        // 🎯 ENHANCED: Check for specific details first
+        // Check for specific details first
         const specificDetails = this.extractSpecificDetails(lowerMessage);
         const hasSpecificDetails = specificDetails.length > 0;
         
-        // 🎯 ENHANCED: Detect general modification patterns
+        // Detect general modification patterns
         const generalPatterns = this.detectGeneralModificationPatterns(lowerMessage, language);
         const isGeneralPattern = generalPatterns.length > 0;
         
@@ -415,7 +415,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
         console.log(`🔍 [Maya-Analysis] Has specific details: ${hasSpecificDetails}`);
         console.log(`🔍 [Maya-Analysis] Is general pattern: ${isGeneralPattern}`);
         
-        // 🎯 ENHANCED: Decision logic
+        // Decision logic
         if (isGeneralPattern && !hasSpecificDetails) {
             return {
                 type: 'general_question',
@@ -441,7 +441,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
     }
 
     /**
-     * 🎯 NEW: Extract specific modification details from user message
+     * Extract specific modification details from user message
      * Detects concrete new information like times, dates, guest counts
      */
     private extractSpecificDetails(message: string): string[] {
@@ -496,7 +496,7 @@ This enhanced approach provides users with intelligent, context-aware assistance
     }
 
     /**
-     * 🎯 NEW: Detect general modification patterns (questions without specific details)
+     * Detect general modification patterns (questions without specific details)
      * Enhanced pattern matching for better question detection
      */
     private detectGeneralModificationPatterns(message: string, language: Language): string[] {

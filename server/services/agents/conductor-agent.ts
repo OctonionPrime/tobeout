@@ -1,14 +1,9 @@
 // server/services/agents/conductor-agent.ts
 
-/**
- * @file conductor-agent.ts
+/*
  * @description This file contains the implementation of the ConductorAgent, which manages
  * the conversation flow after a primary task (like booking or modification) is complete.
  * It handles polite sign-offs and can hand off to other agents for new tasks.
- *
- * @version 1.0.0
- * @date 2025-07-21
- * @updated 2025-08-02 - Added comprehensive language enforcement system
  */
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
@@ -17,15 +12,7 @@ import { agentTools } from './agent-tools';
 // 🚨 LANGUAGE ENFORCEMENT: Add Language type for comprehensive validation
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
 
-/**
- * Conductor Agent - The Conversation Orchestrator
- *
- * The Conductor agent acts as a neutral, post-task manager. Its primary roles are:
- * 1.  Gracefully handle post-booking/modification pleasantries (e.g., "thank you").
- * 2.  Provide a final, helpful closing to the conversation.
- * 3.  Remain ready to hand off to another specialist agent (Sofia or Maya) if the user starts a new, distinct task.
- * 4.  Answer general restaurant questions after a task is complete.
- */
+
 export class ConductorAgent extends BaseAgent {
     readonly name = 'Conductor';
     readonly description = 'Orchestrates the conversation after a primary task is completed.';
@@ -41,7 +28,7 @@ export class ConductorAgent extends BaseAgent {
     }
 
     /**
-     * 🚨 CRITICAL FIX: Comprehensive language enforcement rules for Conductor agent
+     * Comprehensive language enforcement rules for Conductor agent
      * Prevents language mixing in conversation orchestration and handoff facilitation
      */
     private getLanguageEnforcementRules(language: Language): string {
@@ -80,7 +67,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language-specific conversation orchestration examples
+     * Language-specific conversation orchestration examples
      * Provides natural templates for post-task conversation flow in multiple languages
      */
     private getConductorExamples(language: Language): string {
@@ -355,12 +342,12 @@ Conductor: "Certainly, I can help you with another reservation modification."`
 
     /**
      * Generates the system prompt for the Conductor agent.
-     * 🚨 ENHANCED: Now includes comprehensive language enforcement
+     * Now includes comprehensive language enforcement
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, guestHistory, conversationContext } = context;
 
-        // 🚨 CRITICAL: Enhanced language enforcement at the very beginning
+        // Enhanced language enforcement at the very beginning
         const languageEnforcementRules = this.getLanguageEnforcementRules(language);
         const conductorExamples = this.getConductorExamples(language);
 
@@ -381,7 +368,7 @@ Conductor: "Certainly, I can help you with another reservation modification."`
 
         const guestContext = guestHistory ? `The guest's name is ${guestHistory.guest_name}. You can use their name for a personal touch.` : '';
 
-        // 🚨 ENHANCED: Add language-specific conversation tracking
+        // Add language-specific conversation tracking
         this.logAgentAction('Conductor system prompt generated with language enforcement', {
             agent: this.name,
             conversationLanguage: language,
@@ -404,12 +391,12 @@ Remember: ALL responses must be in the conversation language specified above. Pr
 
     /**
      * Handles the user's message using the Conductor's logic.
-     * 🚨 ENHANCED: Now includes language-aware logging
+     * Now includes language-aware logging
      */
     async handleMessage(message: string, context: AgentContext): Promise<AgentResponse> {
         const startTime = Date.now();
         
-        // 🚨 ENHANCED: Language-aware logging
+        // Language-aware logging
         this.logAgentAction('Processing message with Conductor agent', { 
             message: message.substring(0, 50),
             conversationLanguage: context.language,
@@ -424,7 +411,7 @@ Remember: ALL responses must be in the conversation language specified above. Pr
 
             const processingTimeMs = Date.now() - startTime;
             
-            // 🚨 ENHANCED: Language-aware success logging
+            // Language-aware success logging
             this.logAgentAction('Conductor response generated with language consistency', { 
                 processingTimeMs,
                 conversationLanguage: context.language,
@@ -440,12 +427,12 @@ Remember: ALL responses must be in the conversation language specified above. Pr
                     agentType: this.name,
                     confidence: 0.95,
                     processingTimeMs,
-                    conversationLanguage: context.language, // 🚨 NEW: Track conversation language
-                    languageEnforcementApplied: true // 🚨 NEW: Confirm language enforcement
+                    conversationLanguage: context.language, // Track conversation language
+                    languageEnforcementApplied: true // Confirm language enforcement
                 }
             };
         } catch (error) {
-            // 🚨 ENHANCED: Language-aware error logging
+            // Language-aware error logging
             this.logAgentAction('Conductor agent error with language context', {
                 error: (error as Error).message,
                 conversationLanguage: context.language,

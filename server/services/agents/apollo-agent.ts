@@ -1,11 +1,4 @@
 // src/agents/apollo-agent.ts
-// 🚀 PRODUCTION-READY: Apollo Availability Agent - Complete Implementation
-// ✅ CRITICAL FIX: Missing availability agent that's referenced throughout the system
-// ✅ INTEGRATED: Seamless integration with fixed enhanced-conversation-manager.ts
-// ✅ OPTIMIZED: Intelligent alternative time finding with user preference analysis
-// ✅ MULTILINGUAL: Full support for all system languages with contextual responses
-// ✅ PROFESSIONAL: Production-grade error handling and comprehensive logging
-// 🚨 LANGUAGE BUG FIX: Complete language enforcement system for availability specialist
 
 import { BaseAgent, AgentContext, AgentResponse, AgentConfig, RestaurantConfig } from './base-agent';
 import { agentTools } from './agent-tools';
@@ -20,11 +13,11 @@ import {
     isOvernightOperation
 } from '../../utils/timezone-utils';
 
-// 🚨 LANGUAGE ENFORCEMENT: Add Language type for comprehensive validation
+// Add Language type for comprehensive validation
 export type Language = 'en' | 'ru' | 'sr' | 'hu' | 'de' | 'fr' | 'es' | 'it' | 'pt' | 'nl' | 'auto';
 
 /**
- * 🔧 ENHANCED: Availability failure context interface
+ * Availability failure context interface
  */
 interface AvailabilityFailureContext {
     originalDate: string;
@@ -41,7 +34,7 @@ interface AvailabilityFailureContext {
 }
 
 /**
- * 🔧 ENHANCED: Alternative time with scoring
+ * Alternative time with scoring
  */
 interface AlternativeTimeOption {
     date: string;
@@ -54,20 +47,7 @@ interface AlternativeTimeOption {
     timeOfDay: 'morning' | 'afternoon' | 'evening';
 }
 
-/**
- * 🚀 PRODUCTION-READY: Apollo Agent - Availability Specialist
- * 
- * Apollo is the availability specialist agent that handles situations when
- * the preferred booking time is not available. It finds and presents
- * alternative times intelligently based on user preferences and context.
- * 
- * Core Responsibilities:
- * 1. Analyze availability failures and understand user preferences
- * 2. Find alternative times near the requested slot
- * 3. Present alternatives in an intelligent, user-friendly way
- * 4. Handle user selection and prepare for booking handoff
- * 5. Provide empathetic communication during disappointment
- */
+
 export class ApolloAgent extends BaseAgent {
     readonly name = 'Apollo';
     readonly description = 'Availability specialist for finding alternative booking times';
@@ -95,7 +75,7 @@ export class ApolloAgent extends BaseAgent {
     }
 
     /**
-     * 🚨 CRITICAL FIX: Comprehensive language enforcement rules for Apollo agent
+     * Comprehensive language enforcement rules for Apollo agent
      * Prevents language mixing in availability recovery and alternative time presentation
      */
     private getLanguageEnforcementRules(language: Language): string {
@@ -135,7 +115,7 @@ Current conversation language: **${currentLanguageName}** (LOCKED)`;
     }
 
     /**
-     * 🚨 CRITICAL FIX: Language-specific availability specialist examples
+     * Language-specific availability specialist examples
      * Provides natural templates for availability recovery conversations in multiple languages
      */
     private getAvailabilityExamples(language: Language): string {
@@ -376,13 +356,13 @@ Apollo: "Excellent! I'm transferring you to Sofia who will finalize your reserva
     }
 
     /**
-     * 🔧 PRODUCTION-READY: System prompt optimized for availability specialist role
-     * 🚨 ENHANCED: Now includes comprehensive language enforcement
+     * System prompt optimized for availability specialist role
+     * Now includes comprehensive language enforcement
      */
     generateSystemPrompt(context: AgentContext): string {
         const { language, availabilityFailureContext } = context;
 
-        // 🚨 CRITICAL: Enhanced language enforcement at the very beginning
+        // Enhanced language enforcement at the very beginning
         const languageEnforcementRules = this.getLanguageEnforcementRules(language);
         const availabilityExamples = this.getAvailabilityExamples(language);
 
@@ -391,7 +371,7 @@ Apollo: "Excellent! I'm transferring you to Sofia who will finalize your reserva
         const communicationGuidelines = this.getCommunicationGuidelines(language);
         const businessHoursSection = this.getBusinessHoursSection();
 
-        // 🚨 ENHANCED: Add language-specific conversation tracking
+        // Add language-specific conversation tracking
         this.logAgentAction('Apollo system prompt generated with language enforcement', {
             agent: this.name,
             conversationLanguage: language,
@@ -518,7 +498,7 @@ Remember: ALL responses must be in the conversation language specified above. Pr
                 };
             }
 
-            // 🎯 INTELLIGENT: Analyze user message for preferences
+            // Analyze user message for preferences
             const userPreferences = this.analyzeUserPreferences(message, context.language || 'en');
             
             // 🔧 Generate empathetic response with immediate action
@@ -541,7 +521,7 @@ After getting results, present the best alternatives empathetically and clearly.
                 temperature: 0.7
             });
 
-            // 🚨 ENHANCED: Language-aware success logging
+            // Language-aware success logging
             this.logAgentAction('Apollo response generated with language consistency', {
                 processingTimeMs: Date.now() - startTime,
                 conversationLanguage: context.language,
@@ -562,13 +542,13 @@ After getting results, present the best alternatives empathetically and clearly.
                     action: 'availability_recovery',
                     userPreferences,
                     failureContext: context.availabilityFailureContext,
-                    conversationLanguage: context.language, // 🚨 NEW: Track conversation language
-                    languageEnforcementApplied: true // 🚨 NEW: Confirm language enforcement
+                    conversationLanguage: context.language, // Track conversation language
+                    languageEnforcementApplied: true // 🚨 Confirm language enforcement
                 }
             };
 
         } catch (error) {
-            // 🚨 ENHANCED: Language-aware error logging
+            // Language-aware error logging
             this.logAgentAction('Apollo agent error with language context', {
                 error: (error as Error).message,
                 conversationLanguage: context.language,
@@ -581,7 +561,7 @@ After getting results, present the best alternatives empathetically and clearly.
     }
 
     /**
-     * 🔍 INTELLIGENT: Analyze user message for time preferences
+     * Analyze user message for time preferences
      */
     private analyzeUserPreferences(message: string, language: string): any {
         const lowerMessage = message.toLowerCase();
@@ -634,7 +614,7 @@ After getting results, present the best alternatives empathetically and clearly.
     }
 
     /**
-     * 🔧 ENHANCED: Get failure context section for system prompt
+     * Get failure context section for system prompt
      */
     private getFailureContextSection(failureContext?: AvailabilityFailureContext): string {
         if (!failureContext) {
@@ -661,7 +641,7 @@ You MUST use these exact parameters when calling find_alternative_times.`;
     }
 
     /**
-     * 🗣️ MULTILINGUAL: Communication guidelines for empathetic responses
+     * Communication guidelines for empathetic responses
      */
     private getCommunicationGuidelines(language: Language): string {
         const guidelines = {
@@ -706,7 +686,7 @@ You MUST use these exact parameters when calling find_alternative_times.`;
     }
 
     /**
-     * 📅 ENHANCED: Business hours section with availability context
+     * Business hours section with availability context
      */
     private getBusinessHoursSection(): string {
         const openingTime = this.restaurantConfig.openingTime || '09:00';
@@ -729,7 +709,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🔧 ENHANCED: Get restaurant context for date/time awareness
+     * Get restaurant context for date/time awareness
      */
     private getRestaurantContext() {
         try {
@@ -762,7 +742,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🔧 GET: Available tools for Apollo agent
+     * Available tools for Apollo agent
      */
     getTools() {
         return agentTools.filter(tool =>
@@ -771,7 +751,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🎯 INTELLIGENT: Score alternative times based on proximity and preferences
+     * Score alternative times based on proximity and preferences
      */
     private scoreAlternative(
         alternative: any,
@@ -823,7 +803,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🕐 HELPER: Determine time of day category
+     * Determine time of day category
      */
     private getTimeOfDay(time: string): 'morning' | 'afternoon' | 'evening' {
         const hour = parseInt(time.split(':')[0]);
@@ -834,7 +814,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 💡 HELPER: Generate reason why an alternative time is good
+     * Generate reason why an alternative time is good
      */
     private generateAlternativeReason(time: string, proximityMinutes: number): string {
         const hour = parseInt(time.split(':')[0]);
@@ -853,7 +833,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🔧 COMPATIBILITY: Legacy method support for system integration
+     * Legacy method support for system integration
      */
     updateInstructions(
         context: string, 
@@ -871,7 +851,7 @@ ${isOvernight ? '- Late Night Advantage: Open until ' + closingTime + ' - great 
     }
 
     /**
-     * 🔧 COMPATIBILITY: Legacy greeting method
+     * Legacy greeting method
      */
     getPersonalizedGreeting(
         guestHistory: any | null, 

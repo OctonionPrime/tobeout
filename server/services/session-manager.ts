@@ -1,12 +1,4 @@
 // server/services/session-manager.ts
-// ✅ REFACTORED: This file has been streamlined to only contain session management utilities.
-// ❌ OBSOLETE: All agent creation logic (createBookingAgent), system prompt generation,
-// and other agent-specific functions have been removed.
-// ➡️ NEW ARCHITECTURE: Agent logic is now handled by the `BaseAgent` class and its
-// implementations (`SofiaAgent`, `MayaAgent`) and managed by the `AgentFactory`.
-// This file's purpose is to define the session data structure and provide
-// basic session manipulation functions used by `enhanced-conversation-manager.ts`.
-// 🔒 SECURITY FIX: Complete tenant isolation and validation added
 
 import type { Language } from '../enhanced-conversation-manager';
 import { TenantContext } from './tenant-context';

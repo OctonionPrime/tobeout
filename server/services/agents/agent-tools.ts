@@ -20,7 +20,6 @@ import type { Language } from '../enhanced-conversation-manager';
 import type { TenantContext } from '../tenant-context'; // 🔧 Import TenantContext type
 import { smartLog } from '../smart-logging.service';
 import { wss } from '../../index';
-// 🚀 REDIS PHASE 3: Import Redis service for guest history caching
 import { redisService } from '../redis-service';
 
 // Import the Drizzle 'db' instance, schema definitions, and ORM operators
@@ -34,11 +33,8 @@ import {
     reservationCancellations
 } from '@shared/schema';
 
-// =================================================================================
-// 🐞 BUG FIX: ADDED HELPER FUNCTION
-// The 'parseTimeToMinutes' function was needed by the corrected business hours
-// validation but was not available in this file. It has been added here.
-// =================================================================================
+
+
 function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
     if (!timeStr) return null;
     const parts = timeStr.split(':');
@@ -50,10 +46,6 @@ function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
     }
     return hours * 60 + minutes;
 }
-// =================================================================================
-// END OF HELPER FUNCTION
-// =================================================================================
-
 
 /**
  * ✅ Extended session interface for context resolution
@@ -110,7 +102,7 @@ class AgentToolTranslationService {
     static async translateToolMessage(
         message: string,
         targetLanguage: Language,
-        tenantContext: TenantContext, // This is the critical fix.
+        tenantContext: TenantContext, 
         context: 'error' | 'success' | 'info' = 'info'
     ): Promise<string> {
         if (targetLanguage === 'en' || targetLanguage === 'auto') return message;
@@ -145,13 +137,8 @@ Return only the translation, no explanations.`;
     }
 }
 
-/**
- * ✅ CRITICAL LANGUAGE BUG FIX: AI Analysis Service using AIService with English output enforcement
- */
+
 class AgentAIAnalysisService {
-    /**
-     * ✅ CRITICAL LANGUAGE BUG FIXED: Enhanced AI analysis that ALWAYS returns English results
-     */
     static async analyzeSpecialRequests(
         completedReservations: Array<{ comments: string | null }>,
         guestName: string,
@@ -248,9 +235,7 @@ If no genuinely useful patterns emerge, return: {"patterns": [], "reasoning": "N
         }
     }
 
-    /**
-     * ✅ CRITICAL FIX: Filter out generic/useless patterns
-     */
+
     private static isGenericPattern(pattern: string): boolean {
         const genericTerms = [
             'meal', 'food', 'dinner', 'lunch', 'breakfast', 'dining', 'eat', 'restaurant',
@@ -405,7 +390,7 @@ async function validateBookingInput(input: {
     guests: number;
     specialRequests?: string;
     context: any;
-}, isAvailabilityCheck: boolean = false): Promise<ValidationResult> { // 🐛 BUG FIX: Add optional flag
+}, isAvailabilityCheck: boolean = false): Promise<ValidationResult> { 
     console.log('🛡️ [validateBookingInput] Starting comprehensive validation:', {
         guestName: input.guestName?.substring(0, 10) + '...',
         guestPhone: input.guestPhone?.substring(0, 6) + '...',
@@ -415,7 +400,7 @@ async function validateBookingInput(input: {
         isAvailabilityCheck // Log the flag
     });
 
-    // 🐛 BUG FIX: Conditionally skip name and phone validation for availability checks
+    // Conditionally skip name and phone validation for availability checks
     if (!isAvailabilityCheck) {
         // 🚨 Name validation (2+ characters)
         if (!input.guestName || typeof input.guestName !== 'string') {
@@ -442,8 +427,7 @@ async function validateBookingInput(input: {
                 field: 'guestName'
             };
         }
-
-        // 🐞 FIX: Prevent using a phone number as a name
+       
         const nameAsDigits = trimmedName.replace(/\D/g, '');
         if (nameAsDigits.length > 6) {
             return {
@@ -596,8 +580,7 @@ async function validateBookingInput(input: {
 
 
 /**
- * 🚨 CRITICAL BUG FIX: Enhanced business hours validation that considers reservation DURATION
- * This fixes the major bug where bookings could end after closing time
+ * business hours validation that considers reservation DURATION
  */
 async function validateBusinessHours(
     time: string,
@@ -608,7 +591,7 @@ async function validateBusinessHours(
         language?: string;
     }
 ): Promise<ValidationResult> {
-    console.log('🕒 [validateBusinessHours] Validating business hours with DURATION check (CRITICAL BUG FIX):', {
+    console.log('🕒 [validateBusinessHours] Validating business hours with DURATION check:', {
         time,
         date,
         timezone: context.timezone
@@ -627,11 +610,10 @@ async function validateBusinessHours(
         }
 
         const { openingTime, closingTime } = restaurant;
-
-        // 🚨 CRITICAL FIX: Get the reservation duration to check end time
+       
         const reservationDurationMinutes = restaurant.avgReservationDuration || 120; // Default 2 hours
 
-        console.log('🚨 [CRITICAL FIX] Using reservation duration for validation:', {
+        console.log('Using reservation duration for validation:', {
             reservationDurationMinutes,
             willCheckEndTime: true
         });
@@ -644,12 +626,11 @@ async function validateBusinessHours(
         if (!requestedDateTime.isValid) {
             return { valid: false, errorMessage: 'Invalid date or time provided.', field: 'datetime' };
         }
-
-        // 🚨 CRITICAL FIX: Calculate when the reservation would END
+        
         const reservationEndDateTime = requestedDateTime.plus({ minutes: reservationDurationMinutes });
         const endTime = reservationEndDateTime.toFormat('HH:mm');
 
-        console.log('🚨 [CRITICAL FIX] Reservation timing validation:', {
+        console.log('Reservation timing validation:', {
             startTime: time,
             endTime: endTime,
             duration: reservationDurationMinutes,
@@ -674,8 +655,7 @@ async function validateBusinessHours(
             if (openingTimeMinutes !== null && closingTimeMinutes !== null) {
                 // Start time validation - valid if it's after opening OR before closing
                 isStartTimeValid = (requestedTimeMinutes >= openingTimeMinutes) || (requestedTimeMinutes < closingTimeMinutes);
-
-                // 🚨 CRITICAL FIX: End time validation for overnight operations
+                
                 // For overnight ops, end time must also respect the overnight window
                 if (reservationEndDateTime.day === requestedDateTime.day) {
                     // Reservation starts and ends on same day
@@ -712,8 +692,7 @@ async function validateBusinessHours(
                 : DateTime.fromFormat(`${date} ${closingTime}`, 'yyyy-MM-dd HH:mm', { zone: context.timezone });
 
             isStartTimeValid = requestedDateTime >= openingDateTime && requestedDateTime < closingDateTime;
-
-            // 🚨 CRITICAL FIX: Check that reservation ENDS before closing time
+           
             isEndTimeValid = reservationEndDateTime <= closingDateTime;
 
             console.log('🌅 [validateBusinessHours] Standard operation validation:', {
@@ -725,8 +704,7 @@ async function validateBusinessHours(
                 reservationEnd: reservationEndDateTime.toISO()
             });
         }
-
-        // 🚨 CRITICAL FIX: Both start AND end times must be valid
+        
         if (!isStartTimeValid) {
             const errorMessage = `Requested start time ${time} is outside business hours (${operatingHours}). Please choose a time during our operating hours.`;
             return {
@@ -752,7 +730,7 @@ async function validateBusinessHours(
             };
         }
 
-        console.log('✅ [validateBusinessHours] Both start and end times are within business hours (CRITICAL BUG FIXED)');
+        console.log('✅ [validateBusinessHours] Both start and end times are within business hours');
         return { valid: true };
 
     } catch (error) {
@@ -857,7 +835,7 @@ function timeToMinutes(timeStr: string): number | null {
 }
 
 /**
- * ✅ CRITICAL FIX: Helper function to normalize database date format for luxon
+ * ✅ Helper function to normalize database date format for luxon
  */
 function normalizeDatabaseTimestamp(dbTimestamp: string): string {
     if (!dbTimestamp) return '';
@@ -882,21 +860,12 @@ function normalizeDatabaseTimestamp(dbTimestamp: string): string {
     return normalized;
 }
 
-// ===== 🚀 REDIS PHASE 3: ENHANCED GUEST HISTORY TOOL WITH CACHING =====
-
 /**
- * 🚀 REDIS PHASE 3 + 🔒 MULTITENANCY FIX: Get guest history with Redis caching and proper tenant isolation
- * ✅ PHASE 1 FIX: Get guest history with AIService-powered analysis (now returns English patterns)
- * 🔒 CRITICAL SECURITY FIX: Now properly filters guests by restaurant ID for tenant isolation
- * Features:
- * - Redis caching with 1-hour TTL
- * - Automatic fallback to memory cache when Redis is down
- * - Cache hit/miss logging and performance monitoring
- * - Compression for large objects
- * - Cache invalidation triggered by booking changes
- * - PROPER MULTITENANCY: Only returns guests for the requesting restaurant
+ * Get guest history with Redis caching and proper tenant isolation
+ * Get guest history with AIService-powered analysis (now returns English patterns)
+ * Now properly filters guests by restaurant ID for tenant isolation
  */
-// PASTE THIS NEW, MORE RESILIENT VERSION
+
 export async function get_guest_history(
     telegramUserId: string,
     context: {
@@ -971,8 +940,7 @@ export async function get_guest_history(
             }
         }
 
-        let frequent_special_requests: string[] = [];
-        // ✅ FIX 1: Check if tenantContext exists before calling AI services.
+        let frequent_special_requests: string[] = [];        
         if (context.session?.tenantContext) {
             console.log('✅ [Guest History] Tenant context found. Proceeding with AI-powered special request analysis.');
 
@@ -981,8 +949,7 @@ export async function get_guest_history(
                 guest.name,
                 context.session.tenantContext
             );
-
-            // ✅ FIX 2: Also check for context before attempting translation.
+          
             if (context.language && context.language !== 'en' && englishRequests.length > 0) {
                 console.log(`👤 [Guest History] Translating English requests to ${context.language}...`);
                 frequent_special_requests = await Promise.all(
@@ -1022,7 +989,7 @@ export async function get_guest_history(
 }
 
 /**
- * ✅ MAYA FIX: Check availability for ANY specific time with optional reservation exclusion
+ * Check availability for ANY specific time with optional reservation exclusion
  */
 export async function check_availability(
     date: string,
@@ -1055,7 +1022,7 @@ export async function check_availability(
         }
 
         const restaurant = await storage.getRestaurant(context.restaurantId);
-        // 🚨 ENHANCED: Use comprehensive validation but skip name/phone
+        // Use comprehensive validation but skip name/phone
         const validation = await validateBookingInput({
             guestName: 'temp-placeholder', // Placeholder that passes length check
             guestPhone: '0000000', // Placeholder that passes length check
@@ -1063,19 +1030,19 @@ export async function check_availability(
             time,
             guests,
             context
-        }, true); // 🐛 Pass true to indicate this is an availability check
+        }, true); 
 
         if (!validation.valid) {
             return createValidationFailure(validation.errorMessage!, validation.field);
         }
 
-        // 🚨 ENHANCED: Business hours validation with DURATION check (CRITICAL BUG FIX)
+        // 🚨 Business hours validation with DURATION check 
         const businessHoursCheck = await validateBusinessHours(time, date, context);
         if (!businessHoursCheck.valid) {
             return createValidationFailure(businessHoursCheck.errorMessage!, businessHoursCheck.field);
         }
 
-        // 🚨 ENHANCED: Past-date validation
+        // 🚨 Past-date validation
         const pastDateCheck = await validatePastDate(date, time, context);
         if (!pastDateCheck.valid) {
             return createValidationFailure(pastDateCheck.errorMessage!, pastDateCheck.field);
@@ -1212,8 +1179,8 @@ export async function find_alternative_times(
         restaurantId: number;
         timezone: string;
         language: string;
-        excludeReservationId?: number; // ✅ CRITICAL BUG FIX: Added excludeReservationId parameter
-        session?: BookingSessionWithAgent; // 🔧 Pass session for context
+        excludeReservationId?: number; // Added excludeReservationId parameter
+        session?: BookingSessionWithAgent; // Pass session for context
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
@@ -1267,7 +1234,7 @@ export async function find_alternative_times(
                 maxResults: 8,
                 timezone: context.timezone,
                 allowCombinations: true,
-                excludeReservationId: context.excludeReservationId // ✅ CRITICAL BUG FIX: Pass excludeReservationId to availability service
+                excludeReservationId: context.excludeReservationId // ✅ Pass excludeReservationId to availability service
             }
         );
 
@@ -1329,12 +1296,6 @@ export async function find_alternative_times(
     }
 }
 
-/**
- * 🚨 COMPLETELY ENHANCED: Create reservation with comprehensive validation pipeline as per original plan
- * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful booking
- * This implements ALL the validation enhancements specified in the original plan
- * 🚨 CRITICAL BUG FIX: Now includes proper business hours validation that considers reservation duration
- */
 export async function create_reservation(
     guestName: string,
     guestPhone: string,
@@ -1349,13 +1310,12 @@ export async function create_reservation(
         source: string;
         sessionId?: string;
         language: string;
-        confirmedName?: string;
-        // ✅ FIX #4: Add session context for validation
+        confirmedName?: string;        
         session?: BookingSessionWithAgent;
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
-    console.log(`📝 [Agent Tool] create_reservation ENHANCED with CRITICAL BUG FIX: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
+    console.log(`📝 [Agent Tool] create_reservation: ${guestName} (${guestPhone}) for ${guests} guests on ${date} at ${time}`);
 
     const effectiveGuestName = context.confirmedName || guestName;
     if (context.confirmedName) {
@@ -1416,7 +1376,7 @@ export async function create_reservation(
 
         console.log('✅ [Agent Tool] Basic input validation passed');
 
-        // 🚨 PAST-DATE VALIDATION with grace period as specified in original plan
+        // 🚨 PAST-DATE VALIDATION with grace period 
         const pastDateValidation = await validatePastDate(date, time, context);
         if (!pastDateValidation.valid) {
             console.error('❌ [Agent Tool] Past-date validation failed:', pastDateValidation.errorMessage);
@@ -1424,17 +1384,16 @@ export async function create_reservation(
         }
 
         console.log('✅ [Agent Tool] Past-date validation passed');
-
-        // 🚨 BUSINESS HOURS VALIDATION with DURATION check (CRITICAL BUG FIX)
+        
         const businessHoursValidation = await validateBusinessHours(time, date, context);
         if (!businessHoursValidation.valid) {
-            console.error('❌ [Agent Tool] Business hours validation failed (CRITICAL BUG PREVENTED):', businessHoursValidation.errorMessage);
+            console.error('❌ [Agent Tool] Business hours validation failed:', businessHoursValidation.errorMessage);
             return createValidationFailure(businessHoursValidation.errorMessage!, businessHoursValidation.field);
         }
 
-        console.log('✅ [Agent Tool] Business hours validation with DURATION check passed (CRITICAL BUG FIXED)');
+        console.log('✅ [Agent Tool] Business hours validation with DURATION check passed');
 
-        // 🚨 INPUT SANITIZATION as specified in original plan
+        // 🚨 INPUT SANITIZATION 
         const cleanPhone = guestPhone.replace(/[^\d+\-\s()]/g, '').trim();
         const cleanName = effectiveGuestName.trim();
 
@@ -1505,7 +1464,7 @@ export async function create_reservation(
             console.log(`✅ [WORKFLOW_VALIDATION] Special request "${specialRequests}" is new (not from history) - proceeding normally`);
         }
 
-        console.log(`✅ [Agent Tool] ALL VALIDATION LAYERS PASSED including CRITICAL BUG FIX. Creating reservation with enhanced validation:`);
+        console.log(`✅ [Agent Tool] ALL VALIDATION LAYERS PASSED. Creating reservation with enhanced validation:`);
         console.log(`   - Restaurant ID: ${context.restaurantId}`);
         console.log(`   - Guest: ${cleanName} (${cleanPhone})`);
         console.log(`   - Date/Time: ${date} ${timeFormatted} (enhanced validation complete with DURATION check)`);
@@ -1529,7 +1488,7 @@ export async function create_reservation(
             context.confirmedName,
             undefined,
             context.timezone,
-            context.session.tenantContext // ✅ CORE FIX: Pass the tenant context from the session
+            context.session.tenantContext 
         );
 
         const executionTime = Date.now() - startTime;
@@ -1562,7 +1521,7 @@ export async function create_reservation(
         });
 
         if (result.success && result.reservation && result.reservation.id) {
-            console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation with CRITICAL BUG FIX created successfully: #${result.reservation.id} at ${timeFormatted}`);
+            console.log(`✅ [Agent Tool] ENHANCED VALIDATION reservation created successfully: #${result.reservation.id} at ${timeFormatted}`);
 
             // 🚀 Invalidate guest history cache after successful booking
             await invalidateGuestHistoryCache({
@@ -1576,12 +1535,12 @@ export async function create_reservation(
                 validationLayers: [
                     'basic_input_validation',
                     'past_date_validation',
-                    'business_hours_validation_with_duration_check', // 🚨 CRITICAL BUG FIX indicator
+                    'business_hours_validation_with_duration_check',  
                     'input_sanitization',
                     'workflow_validation'
                 ],
-                cacheInvalidated: !!context.telegramUserId, // 🚀 REDIS PHASE 3: Indicate cache invalidation
-                criticalBugFixed: 'business_hours_duration_check' // 🚨 Indicate critical bug was fixed
+                cacheInvalidated: !!context.telegramUserId,  
+                criticalBugFixed: 'business_hours_duration_check'  
             };
 
             if (specialRequests !== validatedSpecialRequests) {
@@ -1615,7 +1574,7 @@ export async function create_reservation(
                 timeSupported: 'exact'
             }, metadata);
         } else {
-            console.log(`⚠️ [Agent Tool] Enhanced validation reservation with CRITICAL BUG FIX failed:`, {
+            console.log(`⚠️ [Agent Tool] Enhanced validation reservation with failed:`, {
                 success: result.success,
                 status: result.status,
                 message: result.message,
@@ -1646,7 +1605,7 @@ export async function create_reservation(
         }
 
     } catch (error) {
-        console.error(`❌ [Agent Tool] create_reservation ENHANCED VALIDATION with CRITICAL BUG FIX error:`, error);
+        console.error(`❌ [Agent Tool] create_reservation ENHANCED VALIDATION error:`, error);
 
         console.error(`❌ [Agent Tool] Enhanced validation error details:`, {
             guestName: effectiveGuestName,
@@ -1661,7 +1620,7 @@ export async function create_reservation(
             errorMessage: error instanceof Error ? error.message : 'Unknown error'
         });
 
-        return createSystemError('Failed to create reservation due to system error in enhanced validation pipeline with critical bug fix', error);
+        return createSystemError('Failed to create reservation due to system error in enhanced validation pipeline', error);
     }
 }
 
@@ -1807,9 +1766,8 @@ export async function get_restaurant_info(
 // ===== 🆕 MAYA'S RESERVATION MANAGEMENT TOOLS =====
 
 /**
- * ✅ RESERVATION SEARCH ENHANCEMENT: Find existing reservations with time range and status filtering
- * ✅ FIXED: Find existing reservations for a guest using Drizzle ORM with timezone utils
- * ✅ CRITICAL FIX: Now properly returns reservation details with correct confirmation formatting
+ * ✅ Find existing reservations with time range and status filtering
+ * ✅ Find existing reservations for a guest using Drizzle ORM with timezone utils  
  */
 export async function find_existing_reservation(
     identifier: string,
@@ -1837,7 +1795,7 @@ export async function find_existing_reservation(
 
         let finalIdentifierType = identifierType;
 
-        // ✅ FIX: Improved auto-detection logic
+        // ✅ Improved auto-detection logic
         if (finalIdentifierType === 'auto') {
             const numericOnly = identifier.replace(/\D/g, '');
             if (/^\d{1,4}$/.test(numericOnly) && numericOnly.length < 5) {
@@ -1872,13 +1830,13 @@ export async function find_existing_reservation(
             conditions.push(inArray(reservations.status, includeStatus));
         }
 
-        // ✅ ENHANCEMENT: Add time filter based on range WITH SMART LOGIC
+        // ✅ Add time filter based on range WITH SMART LOGIC
         switch (timeRange) {
             case 'upcoming':
                 conditions.push(gt(reservations.reservation_utc, nowUtc));
                 break;
             case 'past':
-                // ✅ FIX: For 'past' + 'completed'/'canceled' statuses,
+                // ✅ For 'past' + 'completed'/'canceled' statuses,
                 // user wants to see their booking history, not just time-filtered results
                 const hasCompletedOrCanceled = includeStatus.some(status =>
                     ['completed', 'canceled'].includes(status)
@@ -2047,7 +2005,7 @@ export async function find_existing_reservation(
             'success'
         );
 
-        // ✅ CRITICAL FIX: Store reservation details in response data for proper access
+        // ✅ Store reservation details in response data for proper access
         const responseData = {
             reservations: formattedReservations,
             count: formattedReservations.length,
@@ -2055,7 +2013,7 @@ export async function find_existing_reservation(
             timeRange: timeRange,
             includeStatus: includeStatus,
             message: translatedMessage,
-            // ✅ NEW: Add primary reservation for easy access
+            // ✅ Add primary reservation for easy access
             primaryReservation: formattedReservations[0] // Most recent reservation
         };
 
@@ -2202,7 +2160,7 @@ export async function modify_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED MODIFICATION ATTEMPT: Telegram user ${context.telegramUserId} tried to modify reservation ${targetReservationId} owned by ${ownershipCheck.telegramUserId}`);
 
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // Pass tenant context to translation service
                 const baseMessage = 'For security, you can only modify reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2238,7 +2196,7 @@ export async function modify_reservation(
             ));
 
         if (!currentReservation) {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // Pass tenant context to translation service
             const baseMessage = 'Reservation not found.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2249,9 +2207,9 @@ export async function modify_reservation(
             return createBusinessRuleFailure(translatedMessage, 'RESERVATION_NOT_FOUND');
         }
 
-        // ✅ NEW: Check if reservation is already canceled
+        // ✅ Check if reservation is already canceled
         if (currentReservation.status === 'canceled') {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // Pass tenant context to translation service
             const baseMessage = 'Cannot modify a canceled reservation. Please create a new booking instead.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2489,7 +2447,7 @@ export async function modify_reservation(
             telegramUserId: context.telegramUserId
         });
 
-        // ✅ Return success response (NO STATE CLEANUP - this was the bug!)
+        // ✅ Return success response
         const changes = [];
         if (newGuests !== currentReservation.guests) {
             changes.push(`party size changed from ${currentReservation.guests} to ${newGuests}`);
@@ -2545,34 +2503,34 @@ export async function modify_reservation(
 }
 
 /**
- * ✅ BUG FIX: Enhanced cancel_reservation with optional confirmCancellation parameter
- * 🚀 REDIS PHASE 3: Now includes cache invalidation after successful cancellation
+ * ✅ cancel_reservation with optional confirmCancellation parameter
+ * includes cache invalidation after successful cancellation
  */
 export async function cancel_reservation(
     reservationId: number,
     reason: string = 'Guest requested cancellation',
-    confirmCancellation?: boolean, // 🔧 BUG FIX: Made optional
+    confirmCancellation?: boolean, // Made optional
     context: {
         restaurantId: number;
         timezone: string;
         language: string;
         telegramUserId?: string;
         sessionId?: string;
-        session?: BookingSessionWithAgent; // 🔧 BUG-20250725-001 FIX: Pass session for context
+        session?: BookingSessionWithAgent; 
     }
 ): Promise<ToolResponse> {
     const startTime = Date.now();
     console.log(`❌ [Maya Tool] Cancelling reservation ${reservationId}, confirmed: ${confirmCancellation}`);
 
     try {
-        // 🔧 BUG-20250725-001 FIX: Ensure tenantContext exists for AI calls
+        // Ensure tenantContext exists for AI calls
         if (!context.session?.tenantContext) {
             return createSystemError('Missing tenant context for reservation cancellation');
         }
 
-        // 🔧 BUG FIX: If confirmCancellation is not provided, ask for confirmation
+        // 🔧 If confirmCancellation is not provided, ask for confirmation
         if (confirmCancellation !== true) {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // Pass tenant context to translation service
             const baseMessage = `Are you sure you want to cancel your reservation? This action cannot be undone. Please confirm if you want to proceed.`;
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2587,7 +2545,7 @@ export async function cancel_reservation(
             );
         }
 
-        // ✅ SECURITY ENHANCEMENT: Validate ownership before cancellation
+        // ✅ Validate ownership before cancellation
         if (context.telegramUserId) {
             console.log(`🔒 [Security] Validating reservation ownership for cancellation by telegram user: ${context.telegramUserId}`);
 
@@ -2605,7 +2563,7 @@ export async function cancel_reservation(
                 ));
 
             if (!ownershipCheck) {
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // Pass tenant context to translation service
                 const baseMessage = 'Reservation not found. Please provide the correct confirmation number.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2623,7 +2581,7 @@ export async function cancel_reservation(
             if (ownershipCheck.telegramUserId !== context.telegramUserId) {
                 console.warn(`🚨 [Security] UNAUTHORIZED CANCELLATION ATTEMPT: Telegram user ${context.telegramUserId} tried to cancel reservation ${reservationId} owned by ${ownershipCheck.telegramUserId}`);
 
-                // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+                // 🔧 Pass tenant context to translation service
                 const baseMessage = 'For security, you can only cancel reservations linked to your own account. Please provide the confirmation number for the correct booking.';
                 const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                     baseMessage,
@@ -2641,7 +2599,7 @@ export async function cancel_reservation(
             console.log(`✅ [Security] Ownership validated for cancellation of reservation ${reservationId}`);
         }
 
-        // ✅ STEP 1: Get current reservation details before cancellation
+        // ✅ Get current reservation details before cancellation
         const [currentReservation] = await db
             .select({
                 id: reservations.id,
@@ -2660,7 +2618,7 @@ export async function cancel_reservation(
             ));
 
         if (!currentReservation) {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // Pass tenant context to translation service
             const baseMessage = 'Reservation not found.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2672,7 +2630,7 @@ export async function cancel_reservation(
         }
 
         if (currentReservation.status === 'canceled') {
-            // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+            // Pass tenant context to translation service
             const baseMessage = 'This reservation has already been cancelled.';
             const translatedMessage = await AgentToolTranslationService.translateToolMessage(
                 baseMessage,
@@ -2691,7 +2649,7 @@ export async function cancel_reservation(
             tableId: currentReservation.tableId
         });
 
-        // ✅ STEP 2: Update reservation status to cancelled
+        // ✅ Update reservation status to cancelled
         await db
             .update(reservations)
             .set({
@@ -2700,7 +2658,7 @@ export async function cancel_reservation(
             })
             .where(eq(reservations.id, reservationId));
 
-        // ✅ STEP 3: Log the cancellation
+        // ✅ Log the cancellation
         await db.insert(reservationCancellations).values({
             reservationId: reservationId,
             cancelledBy: 'guest',
@@ -2717,13 +2675,13 @@ export async function cancel_reservation(
 
         console.log(`✅ [Maya Tool] Successfully cancelled reservation ${reservationId}`);
 
-        // 🚀 REDIS PHASE 3: Invalidate guest history cache after successful cancellation
+        // Invalidate guest history cache after successful cancellation
         await invalidateGuestHistoryCache({
             restaurantId: context.restaurantId,
             telegramUserId: context.telegramUserId
         });
 
-        // ✅ STEP 4: Calculate refund eligibility (basic logic)
+        // Calculate refund eligibility (basic logic)
         const normalizedTimestamp = normalizeDatabaseTimestamp(currentReservation.reservation_utc);
         const reservationDt = DateTime.fromISO(normalizedTimestamp);
         const now = DateTime.now().setZone(context.timezone);
@@ -2733,8 +2691,8 @@ export async function cancel_reservation(
         const refundEligible = hoursUntilReservation >= 24;
         const refundPercentage = hoursUntilReservation >= 24 ? 100 : hoursUntilReservation >= 2 ? 50 : 0;
 
-        // ✅ STEP 5: Return success response
-        // 🔧 BUG-20250725-001 FIX: Pass tenant context to translation service
+        //  Return success response
+        //  Pass tenant context to translation service
         const baseSuccessMessage = `Your reservation has been successfully cancelled. We're sorry to see you go and hope to serve you again in the future!${refundEligible ? ' You are eligible for a full refund.' : refundPercentage > 0 ? ` You are eligible for a ${refundPercentage}% refund.` : ''}`;
         const translatedSuccessMessage = await AgentToolTranslationService.translateToolMessage(
             baseSuccessMessage,
@@ -2755,7 +2713,7 @@ export async function cancel_reservation(
             hoursUntilReservation: Math.round(hoursUntilReservation * 10) / 10
         }, {
             execution_time_ms: Date.now() - startTime,
-            cacheInvalidated: !!context.telegramUserId // 🚀 REDIS PHASE 3: Indicate cache invalidation
+            cacheInvalidated: !!context.telegramUserId // Indicate cache invalidation
         });
 
     } catch (error) {
@@ -2764,13 +2722,13 @@ export async function cancel_reservation(
     }
 }
 
-// ✅ FIX #6: Enhanced agent tools configuration with improved tool descriptions
+// Enhanced agent tools configuration with improved tool descriptions
 export const agentTools = [
     {
         type: "function" as const,
         function: {
             name: "get_guest_history",
-            description: "🚀 REDIS CACHED + 🔒 MULTITENANCY FIXED: Get guest's booking history for personalized service with 1-hour Redis caching and proper tenant isolation. Use this to welcome returning guests and suggest their usual preferences. Cache automatically invalidated when bookings change. Now properly filters guests by restaurant ID.",
+            description: "Get guest's booking history for personalized service with 1-hour Redis caching and proper tenant isolation. Use this to welcome returning guests and suggest their usual preferences. Cache automatically invalidated when bookings change. Now properly filters guests by restaurant ID.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2787,7 +2745,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "check_availability",
-            description: "🚨 CRITICAL BUG FIXED: Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30) with comprehensive validation pipeline including business hours WITH DURATION CHECK to prevent bookings ending after closing time, past-date prevention, and timezone awareness. Returns standardized response with tool_status and detailed data or error information.",
+            description: " Check if tables are available for ANY specific time (supports exact times like 16:15, 19:43, 8:30) with comprehensive validation pipeline including business hours WITH DURATION CHECK to prevent bookings ending after closing time, past-date prevention, and timezone awareness. Returns standardized response with tool_status and detailed data or error information.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2797,7 +2755,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 - validated against business hours WITH DURATION CHECK (CRITICAL BUG FIX)"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 - validated against business hours WITH DURATION CHECK "
                     },
                     guests: {
                         type: "number",
@@ -2837,7 +2795,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "create_reservation",
-            description: "🚨 CRITICAL BUG FIXED + 🚀 REDIS CACHED: Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation WITH DURATION CHECK to prevent bookings ending after closing time (CRITICAL BUG FIX), (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Automatically invalidates guest history cache after successful booking. Returns standardized response indicating success with reservation details or failure with categorized error.",
+            description: " Create a new reservation at ANY exact time (supports times like 16:15, 19:43, 8:30) with COMPREHENSIVE 5-LAYER VALIDATION PIPELINE: (1) Basic input validation with field-by-field checks, (2) Past-date validation with 5-minute grace period using restaurant timezone, (3) Business hours validation WITH DURATION CHECK to prevent bookings ending after closing time, (4) Input sanitization for all parameters, (5) Workflow validation for special requests. Automatically invalidates guest history cache after successful booking. Returns standardized response indicating success with reservation details or failure with categorized error.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2855,7 +2813,7 @@ export const agentTools = [
                     },
                     time: {
                         type: "string",
-                        description: "Time in HH:MM format (24-hour) - CRITICAL BUG FIX: supports ANY exact time like 16:15, 19:43, 8:30 with business hours validation INCLUDING DURATION CHECK to prevent bookings ending after closing time"
+                        description: "Time in HH:MM format (24-hour) - supports ANY exact time like 16:15, 19:43, 8:30 with business hours validation INCLUDING DURATION CHECK to prevent bookings ending after closing time"
                     },
                     guests: {
                         type: "number",
@@ -2972,7 +2930,7 @@ export const agentTools = [
         type: "function" as const,
         function: {
             name: "cancel_reservation",
-            description: "🔧 BUG FIX + 🚀 REDIS CACHED: Cancel an existing reservation. The system will prompt for confirmation if not provided. SECURITY VALIDATED: Only allows guests to cancel their own reservations. Automatically invalidates guest history cache after successful cancellation.",
+            description: "Cancel an existing reservation. The system will prompt for confirmation if not provided. SECURITY VALIDATED: Only allows guests to cancel their own reservations. Automatically invalidates guest history cache after successful cancellation.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2987,7 +2945,7 @@ export const agentTools = [
                     },
                     confirmCancellation: {
                         type: "boolean",
-                        description: "🔧 BUG FIX: Explicit confirmation from guest that they want to cancel. Omit this to have the system prompt the user for confirmation."
+                        description: " Explicit confirmation from guest that they want to cancel. Omit this to have the system prompt the user for confirmation."
                     }
                 },
                 required: ["reservationId"]
@@ -3003,11 +2961,11 @@ export const agentFunctions = {
     // Sofia's tools with comprehensive validation pipeline including duration check
     check_availability, // ✅ Now includes: basic validation + business hours with DURATION CHECK + past-date validation
     find_alternative_times, // ✅ Now includes: basic validation + past-date validation
-    create_reservation, // 🚨 CRITICAL BUG FIXED: 5-layer validation pipeline with duration check + Redis cache invalidation
+    create_reservation, //  5-layer validation pipeline with duration check + Redis cache invalidation
     get_restaurant_info,
 
     // Maya's tools with ContextManager integration + Redis cache invalidation
     find_existing_reservation,
     modify_reservation, // ✅ Now uses ContextManager for optional reservationId with context resolution + Redis cache invalidation
-    cancel_reservation // 🔧 BUG FIX: Now has optional confirmCancellation parameter + Redis cache invalidation
+    cancel_reservation // 🔧Now has optional confirmCancellation parameter + Redis cache invalidation
 };

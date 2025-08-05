@@ -1,16 +1,11 @@
 // src/services/context-manager.ts
-// Context Manager with Critical Race Condition Fixes
-// ✅ FIXED: Context resolution race condition with comprehensive pattern matching
-// ✅ FIXED: Infinite clarification prevention with attempt counters
-// ✅ ENHANCED: Multilingual natural language cue detection
-// ✅ OPTIMIZED: Performance improvements and caching
-// ✅ SECURED: Input validation and sanitization
+
 
 import type { BookingSession } from './session-manager';
 import type { Language } from './enhanced-conversation-manager';
 
 /**
- * 🔧 ENHANCED: Booking session interface with critical fixes
+ * Booking session interface with critical fixes
  */
 export interface BookingSessionWithAgent extends BookingSession {
     currentAgent: 'booking' | 'reservations' | 'conductor' | 'availability';
@@ -54,9 +49,9 @@ export interface BookingSessionWithAgent extends BookingSession {
         userReference?: string;
     }>;
     currentOperationContext?: any;
-    // 🆕 CRITICAL FIX: Add clarification attempt tracking
+    // Add clarification attempt tracking
     clarificationAttempts?: Map<string, number>;
-    // 🆕 PERFORMANCE: Add caching for resolution results
+    // Add caching for resolution results
     lastResolutionCache?: {
         userMessage: string;
         result: ReservationResolution;
@@ -65,7 +60,7 @@ export interface BookingSessionWithAgent extends BookingSession {
 }
 
 /**
- * 🔧 ENHANCED: Resolution result with confidence scoring
+ * Resolution result with confidence scoring
  */
 export interface ReservationResolution {
     resolvedId: number | null;
@@ -73,7 +68,7 @@ export interface ReservationResolution {
     method: string;
     shouldAskForClarification: boolean;
     suggestion?: string;
-    // 🆕 ENHANCED: Additional metadata for debugging
+    // Additional metadata for debugging
     matchingPatterns?: string[];
     alternativeCandidates?: number[];
     debugInfo?: {
@@ -84,7 +79,7 @@ export interface ReservationResolution {
 }
 
 /**
- * 🔧 ENHANCED: Conversation flags with history tracking
+ * Conversation flags with history tracking
  */
 export interface ConversationFlags {
     hasAskedPartySize?: boolean;
@@ -101,7 +96,7 @@ export interface ConversationFlags {
 }
 
 /**
- * 🆕 CRITICAL FIX: Pattern matching configuration for different languages
+ * Pattern matching configuration for different languages
  */
 interface PatternConfig {
     datePatterns: RegExp[];
@@ -111,20 +106,19 @@ interface PatternConfig {
 }
 
 /**
- * 🚀 PRODUCTION-READY: Context Manager with Critical Race Condition Fixes
- * 
+ * Context Manager with Critical Race Condition Fixes 
  * This class handles all context resolution for multi-reservation scenarios,
  * preventing the critical race condition that caused modification failures.
  */
 export class ContextManager {
     private static instance: ContextManager | null = null;
     
-    // 🆕 PERFORMANCE: Cache resolution results for similar queries
+    // Cache resolution results for similar queries
     private resolutionCache = new Map<string, { result: ReservationResolution; timestamp: number }>();
     private readonly CACHE_TTL = 30000; // 30 seconds
     private readonly MAX_CLARIFICATION_ATTEMPTS = 3; // Prevent infinite loops
     
-    // 🆕 CRITICAL FIX: Comprehensive multilingual pattern configurations
+    // Comprehensive multilingual pattern configurations
     private readonly patterns: Record<string, PatternConfig> = {
         en: {
             datePatterns: [
@@ -211,16 +205,7 @@ export class ContextManager {
         return ContextManager.instance;
     }
 
-    /**
-     * 🚀 CRITICAL FIX: Comprehensive reservation resolution with race condition prevention
-     * 
-     * This method completely resolves the race condition by implementing:
-     * 1. Comprehensive pattern matching across all languages
-     * 2. Confidence-based scoring system
-     * 3. Caching for performance optimization
-     * 4. Attempt limiting to prevent infinite clarification loops
-     * 5. Detailed logging for debugging
-     */
+
     resolveReservationFromContext(
         userMessage: string,
         session: BookingSessionWithAgent,
@@ -228,7 +213,7 @@ export class ContextManager {
     ): ReservationResolution {
         console.log(`[ContextManager] 🔍 Starting resolution for: "${userMessage.substring(0, 100)}..."`);
         
-        // 🆕 PERFORMANCE: Check cache first (for repeated similar queries)
+        // Check cache first (for repeated similar queries)
         const cacheKey = `${userMessage.toLowerCase().trim()}_${session.foundReservations?.length || 0}`;
         const cached = this.resolutionCache.get(cacheKey);
         if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
@@ -239,7 +224,7 @@ export class ContextManager {
         // Clean expired context entries
         this.cleanExpiredContext(session);
 
-        // 🆕 SECURITY: Sanitize user input
+        // Sanitize user input
         const sanitizedMessage = this.sanitizeUserInput(userMessage);
         
         // Initialize debug info
@@ -299,7 +284,7 @@ export class ContextManager {
             return result;
         }
 
-        // 🚀 CRITICAL FIX: Advanced natural language cue resolution
+        // Advanced natural language cue resolution
         if (session.foundReservations && session.foundReservations.length > 1) {
             const naturalLanguageResult = this.resolveWithNaturalLanguageCues(
                 sanitizedMessage, 
@@ -322,8 +307,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 CRITICAL FIX: Advanced natural language cue detection
-     * 
+     * Advanced natural language cue detection
      * This completely replaces the simple day-matching logic with comprehensive
      * pattern matching across multiple languages and reservation attributes.
      */
@@ -339,7 +323,7 @@ export class ContextManager {
             let score = 0;
             const matchingPatterns: string[] = [];
 
-            // 🔍 DATE PATTERN MATCHING
+            // DATE PATTERN MATCHING
             const reservationDate = new Date(reservation.date);
             const day = reservationDate.getDate();
             const month = reservationDate.getMonth() + 1;
@@ -358,7 +342,7 @@ export class ContextManager {
                 }
             }
 
-            // 🔍 TIME PATTERN MATCHING
+            // TIME PATTERN MATCHING
             const reservationHour = parseInt(reservation.time.split(':')[0], 10);
             const reservationMinute = parseInt(reservation.time.split(':')[1], 10);
             
@@ -386,7 +370,7 @@ export class ContextManager {
                 }
             }
 
-            // 🔍 GUEST COUNT PATTERN MATCHING
+            // GUEST COUNT PATTERN MATCHING
             for (const pattern of patterns.guestPatterns) {
                 const matches = userMessage.match(pattern);
                 if (matches) {
@@ -403,7 +387,7 @@ export class ContextManager {
                 }
             }
 
-            // 🔍 TABLE NAME MATCHING (if available)
+            // TABLE NAME MATCHING (if available)
             if (reservation.tableName) {
                 const tablePattern = new RegExp(`\\b${reservation.tableName.replace(/\s+/g, '\\s*')}\\b`, 'gi');
                 if (tablePattern.test(userMessage)) {
@@ -461,7 +445,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 ENHANCED: Check recent context with comprehensive phrase matching
+     * Check recent context with comprehensive phrase matching
      */
     private checkRecentContext(
         userMessage: string,
@@ -496,7 +480,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 CRITICAL FIX: Handle clarification with attempt limiting
+     * Handle clarification with attempt limiting
      */
     private handleClarificationRequest(
         session: BookingSessionWithAgent,
@@ -512,7 +496,7 @@ export class ContextManager {
         const attemptKey = 'reservation_clarification';
         const currentAttempts = session.clarificationAttempts.get(attemptKey) || 0;
 
-        // 🚨 CRITICAL FIX: Prevent infinite clarification loops
+        // Prevent infinite clarification loops
         if (currentAttempts >= this.MAX_CLARIFICATION_ATTEMPTS) {
             console.log(`[ContextManager] 🚨 Max clarification attempts reached (${currentAttempts})`);
             
@@ -549,7 +533,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 SECURITY: Input sanitization for user messages
+     * Input sanitization for user messages
      */
     private sanitizeUserInput(input: string): string {
         // Remove potentially harmful characters and normalize
@@ -566,7 +550,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 PERFORMANCE: Cache resolution results
+     * Cache resolution results
      */
     private cacheResolution(key: string, result: ReservationResolution): void {
         this.resolutionCache.set(key, {
@@ -586,7 +570,7 @@ export class ContextManager {
     }
 
     /**
-     * ✅ ENHANCED: Context preservation with enhanced tracking
+     * Context preservation with enhanced tracking
      */
     preserveReservationContext(
         session: BookingSessionWithAgent,
@@ -623,12 +607,12 @@ export class ContextManager {
             console.log(`[ContextManager] Set active reservation ID: ${reservationId}`);
         }
 
-        // 🆕 PERFORMANCE: Clear resolution cache when context changes
+        // Clear resolution cache when context changes
         this.resolutionCache.clear();
     }
 
     /**
-     * ✅ ENHANCED: Clean expired context entries
+     * Clean expired context entries
      */
     cleanExpiredContext(session: BookingSessionWithAgent): void {
         if (!session.recentlyModifiedReservations) return;
@@ -649,7 +633,7 @@ export class ContextManager {
     }
 
     /**
-     * ✅ ENHANCED: Advanced conversation flag management
+     * Advanced conversation flag management
      */
     updateConversationFlags(
         session: BookingSessionWithAgent,
@@ -695,7 +679,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 CRITICAL FIX: Enhanced session reset with clarification attempt cleanup
+     * Enhanced session reset with clarification attempt cleanup
      */
     resetSessionContamination(
         session: BookingSessionWithAgent,
@@ -731,7 +715,7 @@ export class ContextManager {
         delete session.foundReservations;
         delete session.availabilityFailureContext;
 
-        // 🆕 CRITICAL FIX: Clear clarification attempts to prevent stale state
+        // Clear clarification attempts to prevent stale state
         if (session.clarificationAttempts) {
             session.clarificationAttempts.clear();
         }
@@ -743,7 +727,7 @@ export class ContextManager {
     }
 
     /**
-     * ✅ ENHANCED: Set availability failure context for Apollo agent
+     * Set availability failure context for Apollo agent
      */
     setAvailabilityFailureContext(
         session: BookingSessionWithAgent,
@@ -768,7 +752,7 @@ export class ContextManager {
     }
 
     /**
-     * ✅ ENHANCED: Clear availability failure context
+     * Clear availability failure context
      */
     clearAvailabilityFailureContext(session: BookingSessionWithAgent): void {
         if (session.availabilityFailureContext) {
@@ -778,7 +762,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 ENHANCED: Get comprehensive context summary for debugging
+     * Get comprehensive context summary for debugging
      */
     getContextSummary(session: BookingSessionWithAgent): {
         activeReservationId: number | undefined;
@@ -828,7 +812,7 @@ export class ContextManager {
     }
 
     /**
-     * 🆕 MAINTENANCE: Clear all caches (useful for memory management)
+     * Clear all caches (useful for memory management)
      */
     clearCaches(): void {
         this.resolutionCache.clear();
@@ -836,5 +820,5 @@ export class ContextManager {
     }
 }
 
-// ✅ Export singleton instance
+// Export singleton instance
 export const contextManager = ContextManager.getInstance();

@@ -4,7 +4,6 @@ import { BaseAgent, AgentConfig, RestaurantConfig } from './base-agent';
 import { SofiaAgent } from './sofia-agent';
 import { MayaAgent } from './maya-agent';
 import { ConductorAgent } from './conductor-agent';
-// 🚀 APOLLO FIX: Import the newly created ApolloAgent
 import { ApolloAgent } from './apollo-agent';
 import { TenantContext } from '../tenant-context';
 import { smartLog } from '../smart-logging.service';
@@ -19,14 +18,13 @@ type AgentType = 'booking' | 'reservations' | 'conductor' | 'availability';
 
 /**
  * Represents an entry in the agent cache registry with tenant isolation.
- * 🔒 BUG-B-1 FIX: Added full tenantContext storage for AI operations
  */
 interface AgentRegistryEntry {
     agent: BaseAgent;
     agentType: AgentType;
     restaurantId: number;
-    tenantId: number; // 🔒 NEW: Explicit tenant tracking
-    tenantContext: TenantContext; // ✅ BUG-B-1 FIX: Store full context for AI calls
+    tenantId: number; 
+    tenantContext: TenantContext; 
     createdAt: Date;
     lastUsed: Date;
     requestCount: number;
@@ -383,7 +381,6 @@ export class AgentFactory {
                 cachedEntry.lastUsed = new Date();
                 cachedEntry.requestCount++;
                 cachedEntry.securityContext.lastValidation = new Date();
-                // ✅ BUG-B-1 FIX: Update tenant context in cache to ensure it's current
                 cachedEntry.tenantContext = tenantContext;
 
                 smartLog.info('Retrieved cached agent with tenant validation', {
@@ -420,7 +417,6 @@ export class AgentFactory {
     }
 
     /**
-     * ✅ BUG-B-5 FIX: Enhanced cache management with staleness check
      * 🔒 Find cached agent for specific tenant (prevents cross-tenant sharing)
      */
     private findCachedAgentForTenant(type: AgentType, tenantId: number): AgentRegistryEntry | null {
@@ -428,7 +424,7 @@ export class AgentFactory {
             if (entry.agentType === type && 
                 entry.tenantId === tenantId && 
                 entry.healthy &&
-                !this.isEntryStale(entry)) { // ✅ BUG-B-5 FIX: Add staleness check
+                !this.isEntryStale(entry)) { 
                 
                 entry.lastUsed = new Date();
                 entry.requestCount++;
@@ -452,9 +448,7 @@ export class AgentFactory {
         return null;
     }
 
-    /**
-     * ✅ BUG-B-5 FIX: Check if cache entry is stale
-     */
+  
     private isEntryStale(entry: AgentRegistryEntry): boolean {
         const maxAge = 30 * 60 * 1000; // 30 minutes
         const isStale = Date.now() - entry.lastUsed.getTime() > maxAge;
@@ -471,9 +465,7 @@ export class AgentFactory {
         return isStale;
     }
 
-    /**
-     * ✅ BUG-B-5 FIX: Prevent cache clearing on valid session resets
-     */
+  
     private shouldClearCacheForReset(resetReason: string): boolean {
         const validReasons = ['new_booking_request', 'agent_handoff'];
         return !validReasons.includes(resetReason);
@@ -481,7 +473,6 @@ export class AgentFactory {
 
     /**
      * 🔒 Register agent with complete security context
-     * ✅ BUG-B-1 FIX: Store full tenant context for AI operations
      */
     private registerSecureAgent(
         agentId: string,
@@ -494,7 +485,7 @@ export class AgentFactory {
             agentType: type,
             restaurantId: tenantContext.restaurant.id,
             tenantId: tenantContext.restaurant.id,
-            tenantContext, // ✅ BUG-B-1 FIX: Store full context
+            tenantContext, 
             createdAt: new Date(),
             lastUsed: new Date(),
             requestCount: 1,
@@ -569,7 +560,6 @@ export class AgentFactory {
                 case 'conductor':
                     return new ConductorAgent(defaultConfig, restaurantConfig);
 
-                // 🚀 APOLLO FIX: Replace the placeholder with the actual ApolloAgent class
                 case 'availability':
                     smartLog.info('Instantiating production-ready ApolloAgent', {
                         agentType: type,
@@ -670,17 +660,13 @@ export class AgentFactory {
     // ===== ENHANCED HEALTH MONITORING WITH TENANT CONTEXT =====
 
     /**
-     * ✅ BUG-B-1 FIX: Enhanced health monitoring with tenant context support
      * Starts a periodic timer to run health checks on all cached agents.
-     * 
-     * CRITICAL CHANGE: Now passes tenantContext to healthCheck() method to prevent
-     * MISSING_TENANT_CONTEXT errors during background health monitoring.
      */
     private startHealthMonitoring(): void {
         smartLog.info('Agent factory health monitoring started', {
             interval: this.factoryConfig.healthCheckInterval,
             tenantIsolationEnabled: true,
-            tenantContextEnabled: true // ✅ BUG-B-1 FIX: Indicating tenant context support
+            tenantContextEnabled: true 
         });
 
         this.healthCheckTimer = setInterval(async () => {
@@ -688,14 +674,11 @@ export class AgentFactory {
 
             smartLog.info('Running agent health check with tenant context', {
                 totalAgents: this.agentRegistry.size,
-                tenantContextSupport: true // ✅ BUG-B-1 FIX: Log tenant context support
+                tenantContextSupport: true 
             });
 
             for (const [agentId, entry] of this.agentRegistry.entries()) {
                 try {
-                    // ✅ BUG-B-1 CRITICAL FIX: Pass tenant context to health check
-                    // Previously: const health = await entry.agent.healthCheck(); // ❌ Missing tenant context
-                    // Now: Pass the stored tenant context from the registry entry
                     const health = await entry.agent.healthCheck(entry.tenantContext);
                     
                     entry.healthy = health.healthy;
@@ -707,16 +690,15 @@ export class AgentFactory {
                             tenantId: entry.tenantId,
                             agentType: entry.agentType,
                             details: health.details,
-                            tenantContextPassed: true // ✅ BUG-B-1 FIX: Confirm tenant context was passed
+                            tenantContextPassed: true 
                         });
-                    } else {
-                        // 🐞 FIX: Changed from .debug to .info
+                    } else {                        
                         // Log successful health check with tenant context
                         smartLog.info('Agent health check passed', {
                             agentId,
                             tenantId: entry.tenantId,
                             agentType: entry.agentType,
-                            tenantContextPassed: true // ✅ BUG-B-1 FIX: Confirm tenant context was passed
+                            tenantContextPassed: true 
                         });
                     }
                 } catch (error) {
@@ -726,12 +708,12 @@ export class AgentFactory {
                         tenantId: entry.tenantId,
                         agentType: entry.agentType,
                         errorType: 'HEALTH_CHECK_FAILURE',
-                        tenantContextPassed: !!entry.tenantContext // ✅ BUG-B-1 FIX: Log whether tenant context was available
+                        tenantContextPassed: !!entry.tenantContext 
                     });
                 }
             }
 
-            // ✅ BUG-B-5 FIX: Remove stale entries during health check
+            
             this.cleanupStaleEntries();
         }, this.factoryConfig.healthCheckInterval);
 
@@ -739,9 +721,7 @@ export class AgentFactory {
         this.healthCheckTimer.unref();
     }
 
-    /**
-     * ✅ BUG-B-5 FIX: Clean up stale cache entries
-     */
+
     private cleanupStaleEntries(): void {
         const staleEntries: string[] = [];
         

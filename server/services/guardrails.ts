@@ -1,12 +1,4 @@
 // server/services/guardrails.ts
-// ✅ PHASE 1 INTEGRATION COMPLETE: Using centralized AIService
-// ✅ BUG-B-4 SECURITY FIX: Changed from fail-open to fail-closed behavior
-// ✅ BUG-B-1 TENANT CONTEXT FIX: Added tenant context to all AI service calls
-// 1. Replaced all AI provider logic with aiService calls
-// 2. Unified translation service pattern using AIService
-// 3. Enhanced relevance checking with AIService fallback
-// 4. Improved safety and multilingual support
-// 5. CRITICAL: Fixed security vulnerability by failing closed on AI errors
 
 import { aiService } from './ai-service';
 import type { BookingSession } from './session-manager';
@@ -19,11 +11,6 @@ export interface GuardrailResult {
     category?: 'off_topic' | 'safety' | 'inappropriate';
 }
 
-/**
- * ✅ PHASE 1 FIX: Unified Translation Service using AIService
- * ✅ BUG-B-1 FIX: Added tenant context parameter for AI operations
- * ✅ BUG-B-4 FIX: Fail closed on AI service errors
- */
 class UnifiedGuardrailTranslationService {
     private static cache = new Map<string, { translation: string, timestamp: number }>();
     private static CACHE_TTL = 60 * 60 * 1000; // 1 hour
@@ -31,7 +18,7 @@ class UnifiedGuardrailTranslationService {
     static async translate(
         message: string, 
         targetLanguage: Language,
-        tenantContext: TenantContext, // ✅ BUG-B-1 FIX: Required tenant context
+        tenantContext: TenantContext, 
         context: 'error' | 'safety' | 'off_topic' = 'error'
     ): Promise<string> {
         if (targetLanguage === 'en' || targetLanguage === 'auto') return message;
@@ -43,8 +30,7 @@ class UnifiedGuardrailTranslationService {
             return cached.translation;
         }
         
-        try {
-            // ✅ BUG-B-1 FIX: Validate tenant context before AI operations
+        try {            
             if (!tenantContext) {
                 console.error('[GuardrailTranslation] Missing tenant context for AI operation');
                 return message; // Fallback to original without AI call
@@ -64,8 +50,7 @@ Context: This is a ${context} message for a restaurant booking system
 Keep the same tone and professional style.
 Return only the translation, no explanations.`;
 
-            // ✅ USE AISERVICE: Fast translation with automatic fallback
-            // ✅ BUG-B-1 FIX: Pass tenant context to AI service
+            // ✅ USE AISERVICE: Fast translation with automatic fallback            
             const translation = await aiService.generateContent(prompt, {
                 maxTokens: 200,
                 temperature: 0.2,
@@ -78,7 +63,7 @@ Return only the translation, no explanations.`;
             return translation;
         } catch (error) {
             console.error('[GuardrailTranslation] AI translation failed:', error);
-            // ✅ BUG-B-4 FIX: On AI failure, return original message (fail gracefully but securely)
+            // On AI failure, return original message (fail gracefully but securely)
             return message; // Fallback to original - this is acceptable for translations
         }
     }
@@ -95,7 +80,7 @@ Return only the translation, no explanations.`;
 }
 
 /**
- * ✅ ENHANCED: Checks if the bot's last message was a direct question for information
+ * ✅ Checks if the bot's last message was a direct question for information
  * that the user's current message is likely providing.
  * Now includes phone number detection patterns for better validation.
  *
@@ -109,7 +94,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
 
     if (!lastBotMessage) return false;
 
-    // ✅ ENHANCED: Better phone number detection
+    // ✅ Better phone number detection
     if (lastBotMessage.includes('phone') || lastBotMessage.includes('телефон') || lastBotMessage.includes('номер') || 
         lastBotMessage.includes('telefon') || lastBotMessage.includes('szám') || lastBotMessage.includes('numero')) {
         // Enhanced phone number patterns: supports various formats
@@ -126,7 +111,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    // ✅ ENHANCED: Better name detection with multilingual support
+    // ✅ Better name detection with multilingual support
     if (lastBotMessage.includes('name') || lastBotMessage.includes('имя') || lastBotMessage.includes('зовут') ||
         lastBotMessage.includes('ime') || lastBotMessage.includes('név') || lastBotMessage.includes('nome') ||
         lastBotMessage.includes('nom') || lastBotMessage.includes('naam')) {
@@ -149,7 +134,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
         }
     }
 
-    // ✅ ENHANCED: Date and time detection with multilingual support
+    // ✅ Date and time detection with multilingual support
     if (lastBotMessage.includes('date') || lastBotMessage.includes('дата') || lastBotMessage.includes('когда') ||
         lastBotMessage.includes('datum') || lastBotMessage.includes('dátum') || lastBotMessage.includes('data') ||
         lastBotMessage.includes('fecha') || lastBotMessage.includes('date')) {
@@ -202,7 +187,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
 }
 
 /**
- * ✅ ENHANCED: A fast, keyword-based check for obviously relevant messages.
+ * ✅ A fast, keyword-based check for obviously relevant messages.
  * Now includes more comprehensive patterns and better multilingual support.
  *
  * @param message The user's message.
@@ -211,7 +196,7 @@ function isDirectAnswer(session: BookingSession, message: string): boolean {
 function containsBookingKeywords(message: string): boolean {
     const normalized = message.toLowerCase().trim();
 
-    // ✅ ENHANCED: More comprehensive booking keywords with all supported languages
+    // ✅ More comprehensive booking keywords with all supported languages
     const bookingKeywords = [
         // English - expanded
         'table', 'reservation', 'book', 'reserve', 'restaurant', 'menu', 'dinner', 'lunch',
@@ -283,9 +268,9 @@ function containsBookingKeywords(message: string): boolean {
 }
 
 /**
- * ✅ PHASE 1 FIX: Enhanced AI-powered relevance classifier using AIService
- * ✅ BUG-B-1 FIX: Added tenant context parameter for AI operations
- * ✅ BUG-B-4 CRITICAL SECURITY FIX: Changed from fail-open to fail-closed behavior
+ * ✅ Enhanced AI-powered relevance classifier using AIService
+ * ✅ Added tenant context parameter for AI operations
+ * ✅ Changed from fail-open to fail-closed behavior
  * This provides context-aware relevance checking with robust AI fallback system.
  */
 async function checkRelevanceWithAIService(
@@ -293,10 +278,10 @@ async function checkRelevanceWithAIService(
     message: string
 ): Promise<GuardrailResult> {
     try {
-        // ✅ BUG-B-1 FIX: Ensure tenant context is available
+        // ✅ Ensure tenant context is available
         if (!session.tenantContext) {
             console.error('[Guardrails] Missing tenant context for AI relevance check');
-            // ✅ BUG-B-4 FIX: Fail closed when tenant context missing
+            // ✅ Fail closed when tenant context missing
             return {
                 allowed: false,
                 reason: 'System validation required. Please rephrase your message.',
@@ -349,7 +334,7 @@ Respond with JSON only:
 }`;
 
         // ✅ USE AISERVICE: Fast relevance checking with automatic fallback
-        // ✅ BUG-B-1 FIX: Pass tenant context to AI service
+        // ✅ Pass tenant context to AI service
         const responseText = await aiService.generateContent(prompt, {
             maxTokens: 200,
             temperature: 0.0,
@@ -361,7 +346,7 @@ Respond with JSON only:
         
         console.log(`[Guardrails] AI relevance check for "${message}":`, relevanceResult);
 
-        // ✅ ENHANCED: More permissive threshold and better logic
+        // ✅ More permissive threshold and better logic
         if (relevanceResult.is_relevant === true || relevanceResult.confidence < 0.85) {
             return { allowed: true };
         } else {
@@ -383,7 +368,7 @@ Respond with JSON only:
     } catch (error) {
         console.error('[Guardrails] Relevance check system failure:', error);
         
-        // ✅ BUG-B-4 CRITICAL SECURITY FIX: Fail closed for security
+        // ✅ Fail closed for security
         return { 
             allowed: false, 
             reason: 'System check failed. Please rephrase your message.',
@@ -393,9 +378,9 @@ Respond with JSON only:
 }
 
 /**
- * ✅ PHASE 1 FIX: Enhanced safety check using AIService
- * ✅ BUG-B-1 FIX: Added tenant context parameter for AI operations
- * ✅ BUG-B-4 CRITICAL SECURITY FIX: Changed from fail-open to fail-closed behavior
+ * ✅ Enhanced safety check using AIService
+ * ✅ Added tenant context parameter for AI operations
+ * ✅ Changed from fail-open to fail-closed behavior
  * This provides robust safety checking with AI fallback system.
  */
 async function checkSafetyWithAIService(
@@ -403,7 +388,7 @@ async function checkSafetyWithAIService(
     language: Language = 'en',
     tenantContext: TenantContext
 ): Promise<GuardrailResult> {
-    // ✅ ENHANCED: First check with regex patterns for obvious cases
+    // ✅ First check with regex patterns for obvious cases
     const suspiciousPatterns = [
         // Prompt injection attempts
         /ignore.*(previous|above|earlier).*(instruction|prompt|rule)/i,
@@ -443,13 +428,13 @@ async function checkSafetyWithAIService(
         };
     }
 
-    // ✅ PHASE 1 FIX: For more subtle cases, use AIService
+    // ✅ For more subtle cases, use AIService
     if (message.length > 50) { // Only use AI for longer messages
         try {
-            // ✅ BUG-B-1 FIX: Validate tenant context before AI operations
+            // ✅ Validate tenant context before AI operations
             if (!tenantContext) {
                 console.error('[Guardrails] Missing tenant context for AI safety check');
-                // ✅ BUG-B-4 FIX: Fail closed when tenant context missing
+                // ✅ Fail closed when tenant context missing
                 return {
                     allowed: false,
                     reason: 'Security validation required. Please rephrase.',
@@ -475,7 +460,7 @@ Respond with JSON only:
 }`;
 
             // ✅ USE AISERVICE: Fast safety checking with automatic fallback
-            // ✅ BUG-B-1 FIX: Pass tenant context to AI service
+            // ✅ Pass tenant context to AI service
             const responseText = await aiService.generateContent(safetyPrompt, {
                 maxTokens: 150,
                 temperature: 0.0,
@@ -503,7 +488,7 @@ Respond with JSON only:
         } catch (error) {
             console.error('[Guardrails] Safety check system failure:', error);
             
-            // ✅ BUG-B-4 CRITICAL SECURITY FIX: Fail closed for security
+            // ✅ Fail closed for security
             return { 
                 allowed: false, 
                 reason: 'Security validation required. Please rephrase.',
@@ -516,19 +501,19 @@ Respond with JSON only:
 }
 
 /**
- * ✅ ENHANCED & FIXED: High-Risk Action Confirmation with Language Support
+ * ✅ High-Risk Action Confirmation with Language Support
  * The reservation creation confirmation has been removed for a smoother UX.
  */
 export function requiresConfirmation(toolName: string, args: any, lang: Language = 'en'): { required: boolean; data?: any; } {
     if (toolName === 'create_reservation') {
-        // ✅ CRITICAL UX FIX: Removed mandatory confirmation for creating a reservation.
+        // ✅ Removed mandatory confirmation for creating a reservation.
         // The agent is already instructed to gather all information first.
         // Forcing another confirmation step is redundant and unnatural for the user.
         console.log(`[Guardrails] Skipping confirmation for create_reservation for a smoother user experience.`);
         return { required: false };
     }
 
-    // ✅ CRITICAL FIX: Only require confirmation for cancellations if not already confirmed.
+    // ✅ Only require confirmation for cancellations if not already confirmed.
     if (toolName === 'cancel_reservation') {
         if (args.confirmCancellation === true) {
             return { required: false };
@@ -548,9 +533,9 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
 }
 
 /**
- * ✅ PHASE 1 INTEGRATION: Main guardrail orchestrator function using AIService
- * ✅ BUG-B-1 FIX: Added tenant context parameter for all AI operations
- * ✅ BUG-B-4 CRITICAL SECURITY FIX: Enhanced error handling with fail-closed behavior
+ * ✅ Main guardrail orchestrator function using AIService
+ * ✅ Added tenant context parameter for all AI operations
+ * ✅ Enhanced error handling with fail-closed behavior
  * This is the only function you need to call from the outside.
  * Now with AIService for all AI components and proper security.
  *
@@ -561,7 +546,7 @@ export function requiresConfirmation(toolName: string, args: any, lang: Language
 export async function runGuardrails(message: string, session: BookingSession): Promise<GuardrailResult> {
     console.log(`[Guardrails] Checking message: "${message}" (Context: ${session.context}, Step: ${session.currentStep}, Agent: ${(session as any).currentAgent || 'booking'}, Language: ${session.language})`);
 
-    // ✅ BUG-B-1 FIX: Validate tenant context at entry point
+    // ✅ Validate tenant context at entry point
     if (!session.tenantContext) {
         console.error('[Guardrails] Missing tenant context in session', {
             sessionId: session.sessionId,
@@ -569,7 +554,7 @@ export async function runGuardrails(message: string, session: BookingSession): P
             critical: true
         });
         
-        // ✅ BUG-B-4 FIX: Fail closed when tenant context missing
+        // ✅ Fail closed when tenant context missing
         return {
             allowed: false,
             reason: 'System validation required. Please start a new conversation.',
@@ -577,7 +562,7 @@ export async function runGuardrails(message: string, session: BookingSession): P
         };
     }
 
-    // ✅ ENHANCED: More intelligent pre-checks with better logging
+    // ✅ More intelligent pre-checks with better logging
 
     // Always allow direct answers to questions. This is the main fix.
     if (isDirectAnswer(session, message)) {
@@ -591,14 +576,14 @@ export async function runGuardrails(message: string, session: BookingSession): P
         return { allowed: true };
     }
 
-    // ✅ ENHANCED: Allow very short confirmations and common responses (multilingual)
+    // ✅ Allow very short confirmations and common responses (multilingual)
     const shortResponsePatterns = /^(да|нет|yes|no|ok|okay|thanks|спасибо|hvala|ок|k|igen|nem|ja|nein|oui|non|sì|sí|tak|nie)$/i;
     if (shortResponsePatterns.test(message.trim())) {
         console.log(`[Guardrails] ✅ ALLOWED - Short confirmation/response`);
         return { allowed: true };
     }
 
-    // ✅ NEW: Allow messages that seem to provide missing booking information
+    // ✅ Allow messages that seem to provide missing booking information
     const missingInfo = [];
     if (!session.gatheringInfo.date) missingInfo.push('date');
     if (!session.gatheringInfo.time) missingInfo.push('time');
@@ -620,14 +605,14 @@ export async function runGuardrails(message: string, session: BookingSession): P
         }
     }
 
-    // --- Step 2: Safety Check (for malicious content) using AIService ---
+    // Safety Check (for malicious content) using AIService ---
     const safetyResult = await checkSafetyWithAIService(message, session.language, session.tenantContext);
     if (!safetyResult.allowed) {
         console.log(`[Guardrails] ❌ BLOCKED - Safety check failed: ${safetyResult.reason}`);
         return safetyResult;
     }
 
-    // --- Step 3: AI Relevance Check (for ambiguous cases) using AIService ---
+    // AI Relevance Check (for ambiguous cases) using AIService ---
     // This now only runs if the message is not a direct answer or keyword-related.
     console.log(`[Guardrails] Running AI relevance check for ambiguous message...`);
     const relevanceResult = await checkRelevanceWithAIService(session, message);
